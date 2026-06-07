@@ -14,8 +14,8 @@ from field_capture.text_semantics import run_text_semantic_pipeline
 
 @pytest.fixture
 def vault_named_bt(monkeypatch) -> None:
-    """Make get_config().vault_dir.name return "Clearpath" deterministically."""
-    fake_config = SimpleNamespace(vault_dir=Path("/some/path/Clearpath"))
+    """Make get_config().vault_dir.name return "OperationalVault" deterministically."""
+    fake_config = SimpleNamespace(vault_dir=Path("/some/path/OperationalVault"))
     # normalize_vault_relative_path lives in queue_spec; action_candidates
     # only re-exports it. Patch at the source so the configured vault name
     # is what the function actually reads.
@@ -24,7 +24,7 @@ def vault_named_bt(monkeypatch) -> None:
 
 def test_normalize_strips_doubled_bt_prefix(vault_named_bt: None) -> None:
     assert (
-        action_candidates.normalize_vault_relative_path("Clearpath/Accounts/Hillcrest/Locations/7091 - Hillcrest Corporation/about.md")
+        action_candidates.normalize_vault_relative_path("OperationalVault/Accounts/Hillcrest/Locations/7091 - Hillcrest Corporation/about.md")
         == "Accounts/Hillcrest/Locations/7091 - Hillcrest Corporation/about.md"
     )
 
@@ -33,7 +33,7 @@ def test_normalize_strips_repeated_bt_prefix(vault_named_bt: None) -> None:
     # Defense in depth: a producer that doubles up its own bug shouldn't
     # leak through.
     assert (
-        action_candidates.normalize_vault_relative_path("Clearpath/Clearpath/People/Derry, Albert.md")
+        action_candidates.normalize_vault_relative_path("OperationalVault/OperationalVault/People/Derry, Albert.md")
         == "People/Derry, Albert.md"
     )
 
@@ -46,8 +46,8 @@ def test_normalize_passes_through_clean_path(vault_named_bt: None) -> None:
 
 
 def test_normalize_strips_leading_slashes_and_dot(vault_named_bt: None) -> None:
-    assert action_candidates.normalize_vault_relative_path("/Clearpath/People/Smith.md") == "People/Smith.md"
-    assert action_candidates.normalize_vault_relative_path("./Clearpath/People/Smith.md") == "People/Smith.md"
+    assert action_candidates.normalize_vault_relative_path("/OperationalVault/People/Smith.md") == "People/Smith.md"
+    assert action_candidates.normalize_vault_relative_path("./OperationalVault/People/Smith.md") == "People/Smith.md"
     assert action_candidates.normalize_vault_relative_path("./People/Smith.md") == "People/Smith.md"
 
 
@@ -60,17 +60,17 @@ def test_normalize_handles_non_string_inputs(vault_named_bt: None) -> None:
 
 def test_normalize_uses_configured_vault_name(monkeypatch) -> None:
     # If the vault gets renamed to something else, the normalizer should
-    # strip the new name — proves we're not hardcoded to "Clearpath/".
+    # strip the new name — proves we're not hardcoded to one vault prefix.
     fake_config = SimpleNamespace(vault_dir=Path("/other/path/CustomVaultName"))
     monkeypatch.setattr(queue_spec, "get_config", lambda: fake_config)
     assert (
         action_candidates.normalize_vault_relative_path("CustomVaultName/Accounts/X/about.md")
         == "Accounts/X/about.md"
     )
-    # A "Clearpath/" prefix is no longer the vault name, so it must NOT be stripped.
+    # An "OperationalVault/" prefix is no longer the vault name, so it must NOT be stripped.
     assert (
-        action_candidates.normalize_vault_relative_path("Clearpath/Accounts/X/about.md")
-        == "Clearpath/Accounts/X/about.md"
+        action_candidates.normalize_vault_relative_path("OperationalVault/Accounts/X/about.md")
+        == "OperationalVault/Accounts/X/about.md"
     )
 
 
@@ -95,14 +95,14 @@ def test_quality_filter_suppresses_non_field_operation_actions() -> None:
 def test_semantic_channel_metadata_strips_doubled_prefix(vault_named_bt: None) -> None:
     payload = {
         "site_id": "7050",
-        "proposed_note_path": "Clearpath/Accounts/Hillcrest/Locations/7091 - Hillcrest Corporation/about.md",
+        "proposed_note_path": "OperationalVault/Accounts/Hillcrest/Locations/7091 - Hillcrest Corporation/about.md",
     }
     metadata = action_candidates.semantic_channel_metadata(payload)
     assert metadata["proposed_note_path"] == "Accounts/Hillcrest/Locations/7091 - Hillcrest Corporation/about.md"
 
 
 def test_semantic_channel_metadata_omits_proposed_when_empty_after_strip(vault_named_bt: None) -> None:
-    payload = {"site_id": "7050", "proposed_note_path": "Clearpath/"}
+    payload = {"site_id": "7050", "proposed_note_path": "OperationalVault/"}
     metadata = action_candidates.semantic_channel_metadata(payload)
     assert "proposed_note_path" not in metadata
 

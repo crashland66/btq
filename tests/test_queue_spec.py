@@ -317,7 +317,7 @@ def test_validate_job_accepts_recruiting_survey_journal_note() -> None:
             "payload": {
                 "path": "Journal/2026-05-20.md",
                 "content": (
-                    "Clearpath open-position listing URL recovered. A live posting "
+                    "Open-position listing URL recovered. A live posting "
                     "requires someone to create a public posting on the board. "
                     "Do not assume the Continental cleaner backfill is publicly "
                     "advertised just because it is flagged internally."

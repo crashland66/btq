@@ -96,7 +96,7 @@ type: location
 What is enforced:
 
 - Site jobs are identified by either a `job` or `site_id` field. Treat site IDs
-  as strings because Clearpath job numbers are identifiers, not numbers.
+  as strings because site/job numbers are identifiers, not numbers.
 
 What is implied but not strongly enforced:
 

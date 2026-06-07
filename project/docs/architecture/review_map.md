@@ -1,6 +1,6 @@
 # BTQ Architecture Review Map
 
-This directory is a technical review package for the Clearpath Queue pipeline. It is based on the checked-in code, tests, scripts, and existing docs as of the review, with code treated as the source of truth.
+This directory is a technical review package for the BTQ queue pipeline. It is based on the checked-in code, tests, scripts, and existing docs as of the review, with code treated as the source of truth.
 
 Recommended reading order:
 

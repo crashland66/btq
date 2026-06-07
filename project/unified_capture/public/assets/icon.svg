@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" role="img" aria-label="Field Capture">
   <!-- Field Capture app icon: centered frame-wave mark on a solid tile.
-       Background = manifest background_color; accent = Clearpath green to match theme_color. -->
+       Background = manifest background_color; accent = app green to match theme_color. -->
   <rect width="512" height="512" rx="96" fill="#f7f8f6"/>
   <!-- mark drawn in a 0..512 space, centered, scaled up from the 64-unit design -->
   <g transform="translate(96,96) scale(5)">
@@ -11,7 +11,7 @@
       <path d="M8 46 v6 a4 4 0 0 0 4 4 h6"/>
       <path d="M46 56 h6 a4 4 0 0 0 4-4 v-6"/>
     </g>
-    <!-- waveform in Clearpath green -->
+    <!-- waveform in app green -->
     <g fill="none" stroke="#6fd064" stroke-width="4.5" stroke-linecap="round">
       <line x1="20" y1="28" x2="20" y2="36"/>
       <line x1="27" y1="22" x2="27" y2="42"/>

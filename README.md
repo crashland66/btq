@@ -1,4 +1,4 @@
-# BT Pipeline
+# BTQ
 
 Deterministic field-operations pipeline for turning recorded voice notes and field captures into validated queue jobs and controlled canonical writes.
 
@@ -12,7 +12,7 @@ Development workflow, prompts, and execution history live in the sister reposito
 
 ## Purpose
 
-BT Pipeline ingests field audio notes and captures, transcribes audio with Whisper, normalizes domain language, extracts deterministic operational events, converts those events into validated queue jobs, and writes approved updates to the canonical CouchDB store through a single writer boundary (with an optional, off-by-default human-readable Markdown projection into an Obsidian vault).
+BTQ ingests field audio notes and captures, transcribes audio with Whisper, normalizes domain language, extracts deterministic operational events, converts those events into validated queue jobs, and writes approved updates to the canonical CouchDB store through a single writer boundary (with an optional, off-by-default human-readable Markdown projection into an Obsidian vault).
 
 Author entry point:
 
@@ -128,7 +128,7 @@ Personal journal boundary:
 - A voice memo that begins with `personal journal`, `this is a personal journal`, or `personal note` is routed as personal-only.
 - The trigger phrase is stripped from the stored body, while the raw transcript path, timestamp, and source audio filename are preserved in the queued job.
 - Personal entries are staged as `personal_journal_entry` jobs and written by the queue watcher to `Journal/YYYY-MM-DD.md` inside `personal_vault_dir`.
-- Personal entries do not enter Clearpath operational extraction, account journals, staffing events, shift reports, unknown captures, or nightly ops digest.
+- Personal entries do not enter operational extraction, account journals, staffing events, shift reports, unknown captures, or nightly ops digest.
 - This first pass performs separation only. It does not add semantic analysis, pattern extraction, mood analysis, tagging, summaries, or personal insight generation.
 
 ## Repository Layout
@@ -414,7 +414,7 @@ Practical checks:
 - the Python version is at least 3.9
 - `torch` and `whisper` import successfully from `project/.venv`
 - `ffmpeg` is on `PATH`
-- the configured inbox, archive, Clearpath vault, and personal vault paths exist on disk
+- the configured inbox, archive, operational vault, and personal vault paths exist on disk
 - `base_dir` and `project_dir` point at the checkout you intend to run
 - runtime queue backlog count, oldest queued job age, and recent queue watcher or processing activity
 
@@ -647,7 +647,7 @@ These are implementation truths in the current codebase:
 
 ## Current Limitations / Local Environment Assumptions
 
-- Default path values in `config.json` still reflect the author's current machine layout until you change them.
+- Default path values in `config.example.json` are placeholders; installation-specific paths belong in local config or environment variables.
 - The root `pyproject.toml` is intentionally minimal and only covers the dependencies the active code imports directly.
 - There is still no lockfile or pinned environment export for reproducible installs across machines.
 - The queue watcher and transcription watcher are macOS `launchd` oriented.

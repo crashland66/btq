@@ -13,7 +13,7 @@ from vps import ssh as vps_ssh
 def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     refresh_vault_parser = subparsers.add_parser(
         "refresh-vault",
-        help="Sync Clearpath vault sites and people into CouchDB.",
+        help="Sync operational vault sites and people into CouchDB.",
     )
     refresh_vault_parser.add_argument("--vault-root", type=Path)
     refresh_vault_parser.add_argument("--sites-only", action="store_true")

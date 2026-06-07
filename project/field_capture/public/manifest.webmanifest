@@ -1,6 +1,6 @@
 {
-  "name": "Clearpath Field Capture",
-  "short_name": "Clearpath Field",
+  "name": "Field Capture",
+  "short_name": "Field Capture",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",

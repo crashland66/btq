@@ -1,5 +1,5 @@
 [Unit]
-Description=Clearpath Unified Capture Intake
+Description=BTQ Unified Capture Intake
 After=network-online.target
 Wants=network-online.target
 

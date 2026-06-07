@@ -1,6 +1,6 @@
 {
-  "name": "Clearpath Voice Memo",
-  "short_name": "Clearpath Voice",
+  "name": "Voice Memo",
+  "short_name": "Voice Memo",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",

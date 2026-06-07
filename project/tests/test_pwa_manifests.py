@@ -7,8 +7,8 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 TOKEN_PASTE_CONTEXT = (
-    "If you don't have an access token, this is a demo of an internal tool used by "
-    "Clearpath Facilities. Real users get a tokenized link directly from Jordan."
+    "If you don't have an access token, this is a demo of an internal field-operations "
+    "tool. Real users get a tokenized link from their administrator."
 )
 
 

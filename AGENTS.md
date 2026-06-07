@@ -10,9 +10,9 @@
 
 ## Repo topology
 
-- The repo root is wherever this AGENTS.md is read from — never hardcode a path. The same checkout exists on the Air (active dev), the Pro (ingestion), and the VPS (PWA + ops dashboard).
-- Canonical git remote is `origin` on the VPS bare repo at `deploy@vps.example.com:/home/deploy/git/btq.git`. The Pro also keeps a `github` remote as a backup mirror — push to it explicitly only when asked.
-- Deploy flow: changes land in the canonical remote first (planner pushes from the Air). Production deploys are `git pull` in the working clones on the VPS and Pro, followed by the appropriate service restart. The planner manages this; do not initiate deploys unless explicitly asked.
+- The repo root is wherever this AGENTS.md is read from; never hardcode a path.
+- Deployment topology is installation-specific. Treat configured remotes, processing nodes, and hosting targets as runtime environment details, not repository defaults.
+- Do not initiate deploys, service restarts, or remote pushes unless explicitly asked.
 
 ## Testing
 

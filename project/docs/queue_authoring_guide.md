@@ -143,7 +143,7 @@ universal site field.
   Example: `"Continental Metalworks"`.
 - **`site_id` = site-number string.** Used by `log_site_issue`,
   `log_supply_need`, `log_equipment_request`, and `promote_prospect`.
-  Example: `"7060"`. Clearpath job numbers are identifiers, not numbers — always
+  Example: `"7060"`. Site/job numbers are identifiers, not numbers — always
   quote them as strings (`"7060"`, never `1200`).
 - **Either** — `update_site_equipment` accepts `site` (name) **or**
   `site_id` (number).
@@ -1447,7 +1447,7 @@ Emitted when a supply-vendor email is captured for parsing.
 
 ### `personal_journal_entry`
 
-Emitted by the audio pipeline for a personal (non-Clearpath) journal dictation.
+Emitted by the audio pipeline for a personal, non-operational journal dictation.
 
 #### Required payload fields
 

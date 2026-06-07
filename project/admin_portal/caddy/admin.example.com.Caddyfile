@@ -31,6 +31,6 @@ admin.example.com {
 	# protected and the VPS-to-Mac Tailscale path has been verified.
 	#
 	# handle_path /ops-dashboard/* {
-	# 	reverse_proxy http://100.64.0.10:8765
+	# 	reverse_proxy http://processing-node.example:8765
 	# }
 }

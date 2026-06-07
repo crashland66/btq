@@ -912,7 +912,7 @@ Safety boundaries:
 
 ## Local Ops Dashboard
 
-Run the local operator dashboard on the MacBook Pro:
+Run the local operator dashboard on the processing node:
 
 ```bash
 ./scripts/btq ops-dashboard
@@ -1069,7 +1069,7 @@ https://workstation.example.ts.net/api/status
 
 The HTTPS surface is required for `MediaRecorder` (the Capture Observation
 card's tape-deck recorder) because `navigator.mediaDevices` is gated to secure
-contexts. Plain `http://100.64.0.10:8765` still works for read-only use but
+contexts. Plain private-network dashboard URLs still work for read-only use but
 recording will be disabled.
 
 Do not bind this dashboard to a public interface. V1 has no in-app
@@ -1172,17 +1172,17 @@ Employee writes:
 
 ### Personal journal mode
 
-To keep a voice memo separate from Clearpath operational memory, begin the memo with one of these explicit triggers:
+To keep a voice memo separate from operational memory, begin the memo with one of these explicit triggers:
 
 - `personal journal`
 - `this is a personal journal`
 - `personal note`
 
-The transcription pipeline strips that trigger from the stored body, preserves the raw transcript path plus source audio filename and timestamp, and stages a `personal_journal_entry` job. The queue watcher writes it under `personal_vault_dir`, separate from the Clearpath operational vault:
+The transcription pipeline strips that trigger from the stored body, preserves the raw transcript path plus source audio filename and timestamp, and stages a `personal_journal_entry` job. The queue watcher writes it under `personal_vault_dir`, separate from the operational vault:
 
 - `Journal/YYYY-MM-DD.md`
 
-Personal journal jobs do not run through operational event extraction and do not feed Clearpath shift reports, account journals, staffing events, unknown captures, or nightly ops digest. This first pass is separation only; it does not perform semantic analysis, tagging, summaries, mood analysis, or personal insight generation.
+Personal journal jobs do not run through operational event extraction and do not feed shift reports, account journals, staffing events, unknown captures, or nightly ops digest. This first pass is separation only; it does not perform semantic analysis, tagging, summaries, mood analysis, or personal insight generation.
 
 ## Site Routing Lifecycle
 

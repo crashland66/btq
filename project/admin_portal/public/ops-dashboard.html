@@ -22,7 +22,7 @@
       <section class="page-header">
         <h1>Ops Dashboard</h1>
         <p>
-          V1 links to the MacBook Pro read-only dashboard instead of proxying it
+          V1 links to the runtime read-only dashboard instead of proxying it
           through the public admin hostname.
         </p>
       </section>
@@ -30,7 +30,7 @@
       <section class="panel">
         <h2>Chosen V1 Approach</h2>
         <p>
-          Use a protected link to <code>http://100.64.0.10:8765/</code>. The
+          Use a protected link to <code>http://processing-node.example:8765/</code>. The
           dashboard remains hosted by the Mac runtime, and the VPS admin shell
           does not become a runtime authority.
         </p>
@@ -39,7 +39,7 @@
           protected by Cloudflare Access, Tailscale-only reachability, Caddy
           basic auth, or an equivalent control.
         </p>
-        <a class="primary-link" href="http://100.64.0.10:8765/" rel="noreferrer">Open Mac Ops Dashboard</a>
+        <a class="primary-link" href="http://processing-node.example:8765/" rel="noreferrer">Open Runtime Ops Dashboard</a>
       </section>
 
       <section class="panel">
@@ -48,10 +48,9 @@
           <li>No unauthenticated public access to <code>admin.example.com</code>.</li>
           <li>No processor execution route exposed through the admin shell.</li>
           <li>No queue staging, approval, or publish route in V1.</li>
-          <li>MacBook Pro remains the runtime and processing authority.</li>
+          <li>The processing node remains the runtime and processing authority.</li>
         </ul>
       </section>
     </main>
   </body>
 </html>
-

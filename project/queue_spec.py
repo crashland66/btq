@@ -12,11 +12,11 @@ def _vault_path_prefixes() -> tuple[str, ...]:
 
     Generic defaults ship in git; production supplies its real top-level vault
     folders via BTQ_VAULT_PATH_PREFIXES (comma-separated, e.g.
-    "B&T/,Accounts/"). The structural folders (People/, Accounts/, Journal/,
-    Outbox/) are always included so the matcher works out of the box.
+    "OperationalVault/,Accounts/"). The structural folders (People/, Accounts/,
+    Journal/, Outbox/) are always included so the matcher works out of the box.
     """
     structural = ["People/", "Accounts/", "Journal/", "Outbox/"]
-    raw = os.environ.get("BTQ_VAULT_PATH_PREFIXES", "Clearpath/,Accounts/")
+    raw = os.environ.get("BTQ_VAULT_PATH_PREFIXES", "OperationalVault/,Accounts/")
     extra = [segment.strip() for segment in raw.split(",") if segment.strip()]
     seen: dict[str, None] = {}
     for prefix in [*structural, *extra]:
@@ -353,10 +353,10 @@ def normalize_vault_relative_path(path: object) -> str:
     segments stripped.
 
     Remote payload producers have at times emitted paths like
-    "Clearpath/Accounts/Hillcrest/.../about.md" when they should emit
+    "OperationalVault/Accounts/Hillcrest/.../about.md" when they should emit
     "Accounts/Hillcrest/.../about.md" — the vault root directory is already at
-    .../Clearpath, so the doubled prefix produces
-    .../Clearpath/Clearpath/Accounts/... which
+    .../OperationalVault, so the doubled prefix produces
+    .../OperationalVault/OperationalVault/Accounts/... which
     doesn't exist. Strip the vault-name prefix here so downstream consumers
     always see a clean vault-relative path. The vault name is read from
     get_config() rather than hardcoded so a vault rename doesn't silently

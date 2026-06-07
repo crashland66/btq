@@ -49,7 +49,7 @@ def test_mobile_form_uses_prominent_add_photo_button_without_camera_controls() -
 
     assert 'class="brand-logo"' in html
     assert 'src="./assets/app-logo.png"' in html
-    assert 'alt="Clearpath Facilities"' in html
+    assert 'alt="Field Capture"' in html
     assert (PROJECT_ROOT / "assets" / "app-logo.png").is_file()
     assert "Photo evidence for BTQ queue review" not in html
     assert "<h1>Field Capture</h1>" not in html

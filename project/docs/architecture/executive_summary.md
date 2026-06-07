@@ -1,6 +1,6 @@
 # Executive Summary
 
-BTQ is a local-first field-operations pipeline that turns voice memos, field captures, structured queue jobs, and operational triggers into controlled canonical CouchDB updates with preserved evidence. Its primary purpose is not general automation; it is durable operational memory for Clearpath field management: staffing risks, access constraints, site observations, visit anchors, supply orders, unknown captures, and nightly digests. Markdown is a human-readable projection/export of canonical state, not the authoritative mutation target.
+BTQ is a local-first field-operations pipeline that turns voice memos, field captures, structured queue jobs, and operational triggers into controlled canonical CouchDB updates with preserved evidence. Its primary purpose is durable operational memory for field management: staffing risks, access constraints, site observations, visit anchors, supply orders, unknown captures, and nightly digests. Markdown is a human-readable projection/export of canonical state, not the authoritative mutation target.
 
 The core architectural philosophy is a strict mutation boundary:
 

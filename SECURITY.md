@@ -2,7 +2,7 @@
 
 ## Reporting a Vulnerability
 
-Please report security issues privately by email to **greg@example.com**.
+Please report security issues privately through the repository security contact or by email to **security@example.com**.
 Do not open a public issue for security reports.
 
 Include where relevant:
@@ -16,7 +16,7 @@ alpha-stage, single-operator project, so response times are best-effort.
 
 ## Scope and Status
 
-BT Pipeline is a local-first, single-operator field-operations pipeline. The
+BTQ is a local-first, single-operator field-operations pipeline. The
 trust boundaries are intentional and load-bearing:
 
 - The queue processor (`project/queue_processor/main.py`) is the only path that

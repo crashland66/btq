@@ -24,16 +24,16 @@ project/admin_portal/
 
 ## Architecture
 
-The VPS can host this static shell for `admin.example.com`. The MacBook Pro
-remains the BTQ runtime and processing authority.
+The hosting node can serve this static shell for `admin.example.com`. The
+processing node remains the BTQ runtime and processing authority.
 
 ```text
 admin.example.com
-  -> protected VPS static admin shell
-  -> protected link to Mac ops dashboard over Tailscale
-  -> optional protected reverse proxy to http://100.64.0.10:8765/
+  -> protected static admin shell
+  -> protected link to runtime ops dashboard over private networking
+  -> optional protected reverse proxy to http://processing-node.example:8765/
 
-MacBook Pro
+Processing node
   -> field_capture/intake
   -> transcription and semantic artifacts
   -> review artifacts
@@ -51,20 +51,20 @@ Stage 27 deployed Option A to the VPS:
 - Caddy config: `/etc/caddy/Caddyfile`, between `BTQ ADMIN PORTAL` markers
 - protection: Caddy basic auth
 - basic-auth secret location: VPS Caddy config only, outside this repository
-- Mac ops dashboard: link-only to `http://100.64.0.10:8765/`
+- runtime ops dashboard: link-only to `http://processing-node.example:8765/`
 
 The deployed Caddy route serves static files only. It does not reverse proxy the
-Mac ops dashboard.
+runtime ops dashboard.
 
 ## V1 Proxy Choice
 
-V1 defaults to a protected link to the Mac ops dashboard:
+V1 defaults to a protected link to the runtime ops dashboard:
 
 ```text
-http://100.64.0.10:8765/
+http://processing-node.example:8765/
 ```
 
-Reason: a link keeps the admin shell read-only and avoids exposing the Mac
+Reason: a link keeps the admin shell read-only and avoids exposing the runtime
 runtime dashboard through the public domain before access control has been
 confirmed end to end.
 
@@ -115,7 +115,7 @@ Suggested manual shape:
 4. Keep the Mac ops dashboard bound to the Mac runtime. Do not move BTQ
    processing to the VPS.
 5. If enabling the optional reverse proxy, confirm the VPS can reach
-   `100.64.0.10:8765` over Tailscale and that unauthenticated requests are
+   the processing node over private networking and that unauthenticated requests are
    blocked before the proxy.
 
 ## VPS Install Helper

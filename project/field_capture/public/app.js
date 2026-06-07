@@ -210,8 +210,8 @@ function showTokenPasteUI() {
   panel.id = "tokenPastePanel";
   panel.className = "details-panel token-paste-panel";
   panel.innerHTML = `
-    <p class="token-paste-context">If you don't have an access token, this is a demo of an internal tool used by Clearpath Facilities. Real users get a tokenized link directly from Jordan.</p>
-    <p class="token-paste-help">First-time setup on this device. Paste the access token Jordan gave you, then tap Save.</p>
+    <p class="token-paste-context">If you don't have an access token, this is a demo of an internal field-operations tool. Real users get a tokenized link from their administrator.</p>
+    <p class="token-paste-help">First-time setup on this device. Paste the access token you were given, then tap Save.</p>
     <label class="token-paste-field">
       <span>Access token</span>
       <input id="tokenPasteInput" type="password" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">

@@ -4,7 +4,7 @@ Foreground-only voice memo PWA and intake server for channel 3 of the capture
 pipeline. The browser records audio, POSTs it to `voice.example.com`, stores
 audio bytes on the VPS filesystem, and writes metadata to CouchDB.
 
-This is the channel-3 capture intake for Clearpath. Source moved to
+This is the channel-3 capture intake for BTQ. Source moved to
 `btq/project/voice_memo/` from `WebsiteProjects/voice_memo/` on 2026-05-10
 (prompt 08).
 

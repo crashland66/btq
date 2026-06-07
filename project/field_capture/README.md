@@ -978,7 +978,7 @@ The local ops dashboard also shows a read-only **Open Site Issues** summary and
 manually browsing the vault.
 
 Install the optional macOS LaunchAgent template only when you want this watcher
-to run automatically on the MacBook Pro. The repo-owned template is:
+to run automatically on the processing node. The repo-owned template is:
 
 ```text
 project/field_capture/launchagents/com.btq.field-capture-pipeline-watcher.plist

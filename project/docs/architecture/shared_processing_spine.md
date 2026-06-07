@@ -58,7 +58,7 @@ mutation remain channel-owned.
 
 ## Summit Wire Pilot Surface
 
-For the Summit Wire pilot, the production field-capture SPA is a Clearpath-branded
+For the Summit Wire pilot, the production field-capture SPA is a deployment-branded
 tokenized upload surface. A valid individual bearer link resolves one employee
 and one site and shows a personalized ready message:
 

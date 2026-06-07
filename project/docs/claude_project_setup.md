@@ -1,8 +1,8 @@
-# Clearpath Claude Project Setup
+# BTQ Queue-Authoring Project Setup
 
 Use this document to configure a **scoped** Claude project that authors BTQ queue jobs only — no dev work, no runtime access.
 
-The MacBook Air now also holds a git checkout of the BTQ source at `/path/to/btq/`, and a Cowork session there is the active development environment (Codex prompts, Claude Code agent worktrees, commits). The deployed runtime install lives on PC at `/Users/operator/btq/`. Both exist; they are different surfaces for different work.
+The development machine also holds a git checkout of the BTQ source at `/path/to/btq/`, and a Cowork session there is the active development environment. The deployed runtime install lives at `/path/to/runtime/btq/`. Both exist; they are different surfaces for different work.
 
 This document is for a different Claude project: a queue-authoring-only scope where Claude has no source-repo access and no runtime access. Its role is narrow:
 
@@ -12,11 +12,11 @@ This document is for a different Claude project: a queue-authoring-only scope wh
 - never edit the BTQ runtime code
 - never write directly into the operational vault as a substitute for a queue job
 
-Validation and execution stay on PC's runtime install. Dev work happens in the AC Cowork session against the dev checkout — out of scope for this document.
+Validation and execution stay on the runtime install. Dev work happens in a separate Cowork session against the dev checkout and is out of scope for this document.
 
 ## Handoff Directory
 
-On the MacBook Air, Claude should write completed jobs to:
+The queue-authoring assistant should write completed jobs to:
 
 ```text
 ~/Library/Mobile Documents/com~apple~CloudDocs/BTpipeline/outbox/
@@ -31,7 +31,7 @@ If Claude cannot write to that directory directly, have it produce one JSON obje
 Paste this section into the Claude project instructions.
 
 ```text
-You are authoring BTQ queue jobs for Clearpath field operations.
+You are authoring BTQ queue jobs for field operations.
 
 Important boundary:
 - This Claude project is intentionally scoped to queue authoring only. You do not have, and should not assume, access to the BTQ source or the BTQ runtime install on any machine.
