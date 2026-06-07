@@ -1,0 +1,186 @@
+#!/usr/bin/env python3
+"""btq-enqueue — author a queue job directly into CouchDB (`btq_queue`).
+
+Replaces the iCloud `BTpipeline/outbox/` JSON-drop authoring pattern. After
+the 2026-05-22 removal of the iCloud outbox machinery (commit 331fbbe) and
+the 2026-05-23–25 CouchDB cutover, queue jobs must land in CouchDB to be
+materialized by `queue_processor.couchdb_queue_watcher` on PC.
+
+Usage:
+  btq-enqueue < job.json
+  btq-enqueue --file job.json
+  cat <<EOF | btq-enqueue
+  { "job_type": "append_to_note",
+    "payload": { "path": "Journal/2026-05-28.md",
+                 "destination": "journal",
+                 "content": "..." } }
+  EOF
+
+Optional fields the script will fill in if missing:
+  job_id      → 2026-05-28T13-04-22Z__<slug-of-job_type>
+  created_at  → ISO-8601 now (UTC)
+  created_by  → "ac" (override with --created-by)
+
+Reads connection info from ~/.config/btq/config.json:
+  { "couchdb_url": "...", "couchdb_user": "...",
+    "couchdb_password": "...", "queue_database": "btq_queue" }
+"""
+
+from __future__ import annotations
+
+import argparse
+import base64
+import datetime as dt
+import json
+import os
+import re
+import sys
+import urllib.error
+import urllib.request
+from pathlib import Path
+
+
+DEFAULT_CONFIG_PATH = Path.home() / ".config" / "btq" / "config.json"
+
+
+def load_config(path: Path) -> dict:
+    cfg: dict = {}
+    if path.exists():
+        with path.open() as fh:
+            cfg = json.load(fh)
+    # Environment overrides / fallback, matching the BTQ_COUCHDB_* convention the
+    # launchd agents already use. This lets the Pro cowork_drop watcher enqueue
+    # even if no config file is present in that account.
+    env_map = {
+        "couchdb_url": "BTQ_COUCHDB_URL",
+        "couchdb_user": "BTQ_COUCHDB_USER",
+        "couchdb_password": "BTQ_COUCHDB_PASSWORD",
+        "queue_database": "BTQ_QUEUE_DATABASE",
+    }
+    for key, env in env_map.items():
+        val = os.environ.get(env)
+        if val:
+            cfg[key] = val
+    missing = [k for k in ("couchdb_url", "couchdb_user", "couchdb_password") if not cfg.get(k)]
+    if missing:
+        raise SystemExit(
+            f"btq-enqueue: missing {missing}. Set them in {path} or via env "
+            f"{[env_map[k] for k in missing]}."
+        )
+    cfg.setdefault("queue_database", "btq_queue")
+    return cfg
+
+
+def slugify(text: str, *, max_len: int = 40) -> str:
+    text = re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
+    return text[:max_len] or "job"
+
+
+def derive_job_id(job: dict) -> str:
+    now = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H-%M-%SZ")
+    job_type = job.get("job_type", "unknown")
+    payload = job.get("payload") or {}
+    # Pick a distinctive slug from the payload where possible.
+    candidates = [
+        payload.get("slug"),
+        payload.get("title"),
+        payload.get("path"),
+        payload.get("site_id"),
+        payload.get("person_id"),
+        job_type,
+    ]
+    slug_source = next((c for c in candidates if isinstance(c, str) and c), job_type)
+    return f"{now}__{slugify(slug_source)}"
+
+
+def build_doc(job: dict, *, created_by: str) -> dict:
+    if "job_type" not in job:
+        raise SystemExit("btq-enqueue: input JSON must have 'job_type'")
+    if "payload" not in job:
+        raise SystemExit("btq-enqueue: input JSON must have 'payload'")
+    job_id = job.get("job_id") or derive_job_id(job)
+    created_at = job.get("created_at") or dt.datetime.now(dt.timezone.utc).isoformat()
+    doc = {
+        "_id": job_id,
+        "btq_state": "pending",
+        "created_at": created_at,
+        "created_by": created_by,
+        "job_id": job_id,
+        "job_type": job["job_type"],
+        "payload": job["payload"],
+    }
+    # Pass through any extra top-level fields ALLOWED by queue_spec.
+    # See project/queue_spec.py ALLOWED_TOP_LEVEL_FIELDS — currently
+    # {"job_id", "job_type", "payload", "metadata", "intent",
+    #  "idempotency_key"}. Anything else would be stripped by the watcher
+    # only via COUCHDB_METADATA_KEYS, so we must filter at enqueue time
+    # or the queue_spec validator rejects the materialized file with
+    # "Job does not match queue_spec".
+    #
+    # Notable: we intentionally do NOT set a top-level `type` field even
+    # though the CouchDB watcher would use it as the filename prefix.
+    # The materialized file becomes `unknown_job.<doc_id>.json`; the main
+    # processor reads job_type from the file content regardless of name.
+    allowed_extras = {"metadata", "intent", "idempotency_key"}
+    for k in allowed_extras:
+        if k in job and k not in doc:
+            doc[k] = job[k]
+    return doc
+
+
+def put_doc(cfg: dict, doc: dict, *, dry_run: bool) -> dict:
+    url = f"{cfg['couchdb_url'].rstrip('/')}/{cfg['queue_database']}/{urllib_quote(doc['_id'])}"
+    body = json.dumps(doc).encode("utf-8")
+    if dry_run:
+        return {"dry_run": True, "url": url, "doc_id": doc["_id"], "bytes": len(body)}
+    creds = f"{cfg['couchdb_user']}:{cfg['couchdb_password']}".encode()
+    headers = {
+        "Authorization": "Basic " + base64.b64encode(creds).decode(),
+        "Content-Type": "application/json",
+    }
+    req = urllib.request.Request(url, data=body, headers=headers, method="PUT")
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            return json.loads(resp.read())
+    except urllib.error.HTTPError as e:
+        if e.code == 409:
+            # Document _id already exists. With deterministic job_ids this means
+            # the job was already enqueued (e.g. an iCloud re-sync of a Cowork
+            # drop file) — treat as an idempotent no-op, not a failure.
+            return {"ok": True, "duplicate": True, "id": doc["_id"], "status": 409}
+        detail = e.read().decode("utf-8", errors="replace")
+        raise SystemExit(f"btq-enqueue: PUT {url} -> HTTP {e.code}: {detail}")
+    except urllib.error.URLError as e:
+        raise SystemExit(f"btq-enqueue: cannot reach CouchDB at {url}: {e.reason}")
+
+
+def urllib_quote(s: str) -> str:
+    from urllib.parse import quote
+    return quote(s, safe="")
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--file", type=Path, help="Read job JSON from this path instead of stdin.")
+    parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG_PATH, help="Path to AC config JSON.")
+    parser.add_argument("--created-by", default=os.environ.get("BTQ_CREATED_BY", "ac"), help="created_by marker.")
+    parser.add_argument("--dry-run", action="store_true", help="Print the doc and target URL without PUT.")
+    args = parser.parse_args(argv)
+
+    raw = args.file.read_text() if args.file else sys.stdin.read()
+    try:
+        job = json.loads(raw)
+    except json.JSONDecodeError as e:
+        raise SystemExit(f"btq-enqueue: input is not valid JSON: {e}")
+
+    cfg = load_config(args.config)
+    doc = build_doc(job, created_by=args.created_by)
+    result = put_doc(cfg, doc, dry_run=args.dry_run)
+
+    out = {"ok": True, "job_id": doc["_id"], "couchdb": result}
+    print(json.dumps(out, indent=2))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

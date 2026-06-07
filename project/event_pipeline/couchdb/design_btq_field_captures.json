@@ -1,0 +1,11 @@
+{
+  "_id": "_design/btq_field_captures",
+  "views": {
+    "by_site_id": {
+      "map": "function(doc) {\n  if (doc.type !== \"field_capture\") return;\n  var siteId = (doc.site_id || \"\").toString().trim();\n  if (!siteId) return;\n  var capturedAt = doc.captured_at || doc.exported_at || doc.created_at || \"\";\n  emit([siteId, capturedAt, doc.capture_id || doc._id], {\n    _id: doc._id,\n    type: doc.type,\n    capture_id: doc.capture_id || doc._id,\n    site_id: siteId,\n    site: doc.site || \"\",\n    person_id: doc.person_id || \"\",\n    person_name: doc.person_name || \"\",\n    qc_category: doc.qc_category || \"\",\n    phase: doc.phase || \"\",\n    note: doc.note || \"\",\n    captured_at: doc.captured_at || \"\",\n    exported_at: doc.exported_at || \"\",\n    created_at: doc.created_at || \"\",\n    photos: doc.photos || [],\n    audio: doc.audio || []\n  });\n}"
+    },
+    "by_upload_id": {
+      "map": "function(doc) {\n  if (doc.type !== \"field_capture\") return;\n  var targetType = doc.target_type || \"location\";\n  var targetId = (doc.target_id || doc.site_id || \"\").toString().trim();\n  var siteId = (doc.site_id || \"\").toString().trim();\n  // Skip docs that genuinely have no target. Post-prompt-133\n  // every capture has either site_id (location) or target_id\n  // (prospect), so this should never fire in practice.\n  if (!targetId) return;\n  function emitUploads(records) {\n    if (!records) return;\n    for (var i = 0; i < records.length; i++) {\n      var record = records[i] || {};\n      if (record.upload_id) {\n        emit(record.upload_id, {\n          target_type: targetType,\n          target_id: targetId,\n          site_id: siteId\n        });\n      }\n    }\n  }\n  emitUploads(doc.photos);\n  emitUploads(doc.audio);\n}"
+    }
+  }
+}

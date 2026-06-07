@@ -1,0 +1,87 @@
+#!/bin/zsh
+# btq-prune-logs — bound the on-disk footprint of the btq log directories.
+#
+# Logs are transient debug output — btq-backup-runtime deliberately excludes
+# them from snapshots. Yet almost nothing caps them: launchd stdout/stderr
+# captures and several app logs grow unbounded, and a one-time rotation left
+# an ~890 MB queue_watch.log .bak orphan behind. Left alone the log dirs
+# reach multiple GB and eventually fill the disk.
+#
+# This sweep applies one uniform policy to every file under the log dirs:
+#
+#   * a log not written in RETENTION_DAYS is deleted outright
+#   * a more-recent log larger than MAX_LOG_MB is tail-truncated to its last
+#     MAX_LOG_MB — this keeps recent context and rewrites the same inode in
+#     place, so a daemon's open append handle keeps working without a restart
+#
+# Run with --dry-run to preview the summary and per-file truncations without
+# changing anything (deletions are high-volume, so they are only counted).
+#
+# Environment overrides:
+#   BTQ_LOG_DIRS             space-separated dirs
+#                            (default: ~/btq_runtime/logs ~/btq/local/logs)
+#   BTQ_LOG_RETENTION_DAYS   delete logs older than this (default: 14)
+#   BTQ_LOG_MAX_MB           truncate recent logs larger than this (default: 25)
+
+set -euo pipefail
+
+DRY_RUN=0
+if [[ "${1:-}" == "--dry-run" ]]; then
+  DRY_RUN=1
+elif [[ -n "${1:-}" ]]; then
+  echo "usage: btq-prune-logs [--dry-run]" >&2
+  exit 2
+fi
+
+RETENTION_DAYS="${BTQ_LOG_RETENTION_DAYS:-14}"
+MAX_LOG_MB="${BTQ_LOG_MAX_MB:-25}"
+MAX_BYTES=$(( MAX_LOG_MB * 1024 * 1024 ))
+
+if [[ -n "${BTQ_LOG_DIRS:-}" ]]; then
+  LOG_DIRS=(${=BTQ_LOG_DIRS})
+else
+  LOG_DIRS=("$HOME/btq_runtime/logs" "$HOME/btq/local/logs")
+fi
+
+deleted_count=0
+deleted_bytes=0
+truncated_count=0
+reclaimed_bytes=0
+
+for dir in "${LOG_DIRS[@]}"; do
+  [[ -d "$dir" ]] || continue
+
+  # Delete logs untouched for RETENTION_DAYS — a log nothing has written in
+  # two weeks is dead debug output, and the precious data lives elsewhere.
+  # The queue processor's per-run logs alone number in the hundreds of
+  # thousands, so deletions are counted rather than printed.
+  while IFS= read -r -d '' f; do
+    size=$(stat -f %z "$f" 2>/dev/null) || continue
+    (( DRY_RUN )) || rm -f "$f"
+    deleted_count=$(( deleted_count + 1 ))
+    deleted_bytes=$(( deleted_bytes + size ))
+  done < <(find "$dir" -type f -mtime +"${RETENTION_DAYS}" -print0)
+
+  # Tail-truncate recent logs over the size cap, keeping the newest bytes.
+  while IFS= read -r -d '' f; do
+    size=$(stat -f %z "$f" 2>/dev/null) || continue
+    (( size > MAX_BYTES )) || continue
+    if (( DRY_RUN )); then
+      printf '  would truncate %12d B -> %d B  %s\n' "$size" "$MAX_BYTES" "$f"
+    else
+      tmp=$(mktemp -t btq-prune-logs)
+      tail -c "$MAX_BYTES" "$f" > "$tmp"
+      cat "$tmp" > "$f"
+      rm -f "$tmp"
+    fi
+    truncated_count=$(( truncated_count + 1 ))
+    reclaimed_bytes=$(( reclaimed_bytes + size - MAX_BYTES ))
+  done < <(find "$dir" -type f -mtime -"${RETENTION_DAYS}" -print0)
+done
+
+mode="applied"
+(( DRY_RUN )) && mode="dry-run"
+printf '%s btq-prune-logs (%s): deleted %d file(s), %d B; truncated %d file(s), reclaimed ~%d B; retention=%dd cap=%dMB\n' \
+  "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$mode" \
+  "$deleted_count" "$deleted_bytes" "$truncated_count" "$reclaimed_bytes" \
+  "$RETENTION_DAYS" "$MAX_LOG_MB"

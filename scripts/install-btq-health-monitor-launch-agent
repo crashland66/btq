@@ -1,0 +1,71 @@
+#!/bin/zsh
+set -euo pipefail
+
+# Install the unattended BTQ health monitor as a launchd user agent on the Pro.
+# Fires every 15 minutes to run the existing health model in scheduled mode.
+# Critical conditions write throttled artifacts under runtime_root/alerts/ and
+# are surfaced on /health; repeated identical conditions are not re-alerted
+# inside the default throttle window.
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+BTQ="${REPO_ROOT}/scripts/btq"
+
+if [[ ! -x "${BTQ}" ]]; then
+  echo "ERROR: btq wrapper not executable: ${BTQ}" >&2
+  exit 1
+fi
+
+LAUNCH_AGENTS_DIR="${HOME}/Library/LaunchAgents"
+PLIST_PATH="${LAUNCH_AGENTS_DIR}/com.btq.health-monitor.plist"
+LOG_DIR="${HOME}/btq_runtime/logs"
+STDOUT_LOG="${LOG_DIR}/btq-health-monitor.out.log"
+STDERR_LOG="${LOG_DIR}/btq-health-monitor.err.log"
+
+mkdir -p "${LAUNCH_AGENTS_DIR}"
+mkdir -p "${LOG_DIR}"
+
+cat > "${PLIST_PATH}" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.btq.health-monitor</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>${BTQ}</string>
+    <string>health</string>
+    <string>--monitor</string>
+    <string>--quiet</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>${REPO_ROOT}</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>HOME</key>
+    <string>${HOME}</string>
+  </dict>
+  <key>StartInterval</key>
+  <integer>900</integer>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>${STDOUT_LOG}</string>
+  <key>StandardErrorPath</key>
+  <string>${STDERR_LOG}</string>
+</dict>
+</plist>
+EOF
+
+launchctl bootout "gui/$(id -u)/com.btq.health-monitor" >/dev/null 2>&1 || true
+launchctl bootstrap "gui/$(id -u)" "${PLIST_PATH}"
+
+printf 'Installed and scheduled %s\n' "${PLIST_PATH}"
+printf '  Fires every 900s (15 min); runs once now (RunAtLoad)\n'
+printf '  Alerts: runtime_root/alerts/health_alerts.jsonl and latest_health_alert.json\n'
+printf '  Logs: %s\n' "${STDOUT_LOG}"
+printf '\nRun once manually now:     %s health --monitor\n' "${BTQ}"
+printf 'Force a fire via launchd:  launchctl kickstart -k gui/$(id -u)/com.btq.health-monitor\n'

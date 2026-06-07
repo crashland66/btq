@@ -1,0 +1,123 @@
+#!/usr/bin/env bash
+# btq-rotate-replicator-auth — refresh embedded Basic auth headers on
+# _replicator docs using the dashboard host's current CouchDB admin
+# credentials. Idempotent. Run on the Mac that hosts CouchDB.
+#
+# Usage:
+#   BTQ_COUCHDB_USER=admin BTQ_COUCHDB_PASSWORD=... ./scripts/btq-rotate-replicator-auth
+#   ./scripts/btq-rotate-replicator-auth
+
+set -euo pipefail
+
+if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+  echo "usage: ./scripts/btq-rotate-replicator-auth"
+  exit 0
+fi
+
+PLIST="$HOME/Library/LaunchAgents/com.btq.couchdb-field-capture-watcher.plist"
+PLIST_KEY() { /usr/libexec/PlistBuddy -c "Print :EnvironmentVariables:$1" "$PLIST" 2>/dev/null || true; }
+
+USER="${BTQ_COUCHDB_USER:-$(PLIST_KEY BTQ_COUCHDB_USER)}"
+PASS="${BTQ_COUCHDB_PASSWORD:-$(PLIST_KEY BTQ_COUCHDB_PASSWORD)}"
+URL="${BTQ_COUCHDB_URL:-$(PLIST_KEY BTQ_COUCHDB_URL)}"
+URL="${URL:-http://127.0.0.1:5984}"
+
+if [[ -z "$USER" || -z "$PASS" ]]; then
+  echo "error: BTQ_COUCHDB_USER / BTQ_COUCHDB_PASSWORD not set in env or plist" >&2
+  exit 1
+fi
+
+export BTQ_USER="$USER" BTQ_PASS="$PASS" BTQ_URL="$URL"
+
+python3 - <<'PYEOF'
+import base64
+import json
+import os
+import sys
+import urllib.error
+import urllib.parse
+import urllib.request
+
+USER = os.environ["BTQ_USER"]
+PASS = os.environ["BTQ_PASS"]
+URL = os.environ["BTQ_URL"].rstrip("/")
+BASIC = "Basic " + base64.b64encode(f"{USER}:{PASS}".encode("utf-8")).decode("ascii")
+
+
+def req(method, path, data=None):
+    body = json.dumps(data, sort_keys=True).encode("utf-8") if data is not None else None
+    request = urllib.request.Request(URL + path, data=body, method=method)
+    request.add_header("Accept", "application/json")
+    request.add_header("Authorization", BASIC)
+    if data is not None:
+        request.add_header("Content-Type", "application/json")
+    with urllib.request.urlopen(request, timeout=15) as response:
+        raw = response.read()
+    return json.loads(raw.decode("utf-8")) if raw else {}
+
+
+def auth_header_locations(doc):
+    present = []
+    for side in ("source", "target"):
+        value = doc.get(side)
+        if not isinstance(value, dict):
+            continue
+        headers = value.get("headers")
+        if not isinstance(headers, dict):
+            continue
+        auth_header = headers.get("Authorization")
+        if isinstance(auth_header, str) and auth_header.startswith("Basic "):
+            present.append((side, headers, auth_header))
+    return present
+
+
+try:
+    listing = req("GET", "/_replicator/_all_docs?include_docs=true")
+except (urllib.error.URLError, OSError, json.JSONDecodeError) as exc:
+    print(f"error: could not read _replicator docs: {exc}", file=sys.stderr)
+    sys.exit(2)
+
+rotated = already = skipped = errors = 0
+
+for row in listing.get("rows", []):
+    doc = row.get("doc") or {}
+    doc_id = doc.get("_id") or ""
+    if doc_id.startswith("_design/"):
+        continue
+
+    present = auth_header_locations(doc)
+    if not present:
+        skipped += 1
+        continue
+
+    if all(auth_header == BASIC for _side, _headers, auth_header in present):
+        print(f"{doc_id}: already current")
+        already += 1
+        continue
+
+    for _side, headers, _auth_header in present:
+        headers["Authorization"] = BASIC
+
+    encoded_id = urllib.parse.quote(doc_id, safe="")
+    try:
+        result = req("PUT", f"/_replicator/{encoded_id}", data=doc)
+    except urllib.error.HTTPError as exc:
+        print(f"{doc_id}: ERROR HTTP {exc.code} {exc.reason}", file=sys.stderr)
+        errors += 1
+        continue
+    except (urllib.error.URLError, OSError, json.JSONDecodeError) as exc:
+        print(f"{doc_id}: ERROR {exc}", file=sys.stderr)
+        errors += 1
+        continue
+
+    if not result.get("ok"):
+        print(f"{doc_id}: ERROR (no ok in response)", file=sys.stderr)
+        errors += 1
+        continue
+
+    print(f"{doc_id}: rotated")
+    rotated += 1
+
+print(f"rotated={rotated} already_current={already} skipped={skipped} errors={errors}")
+sys.exit(2 if errors else 0)
+PYEOF

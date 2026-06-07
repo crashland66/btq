@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>BTQ Admin - Runtime Health</title>
+    <link rel="stylesheet" href="styles.css">
+  </head>
+  <body>
+    <header class="topbar">
+      <a class="brand" href="index.html"><span class="brand-mark">BTQ</span><span>Admin</span></a>
+      <nav class="nav" aria-label="Primary">
+        <a href="ops-dashboard.html">Ops</a>
+        <a href="docs.html">Docs</a>
+        <a href="sites.html">Sites</a>
+        <a href="content-moderation.html">Moderation</a>
+        <a aria-current="page" href="runtime-health.html">Health</a>
+      </nav>
+    </header>
+
+    <main class="page">
+      <section class="page-header">
+        <h1>Runtime Health</h1>
+        <p>
+          V1 describes the health surfaces the protected portal can expose
+          without becoming an operational writer.
+        </p>
+      </section>
+
+      <section class="section-grid">
+        <article class="section-card inert">
+          <span class="card-icon" aria-hidden="true">Q</span>
+          <h2>Queue Backlog</h2>
+          <p>Read-only count of queue files waiting on the Mac runtime.</p>
+        </article>
+        <article class="section-card inert">
+          <span class="card-icon" aria-hidden="true">R</span>
+          <h2>Review State</h2>
+          <p>Pending candidates, approved drafts, and staging status summaries.</p>
+        </article>
+        <article class="section-card inert">
+          <span class="card-icon" aria-hidden="true">L</span>
+          <h2>Recent Logs</h2>
+          <p>Warnings and errors from Mac-side runtime log tails.</p>
+        </article>
+        <article class="section-card inert">
+          <span class="card-icon" aria-hidden="true">U</span>
+          <h2>Latest Uploads</h2>
+          <p>VPS field-capture upload visibility after protected sync or proxy.</p>
+        </article>
+      </section>
+
+      <section class="notice">
+        <h2>Read-Only Contract</h2>
+        <p>
+          Health views may read status JSON from the protected Mac dashboard or
+          static exports. They must not call queue processors, import captures,
+          approve candidates, publish summaries, or write vault files.
+        </p>
+      </section>
+    </main>
+  </body>
+</html>
+

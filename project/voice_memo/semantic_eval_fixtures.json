@@ -1,0 +1,90 @@
+[
+  {
+    "id": "western_gas_inactive_site",
+    "context": {
+      "capture_id": "eval-western-gas",
+      "routing_flag": "site_tagged",
+      "raw_transcript_path": "/tmp/eval-western-gas.webm.whisper.txt",
+      "audio_file": "eval-western-gas.webm",
+      "site_id": "7030",
+      "site": "Western Gas Transmission",
+      "employees": [],
+      "note": "",
+      "captured_at": "2026-05-31T14:00:00+00:00",
+      "raw_text": "This is another voicenote for Western Gas Transmission from the BTQ Office Dashboard. And I have selected Western Gas Transmission from the site. And the voicenote is just the fact that Western Gas Transmission is no longer one of my accounts, therefore needs to be set to be inactive. So if there is a job that can generate an action that will set the Western Gas site to be inactive, that would be perfect. If not, we're going to have to create one to be able to turn accounts on and turn accounts off and turn employees on and turn employees off, because there are also several employees that are no longer with us as employees and need to be inactive. So they don't show up on my employee directory."
+    },
+    "expected": {
+      "intent": "site_status_change",
+      "target_type": "site",
+      "target_id": "7030",
+      "action": "set_inactive",
+      "review_required": true
+    }
+  },
+  {
+    "id": "general_dashboard_note",
+    "context": {
+      "capture_id": "eval-general-note",
+      "routing_flag": "general",
+      "raw_transcript_path": "/tmp/eval-general-note.webm.whisper.txt",
+      "audio_file": "eval-general-note.webm",
+      "site_id": "",
+      "site": "",
+      "employees": [],
+      "note": "",
+      "captured_at": "2026-05-31T15:00:00+00:00",
+      "raw_text": "General dashboard note. Remember to review tomorrow's open admin list after the morning route settles."
+    },
+    "expected": {
+      "intent": "unknown",
+      "target_type": "general",
+      "target_id": "",
+      "action": "",
+      "review_required": false
+    }
+  },
+  {
+    "id": "personal_journal_note",
+    "context": {
+      "capture_id": "eval-personal-journal",
+      "routing_flag": "personal_journal",
+      "raw_transcript_path": "/tmp/eval-personal-journal.webm.whisper.txt",
+      "audio_file": "eval-personal-journal.webm",
+      "site_id": "",
+      "site": "",
+      "employees": [],
+      "note": "",
+      "captured_at": "2026-05-31T16:00:00+00:00",
+      "raw_text": "Keep this as a personal journal entry about how the day went and what I need to think about tomorrow."
+    },
+    "expected": {
+      "intent": "personal_journal",
+      "target_type": "general",
+      "target_id": "",
+      "action": "",
+      "review_required": false
+    }
+  },
+  {
+    "id": "employee_inactive_note",
+    "context": {
+      "capture_id": "eval-employee-inactive",
+      "routing_flag": "employee_tagged",
+      "raw_transcript_path": "/tmp/eval-employee-inactive.webm.whisper.txt",
+      "audio_file": "eval-employee-inactive.webm",
+      "site_id": "",
+      "site": "",
+      "employees": [{"slug": "per_diana_test", "name": "Diana Test", "source": "voice_memo_picker"}],
+      "note": "",
+      "captured_at": "2026-05-31T17:00:00+00:00",
+      "raw_text": "Employee note for Diana Test. She is no longer with us and needs to be inactive so she stops showing in the employee directory."
+    },
+    "expected": {
+      "intent": "employee_status_change",
+      "target_type": "employee",
+      "target_id": "per_diana_test",
+      "action": "set_inactive",
+      "review_required": true
+    }
+  }
+]

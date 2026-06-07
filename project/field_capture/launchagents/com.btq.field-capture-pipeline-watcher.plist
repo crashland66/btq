@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.btq.field-capture-pipeline-watcher</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>@@BTQ_PROJECT_ROOT@@/scripts/btq</string>
+    <string>watch-field-capture-pipeline</string>
+    <string>--poll-seconds</string>
+    <string>60</string>
+    <string>--vision-limit</string>
+    <string>3</string>
+    <string>--vision-auto-retry-per-cycle</string>
+    <string>1</string>
+    <string>--json</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>@@BTQ_PROJECT_ROOT@@</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>BTQ_FIELD_CAPTURE_VISION_MODEL</key>
+    <string>gemma4:26b</string>
+    <key>BTQ_OLLAMA_URL</key>
+    <string>http://127.0.0.1:11434</string>
+    <key>BTQ_FIELD_CAPTURE_VISION_TIMEOUT_SECONDS</key>
+    <string>180</string>
+    <key>BTQ_FIELD_CAPTURE_SEMANTIC_ENGINE</key>
+    <string>local_model</string>
+    <key>BTQ_SEMANTIC_PROVIDER</key>
+    <string>ollama</string>
+    <key>BTQ_SEMANTIC_MODEL</key>
+    <string>qwen3:4b</string>
+    <key>BTQ_FIELD_CAPTURE_SEMANTIC_URL</key>
+    <string>http://127.0.0.1:11434</string>
+    <key>BTQ_FIELD_CAPTURE_SEMANTIC_DISABLE_THINKING</key>
+    <string>1</string>
+    <key>BTQ_FIELD_CAPTURE_SEMANTIC_TIMEOUT_SECONDS</key>
+    <string>180</string>
+    <key>BTQ_FIELD_CAPTURE_SEMANTIC_KEEP_ALIVE</key>
+    <string>10m</string>
+    <key>BTQ_COUCHDB_URL</key>
+    <string>http://127.0.0.1:5984</string>
+    <key>BTQ_COUCHDB_USER</key>
+    <string>REPLACE_ME</string>
+    <key>BTQ_COUCHDB_PASSWORD</key>
+    <string>REPLACE_ME</string>
+    <key>PYTHONUNBUFFERED</key>
+    <string>1</string>
+  </dict>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>@@BTQ_RUNTIME@@/logs/field-capture-pipeline-watcher.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>@@BTQ_RUNTIME@@/logs/field-capture-pipeline-watcher.err.log</string>
+</dict>
+</plist>

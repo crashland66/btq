@@ -1,0 +1,29 @@
+[Unit]
+Description=BTQ Voice Memo Intake (channel 3)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=btq-voice
+Group=btq-voice
+WorkingDirectory=/srv/btq/voice/source
+Environment=PYTHONPATH=/srv/btq/voice/source
+EnvironmentFile=-/etc/btq/voice-memo.env
+ExecStart=/usr/bin/python3 -m voice_memo.server --host 127.0.0.1 --port 8092 --data-dir /srv/btq/voice/data --token-db /srv/btq/data/field_capture_tokens.sqlite3
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+# /srv/btq/data holds the shared field-capture token DB; the server writes
+# last_used_at on auth, so its directory must be writable (also for SQLite
+# WAL/journal files).
+ReadWritePaths=/srv/btq/voice/data /srv/btq/data
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+LockPersonality=true
+MemoryDenyWriteExecute=true
+
+[Install]
+WantedBy=multi-user.target

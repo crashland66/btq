@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="Field Capture">
+  <!-- Concept 1: Capture frame (corner brackets) + audio waveform -->
+  <!-- Neutral parts use currentColor so they flip with light/dark; accent = teal -->
+  <g fill="none" stroke="currentColor" stroke-width="4" stroke-linecap="round" stroke-linejoin="round">
+    <!-- top-left bracket -->
+    <path d="M8 18 V12 a4 4 0 0 1 4-4 h6"/>
+    <!-- top-right bracket -->
+    <path d="M46 8 h6 a4 4 0 0 1 4 4 v6"/>
+    <!-- bottom-left bracket -->
+    <path d="M8 46 v6 a4 4 0 0 0 4 4 h6"/>
+    <!-- bottom-right bracket -->
+    <path d="M46 56 h6 a4 4 0 0 0 4-4 v-6"/>
+  </g>
+  <!-- waveform in accent -->
+  <g fill="none" stroke="#14B8A6" stroke-width="4" stroke-linecap="round">
+    <line x1="20" y1="28" x2="20" y2="36"/>
+    <line x1="27" y1="22" x2="27" y2="42"/>
+    <line x1="34" y1="17" x2="34" y2="47"/>
+    <line x1="41" y1="24" x2="41" y2="40"/>
+    <line x1="48" y1="29" x2="48" y2="35"/>
+  </g>
+</svg>

@@ -1,0 +1,168 @@
+{
+  "sites": [
+    {
+      "canonical": "Brookfield License Center",
+      "site_id": "7010",
+      "note_path": "Accounts/Civicsource/Locations/7010 - Brookfield License Center/about.md",
+      "aliases": [
+        "brookfield license center",
+        "brookfield lc",
+        "brookfield license",
+        "brookfield",
+        "7010"
+      ]
+    },
+    {
+      "canonical": "Lakeshore Community Health",
+      "site_id": "7020",
+      "note_path": "Accounts/RHN/Locations/7020 - Lakeshore Community Health Center - RHN/about.md",
+      "aliases": [
+        "lakeshore community health",
+        "lakshore community health",
+        "lakeshore health",
+        "lakshore health"
+      ]
+    },
+    {
+      "canonical": "Cedar Valley Medical Center",
+      "site_id": "7021",
+      "note_path": "Accounts/RHN/Locations/7021 - Cedar Valley Medical Center - RHN/about.md",
+      "aliases": [
+        "cedar valley",
+        "cedar valley medical center",
+        "cedarville",
+        "rhn 7021",
+        "7021"
+      ]
+    },
+    {
+      "canonical": "Hartwell Memorial Medical Center",
+      "site_id": "7022",
+      "note_path": "Accounts/RHN/Locations/7022 - Hartwell Memorial Medical Center - RHN/about.md",
+      "aliases": [
+        "hartwell memorial",
+        "hartwell memorial medical center",
+        "hartwell",
+        "west haven",
+        "rhn 7022",
+        "7022"
+      ]
+    },
+    {
+      "canonical": "Western Gas Transmission",
+      "site_id": "7030",
+      "note_path": "Accounts/Wgtco/Locations/7030 - Western Gas Transmission/about.md",
+      "aliases": [
+        "western gas transmission",
+        "western gas",
+        "gas transmission building",
+        "gas building"
+      ]
+    },
+    {
+      "canonical": "KMF Industries- Oak St",
+      "site_id": "7040",
+      "note_path": "Accounts/Kmf/Locations/7040 - KMF Industries- Oak St/about.md",
+      "aliases": [
+        "kmf industries- oak st",
+        "kmf industries oak st",
+        "kmf oak st",
+        "kmf oak street",
+        "oak st",
+        "oak street",
+        "kmf 7040"
+      ]
+    },
+    {
+      "canonical": "KMF Industries- Maple Pike",
+      "site_id": "7041",
+      "note_path": "Accounts/Kmf/Locations/7041 - KMF Industries- Maple Pike/about.md",
+      "aliases": [
+        "kmf industries- maple pike",
+        "kmf industries maple pike",
+        "kmf maple pike",
+        "maple pike",
+        "kmf 7041"
+      ]
+    },
+    {
+      "canonical": "Summit Wire",
+      "site_id": "7050",
+      "note_path": "Accounts/Summitsteel/Locations/7050 - Summit Wire/about.md",
+      "aliases": [
+        "summit wire",
+        "summit"
+      ]
+    },
+    {
+      "canonical": "Continental Metalworks",
+      "site_id": "7060",
+      "note_path": "Accounts/Contworks/Locations/7060 - Continental Metalworks/about.md",
+      "aliases": [
+        "continental metalworks",
+        "continental metal works",
+        "continental metalwork",
+        "contimetalworks",
+        "metalworks",
+        "continental",
+        "7060"
+      ]
+    },
+    {
+      "canonical": "Glenwood Elementary School",
+      "site_id": "7070",
+      "note_path": "Accounts/Glenco/Locations/7070 - Glenwood Elementary School/about.md",
+      "aliases": [
+        "glenwood elementary school",
+        "glenwood elementary",
+        "glenwood el",
+        "glenwood school"
+      ]
+    },
+    {
+      "canonical": "Glenwood High School",
+      "site_id": "7071",
+      "note_path": "Accounts/Glenco/Locations/7071 - Glenwood High School/about.md",
+      "aliases": [
+        "glenwood high school",
+        "glenwood high"
+      ]
+    },
+    {
+      "canonical": "Apex Powdered Metals",
+      "site_id": "7080",
+      "note_path": "Accounts/Apexco/Locations/7080 - Apex Powdered Metals/about.md",
+      "aliases": [
+        "apex powdered metals",
+        "apex powdered metal",
+        "apex"
+      ]
+    }
+  ],
+  "vision_contexts": {
+    "7050": {
+      "context_id": "7050",
+      "label": "Summit Wire",
+      "environment": "industrial manufacturing / wire facility",
+      "summary": "Photos are interior field-capture images from an industrial facility. Common areas may include locker rooms, restrooms, admin offices, entryways, break rooms, supply areas, mill or plant-adjacent spaces, and maintenance areas. Lighting, concrete floors, industrial fixtures, lockers, tools, carts, and heavy-use restrooms may appear."
+    },
+    "7070": {
+      "context_id": "glenwood-school",
+      "label": "Glenwood school",
+      "environment": "school",
+      "summary": "Photos are interior field-capture images from an elementary or high school. Common areas may include classrooms, hallways, restrooms, offices, cafeteria or break areas, entryways, nurse or office areas, and custodial spaces."
+    },
+    "7071": {
+      "context_id": "glenwood-school",
+      "label": "Glenwood school",
+      "environment": "school",
+      "summary": "Photos are interior field-capture images from an elementary or high school. Common areas may include classrooms, hallways, restrooms, offices, cafeteria or break areas, entryways, nurse or office areas, and custodial spaces."
+    },
+    "contmetal": {
+      "context_id": "contmetal",
+      "label": "Continental Metalworks",
+      "environment": "industrial manufacturing",
+      "summary": "Photos are interior field-capture images from a manufacturing site with offices, restrooms, locker rooms, plant-adjacent spaces, and supply areas."
+    }
+  }
+}

@@ -1,0 +1,323 @@
+#!/usr/bin/env bash
+# btq-migrate-malformed-scalars — discover and, with --apply, repair
+# CouchDB documents whose scalar fields are wrongly shaped as lists or
+# JSON-quoted strings.
+#
+# Usage:
+#   ./scripts/btq-migrate-malformed-scalars --discover [--db btq_vault] [--output proposed_fixes.json]
+#   ./scripts/btq-migrate-malformed-scalars --apply proposed_fixes.json
+
+set -euo pipefail
+
+PLIST="$HOME/Library/LaunchAgents/com.btq.couchdb-field-capture-watcher.plist"
+PLIST_KEY() { /usr/libexec/PlistBuddy -c "Print :EnvironmentVariables:$1" "$PLIST" 2>/dev/null || true; }
+
+USER="${BTQ_COUCHDB_USER:-$(PLIST_KEY BTQ_COUCHDB_USER)}"
+PASS="${BTQ_COUCHDB_PASSWORD:-$(PLIST_KEY BTQ_COUCHDB_PASSWORD)}"
+URL="${BTQ_COUCHDB_URL:-$(PLIST_KEY BTQ_COUCHDB_URL)}"
+URL="${URL:-http://127.0.0.1:5984}"
+
+if [[ -z "$USER" || -z "$PASS" ]]; then
+  echo "error: BTQ_COUCHDB_USER / BTQ_COUCHDB_PASSWORD not set in env or plist" >&2
+  exit 1
+fi
+
+export BTQ_USER="$USER" BTQ_PASS="$PASS" BTQ_URL="$URL"
+
+python3 - "$@" <<'PYEOF'
+from __future__ import annotations
+
+import argparse
+import base64
+import copy
+import json
+import os
+import re
+import sys
+import urllib.error
+import urllib.parse
+import urllib.request
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+
+ALLOWED_DATABASES = (
+    "btq_vault",
+    "btq_sites",
+    "btq_people",
+    "btq_field_captures",
+    "btq_photo_vision",
+)
+SCANNED_FIELDS = (
+    "job",
+    "site_id",
+    "name",
+    "account",
+    "contact_name",
+    "contact_phone",
+    "contact_email",
+    "first",
+    "last",
+    "email",
+    "status",
+)
+JSON_QUOTED_RE = re.compile(r'^".*"$')
+
+USER = os.environ["BTQ_USER"]
+PASS = os.environ["BTQ_PASS"]
+URL = os.environ["BTQ_URL"].rstrip("/")
+BASIC = "Basic " + base64.b64encode(f"{USER}:{PASS}".encode("utf-8")).decode("ascii")
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Discover and repair malformed scalar fields in BTQ CouchDB documents."
+    )
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--discover", action="store_true", help="scan and write a proposed fixes JSON artifact")
+    mode.add_argument("--apply", metavar="PROPOSAL_PATH", help="apply auto-fixable entries from a proposal")
+    parser.add_argument(
+        "--summary",
+        action="store_true",
+        help="with --apply, print what would happen without writing documents",
+    )
+    parser.add_argument(
+        "--db",
+        action="append",
+        choices=ALLOWED_DATABASES,
+        help="database to scan; may be repeated; defaults to btq_vault",
+    )
+    parser.add_argument(
+        "--all-dbs",
+        action="store_true",
+        help="scan all vault-shaped BTQ databases",
+    )
+    parser.add_argument(
+        "--output",
+        default="proposed_fixes.json",
+        help="discovery output path; default: proposed_fixes.json",
+    )
+    args = parser.parse_args()
+    if args.summary and not args.apply:
+        parser.error("--summary is only valid with --apply")
+    if args.all_dbs and args.db:
+        parser.error("--all-dbs cannot be combined with --db")
+    return args
+
+
+def selected_databases(args: argparse.Namespace) -> list[str]:
+    if args.all_dbs:
+        return list(ALLOWED_DATABASES)
+    return args.db or ["btq_vault"]
+
+
+def couch_request(method: str, path: str, data: Any | None = None) -> Any:
+    body = json.dumps(data, sort_keys=True).encode("utf-8") if data is not None else None
+    request = urllib.request.Request(URL + path, data=body, method=method)
+    request.add_header("Accept", "application/json")
+    request.add_header("Authorization", BASIC)
+    if data is not None:
+        request.add_header("Content-Type", "application/json")
+    with urllib.request.urlopen(request, timeout=15) as response:
+        raw = response.read()
+    return json.loads(raw.decode("utf-8")) if raw else {}
+
+
+def db_path(database: str) -> str:
+    return "/" + urllib.parse.quote(database, safe="")
+
+
+def doc_path(database: str, doc_id: str) -> str:
+    return f"{db_path(database)}/{urllib.parse.quote(doc_id, safe='')}"
+
+
+def proposed_fix_for(value: Any) -> tuple[Any, bool, str] | None:
+    if isinstance(value, list):
+        if len(value) == 0:
+            return None, True, "empty_list_drop"
+        if len(value) == 1:
+            item = value[0]
+            if item is None:
+                return None, True, "list_of_one_none"
+            if isinstance(item, str):
+                return item, True, "list_of_one_lift"
+            return None
+        return None, False, "multi_element_list_needs_manual_review"
+    if isinstance(value, str) and JSON_QUOTED_RE.match(value):
+        return value[1:-1], True, "json_quote_strip"
+    return None
+
+
+def discover_doc(database: str, doc: dict[str, Any]) -> list[dict[str, Any]]:
+    doc_id = doc.get("_id")
+    current_rev = doc.get("_rev")
+    if not isinstance(doc_id, str) or not isinstance(current_rev, str):
+        return []
+    if doc_id.startswith("_design/"):
+        return []
+
+    fixes: list[dict[str, Any]] = []
+    for field in SCANNED_FIELDS:
+        if field not in doc:
+            continue
+        proposed = proposed_fix_for(doc[field])
+        if proposed is None:
+            continue
+        proposed_value, auto_fix, rationale = proposed
+        fixes.append(
+            {
+                "database": database,
+                "doc_id": doc_id,
+                "current_rev": current_rev,
+                "field": field,
+                "current_value": doc[field],
+                "proposed_value": proposed_value,
+                "auto_fix": auto_fix,
+                "rationale": rationale,
+            }
+        )
+    return fixes
+
+
+def discover(databases: list[str], output_path: str) -> int:
+    fixes: list[dict[str, Any]] = []
+    documents_scanned = 0
+    errors = 0
+
+    for database in databases:
+        try:
+            listing = couch_request("GET", f"{db_path(database)}/_all_docs?include_docs=true")
+        except (urllib.error.HTTPError, urllib.error.URLError, OSError, json.JSONDecodeError) as exc:
+            print(f"{database}: ERROR could not scan database: {exc}", file=sys.stderr)
+            errors += 1
+            continue
+
+        for row in listing.get("rows", []):
+            doc = row.get("doc") or {}
+            if not isinstance(doc, dict):
+                continue
+            documents_scanned += 1
+            fixes.extend(discover_doc(database, doc))
+
+    by_rationale: dict[str, int] = {}
+    for fix in fixes:
+        rationale = str(fix["rationale"])
+        by_rationale[rationale] = by_rationale.get(rationale, 0) + 1
+    manual_review = sum(1 for fix in fixes if not fix.get("auto_fix"))
+    payload = {
+        "scanned_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+        "scope": {"databases": databases},
+        "fixes": fixes,
+        "summary": {
+            "documents_scanned": documents_scanned,
+            "fixes_proposed": len(fixes) - manual_review,
+            "manual_review": manual_review,
+            "by_rationale": by_rationale,
+        },
+    }
+    Path(output_path).write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    print(
+        f"wrote={output_path} documents_scanned={documents_scanned} "
+        f"fixes_proposed={len(fixes) - manual_review} manual_review={manual_review} errors={errors}"
+    )
+    return 2 if errors else 0
+
+
+def field_already_current(doc: dict[str, Any], field: str, proposed_value: Any) -> bool:
+    if proposed_value is None:
+        return field not in doc
+    return doc.get(field) == proposed_value
+
+
+def apply_fix(fix: dict[str, Any], *, dry_run: bool) -> str:
+    database = str(fix.get("database", ""))
+    doc_id = str(fix.get("doc_id", ""))
+    field = str(fix.get("field", ""))
+    label = f"{database}/{doc_id}"
+
+    if not fix.get("auto_fix"):
+        return f"{label}: skipped: manual review needed"
+    if database not in ALLOWED_DATABASES or field not in SCANNED_FIELDS or not doc_id:
+        return f"{label}: ERROR invalid proposal entry"
+
+    try:
+        doc = couch_request("GET", doc_path(database, doc_id))
+    except urllib.error.HTTPError as exc:
+        return f"{label}: ERROR HTTP {exc.code} {exc.reason}"
+    except (urllib.error.URLError, OSError, json.JSONDecodeError) as exc:
+        return f"{label}: ERROR {exc}"
+    if not isinstance(doc, dict):
+        return f"{label}: ERROR current document is not a JSON object"
+
+    proposed_value = fix.get("proposed_value")
+    if field_already_current(doc, field, proposed_value):
+        return f"{label}: already current"
+
+    if doc.get("_rev") != fix.get("current_rev"):
+        return f"{label}: rev mismatch, doc changed since discovery; re-run --discover"
+
+    updated = copy.deepcopy(doc)
+    if proposed_value is None:
+        updated.pop(field, None)
+    else:
+        updated[field] = proposed_value
+
+    if dry_run:
+        return f"{label}: would apply"
+
+    try:
+        result = couch_request("PUT", doc_path(database, doc_id), data=updated)
+    except urllib.error.HTTPError as exc:
+        return f"{label}: ERROR HTTP {exc.code} {exc.reason}"
+    except (urllib.error.URLError, OSError, json.JSONDecodeError) as exc:
+        return f"{label}: ERROR {exc}"
+    if not isinstance(result, dict) or not result.get("ok"):
+        return f"{label}: ERROR no ok in response"
+    return f"{label}: rotated"
+
+
+def apply_proposal(proposal_path: str, *, dry_run: bool) -> int:
+    try:
+        proposal = json.loads(Path(proposal_path).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        print(f"error: could not read proposal: {exc}", file=sys.stderr)
+        return 2
+
+    fixes = proposal.get("fixes", [])
+    if not isinstance(fixes, list):
+        print("error: proposal fixes must be a list", file=sys.stderr)
+        return 2
+
+    applied = skipped = manual_review = errors = 0
+    for fix in fixes:
+        if not isinstance(fix, dict):
+            print("invalid proposal entry: ERROR invalid proposal entry")
+            errors += 1
+            continue
+        result = apply_fix(fix, dry_run=dry_run)
+        print(result)
+        if ": rotated" in result or ": would apply" in result:
+            applied += 1
+        elif "manual review needed" in result:
+            manual_review += 1
+        elif ": ERROR" in result:
+            errors += 1
+        else:
+            skipped += 1
+
+    prefix = "summary " if dry_run else ""
+    print(f"{prefix}applied={applied} skipped={skipped} manual_review={manual_review} errors={errors}")
+    return 2 if errors else 0
+
+
+def main() -> int:
+    args = parse_args()
+    if args.apply:
+        return apply_proposal(args.apply, dry_run=args.summary)
+    return discover(selected_databases(args), args.output)
+
+
+if __name__ == "__main__":
+    sys.exit(main())
+PYEOF

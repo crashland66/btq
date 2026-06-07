@@ -1,0 +1,122 @@
+#!/usr/bin/env python3
+"""Detect drift between BTDocs (exported on Jordan's PC) and the BTQ source-of-truth.
+
+Two checks:
+  1) Per-source hash check. For each entry in BTDocs/export_manifest.json,
+     hash the current project source file and compare against the manifest's
+     source_sha256. Any mismatch means the source has changed since the last
+     export and BTDocs is stale for that document.
+  2) Job-type completeness. Extract the set of job types named in the exported
+     docs and diff against queue_spec.ALLOWED_JOB_TYPES. Missing job types
+     mean the AC primer / authoring guide is out-of-date.
+
+Designed to be runnable from `morning` skill, a launchd timer, or by hand.
+Prints a human report and exits 0 if everything's fresh, 1 if drift is found.
+"""
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import re
+import sys
+from pathlib import Path
+
+# Allow running outside the repo by adding project/ to sys.path.
+SCRIPT_DIR = Path(__file__).resolve().parent
+REPO_ROOT = SCRIPT_DIR.parent
+sys.path.insert(0, str(REPO_ROOT / "project"))
+
+from config import get_config  # noqa: E402  (path is set above)
+from queue_spec import ALLOWED_JOB_TYPES  # noqa: E402
+
+JOB_TYPE_PATTERN = re.compile(r"\b(?:" + "|".join(re.escape(t) for t in ALLOWED_JOB_TYPES) + r")\b")
+
+
+def hash_file(path: Path) -> str:
+    h = hashlib.sha256()
+    with path.open("rb") as fh:
+        for chunk in iter(lambda: fh.read(8192), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def stale_sources(manifest: dict, repo_root: Path) -> list[tuple[str, str]]:
+    """Return [(target, source)] for each manifest entry whose source has changed."""
+    drifted: list[tuple[str, str]] = []
+    for entry in manifest.get("exports", []):
+        source_rel = entry.get("source", "")
+        target_rel = entry.get("target", "")
+        recorded = entry.get("source_sha256", "")
+        if not source_rel or not recorded:
+            continue
+        source_path = repo_root / source_rel
+        if not source_path.exists():
+            drifted.append((target_rel, f"{source_rel} (missing in project)"))
+            continue
+        current = hash_file(source_path)
+        if current != recorded:
+            drifted.append((target_rel, source_rel))
+    return drifted
+
+
+def missing_job_types_in_docs(docs_root: Path) -> set[str]:
+    """Job types present in queue_spec but not mentioned in any BTDocs file."""
+    referenced: set[str] = set()
+    for md in docs_root.rglob("*.md"):
+        try:
+            content = md.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        for hit in JOB_TYPE_PATTERN.findall(content):
+            referenced.add(hit)
+    return set(ALLOWED_JOB_TYPES) - referenced
+
+
+def main() -> int:
+    config = get_config()
+    docs_root = config.docs_dir.expanduser()
+    manifest_path = docs_root / "export_manifest.json"
+    if not manifest_path.exists():
+        print(f"ERROR: manifest not found: {manifest_path}")
+        return 2
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    export_commit = manifest.get("git_commit", "?")
+
+    print(f"BTDocs drift check")
+    print(f"  docs_root:     {docs_root}")
+    print(f"  last export:   git_commit={export_commit}")
+    print()
+
+    drift_sources = stale_sources(manifest, REPO_ROOT)
+    missing_types = missing_job_types_in_docs(docs_root)
+
+    any_drift = bool(drift_sources or missing_types)
+
+    if drift_sources:
+        print(f"⚠ {len(drift_sources)} BTDocs file(s) are stale (source has changed since export):")
+        for target, source in drift_sources:
+            print(f"    {target}  ←  {source}")
+        print()
+    else:
+        print("✓ All manifest sources match their exported hashes")
+        print()
+
+    if missing_types:
+        print(f"⚠ {len(missing_types)} job type(s) in queue_spec are NOT mentioned anywhere in BTDocs:")
+        for jt in sorted(missing_types):
+            print(f"    - {jt}")
+        print()
+    else:
+        print("✓ All queue_spec job types are referenced in BTDocs")
+        print()
+
+    if any_drift:
+        print("Fix: re-run the BTDocs export on the PC, then sync the BTDocs directory.")
+        return 1
+    print("BTDocs is in sync with the project.")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

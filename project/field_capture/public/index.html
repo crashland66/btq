@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#f7f8f6" />
+    <meta name="robots" content="noindex, nofollow" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <title>B&amp;T Field Capture</title>
+    <!--
+      The PWA manifest link is added by the inline script below instead of a
+      static <link>. iOS Safari parses HEAD top-to-bottom: a static manifest
+      link would be fetched (without our token query) before app.js can
+      rewrite its href. iOS captures THAT first manifest into the home-screen
+      icon and ignores later changes. The inline script runs synchronously
+      during HEAD parsing, BEFORE any link the browser would fetch, so the
+      first (and only) manifest URL Safari sees already carries the token.
+    -->
+    <script>
+      (function () {
+        var key = "fieldCaptureToken";
+        var token = "";
+        try {
+          var qs = new URLSearchParams(window.location.search);
+          token = qs.get("token") || "";
+          if (!token && window.location.hash) {
+            var hp = new URLSearchParams(window.location.hash.replace(/^#/, ""));
+            token = hp.get("token") || "";
+          }
+          if (!token) token = window.localStorage.getItem(key) || "";
+          if (!token) {
+            var match = document.cookie.split("; ").find(function (row) {
+              return row.indexOf(key + "=") === 0;
+            });
+            if (match) token = decodeURIComponent(match.slice(key.length + 1));
+          }
+        } catch (_error) {}
+        var link = document.createElement("link");
+        link.rel = "manifest";
+        link.href = token
+          ? "/manifest.webmanifest?token=" + encodeURIComponent(token)
+          : "/manifest.webmanifest";
+        document.head.appendChild(link);
+      })();
+    </script>
+    <link rel="apple-touch-icon" sizes="180x180" href="/assets/icon-180.png" />
+    <link rel="icon" type="image/png" sizes="192x192" href="/assets/icon-192.png" />
+    <link rel="icon" type="image/png" sizes="512x512" href="/assets/icon-512.png" />
+    <!-- Previous asset path: /styles.css?v=20260524-02 -->
+    <link rel="stylesheet" href="/styles.css?v=20260529-01" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <header class="app-header">
+        <div class="brand-lockup">
+          <img class="brand-logo" src="./assets/app-logo.png" alt="Clearpath Facilities" width="500" height="200" />
+          <div id="statusText" class="status-text hero-status" role="status" aria-live="polite">Ready to submit field capture</div>
+        </div>
+        <button id="mySubsBtn" class="my-subs-btn" type="button">
+          My Submissions
+          <span id="mySubsBadge" class="my-subs-badge" hidden></span>
+        </button>
+      </header>
+      <div id="queueStrip" class="queue-strip" role="status" aria-live="polite" hidden></div>
+      <div id="staleStrip" class="stale-strip" role="alert" aria-live="assertive" hidden></div>
+
+      <form id="captureForm" class="details-panel quick-fields">
+        <label>
+          Site
+          <select id="siteInput" name="site" required>
+            <option value="">Loading sites...</option>
+          </select>
+        </label>
+
+        <label>
+          Area / QC Category
+          <select id="categoryInput" name="qc_category">
+            <option value="">Select category…</option>
+          </select>
+        </label>
+      </form>
+
+      <div id="captureGuidance" class="capture-guidance" hidden></div>
+      <section class="photo-input-panel">
+        <canvas id="captureCanvas" hidden></canvas>
+        <div id="thumbnailGrid" class="thumbnail-grid" aria-label="Captured photos"></div>
+        <div class="photo-button-row">
+          <label class="add-photo-button">
+            Take Photo
+            <input id="cameraInput" type="file" accept="image/*" capture="environment" />
+          </label>
+          <label class="add-photo-button add-photo-button--library" aria-label="Add Photo from Library">
+            Add from Library
+            <input id="fileInput" type="file" accept="image/*" multiple />
+          </label>
+        </div>
+      </section>
+
+      <section class="details-panel voice-panel">
+        <div class="section-title">
+          <h2>Voice Note</h2>
+          <span id="voiceStatus">Optional</span>
+        </div>
+        <div class="voice-guidance">
+          <p>Optional but helpful: add a short voice tag when the location is not obvious. Say: Location + completed/reset/issue.</p>
+          <p>Examples: "Locker room 130 fully reset." "CFO office reset, trash pulled." "Foreman locker room done, low on paper towels."</p>
+        </div>
+        <div class="tape-deck">
+          <div class="tape-transport">
+            <button class="tape-btn tape-record" id="recordVoiceButton" type="button" title="Record">&#9679;</button>
+            <button class="tape-btn tape-stop" id="stopVoiceButton" type="button" title="Stop" disabled>&#9632;</button>
+          </div>
+          <button class="tape-btn tape-clear" id="clearVoiceButton" type="button" title="Erase recording" disabled>&#10005;</button>
+        </div>
+        <audio id="voicePreview" controls hidden></audio>
+        <p id="voiceSupportMessage" class="voice-support-message" hidden>Voice recording is not available in this browser.</p>
+      </section>
+
+      <section class="details-panel note-panel">
+        <p id="submitSummary" class="submit-summary" hidden></p>
+        <div class="note-submit-row">
+          <label class="note-field">
+            Location / short note
+            <textarea id="notesInput" name="note" rows="4" placeholder="Example: CFO office reset, trash pulled"></textarea>
+          </label>
+          <button id="exportButton" class="primary-button" type="button">Save capture</button>
+        </div>
+      </section>
+      <section id="feedSection" class="details-panel feed-section" hidden>
+        <button id="feedBack" class="feed-back-btn" type="button">← New Capture</button>
+        <div id="qualityCard" class="quality-card"></div>
+        <ul id="submissionList" class="submission-list"></ul>
+      </section>
+      <section id="successScreen" class="details-panel success-screen" hidden>
+        <div class="success-checkmark" aria-hidden="true">✓</div>
+        <h2 class="success-heading">Saved locally</h2>
+        <p id="successDetail" class="success-detail"></p>
+        <button id="submitAnotherButton" class="primary-button" type="button">Submit Another</button>
+      </section>
+      <section id="installGate" class="details-panel install-gate" hidden>
+        <h2>Add to Home Screen to keep your captures safe</h2>
+        <p>Saved captures live only on this phone until they upload. To keep iOS from deleting them, add this app to your Home Screen and open it from there.</p>
+        <ol class="install-steps">
+          <li>Tap the <strong>Share</strong> button <span aria-hidden="true">&#x2191;</span> in the browser toolbar.</li>
+          <li>Choose <strong>Add to Home Screen</strong>.</li>
+          <li>Open the app from the new icon on your Home Screen.</li>
+        </ol>
+        <p id="installGatePending" class="install-gate-pending" hidden></p>
+      </section>
+      <footer class="app-footer" aria-label="Field capture interface details">
+        <div>B&amp;T Field Capture</div>
+        <div>Interface version: <span id="interfaceVersion">Loading</span></div>
+        <div>Pipeline version: <span id="pipelineVersion">Loading</span></div>
+        <div>Site: <span id="footerSite">Not loaded</span></div>
+        <div><a id="siteViewerLink" class="site-viewer-link" href="#" hidden>View captures</a></div>
+      </footer>
+    </main>
+
+    <!-- Previous asset path: /app.js?v=20260510-12 -->
+    <!-- Previous asset path: /app.js?v=20260514-01 -->
+    <!-- Previous asset path: /app.js?v=20260514-02 -->
+    <!-- Previous asset path: /app.js?v=20260516-01 -->
+    <!-- Previous asset path: /app.js?v=20260516-02 -->
+    <!-- Previous asset path: /app.js?v=20260516-03 -->
+    <!-- Previous asset path: /app.js?v=20260518-01 -->
+    <!-- Previous asset path: /app.js?v=20260523-01 -->
+    <!-- Previous asset path: /app.js?v=20260523-02 -->
+    <!-- Previous asset path: /app.js?v=20260524-01 -->
+    <!-- Previous asset path: /app.js?v=20260524-02 -->
+    <!-- Previous asset path: /app.js?v=20260528-01 -->
+    <!-- Previous asset path: /app.js?v=20260529-01 -->
+    <!-- Previous asset path: /app.js?v=20260529-02 -->
+    <!-- Previous asset path: /app.js?v=20260529-03 -->
+    <!-- Previous asset path: /app.js?v=20260529-04 -->
+    <!-- Local-first capture queue (prompt 146). Loaded before app.js so window.fieldCaptureDb is available at app boot. -->
+    <script src="/db.js?v=20260528-01"></script>
+    <script src="/app.js?v=20260529-05"></script>
+  </body>
+</html>

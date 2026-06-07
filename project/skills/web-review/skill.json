@@ -1,0 +1,12 @@
+{
+  "id": "web-review",
+  "name": "Website Review",
+  "description": "Brutal conversion-focused website evaluation and improvement generator.",
+  "current_version": "v2",
+  "versions": ["v1", "v2"],
+  "tags": ["web-design", "conversion", "ux", "copywriting", "site-review"],
+  "inputs": ["url", "html", "markdown", "screenshot-description", "page-description"],
+  "outputs": ["markdown-review", "score-table", "recommended-changes", "ai-ready-rewrite-block"],
+  "created_from": "Brutally Honest Advice About Web Design in 9 mins",
+  "status": "active"
+}

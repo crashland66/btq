@@ -1,0 +1,11 @@
+{
+  "_id": "_design/btq_sites",
+  "views": {
+    "by_alias": {
+      "map": "function(doc) {\n  if (doc.type !== \"site\" || doc.active !== true) return;\n  var aliases = doc.aliases || [];\n  for (var i = 0; i < aliases.length; i++) {\n    emit(aliases[i].toLowerCase().replace(/\\s+/g, \" \").trim(), {\n      site_id: doc.site_id,\n      canonical: doc.account,\n      note_path: doc.note_path,\n      vision_context: doc.vision_context || null\n    });\n  }\n}"
+    },
+    "by_site_id": {
+      "map": "function(doc) {\n  if (doc.type !== \"site\" || doc.active !== true) return;\n  emit(doc.site_id, {\n    site_id: doc.site_id,\n    canonical: doc.account,\n    note_path: doc.note_path,\n    vision_context: doc.vision_context || null\n  });\n}"
+    }
+  }
+}

@@ -1,0 +1,211 @@
+// __PRODUCT_LABEL__ service worker.
+//
+// Sole responsibility: drain the IndexedDB capture queue
+// (field_capture_v1, store "captures") via Background Sync
+// when the device returns online after a Save while the
+// page was closed.
+//
+// Does NOT cache app shell, fetch responses, push, or
+// notify. Adding any of those is out of scope; this SW
+// is intentionally minimal so deploys can ship it without
+// new offline-cache invalidation risk.
+
+const SW_VERSION = "2026.05.28-drain-only";
+const SYNC_TAG = "__SYNC_TAG__";
+const DB_NAME = "field_capture_v1";
+const DB_VERSION = 1;
+const STORE = "captures";
+
+const DRAIN_BACKOFF_SCHEDULE_MS = [5_000, 30_000, 120_000, 600_000, 3_600_000];
+const DRAIN_PERMANENT_FAILURE_HOURS = 24;
+// A record left in "uploading" longer than this was orphaned when the SW was
+// killed mid-sync (browsers terminate service workers aggressively) — requeue
+// it instead of leaving it stuck forever. Idempotent uploads (capture_id dedup)
+// make a requeue-vs-foreground race harmless.
+const UPLOAD_ORPHAN_RESET_MS = 120_000;
+const TOKEN_KEY = "__TOKEN_KEY__";
+
+self.addEventListener("install", (event) => {
+  // Activate immediately so the new SW can drain on first install.
+  event.waitUntil(self.skipWaiting());
+});
+
+self.addEventListener("activate", (event) => {
+  event.waitUntil(self.clients.claim());
+});
+
+self.addEventListener("sync", (event) => {
+  if (event.tag !== SYNC_TAG) return;
+  event.waitUntil(drainQueue());
+});
+
+// --- IDB helpers (duplicated minimally from db.js because the SW
+// loads as its own script and cannot import the page module). ---
+
+function openDb() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(DB_NAME, DB_VERSION);
+    // No onupgradeneeded — db.js owns the schema and creates the
+    // store on the page side. SW only reads/updates existing rows.
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+function reqToPromise(request) {
+  return new Promise((resolve, reject) => {
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+}
+
+async function listByStatus(status) {
+  const db = await openDb();
+  return reqToPromise(db.transaction(STORE, "readonly").objectStore(STORE).index("status").getAll(status));
+}
+
+async function updateCapture(captureId, patch) {
+  const db = await openDb();
+  return new Promise((resolve, reject) => {
+    const t = db.transaction(STORE, "readwrite");
+    const store = t.objectStore(STORE);
+    const getReq = store.get(captureId);
+    getReq.onsuccess = () => {
+      const existing = getReq.result;
+      if (!existing) {
+        reject(new Error("capture_not_found"));
+        return;
+      }
+      const merged = Object.assign({}, existing, patch);
+      const putReq = store.put(merged);
+      putReq.onsuccess = () => resolve(merged);
+      putReq.onerror = () => reject(putReq.error);
+    };
+    getReq.onerror = () => reject(getReq.error);
+  });
+}
+
+async function deleteCapture(captureId) {
+  const db = await openDb();
+  return reqToPromise(db.transaction(STORE, "readwrite").objectStore(STORE).delete(captureId));
+}
+
+// --- Token retrieval ---
+// The SW doesn't share window.localStorage. Tokens are also
+// mirrored to cookies (see index.html). For sync uploads we
+// read from a cookie via clients.get → but the SW may have no
+// client. The most reliable approach is to require the page to
+// stash the token into IDB on session load, alongside captures.
+// For this first cut we read the token from a special row in
+// the captures store; if it's absent, we skip the sync and let
+// the foreground drain handle it next time the page boots.
+
+async function readToken() {
+  const db = await openDb();
+  const row = await reqToPromise(db.transaction(STORE, "readonly").objectStore(STORE).get("__token__"));
+  return row?.value || "";
+}
+
+// --- Upload + drain ---
+
+function nextBackoffMs(attempts) {
+  const index = Math.min(attempts, DRAIN_BACKOFF_SCHEDULE_MS.length - 1);
+  return DRAIN_BACKOFF_SCHEDULE_MS[index];
+}
+
+async function uploadOneCapture(record, token) {
+  const form = new FormData();
+  const fields = record.fields || {};
+  for (const key of Object.keys(fields)) {
+    const value = fields[key];
+    form.append(key, value == null ? "" : String(value));
+  }
+  for (const photo of record.photos || []) {
+    form.append("photos", photo.blob, photo.filename);
+  }
+  if (record.audio) {
+    form.append("audio", record.audio.blob, record.audio.filename);
+    form.append("audio_duration_seconds", String(record.audio.durationSeconds || 0));
+  }
+  const response = await fetch("__API_ENDPOINT__", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      Accept: "application/json",
+    },
+    body: form,
+  });
+  if (response.status === 401) {
+    const err = new Error("auth_lost");
+    err.permanent = true;
+    throw err;
+  }
+  if (__SUCCESS_CHECK__) {
+    const err = new Error(`upload_failed_${response.status}`);
+    err.status = response.status;
+    err.permanent = __PERMANENT_FAILURE_CHECK__;
+    throw err;
+  }
+  return response.json();
+}
+
+async function drainQueue() {
+  const token = await readToken();
+  if (!token) {
+    // No token cached for SW context. Let the foreground drain
+    // handle it next time the page is opened.
+    return;
+  }
+  // Recover orphans: records the SW left in "uploading" before being killed
+  // mid-sync. listByStatus only re-reads "pending", so requeue stale "uploading"
+  // rows or they stay stuck forever (and keep the queue strip counting them).
+  const orphans = await listByStatus("uploading");
+  const orphanNow = Date.now();
+  for (const orphan of orphans) {
+    const startedMs = new Date(orphan.lastTriedAt || orphan.createdAt).getTime();
+    if (!Number.isFinite(startedMs) || orphanNow - startedMs > UPLOAD_ORPHAN_RESET_MS) {
+      await updateCapture(orphan.capture_id, {
+        status: "pending",
+        lastError: "recovered_orphaned_upload",
+      });
+    }
+  }
+  const pending = await listByStatus("pending");
+  pending.sort((a, b) => (a.createdAt || "").localeCompare(b.createdAt || ""));
+  for (const record of pending) {
+    const ageHours = (Date.now() - new Date(record.createdAt).getTime()) / 3_600_000;
+    if (ageHours > DRAIN_PERMANENT_FAILURE_HOURS) {
+      await updateCapture(record.capture_id, {
+        status: "failed",
+        lastError: "exceeded_retry_window",
+      });
+      continue;
+    }
+    try {
+      await updateCapture(record.capture_id, { status: "uploading", lastTriedAt: new Date().toISOString() });
+      await uploadOneCapture(record, token);
+      await updateCapture(record.capture_id, { status: "done", lastError: null });
+    } catch (error) {
+      const attempts = (record.attempts || 0) + 1;
+      await updateCapture(record.capture_id, {
+        status: error.permanent ? "failed" : "pending",
+        attempts,
+        lastError: error.message || String(error),
+      });
+      if (!error.permanent) {
+        // The browser will fire `sync` again automatically per its
+        // own retry schedule. Throw so the sync event registers as
+        // failed and Chrome reschedules.
+        throw error;
+      }
+    }
+  }
+  // Sweep done rows older than 5 minutes.
+  const dones = await listByStatus("done");
+  for (const record of dones) {
+    const ageMs = Date.now() - new Date(record.lastTriedAt || record.createdAt).getTime();
+    if (ageMs > 5 * 60_000) {
+      await deleteCapture(record.capture_id);
+    }
+  }
+}

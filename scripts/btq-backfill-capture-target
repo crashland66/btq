@@ -1,0 +1,125 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+  echo "usage: ./scripts/btq-backfill-capture-target"
+  exit 0
+fi
+
+PLIST="$HOME/Library/LaunchAgents/com.btq.couchdb-field-capture-watcher.plist"
+PLIST_KEY() { /usr/libexec/PlistBuddy -c "Print :EnvironmentVariables:$1" "$PLIST" 2>/dev/null || true; }
+
+export BTQ_COUCHDB_USER="${BTQ_COUCHDB_USER:-$(PLIST_KEY BTQ_COUCHDB_USER)}"
+export BTQ_COUCHDB_PASSWORD="${BTQ_COUCHDB_PASSWORD:-$(PLIST_KEY BTQ_COUCHDB_PASSWORD)}"
+export BTQ_COUCHDB_URL="${BTQ_COUCHDB_URL:-$(PLIST_KEY BTQ_COUCHDB_URL)}"
+export BTQ_COUCHDB_URL="${BTQ_COUCHDB_URL:-http://127.0.0.1:5984}"
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+PROJECT_ROOT="${REPO_ROOT}/project"
+PYTHON_BIN="${PROJECT_ROOT}/.venv/bin/python"
+
+cd "${PROJECT_ROOT}"
+
+exec "${PYTHON_BIN}" - <<'PYEOF'
+from __future__ import annotations
+
+import json
+import os
+import sys
+from pathlib import Path
+from urllib import error, parse, request
+
+from config import get_config
+from event_pipeline import couchdb_config
+
+
+def req(config, method, database, path, data=None):
+    url = f"{config.base_url}/{parse.quote(database, safe='')}/{path}"
+    body = json.dumps(data, sort_keys=True).encode("utf-8") if data is not None else None
+    headers = {"Accept": "application/json"}
+    if data is not None:
+        headers["Content-Type"] = "application/json"
+    headers.update(config.auth_header())
+    http_req = request.Request(url, data=body, headers=headers, method=method)
+    with request.urlopen(http_req, timeout=config.timeout) as response:
+        raw = response.read()
+    return json.loads(raw.decode("utf-8")) if raw else {}
+
+
+def put_doc(config, database, doc):
+    doc_id = parse.quote(str(doc["_id"]), safe="")
+    return req(config, "PUT", database, doc_id, doc)
+
+
+def backfill_doc(doc):
+    if doc.get("target_type"):
+        return False
+    doc["target_type"] = "location"
+    doc["target_id"] = str(doc.get("site_id") or "")
+    return True
+
+
+def backfill_couchdb(config, database):
+    migrated = skipped = errors = 0
+    try:
+        listing = req(config, "GET", database, "_all_docs?include_docs=true")
+    except Exception as exc:
+        print(f"couchdb: ERROR listing captures: {exc}", file=sys.stderr)
+        return migrated, skipped, 1
+    for row in listing.get("rows", []):
+        doc = row.get("doc") if isinstance(row, dict) else None
+        if not isinstance(doc, dict) or doc.get("type") != "field_capture":
+            continue
+        if not backfill_doc(doc):
+            skipped += 1
+            continue
+        try:
+            put_doc(config, database, doc)
+            migrated += 1
+        except Exception as exc:
+            print(f"{doc.get('_id', '(unknown)')}: ERROR {exc}", file=sys.stderr)
+            errors += 1
+    return migrated, skipped, errors
+
+
+def backfill_disk(intake_dir):
+    migrated = skipped = errors = 0
+    for path in sorted(intake_dir.glob("cap-*.json")) if intake_dir.is_dir() else []:
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            print(f"{path}: ERROR read {exc}", file=sys.stderr)
+            errors += 1
+            continue
+        if not isinstance(payload, dict):
+            skipped += 1
+            continue
+        if not backfill_doc(payload):
+            skipped += 1
+            continue
+        try:
+            path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+            migrated += 1
+        except OSError as exc:
+            print(f"{path}: ERROR write {exc}", file=sys.stderr)
+            errors += 1
+    return migrated, skipped, errors
+
+
+def main():
+    config = couchdb_config.from_env()
+    database = couchdb_config.field_captures_database()
+    runtime_root = get_config().runtime_root
+    intake_dir = Path(os.environ.get("BTQ_FIELD_CAPTURE_INTAKE_DIR", runtime_root / "field_capture" / "intake")).expanduser()
+    couch_migrated, couch_skipped, couch_errors = backfill_couchdb(config, database)
+    disk_migrated, disk_skipped, disk_errors = backfill_disk(intake_dir)
+    migrated = couch_migrated + disk_migrated
+    skipped = couch_skipped + disk_skipped
+    errors = couch_errors + disk_errors
+    print(f"migrated={migrated} skipped={skipped} errors={errors}")
+    return 2 if errors else 0
+
+
+raise SystemExit(main())
+PYEOF

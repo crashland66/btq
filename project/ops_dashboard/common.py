@@ -1,0 +1,1434 @@
+from __future__ import annotations
+
+import html
+import json
+import logging
+import mimetypes
+import os
+import re
+import threading
+import time
+import uuid
+from collections import Counter
+from collections.abc import Callable
+from datetime import datetime, timezone
+from pathlib import Path
+from urllib import request as urllib_request
+
+from urllib.parse import parse_qs, quote
+
+from event_pipeline import couchdb_config
+from event_pipeline.couchdb_registry import CouchDBSiteRegistry
+from field_capture import photo_vision as field_photo_vision
+from ops_dashboard import audit
+from processing_core.slugs import css_status_slug
+from voice_memo.couchdb import VoiceMemoCouchDBConfig, VoiceMemoCouchDBError, query_couchdb_find
+
+
+logger = logging.getLogger(__name__)
+
+DEFAULT_LOG_LINES = 40
+PHOTO_VISION_RECENT_LIMIT = 8
+UNKNOWN_SUBMITTER = "Unknown submitter"
+KNOWN_JOB_SUMMARY_TYPES = {
+    "append_to_note",
+    "add_person",
+    "trigger_recruiting",
+    "close_recruiting",
+    "remove_from_schedule",
+    "flag_access_constraint",
+    "flag_retention_risk",
+    "reclassify_unknown",
+    "record_unknown_capture",
+    "visit_create",
+    "parse_supply_email",
+    "personal_journal_entry",
+    "photo_capture",
+    "promote_prospect",
+    "retarget_capture",
+    "log_site_issue",
+    "log_supply_need",
+    "log_equipment_request",
+    "log_personnel_event",
+    "set_entity_status",
+    "update_site_equipment",
+    "mark_supply_ordered",
+    "mark_supply_delivered",
+    "mark_supply_stocked",
+    "mark_supply_no_action_needed",
+    "mark_equipment_approved",
+    "mark_equipment_denied",
+    "mark_equipment_ordered",
+    "mark_equipment_provided",
+    "mark_equipment_no_action_needed",
+    "voice_memo_note",
+}
+
+
+class SectionContext:
+    def __init__(self, runtime_root: Path, get_config_func) -> None:
+        self._runtime_root = runtime_root
+        self._get_config = get_config_func
+        self.query: dict[str, list[str]] = {}
+        self.route_path = ""
+
+    def effective_config(self) -> object:
+        return self._get_config()
+
+    @property
+    def config(self) -> object:
+        return self.effective_config()
+
+    @property
+    def runtime_root(self) -> Path:
+        return self._runtime_root.expanduser().resolve(strict=False)
+
+    def redirect(self, location: str):
+        return 303, "text/html; charset=utf-8", f'<a href="{html.escape(location)}">Return</a>'.encode(), {"Location": location}
+
+    def flash(self, query: dict[str, list[str]] | None = None) -> str:
+        query = query if query is not None else self.query
+        message = html.escape(first_query_value(query, "message"))
+        error_value = html.escape(first_query_value(query, "error"))
+        parts = []
+        if message:
+            parts.append(f'<section class="notice success"><p>{message}</p></section>')
+        if error_value:
+            parts.append(f'<section class="error"><p>{error_value}</p></section>')
+        return "".join(parts)
+
+    def form_payload(self, form: dict[str, list[str]]) -> dict[str, object]:
+        return {key: values[0] if values else "" for key, values in form.items()}
+
+    def audit(self, route: str, payload: dict[str, object], result: str) -> None:
+        audit.append_audit(self.runtime_root, {"route": route, "actor": "localhost", "payload": payload, "result_summary": result})
+
+
+def count_files(path: Path, pattern: str = "*", recursive: bool = False) -> int:
+    if not path.exists():
+        return 0
+    iterator = path.rglob(pattern) if recursive else path.glob(pattern)
+    return sum(1 for item in iterator if item.is_file())
+
+
+def read_json_artifact(path: Path) -> tuple[dict[str, object] | None, str]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        return None, f"{type(exc).__name__}: {exc}"
+    if not isinstance(payload, dict):
+        return None, "JSON artifact is not an object"
+    return payload, ""
+
+
+def safe_submitter(metadata: dict[str, object] | None, payload: dict[str, object] | None = None) -> dict[str, str]:
+    metadata = metadata if isinstance(metadata, dict) else {}
+    payload = payload if isinstance(payload, dict) else {}
+    person_name = str(metadata.get("person_name") or metadata.get("submitter_name") or payload.get("person_name") or payload.get("submitter_name") or "").strip()
+    person_id = str(metadata.get("person_id") or payload.get("person_id") or "").strip()
+    token_label = str(metadata.get("field_capture_token_label") or metadata.get("token_label") or payload.get("field_capture_token_label") or payload.get("token_label") or "").strip()
+    display = person_name or person_id or token_label or UNKNOWN_SUBMITTER
+    return {
+        "submitter_name": display,
+        "submitter_id": person_id,
+        "token_label": token_label if not person_name and not person_id else "",
+    }
+
+
+_SUBMITTERS_CACHE_TTL_SECONDS = 5.0
+# cache[intake_dir] = (cached_at_monotonic, dir_mtime, result)
+_SUBMITTERS_CACHE: dict[Path, tuple[float, float, dict[str, dict[str, str]]]] = {}
+_SUBMITTERS_CACHE_LOCK = threading.Lock()
+
+
+def submitters_by_capture(runtime_root: Path) -> dict[str, dict[str, str]]:
+    intake_dir = field_photo_vision.default_intake_dir(runtime_root)
+    if not intake_dir.exists():
+        return {}
+    try:
+        dir_mtime = intake_dir.stat().st_mtime
+    except OSError:
+        dir_mtime = 0.0
+
+    def _cached_if_fresh() -> dict[str, dict[str, str]] | None:
+        cached = _SUBMITTERS_CACHE.get(intake_dir)
+        if cached is None:
+            return None
+        cached_at, cached_dir_mtime, cached_result = cached
+        if cached_dir_mtime != dir_mtime or time.monotonic() - cached_at >= _SUBMITTERS_CACHE_TTL_SECONDS:
+            return None
+        return cached_result
+
+    fresh = _cached_if_fresh()
+    if fresh is not None:
+        return fresh
+
+    # Serialize cold loads. Without this, concurrent requests each run the
+    # full intake-dir scan in parallel, multiplying transient memory by
+    # the worker count. Re-check inside the lock so the second-arriver
+    # gets the just-filled cache instead of redoing the scan.
+    with _SUBMITTERS_CACHE_LOCK:
+        fresh = _cached_if_fresh()
+        if fresh is not None:
+            return fresh
+        submitters: dict[str, dict[str, str]] = {}
+        for path in sorted(intake_dir.glob("**/*.json")):
+            payload, _error = read_json_artifact(path)
+            if not payload or payload.get("job_type") != "photo_capture":
+                continue
+            metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
+            body = payload.get("payload") if isinstance(payload.get("payload"), dict) else {}
+            capture_id = str(metadata.get("capture_id") or body.get("capture_id") or "").strip()
+            if capture_id:
+                submitters[capture_id] = safe_submitter(metadata, body)
+        _SUBMITTERS_CACHE[intake_dir] = (time.monotonic(), dir_mtime, submitters)
+        return submitters
+
+
+def is_audio_file(path: Path) -> bool:
+    mime = mimetypes.guess_type(path.name)[0] or ""
+    return mime.startswith("audio/") or path.suffix.lower() in {".webm", ".m4a", ".mp3", ".wav", ".aac"}
+
+
+def latest_uploads(upload_root: Path, submitters: dict[str, dict[str, str]] | None = None, limit: int = 5) -> list[dict[str, object]]:
+    if not upload_root.exists():
+        return []
+    submitters = submitters or {}
+    captures: list[tuple[float, Path]] = []
+    for path in upload_root.glob("*/*"):
+        if path.is_dir():
+            try:
+                captures.append((path.stat().st_mtime, path))
+            except OSError:
+                continue
+    captures.sort(reverse=True)
+    items: list[dict[str, object]] = []
+    for _mtime, path in captures[:limit]:
+        submitter = submitters.get(path.name, safe_submitter({}))
+        items.append(
+            {
+                "capture_id": path.name,
+                "submitter_name": submitter["submitter_name"],
+                "submitter_id": submitter["submitter_id"],
+                "date": path.parent.name,
+                "path": str(path),
+                "file_count": count_files(path),
+                "audio_count": sum(1 for item in path.glob("*") if item.is_file() and is_audio_file(item)),
+                "image_count": sum(1 for item in path.glob("*") if item.is_file() and (mimetypes.guess_type(item.name)[0] or "").startswith("image/")),
+            }
+        )
+    return items
+
+
+def latest_json_artifacts(path: Path, limit: int = 5) -> list[dict[str, object]]:
+    if not path.exists():
+        return []
+    artifacts: list[tuple[float, Path]] = []
+    for item in path.glob("*.json"):
+        try:
+            artifacts.append((item.stat().st_mtime, item))
+        except OSError:
+            continue
+    artifacts.sort(reverse=True)
+    return [{"name": item.name, "path": str(item), "modified_at": datetime.fromtimestamp(mtime, timezone.utc).isoformat()} for mtime, item in artifacts[:limit]]
+
+
+def string_list(value: object) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [str(item).strip() for item in value if str(item).strip()]
+
+
+def is_advisory_warning(value: str) -> bool:
+    return value == field_photo_vision.ADVISORY_WARNING or value.startswith("Vision output is advisory interpretation")
+
+
+def significant_warnings(value: object) -> list[str]:
+    return [warning for warning in string_list(value) if not is_advisory_warning(warning)]
+
+
+def first_query_value(query: dict[str, list[str]], key: str) -> str:
+    values = query.get(key) or []
+    return values[0] if values else ""
+
+
+def candidate_capture_sort_value(candidate: dict[str, object]) -> str:
+    return str(candidate.get("captured_at") or candidate.get("capture_id") or candidate.get("candidate_id") or "")
+
+
+def pending_candidate_counts_by_capture(candidates: list[dict[str, object]]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for candidate in candidates:
+        if str(candidate.get("status") or "") != "pending_review":
+            continue
+        capture_id = str(candidate.get("capture_id") or "").strip()
+        if capture_id:
+            counts[capture_id] = counts.get(capture_id, 0) + 1
+    return counts
+
+
+def apply_pending_candidate_counts(candidates: list[dict[str, object]], counts: dict[str, int]) -> None:
+    for candidate in candidates:
+        if str(candidate.get("status") or "") != "pending_review":
+            continue
+        capture_id = str(candidate.get("capture_id") or "").strip()
+        if capture_id:
+            candidate["capture_candidate_count"] = counts.get(capture_id, 1)
+
+
+def render_capture_candidate_signal(value: object) -> str:
+    try:
+        count = int(value or 0)
+    except (TypeError, ValueError):
+        count = 0
+    if count <= 1:
+        return ""
+    label = f"{count} pending candidates from this capture"
+    return f'<span class="pill capture-candidate-count">{html.escape(label)}</span>'
+
+
+def parse_display_categories(raw: str) -> list[dict[str, str]]:
+    if not raw.strip():
+        return []
+    parsed = json.loads(raw)
+    if not isinstance(parsed, list):
+        raise ValueError("display_categories must be a JSON list")
+    categories: list[dict[str, str]] = []
+    for item in parsed:
+        if not isinstance(item, dict):
+            raise ValueError("display_categories entries must be objects")
+        label = str(item.get("label") or "").strip()
+        canonical = str(item.get("canonical") or "").strip()
+        if not label or not canonical:
+            raise ValueError("display_categories entries require label and canonical")
+        categories.append({"label": label, "canonical": canonical})
+    return categories
+
+
+def parse_display_categories_rows(form: dict[str, list[str]], field_prefix: str) -> list[dict[str, str]]:
+    labels = form.get(f"{field_prefix}_label", [])
+    canonicals = form.get(f"{field_prefix}_canonical", [])
+    categories: list[dict[str, str]] = []
+    for raw_label, raw_canonical in zip(labels, canonicals):
+        label = str(raw_label or "").strip()
+        canonical = str(raw_canonical or "").strip()
+        if not label and not canonical:
+            continue
+        if not label or not canonical:
+            raise ValueError("display_categories entries require label and canonical")
+        categories.append({"label": label, "canonical": canonical})
+    return categories
+
+
+def render_display_categories_editor(field_prefix: str, categories: list[dict]) -> str:
+    rows = []
+    for item in categories if isinstance(categories, list) else []:
+        if not isinstance(item, dict):
+            continue
+        label = str(item.get("label") or "")
+        canonical = str(item.get("canonical") or "")
+        rows.append(
+            f"""
+            <div class="cat-editor-row">
+              <input type="text" name="{html.escape(field_prefix)}_label" value="{html.escape(label)}">
+              <input type="text" name="{html.escape(field_prefix)}_canonical" value="{html.escape(canonical)}">
+              <button type="button" data-cat-remove>Remove</button>
+            </div>
+            """
+        )
+    if not rows:
+        rows.append(
+            f"""
+            <div class="cat-editor-row">
+              <input type="text" name="{html.escape(field_prefix)}_label" value="">
+              <input type="text" name="{html.escape(field_prefix)}_canonical" value="">
+              <button type="button" data-cat-remove>Remove</button>
+            </div>
+            """
+        )
+    prefix_json = json.dumps(field_prefix)
+    return f"""
+    <div class="cat-editor" data-field-prefix="{html.escape(field_prefix)}">
+      {''.join(rows)}
+      <button type="button" data-cat-add>Add row</button>
+    </div>
+    <script>
+    (() => {{
+      const prefix = {prefix_json};
+      const scripts = document.getElementsByTagName("script");
+      const container = scripts[scripts.length - 1].previousElementSibling;
+      const addButton = container.querySelector("[data-cat-add]");
+      const wireRemove = (button) => {{
+        button.addEventListener("click", () => button.closest(".cat-editor-row").remove());
+      }};
+      container.querySelectorAll("[data-cat-remove]").forEach(wireRemove);
+      addButton.addEventListener("click", () => {{
+        const row = document.createElement("div");
+        row.className = "cat-editor-row";
+        row.innerHTML = `<input type="text" name="${{prefix}}_label" value=""> <input type="text" name="${{prefix}}_canonical" value=""> <button type="button" data-cat-remove>Remove</button>`;
+        wireRemove(row.querySelector("[data-cat-remove]"));
+        container.insertBefore(row, addButton);
+      }});
+    }})();
+    </script>
+    """
+
+
+def display_categories_json(value: object) -> str:
+    if not isinstance(value, list):
+        return "[]"
+    return json.dumps(value, indent=2, sort_keys=True)
+
+
+def first_filter_value(query: dict[str, list[str]], key: str) -> str:
+    return first_query_value(query, key).strip()
+
+
+def tail_lines(path: Path, line_count: int = DEFAULT_LOG_LINES) -> list[str]:
+    if not path.exists() or not path.is_file():
+        return []
+    try:
+        return path.read_text(encoding="utf-8", errors="replace").splitlines()[-line_count:]
+    except OSError:
+        return []
+
+
+DEFAULT_LIST_EXCLUDE_KEYS = frozenset({"path", "artifact_path", "source_image_path", "vault_issue_path"})
+
+
+class HtmlFragment(str):
+    """Small marker for trusted HTML returned by dashboard render helpers."""
+
+
+def humanize_key(key: object) -> str:
+    text = str(key or "").strip()
+    if not text:
+        return ""
+    abbreviations = {
+        "fc": "FC",
+        "id": "ID",
+        "ids": "IDs",
+        "json": "JSON",
+        "url": "URL",
+        "api": "API",
+        "db": "DB",
+    }
+    words = re.split(r"[_\s-]+", text)
+    return " ".join(abbreviations.get(word.lower(), word.capitalize()) for word in words if word)
+
+
+def has_value(value: object) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, (list, tuple, dict, set)):
+        return len(value) > 0
+    text = str(value).strip()
+    if not text:
+        return False
+    # The YAML loader sometimes surfaces "empty list" as the
+    # literal string "[]" or "{}" when frontmatter is malformed.
+    if text in ("[]", "{}", "None", "null"):
+        return False
+    return True
+
+
+def _strip_wrap_quotes(text: str) -> str:
+    """Strip a single pair of matching wrapping quotes (`"..."` or `'...'`)."""
+    if len(text) >= 2 and text[0] == text[-1] and text[0] in ('"', "'"):
+        return text[1:-1]
+    return text
+
+
+def field_value(value: object) -> str:
+    if isinstance(value, (list, tuple)):
+        return ", ".join(html.escape(str(item)) for item in value if str(item).strip())
+    text = str(value)
+    return html.escape(_strip_wrap_quotes(text))
+
+
+def humanize(key: object) -> str:
+    text = str(key or "").replace("_", " ").strip()
+    return text.title() if text else str(key or "")
+
+
+def field_rows(
+    doc: dict[str, object],
+    keys: tuple[str, ...],
+    *,
+    value_formatter: Callable[[object], str] = field_value,
+) -> str:
+    rows = []
+    for key in keys:
+        value = doc.get(key)
+        if has_value(value):
+            rows.append(
+                f'<div class="field-row"><dt>{html.escape(humanize(key))}</dt>'
+                f"<dd>{value_formatter(value)}</dd></div>"
+            )
+    return "".join(rows)
+
+
+def record_section(
+    title: str,
+    doc: dict[str, object],
+    keys: tuple[str, ...],
+    *,
+    actions_html: str = "",
+    value_formatter: Callable[[object], str] = field_value,
+) -> str:
+    rows = field_rows(doc, keys, value_formatter=value_formatter)
+    if not rows:
+        return ""
+    return f'<section><h3>{html.escape(title)}</h3>{actions_html}<dl class="fields">{rows}</dl></section>'
+
+
+def other_section(
+    doc: dict[str, object],
+    ordered_keys: set[str],
+    suppressed: set[str],
+    *,
+    title: str = "Other",
+    value_formatter: Callable[[object], str] = field_value,
+) -> str:
+    other_keys = tuple(
+        sorted(
+            key
+            for key, value in doc.items()
+            if key not in ordered_keys and key not in suppressed and has_value(value)
+        )
+    )
+    return record_section(title, doc, other_keys, value_formatter=value_formatter)
+
+
+def render_kv_value(value: object) -> str:
+    if isinstance(value, HtmlFragment):
+        return str(value)
+    if isinstance(value, dict):
+        rows = []
+        for key, nested_value in value.items():
+            rows.append(f"<tr><th>{html.escape(str(key))}</th><td>{render_kv_value(nested_value)}</td></tr>")
+        return '<table class="kv-table nested-kv-table">' + "".join(rows) + "</table>"
+    if isinstance(value, list):
+        if not value:
+            return "<ul></ul>"
+        items = "".join(f"<li>{render_kv_value(item)}</li>" for item in value)
+        return f"<ul>{items}</ul>"
+    return html.escape(str(value))
+
+
+def render_kv(mapping: dict[str, object], *, labels: dict[str, str] | None = None) -> str:
+    rows = []
+    for key, value in mapping.items():
+        label = labels.get(key, humanize_key(key)) if labels is not None else str(key)
+        rows.append(f"<tr><th>{html.escape(label)}</th><td>{render_kv_value(value)}</td></tr>")
+    return '<table class="kv-table">' + "".join(rows) + "</table>"
+
+
+def render_fields_value(value: object) -> str:
+    if isinstance(value, HtmlFragment):
+        return str(value)
+    if value is None:
+        return ""
+    if isinstance(value, dict):
+        return render_fields(value)
+    if isinstance(value, list):
+        if not value:
+            return "<ul></ul>"
+        items = "".join(f"<li>{render_fields_value(item)}</li>" for item in value)
+        return f"<ul>{items}</ul>"
+    return field_value(value)
+
+
+def render_fields(mapping: dict[str, object], *, labels: dict[str, str] | None = None) -> str:
+    rows = []
+    for key, value in mapping.items():
+        label = labels.get(key, humanize(key)) if labels is not None else humanize(key)
+        rows.append(
+            f'<div class="field-row"><dt>{html.escape(label)}</dt>'
+            f"<dd>{render_fields_value(value)}</dd></div>"
+        )
+    return '<dl class="fields">' + "".join(rows) + "</dl>"
+
+
+def render_count_badge(value: object, *, kind: str) -> HtmlFragment:
+    count = int(value or 0)
+    effective_kind = "neutral" if count == 0 else kind
+    if effective_kind not in {"danger", "pending", "neutral"}:
+        effective_kind = "neutral"
+    return HtmlFragment(f'<span class="count-badge count-{effective_kind}">{html.escape(str(count))}</span>')
+
+
+def _clean_display_part(value: object) -> str:
+    return str(value or "").strip()
+
+
+def render_site_label(
+    site_id: object,
+    *,
+    site_name: object = None,
+    account: object = None,
+) -> str:
+    site_id_text = _clean_display_part(site_id)
+    if not site_id_text:
+        return ""
+    site_name_text = _clean_display_part(site_name)
+    account_text = _clean_display_part(account)
+    escaped_id = html.escape(site_id_text)
+    id_html = f'<span class="site-id">({escaped_id})</span>'
+    if account_text and site_name_text and account_text != site_name_text:
+        visible = f"{html.escape(account_text)} — {html.escape(site_name_text)} {id_html}"
+    elif site_name_text:
+        visible = f"{html.escape(site_name_text)} {id_html}"
+    else:
+        visible = escaped_id
+    return f'<span class="site-label">{visible}</span>'
+
+
+def _location_account(site_id: str) -> str | None:
+    cfg = couchdb_config.from_env()
+    db_name = couchdb_config.vault_database()
+    url = f"{cfg.base_url.rstrip('/')}/{quote(db_name, safe='')}/_find"
+    payload = {
+        "selector": {"_id": f"location_{site_id}", "type": "location"},
+        "fields": ["_id", "account", "location", "site_id", "job", "type"],
+        "limit": 1,
+    }
+    headers = {"Content-Type": "application/json", "Accept": "application/json"}
+    headers.update(cfg.auth_header())
+    req = urllib_request.Request(url, data=json.dumps(payload).encode("utf-8"), headers=headers, method="POST")
+    with urllib_request.urlopen(req, timeout=cfg.timeout) as resp:
+        response = json.loads(resp.read().decode("utf-8"))
+    docs = response.get("docs") if isinstance(response, dict) else None
+    if not isinstance(docs, list) or not docs or not isinstance(docs[0], dict):
+        raise ValueError(f"missing location document for site {site_id}")
+    account = _clean_display_part(docs[0].get("account"))
+    return account or None
+
+
+def resolve_site_label(site_id: object, vault_root: Path) -> str:
+    site_id_text = _clean_display_part(site_id)
+    if not site_id_text:
+        return render_site_label(site_id)
+    try:
+        rows = CouchDBSiteRegistry().list_sites()
+        site_name = next(
+            (
+                _clean_display_part(row.get("canonical"))
+                for row in rows
+                if isinstance(row, dict) and _clean_display_part(row.get("site_id")) == site_id_text
+            ),
+            "",
+        )
+        if not site_name:
+            return render_site_label(site_id)
+        name_counts = Counter(
+            _clean_display_part(row.get("canonical"))
+            for row in rows
+            if isinstance(row, dict) and _clean_display_part(row.get("canonical"))
+        )
+        account = _location_account(site_id_text) if name_counts.get(site_name, 0) > 1 else None
+    except Exception as exc:
+        logger.warning("site label resolution failed site_id=%s: %s", site_id_text, exc)
+        return render_site_label(site_id)
+    return render_site_label(
+        site_id,
+        site_name=site_name,
+        account=account,
+    )
+
+
+def slugify_status(value: object) -> str:
+    """Sanitize a status value for use in status-* CSS class names."""
+    return css_status_slug(value)
+
+
+def render_status_transition(current: object, target: object) -> str:
+    """Render a current -> target status transition as paired pills."""
+    current_text = str(current or "").strip()
+    target_text = str(target or "").strip()
+    if not current_text and not target_text:
+        return ""
+    current_slug = slugify_status(current_text)
+    target_slug = slugify_status(target_text)
+    current_class = f" status-{current_slug}" if current_slug else ""
+    target_class = f" status-{target_slug}" if target_slug else ""
+    current_pill = f'<span class="pill{current_class}">{html.escape(current_text)}</span>' if current_text else ""
+    target_pill = f'<span class="pill{target_class}">{html.escape(target_text)}</span>' if target_text else ""
+    return f'<div class="status-transition">{current_pill}<span class="arrow" aria-hidden="true">→</span>{target_pill}</div>'
+
+
+def render_back_link(href: str, label: str) -> str:
+    """Render a back-to-list navigation link."""
+    return f'<p class="back-link"><a href="{html.escape(href, quote=True)}">← {html.escape(label)}</a></p>'
+
+
+def render_short_id(
+    value: object,
+    *,
+    prefix_keep: int = 0,
+    suffix_keep: int = 22,
+) -> str:
+    full_value = _clean_display_part(value)
+    if not full_value:
+        return ""
+    escaped_full = html.escape(full_value)
+    if len(full_value) <= prefix_keep + suffix_keep + 1:
+        return escaped_full
+    prefix = full_value[:prefix_keep] if prefix_keep else ""
+    suffix = full_value[-suffix_keep:] if suffix_keep else ""
+    short_value = f"{prefix}…{suffix}"
+    return f'<span class="id-short" title="{escaped_full}">{html.escape(short_value)}</span>'
+
+
+def _parse_relative_time_value(value: object, now: datetime) -> datetime | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        timestamp = value
+    elif isinstance(value, (int, float)):
+        timestamp = datetime.fromtimestamp(now.timestamp() - float(value), timezone.utc)
+    else:
+        raw = str(value).strip()
+        if not raw:
+            return None
+        try:
+            timestamp = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    if timestamp.tzinfo is None:
+        timestamp = timestamp.replace(tzinfo=timezone.utc)
+    return timestamp.astimezone(timezone.utc)
+
+
+def _month_day(value: datetime, *, include_year: bool) -> str:
+    text = f"{value:%b} {value.day}"
+    if include_year:
+        text = f"{text}, {value.year}"
+    return text
+
+
+def render_relative_time(value: object, *, now: datetime | None = None) -> str:
+    current = now or datetime.now(timezone.utc)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=timezone.utc)
+    current = current.astimezone(timezone.utc)
+    timestamp = _parse_relative_time_value(value, current)
+    if timestamp is None:
+        return ""
+    seconds = max(0, int((current - timestamp).total_seconds()))
+    if seconds < 60:
+        label = "just now"
+    elif seconds < 3600:
+        minutes = seconds // 60
+        label = f"{minutes} minute{'s' if minutes != 1 else ''} ago"
+    elif seconds < 86400:
+        hours = seconds // 3600
+        label = f"{hours} hour{'s' if hours != 1 else ''} ago"
+    elif seconds < 604800:
+        days = seconds // 86400
+        label = f"{days} day{'s' if days != 1 else ''} ago"
+    else:
+        label = _month_day(timestamp, include_year=timestamp.year != current.year)
+    iso_value = timestamp.isoformat().replace("+00:00", "Z")
+    absolute = f"{_month_day(timestamp, include_year=True)} {timestamp:%H:%M} UTC"
+    return f'<time datetime="{html.escape(iso_value)}" title="{html.escape(absolute)}">{html.escape(label)}</time>'
+
+
+def render_short_filename(filename: object) -> str:
+    raw = _clean_display_part(filename)
+    if not raw:
+        return ""
+    escaped_raw = html.escape(raw)
+    if "T" in raw[:25] and "__" in raw[:25]:
+        _prefix, slug_with_ext = raw.split("__", 1)
+        if "." in slug_with_ext:
+            slug = slug_with_ext.rsplit(".", 1)[0]
+            if slug:
+                return f'<span class="filename-short" title="{escaped_raw}">{html.escape(slug)}</span>'
+    return escaped_raw
+
+
+def _summary_payload(payload: object) -> dict[str, object]:
+    return payload if isinstance(payload, dict) else {}
+
+
+def _site_summary(payload: dict[str, object]) -> str:
+    return render_site_label(
+        payload.get("site_id") or payload.get("site"),
+        site_name=payload.get("site_name"),
+    )
+
+
+def _join_summary_parts(*parts: str) -> str:
+    return " ".join(part for part in parts if part)
+
+
+def _summary_with_suffix(prefix: str, suffix: str) -> str:
+    return f"{prefix}: {suffix}" if suffix else prefix
+
+
+def _path_summary(value: object) -> str:
+    raw = _clean_display_part(value)
+    if not raw:
+        return ""
+    filename = Path(raw).name
+    shortened = render_short_filename(filename)
+    if shortened != html.escape(filename):
+        return shortened
+    return html.escape(raw)
+
+
+def _unknown_job_summary(job_type: str, payload: dict[str, object]) -> str:
+    label = html.escape(job_type or "Unknown job")
+    fields = []
+    for key, value in list(payload.items())[:3]:
+        fields.append(f"{html.escape(str(key))}={html.escape(str(value))}")
+    return f"{label}: {', '.join(fields)}" if fields else label
+
+
+def _mark_job_summary(job_type: str, payload: dict[str, object], *, kind: str, id_key: str) -> str:
+    status = job_type.removeprefix(f"mark_{kind}_")
+    entity_id = render_short_id(payload.get(id_key))
+    actor = html.escape(_clean_display_part(payload.get("actor")))
+    suffix = _join_summary_parts(entity_id, html.escape(status), f"by {actor}" if actor else "")
+    return _summary_with_suffix(f"Mark {kind}", suffix)
+
+
+def render_job_summary(job_type: object, payload: object) -> str:
+    """Render a one-line human summary of a queue job."""
+    job_type_text = _clean_display_part(job_type)
+    body = _summary_payload(payload)
+    if job_type_text not in KNOWN_JOB_SUMMARY_TYPES:
+        return _unknown_job_summary(job_type_text, body)
+
+    if job_type_text == "append_to_note":
+        suffix = _path_summary(body.get("path"))
+        return _summary_with_suffix("Append to", suffix)
+    if job_type_text == "add_person":
+        suffix = _join_summary_parts(html.escape(_clean_display_part(body.get("name"))), f"({html.escape(_clean_display_part(body.get('role')))})" if _clean_display_part(body.get("role")) else "")
+        return _summary_with_suffix("Add", suffix)
+    if job_type_text == "trigger_recruiting":
+        suffix = _join_summary_parts(_site_summary(body), f"({html.escape(_clean_display_part(body.get('priority')))})" if _clean_display_part(body.get("priority")) else "")
+        return _summary_with_suffix("Trigger recruiting at", suffix)
+    if job_type_text == "close_recruiting":
+        outcome = html.escape(_clean_display_part(body.get("outcome")))
+        suffix = _join_summary_parts(_site_summary(body), f"({outcome})" if outcome else "")
+        return _summary_with_suffix("Close recruiting at", suffix)
+    if job_type_text == "remove_from_schedule":
+        employee = html.escape(_clean_display_part(body.get("employee")))
+        suffix = _join_summary_parts(employee, f"from {_site_summary(body)}" if _site_summary(body) else "")
+        return _summary_with_suffix("Remove", suffix)
+    if job_type_text == "flag_access_constraint":
+        return _summary_with_suffix("Flag access constraint at", _site_summary(body))
+    if job_type_text == "flag_retention_risk":
+        employee = html.escape(_clean_display_part(body.get("employee")))
+        suffix = _join_summary_parts(employee, f"at {_site_summary(body)}" if _site_summary(body) else "")
+        return _summary_with_suffix("Flag retention risk for", suffix)
+    if job_type_text == "reclassify_unknown":
+        return _summary_with_suffix("Reclassify unknown at", _path_summary(body.get("path")))
+    if job_type_text == "record_unknown_capture":
+        return _summary_with_suffix("Record unknown capture at", _path_summary(body.get("path")))
+    if job_type_text == "visit_create":
+        return _summary_with_suffix("Create visit at", _site_summary(body))
+    if job_type_text == "parse_supply_email":
+        return _summary_with_suffix("Parse supply email", html.escape(_clean_display_part(body.get("subject"))))
+    if job_type_text == "personal_journal_entry":
+        return _summary_with_suffix("Personal journal for", html.escape(_clean_display_part(body.get("date"))))
+    if job_type_text == "photo_capture":
+        category = html.escape(_clean_display_part(body.get("qc_category")))
+        suffix = _join_summary_parts(_site_summary(body), f"({category})" if category else "")
+        return _summary_with_suffix("Photo capture at", suffix)
+    if job_type_text == "promote_prospect":
+        prospect = html.escape(_clean_display_part(body.get("prospect_id")))
+        site = html.escape(_clean_display_part(body.get("site_id")))
+        suffix = _join_summary_parts(prospect, f"to site {site}" if site else "")
+        return _summary_with_suffix("Promote prospect", suffix)
+    if job_type_text == "retarget_capture":
+        capture = html.escape(_clean_display_part(body.get("capture_id")))
+        target_type = html.escape(_clean_display_part(body.get("new_target_type")))
+        target_id = html.escape(_clean_display_part(body.get("new_target_id")))
+        suffix = _join_summary_parts(capture, f"to {target_type} {target_id}" if target_type or target_id else "")
+        return _summary_with_suffix("Retarget capture", suffix)
+    if job_type_text == "log_site_issue":
+        title = html.escape(_clean_display_part(body.get("title")))
+        site = _site_summary(body)
+        return _summary_with_suffix("Log site issue", f"{site}: {title}" if site and title else site or title)
+    if job_type_text == "log_supply_need":
+        item = html.escape(_clean_display_part(body.get("item_name")))
+        site = _site_summary(body)
+        return _summary_with_suffix("Log supply need", f"{site}: {item}" if site and item else site or item)
+    if job_type_text == "log_equipment_request":
+        equipment = html.escape(_clean_display_part(body.get("equipment_name")))
+        site = _site_summary(body)
+        return _summary_with_suffix("Log equipment request", f"{site}: {equipment}" if site and equipment else site or equipment)
+    if job_type_text == "log_personnel_event":
+        event_type = html.escape(_clean_display_part(body.get("event_type")))
+        employee = html.escape(_clean_display_part(body.get("employee")))
+        suffix = _join_summary_parts(f"({event_type})" if event_type else "", employee)
+        return _summary_with_suffix("Log personnel event", suffix)
+    if job_type_text == "set_entity_status":
+        entity_type = html.escape(_clean_display_part(body.get("entity_type")))
+        entity_id = html.escape(_clean_display_part(body.get("entity_id")))
+        status = html.escape(_clean_display_part(body.get("status")))
+        suffix = _join_summary_parts(entity_type, entity_id, f"to {status}" if status else "")
+        return _summary_with_suffix("Set entity status", suffix)
+    if job_type_text == "update_site_equipment":
+        site = _site_summary(body)
+        equipment = body.get("equipment")
+        count = len(equipment) if isinstance(equipment, list) else 0
+        count_text = f"{count} item" if count == 1 else f"{count} items"
+        return _summary_with_suffix("Update site equipment", f"{site}: {count_text}" if site else count_text)
+    if job_type_text.startswith("mark_supply_"):
+        return _mark_job_summary(job_type_text, body, kind="supply", id_key="supply_id")
+    if job_type_text.startswith("mark_equipment_"):
+        return _mark_job_summary(job_type_text, body, kind="equipment", id_key="equipment_id")
+    if job_type_text == "voice_memo_note":
+        note = _clean_display_part(body.get("note") or body.get("transcript_text"))[:60]
+        suffix = f"({html.escape(note)})" if note else ""
+        return _summary_with_suffix("Voice memo note", suffix)
+    return _unknown_job_summary(job_type_text, body)
+
+
+def render_collapsible_json(payload: object, *, summary_html: str, summary_label: str = "Raw JSON") -> str:
+    """Wrap a JSON-serializable payload in a details disclosure."""
+    try:
+        raw_json = json.dumps(payload, indent=2, sort_keys=True)
+    except TypeError:
+        raw_json = json.dumps(str(payload), indent=2, sort_keys=True)
+    return f"""
+    <p class="job-summary">{summary_html}</p>
+    <details class="raw-json">
+      <summary>{html.escape(summary_label)}</summary>
+      <pre>{html.escape(raw_json)}</pre>
+    </details>
+    """
+
+
+def render_table(
+    items: list[dict[str, object]],
+    columns: list[dict[str, object]],
+    *,
+    empty_text: str = "Nothing to show.",
+    table_class: str = "",
+) -> str:
+    """Render an HTML table from items and column specs."""
+    if not items:
+        return f'<p class="zero-state">{html.escape(empty_text)}</p>'
+
+    classes = " ".join(part for part in ("data-table", table_class.strip()) if part)
+    header_cells = []
+    for column in columns:
+        key = str(column.get("key") or "")
+        label = str(column.get("label") or key.replace("_", " ").title())
+        priority = int(column.get("priority") or 1)
+        cell_class = str(column.get("class") or "")
+        if column.get("nowrap"):
+            cell_class = (cell_class + " td-nowrap").strip()
+        class_attr = f' class="{html.escape(cell_class)}"' if cell_class else ""
+        priority_attr = f' data-priority="{priority}"' if priority in {2, 3} else ""
+        header_cells.append(f"<th{class_attr}{priority_attr}>{html.escape(label)}</th>")
+
+    body_rows = []
+    for item in items:
+        cells = []
+        for column in columns:
+            key = str(column.get("key") or "")
+            value = item.get(key, "")
+            formatter = column.get("format")
+            if callable(formatter):
+                rendered_value = str(formatter(value, item))
+            else:
+                rendered_value = html.escape(str(value))
+            priority = int(column.get("priority") or 1)
+            cell_class = str(column.get("class") or "")
+            if column.get("nowrap"):
+                cell_class = (cell_class + " td-nowrap").strip()
+            class_attr = f' class="{html.escape(cell_class)}"' if cell_class else ""
+            priority_attr = f' data-priority="{priority}"' if priority in {2, 3} else ""
+            cells.append(f"<td{class_attr}{priority_attr}>{rendered_value}</td>")
+        body_rows.append("<tr>" + "".join(cells) + "</tr>")
+    return f'<table class="{html.escape(classes)}"><thead><tr>{"".join(header_cells)}</tr></thead><tbody>{"".join(body_rows)}</tbody></table>'
+
+
+def render_list(items: list[dict[str, object]], empty: str, *, exclude_keys: frozenset[str] = DEFAULT_LIST_EXCLUDE_KEYS) -> str:
+    keys = sorted({key for item in items for key in item if key not in exclude_keys})
+    columns = [{"key": key} for key in keys]
+    return render_table(items, columns, empty_text=empty)
+
+
+def render_issue_list(issues: list[object], empty_text: str) -> str:
+    if not issues:
+        return f"<p>{html.escape(empty_text)}</p>"
+    items = []
+    for issue in issues:
+        if not isinstance(issue, dict):
+            continue
+        badges = " ".join(
+            f'<span class="pill">{html.escape(str(value))}</span>'
+            for value in (
+                issue.get("status"),
+                issue.get("priority"),
+                issue.get("category"),
+                "client_notified" if issue.get("client_notified") else "client_not_notified",
+            )
+            if value
+        )
+        items.append(
+            f"""<article class="card">
+        <h3>{html.escape(str(issue.get("title") or "Site issue"))}</h3>
+        <p>{badges}</p>
+        <p>{render_site_label(issue.get("site_id"), site_name=issue.get("site_name") or issue.get("site"), account=issue.get("account"))} | {render_short_id(issue.get("issue_id"))}</p>
+        <p>{html.escape(str(issue.get("summary") or ""))}</p>
+        <p><strong>Resolution trigger:</strong> {html.escape(str(issue.get("resolution_trigger") or ""))}</p>
+        <p class="muted">{html.escape(str(issue.get("vault_issue_path") or ""))}</p>
+      </article>"""
+        )
+    return "".join(items)
+
+
+def write_mark_job(
+    runtime_root: Path,
+    *,
+    job_type: str,
+    payload_id_key: str,
+    entity_id: str,
+    actor: str,
+    note: str = "",
+) -> Path:
+    suffix = str(uuid.uuid4())
+    job = {
+        "job_id": f"mark-{job_type}-{suffix}",
+        "job_type": job_type,
+        "payload": {
+            payload_id_key: entity_id,
+            "actor": actor,
+        },
+    }
+    if note:
+        job["payload"]["note"] = note
+    queue_dir = runtime_root.expanduser().resolve(strict=False) / "queue"
+    queue_dir.mkdir(parents=True, exist_ok=True)
+    queue_path = queue_dir / f"mark-{job_type}-{suffix}.json"
+    temp_path = queue_path.with_name(f".{queue_path.name}.tmp")
+    temp_path.write_text(json.dumps(job, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    temp_path.replace(queue_path)
+    return queue_path
+
+
+def _malformed_quality() -> dict[str, object]:
+    return {
+        "analyzable": False,
+        "severity": "unusable",
+        "flags": ["unanalyzable"],
+        "confidence": None,
+        "needs_human_review": True,
+        "source": "derived",
+    }
+
+
+def photo_vision_sidecar_summary(path: Path, payload: dict[str, object] | None, error: str = "") -> dict[str, object]:
+    if payload is None:
+        return {
+            "path": str(path),
+            "name": path.name,
+            "status": "malformed",
+            "capture_id": "",
+            "photo_asset_id": path.stem,
+            "photo_id": "",
+            "site_id": "",
+            "submitted_area": "",
+            "submitted_phase": "",
+            "captured_at": "",
+            "source_image_path": "",
+            "image_media_url": "",
+            "area_guess": "",
+            "description": "",
+            "visible_objects": [],
+            "possible_conditions": [],
+            "possible_issues": [],
+            "confidence": "",
+            "model_name": "",
+            "model_provider": "",
+            "generated_at": "",
+            "warnings": [error or "Malformed photo vision sidecar"],
+            "error": {"type": "malformed", "message": error or "Malformed photo vision sidecar", "can_retry": False},
+            "quality": _malformed_quality(),
+        }
+    provenance = payload.get("provenance") if isinstance(payload.get("provenance"), dict) else {}
+    error_payload = payload.get("error") if isinstance(payload.get("error"), dict) else {}
+    quality = payload.get("quality") if isinstance(payload.get("quality"), dict) else None
+    if quality is None:
+        quality = field_photo_vision.derive_quality(payload)
+    return {
+        "path": str(path),
+        "name": path.name,
+        "status": str(payload.get("status") or ""),
+        "capture_id": str(payload.get("capture_id") or provenance.get("capture_id") or ""),
+        "photo_asset_id": str(payload.get("photo_asset_id") or provenance.get("photo_asset_id") or path.stem),
+        "photo_id": str(payload.get("photo_id") or provenance.get("photo_id") or ""),
+        "site_id": str(payload.get("site_id") or ""),
+        "submitted_area": str(payload.get("submitted_area") or ""),
+        "submitted_phase": str(payload.get("submitted_phase") or ""),
+        "captured_at": str(provenance.get("captured_at") or ""),
+        "source_image_path": str(payload.get("source_image_path") or provenance.get("source_image_path") or ""),
+        "image_media_url": str(provenance.get("image_media_url") or payload.get("image_media_url") or ""),
+        "site_context_used": bool(payload.get("site_context_used", False)),
+        "site_context_id": str(payload.get("site_context_id") or ""),
+        "site_context_name": str(payload.get("site_context_name") or ""),
+        "site_context_summary": str(payload.get("site_context_summary") or ""),
+        "area_guess": str(payload.get("area_guess") or ""),
+        "description": str(payload.get("description") or ""),
+        "visible_objects": string_list(payload.get("visible_objects")),
+        "possible_conditions": string_list(payload.get("possible_conditions")),
+        "possible_issues": string_list(payload.get("possible_issues")),
+        "confidence": "" if payload.get("confidence") is None else str(payload.get("confidence")),
+        "model_name": str(payload.get("model_name") or ""),
+        "model_provider": str(payload.get("model_provider") or ""),
+        "generated_at": str(payload.get("generated_at") or ""),
+        "warnings": string_list(payload.get("warnings")),
+        "error": error_payload,
+        "quality": quality,
+    }
+
+
+_PHOTO_VISION_CACHE_TTL_SECONDS = 5.0
+# cache[dir] = (cached_at_monotonic, dir_mtime, sidecar_summaries)
+_PHOTO_VISION_CACHE: dict[Path, tuple[float, float, list[dict[str, object]]]] = {}
+_PHOTO_VISION_CACHE_LOCK = threading.Lock()
+
+
+def load_photo_vision_sidecars(photo_vision_dir: Path) -> list[dict[str, object]]:
+    if not photo_vision_dir.exists():
+        return []
+    try:
+        dir_mtime = photo_vision_dir.stat().st_mtime
+    except OSError:
+        dir_mtime = 0.0
+
+    def _cached_if_fresh() -> list[dict[str, object]] | None:
+        cached = _PHOTO_VISION_CACHE.get(photo_vision_dir)
+        if cached is None:
+            return None
+        cached_at, cached_dir_mtime, cached_result = cached
+        if cached_dir_mtime != dir_mtime or time.monotonic() - cached_at >= _PHOTO_VISION_CACHE_TTL_SECONDS:
+            return None
+        return cached_result
+
+    fresh = _cached_if_fresh()
+    if fresh is not None:
+        return fresh
+
+    # Serialize cold loads. Without this, concurrent /failed or /inbox
+    # hits each scan and json-parse all ~2400 sidecar files in parallel,
+    # spiking transient memory past the dashboard's RSS watchdog and
+    # killing the daemon. The lock makes the first arriver fill the
+    # cache while the rest wait, so peak memory is bounded.
+    with _PHOTO_VISION_CACHE_LOCK:
+        fresh = _cached_if_fresh()
+        if fresh is not None:
+            return fresh
+        sidecars: list[tuple[float, dict[str, object]]] = []
+        for path in photo_vision_dir.glob("*.json"):
+            try:
+                mtime = path.stat().st_mtime
+            except OSError:
+                continue
+            payload, error = read_json_artifact(path)
+            sidecars.append((mtime, photo_vision_sidecar_summary(path, payload, error)))
+        sidecars.sort(key=lambda item: (item[0], str(item[1]["name"])), reverse=True)
+        result = [summary for _mtime, summary in sidecars]
+        _PHOTO_VISION_CACHE[photo_vision_dir] = (time.monotonic(), dir_mtime, result)
+        return result
+
+
+def photo_vision_status(runtime_root: Path) -> dict[str, object]:
+    intake_dir = field_photo_vision.default_intake_dir(runtime_root)
+    upload_dir = field_photo_vision.default_upload_dir(runtime_root)
+    photo_vision_dir = field_photo_vision.default_photo_vision_dir(runtime_root)
+    assets = field_photo_vision.discover_photo_assets(intake_dir, upload_dir)
+    asset_ids = {asset.photo_asset_id for asset in assets}
+    sidecars = load_photo_vision_sidecars(photo_vision_dir)
+    status_counts = {"completed": 0, "failed": 0, "skipped": 0, "malformed": 0}
+    severity_counts: dict[str, int] = {"ok": 0, "degraded": 0, "unusable": 0}
+    terminal_asset_ids: set[str] = set()
+    recent_warnings: list[dict[str, object]] = []
+    for sidecar in sidecars:
+        status = str(sidecar.get("status") or "")
+        if status in status_counts:
+            status_counts[status] += 1
+        else:
+            status_counts.setdefault(status or "unknown", 0)
+            status_counts[status or "unknown"] += 1
+        if status in {"completed", "failed", "skipped"}:
+            terminal_asset_ids.add(str(sidecar.get("photo_asset_id") or ""))
+        quality = sidecar.get("quality")
+        if isinstance(quality, dict):
+            sev = str(quality.get("severity") or "")
+            if sev in severity_counts:
+                severity_counts[sev] += 1
+        warnings = significant_warnings(sidecar.get("warnings"))
+        if status in {"failed", "malformed"} or warnings:
+            recent_warnings.append(
+                {
+                    "status": status,
+                    "capture_id": sidecar.get("capture_id", ""),
+                    "photo_asset_id": sidecar.get("photo_asset_id", ""),
+                    "warnings": warnings[:3],
+                    "path": sidecar.get("path", ""),
+                }
+            )
+    return {
+        "sidecar_count": len(sidecars),
+        "image_count": len(asset_ids),
+        "completed_count": status_counts.get("completed", 0),
+        "failed_count": status_counts.get("failed", 0),
+        "skipped_count": status_counts.get("skipped", 0),
+        "malformed_count": status_counts.get("malformed", 0),
+        "backlog_count": len(asset_ids - terminal_asset_ids),
+        "warning_count": sum(1 for sidecar in sidecars if significant_warnings(sidecar.get("warnings"))),
+        "severity_counts": severity_counts,
+        "recent_warnings": recent_warnings[:PHOTO_VISION_RECENT_LIMIT],
+    }
+
+
+VOICE_MEMO_RECENT_LIMIT = 5
+
+
+def _voice_memo_site_label(target_path: str) -> str:
+    parts = Path(target_path).parts
+    if "Locations" in parts:
+        index = parts.index("Locations")
+        if index + 1 < len(parts):
+            return parts[index + 1]
+    return ""
+
+
+def voice_memo_status(runtime_root: Path, audio_inbox_dir: Path | None) -> dict[str, object]:
+    """Summarize voice memo processing from Pro-local artifacts.
+
+    A voice memo lands as a vm-*.metadata.json intake sidecar in the audio
+    inbox, becomes a voice_memo_note queue job, and finishes as a record in
+    processed_index.jsonl once written to the vault.
+    """
+    intake_count = count_files(audio_inbox_dir, "vm-*.metadata.json") if audio_inbox_dir is not None else 0
+    queued_count = count_files(runtime_root / "queue", "job_vm-*.json")
+    failed_count = count_files(runtime_root / "failed", "job_vm-*.json")
+    note_count = 0
+    recent: list[dict[str, object]] = []
+    index_path = runtime_root / "processed_index.jsonl"
+    if index_path.exists():
+        try:
+            with open(index_path, encoding="utf-8", errors="replace") as handle:
+                for line in handle:
+                    if "voice_memo_note" not in line:
+                        continue
+                    try:
+                        record = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if not isinstance(record, dict) or record.get("job_type") != "voice_memo_note":
+                        continue
+                    note_count += 1
+                    recent.append(
+                        {
+                            "capture_id": str(record.get("capture_id") or ""),
+                            "site": _voice_memo_site_label(str(record.get("target_path") or "")),
+                            "processed_at": str(record.get("timestamp") or ""),
+                        }
+                    )
+        except OSError:
+            pass
+    return {
+        "intake_count": intake_count,
+        "queued_count": queued_count,
+        "failed_count": failed_count,
+        "note_count": note_count,
+        "recent_notes": list(reversed(recent[-VOICE_MEMO_RECENT_LIMIT:])),
+    }
+
+
+VOICE_MEMO_INTAKE_STATES = ("pending", "claimed", "intake_done", "intake_failed")
+_VOICE_MEMO_INTAKE_CACHE_TTL_SECONDS = 60.0
+_voice_memo_intake_cache: dict[str, tuple[float, dict[str, object]]] = {}
+_voice_memo_intake_lock = threading.Lock()
+
+
+def _voice_memo_couchdb_config() -> VoiceMemoCouchDBConfig | None:
+    url = (os.environ.get("VOICE_MEMO_COUCHDB_URL") or "").strip()
+    if not url:
+        return None
+    return VoiceMemoCouchDBConfig(
+        base_url=url.rstrip("/"),
+        username=os.environ.get("VOICE_MEMO_COUCHDB_USER") or "",
+        password=os.environ.get("VOICE_MEMO_COUCHDB_PASSWORD") or "",
+        # Short timeout: a slow CouchDB must not stall the health page.
+        timeout=4.0,
+        database=os.environ.get("VOICE_MEMO_COUCHDB_DB") or "btq_voice_memos",
+    )
+
+
+def bucket_processing_states(docs: object) -> dict[str, int]:
+    """Count voice memo docs by processing_state, with unknown states pooled
+    under 'other'."""
+    counts: dict[str, int] = {state: 0 for state in VOICE_MEMO_INTAKE_STATES}
+    other = 0
+    if isinstance(docs, list):
+        for doc in docs:
+            if not isinstance(doc, dict):
+                continue
+            state = str(doc.get("processing_state") or "").strip()
+            if state in counts:
+                counts[state] += 1
+            elif state:
+                other += 1
+    if other:
+        counts["other"] = other
+    return counts
+
+
+def voice_memo_intake_state() -> dict[str, object]:
+    """Live CouchDB counts of voice memos by intake processing_state.
+
+    Cached briefly so the health page does not query CouchDB on every load.
+    Degrades to available=False (never raises) when the voice memo CouchDB is
+    not configured or unreachable, so the rest of the health page is safe.
+    """
+    config = _voice_memo_couchdb_config()
+    if config is None:
+        return {"available": False, "reason": "not configured", "counts": {}}
+    cache_key = f"{config.base_url}/{config.database}"
+    now = time.monotonic()
+    with _voice_memo_intake_lock:
+        cached = _voice_memo_intake_cache.get(cache_key)
+        if cached is not None and now - cached[0] < _VOICE_MEMO_INTAKE_CACHE_TTL_SECONDS:
+            return cached[1]
+    selector = {
+        "selector": {"processing_state": {"$exists": True}},
+        "fields": ["processing_state"],
+        "limit": 100000,
+    }
+    try:
+        response = query_couchdb_find(config, config.database, selector)
+        docs = response.get("docs") if isinstance(response, dict) else None
+        counts = bucket_processing_states(docs)
+        result: dict[str, object] = {"available": True, "counts": counts, "total": sum(counts.values())}
+    except VoiceMemoCouchDBError:
+        result = {"available": False, "reason": "couchdb unreachable", "counts": {}}
+    with _voice_memo_intake_lock:
+        _voice_memo_intake_cache[cache_key] = (time.monotonic(), result)
+    return result
+
+
+def reset_voice_memo_intake_cache() -> None:
+    """Drop the cached intake state — used by tests."""
+    with _voice_memo_intake_lock:
+        _voice_memo_intake_cache.clear()
+
+
+def photo_vision_by_capture(runtime_root: Path) -> dict[str, list[dict[str, object]]]:
+    sidecars = load_photo_vision_sidecars(field_photo_vision.default_photo_vision_dir(runtime_root))
+    by_capture: dict[str, list[dict[str, object]]] = {}
+    for sidecar in sidecars:
+        capture_id = str(sidecar.get("capture_id") or "")
+        if capture_id:
+            by_capture.setdefault(capture_id, []).append(sidecar)
+    return by_capture
+
+
+def safe_media_url(value: object) -> str:
+    media_url = str(value or "")
+    if media_url.startswith("/media/") and ".." not in media_url:
+        return media_url
+    return ""
+
+
+def audio_player(media_url: object) -> str:
+    """Render an <audio> player for a /media/ URL (shared across sections)."""
+    url = safe_media_url(media_url)
+    if not url:
+        return ""
+    escaped = html.escape(url, quote=True)
+    return f'<audio controls preload="none" src="{escaped}" style="width:180px;max-width:100%"></audio>'
+
+
+LIGHTBOX_HTML = (
+    '<div id="lb" role="dialog" aria-modal="true" onclick="this.style.display=\'none\'"'
+    ' style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.85);z-index:9999;cursor:zoom-out">'
+    '<img id="lb-img" onclick="event.stopPropagation()"'
+    ' style="max-width:92vw;max-height:92vh;position:absolute;top:50%;left:50%;'
+    'transform:translate(-50%,-50%);border-radius:6px;box-shadow:0 4px 32px rgba(0,0,0,.6)" alt="full size photo">'
+    "</div>"
+    "<script>"
+    "function openLb(src){var lb=document.getElementById('lb');document.getElementById('lb-img').src=src;lb.style.display='block'}"
+    "document.addEventListener('keydown',function(e){if(e.key==='Escape'){document.getElementById('lb').style.display='none'}})"
+    "</script>"
+)
+
+
+def render_thumb(url: str, *, size: int = 60) -> str:
+    if not url:
+        return ""
+    escaped = html.escape(url, quote=True)
+    js_arg = html.escape(json.dumps(url), quote=True)
+    return (
+        f'<a href="#" onclick="openLb({js_arg});return false" title="View full size" style="cursor:zoom-in">'
+        f'<img src="{escaped}" width="{size}" height="{size}"'
+        f' style="object-fit:cover;border-radius:4px" loading="lazy" alt="photo">'
+        f"</a>"
+    )
+
+
+def handle_mark_transition_post(
+    ctx: object,
+    body: bytes,
+    *,
+    job_type: str,
+    route: str,
+    id_field: str,
+    redirect_path: str,
+) -> tuple:
+    """Shared POST handler for entity status-transition forms (supply, equipment, etc.).
+
+    Validates the confirm checkbox, reads the entity id and actor from the form,
+    stages a queue job via write_mark_job, and appends an audit record.
+
+    Args:
+        ctx: Request context with a ``runtime_root`` attribute.
+        body: Raw POST body bytes.
+        job_type: Queue job type string (e.g. ``"mark_supply_ordered"``).
+        route: Route path for audit logging (e.g. ``"/supplies/mark-ordered"``).
+        id_field: Form field name for the entity id (e.g. ``"supply_id"``).
+        redirect_path: Base URL path for redirects (e.g. ``"/supplies"``).
+    """
+    from ops_dashboard import audit as _audit  # lazy to avoid circular import
+
+    form = parse_qs(body.decode("utf-8", errors="replace"), keep_blank_values=True)
+    root = Path(getattr(ctx, "runtime_root", Path("."))).expanduser().resolve(strict=False)
+    form_payload = {key: values[0] if values else "" for key, values in form.items()}
+
+    def _audit_append(result: str) -> None:
+        _audit.append_audit(root, {"route": route, "actor": "localhost", "payload": form_payload, "result_summary": result})
+
+    def _redirect(location: str) -> tuple:
+        return 303, "text/html; charset=utf-8", f'<a href="{html.escape(location)}">Return</a>'.encode(), {"Location": location}
+
+    if first_query_value(form, "confirm") != "1":
+        _audit_append("failed: confirm_required")
+        return _redirect(f"{redirect_path}?error=confirm_required")
+
+    entity_id = first_query_value(form, id_field).strip()
+    actor = first_query_value(form, "actor").strip()
+    note = first_query_value(form, "note").strip()
+
+    if not entity_id or not actor:
+        _audit_append(f"failed: missing {id_field} or actor")
+        return _redirect(f"{redirect_path}?error=missing_field")
+
+    try:
+        queue_path = write_mark_job(root, job_type=job_type, payload_id_key=id_field, entity_id=entity_id, actor=actor, note=note)
+    except Exception as exc:  # noqa: BLE001
+        _audit_append(f"failed: {exc}")
+        return _redirect(f"{redirect_path}?{id_field}={quote(entity_id)}&error={quote(str(exc))}")
+
+    _audit_append(f"success: staged {id_field}={entity_id} queue_path={queue_path}")
+    return _redirect(f"{redirect_path}?{id_field}={quote(entity_id)}&message=staged")

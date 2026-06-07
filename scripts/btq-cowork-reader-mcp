@@ -1,0 +1,279 @@
+#!/usr/bin/env python3
+"""btq-cowork-reader-mcp — read-only remote MCP server for the BTQ queue reader.
+
+Wraps the tested `event_pipeline.couchdb_queue_reader` engine (prompt 261) as a
+Streamable-HTTP MCP server exposing exactly three READ-ONLY tools:
+
+    btq_queue_state, btq_list_queue_jobs, btq_get_queue_job
+
+Transport: a single `/mcp` endpoint. POST carries JSON-RPC requests and the
+server replies with `application/json` (no server-initiated streaming needed for
+a request/response tool server; GET returns 405). This is the shape Claude
+custom connectors speak.
+
+Auth: static bearer token in `Authorization: Bearer <token>` checked against
+`BTQ_COWORK_MCP_TOKEN`. No write path exists anywhere — the engine is GET-only.
+
+Run behind a TLS reverse proxy (Caddy on the VPS). Bind loopback only.
+
+Env:
+  BTQ_COWORK_MCP_TOKEN   (required)  bearer token clients must present
+  BTQ_COWORK_MCP_HOST    default 127.0.0.1
+  BTQ_COWORK_MCP_PORT    default 8790
+  BTQ_COWORK_MCP_ALLOWED_ORIGINS  optional comma list; if set, Origin must match
+  CouchDB connection: via ~/.config/btq/config.json or BTQ_COUCHDB_* (engine).
+"""
+from __future__ import annotations
+
+import hmac
+import json
+import os
+import re
+import sys
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from urllib.parse import parse_qs, urlsplit
+
+# Make the in-repo engine importable (scripts/ -> ../project)
+_REPO = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(_REPO / "project"))
+
+from event_pipeline.couchdb_queue_reader import (  # noqa: E402
+    CouchDBQueueReaderError,
+    get_job,
+    list_queue_jobs,
+    load_reader_config,
+    queue_state,
+)
+
+PROTOCOL_VERSION = "2025-06-18"
+SERVER_INFO = {"name": "btq-cowork-reader", "version": "1.0.0"}
+
+TOOLS = [
+    {
+        "name": "btq_queue_state",
+        "description": "Read-only summary of the BTQ CouchDB queue: counts per state and recent job summaries per state.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "states": {"type": "array", "items": {"type": "string"},
+                           "description": "States to summarize. Default: failed, pending, processing, claimed."},
+                "recent_limit": {"type": "integer", "description": "Max recent jobs per state (default 10)."},
+            },
+        },
+    },
+    {
+        "name": "btq_list_queue_jobs",
+        "description": "Read-only list of BTQ queue jobs matching date/state filters (non-design docs).",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "date": {"type": "string", "description": "YYYY-MM-DD; defaults to today unless all_dates."},
+                "since": {"type": "string", "description": "ISO timestamp lower bound."},
+                "state": {"type": "string", "description": "Filter to a single btq_state."},
+                "all_dates": {"type": "boolean", "description": "Ignore the date filter."},
+                "limit": {"type": "integer", "description": "Max jobs to return."},
+            },
+        },
+    },
+    {
+        "name": "btq_get_queue_job",
+        "description": "Read-only fetch of a single BTQ queue job by id. Returns null if not found.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"job_id": {"type": "string"}},
+            "required": ["job_id"],
+        },
+    },
+]
+TOOL_NAMES = {t["name"] for t in TOOLS}
+
+
+def _call_tool(name: str, args: dict) -> object:
+    cfg = load_reader_config()
+    if name == "btq_queue_state":
+        kwargs = {}
+        if isinstance(args.get("states"), list) and args["states"]:
+            kwargs["states"] = tuple(str(s) for s in args["states"])
+        if isinstance(args.get("recent_limit"), int):
+            kwargs["recent_limit"] = args["recent_limit"]
+        return queue_state(config=cfg, **kwargs)
+    if name == "btq_list_queue_jobs":
+        return list_queue_jobs(
+            date=args.get("date"),
+            since=args.get("since"),
+            state=args.get("state"),
+            all_dates=bool(args.get("all_dates", False)),
+            limit=args.get("limit"),
+            config=cfg,
+        )
+    if name == "btq_get_queue_job":
+        job_id = str(args.get("job_id") or "")
+        if not job_id:
+            raise CouchDBQueueReaderError("invalid_params", "job_id is required")
+        return get_job(job_id, config=cfg)
+    raise CouchDBQueueReaderError("unknown_tool", f"unknown tool: {name}")
+
+
+def _result(req_id, result):
+    return {"jsonrpc": "2.0", "id": req_id, "result": result}
+
+
+def _error(req_id, code, message):
+    return {"jsonrpc": "2.0", "id": req_id, "error": {"code": code, "message": message}}
+
+
+def _handle_rpc(msg: dict):
+    """Return a JSON-RPC response dict, or None for notifications."""
+    method = msg.get("method")
+    req_id = msg.get("id")
+    is_notification = "id" not in msg
+    if method == "initialize":
+        return _result(req_id, {
+            "protocolVersion": PROTOCOL_VERSION,
+            "capabilities": {"tools": {}},
+            "serverInfo": SERVER_INFO,
+        })
+    if method in ("notifications/initialized", "notifications/cancelled"):
+        return None  # notification, no response
+    if method == "ping":
+        return _result(req_id, {})
+    if method == "tools/list":
+        return _result(req_id, {"tools": TOOLS})
+    if method == "tools/call":
+        params = msg.get("params") if isinstance(msg.get("params"), dict) else {}
+        name = params.get("name")
+        args = params.get("arguments")
+        if args is None:
+            args = {}
+        if name not in TOOL_NAMES:
+            return _error(req_id, -32602, f"unknown tool: {name}")
+        if not isinstance(args, dict):
+            return _error(req_id, -32602, "arguments must be an object")
+        try:
+            value = _call_tool(name, args)
+            payload = {"ok": True, "tool": name, "result": value}
+            return _result(req_id, {
+                "content": [{"type": "text", "text": json.dumps(payload)}],
+                "isError": False,
+            })
+        except CouchDBQueueReaderError as exc:
+            payload = {"ok": False, "error": {"code": exc.code, "message": exc.message}}
+            return _result(req_id, {
+                "content": [{"type": "text", "text": json.dumps(payload)}],
+                "isError": True,
+            })
+        except Exception:
+            # never let an unexpected tool error crash the request thread or
+            # leak internals; return a generic structured tool error.
+            payload = {"ok": False, "error": {"code": "internal_error", "message": "tool execution failed"}}
+            return _result(req_id, {
+                "content": [{"type": "text", "text": json.dumps(payload)}],
+                "isError": True,
+            })
+    if is_notification:
+        return None
+    return _error(req_id, -32601, f"method not found: {method}")
+
+
+class Handler(BaseHTTPRequestHandler):
+    server_version = "btq-cowork-reader-mcp/1.0"
+
+    def _authorized(self) -> bool:
+        token = os.environ.get("BTQ_COWORK_MCP_TOKEN", "")
+        if not token:
+            return False  # fail closed if no token configured
+        # 1) standard bearer header (constant-time)
+        auth = self.headers.get("Authorization", "")
+        if hmac.compare_digest(auth, f"Bearer {token}"):
+            return True
+        # 2) ?token= URL query param — for connector UIs (e.g. Claude custom
+        #    connector) that only expose URL + OAuth fields, no header/bearer box.
+        url_token = (parse_qs(urlsplit(self.path).query).get("token") or [""])[0]
+        return bool(url_token) and hmac.compare_digest(url_token, token)
+
+    def _origin_ok(self) -> bool:
+        allowed = os.environ.get("BTQ_COWORK_MCP_ALLOWED_ORIGINS", "").strip()
+        if not allowed:
+            return True
+        origin = self.headers.get("Origin", "")
+        return origin in {o.strip() for o in allowed.split(",") if o.strip()}
+
+    def _send(self, status: int, obj, ctype="application/json"):
+        body = (json.dumps(obj) if not isinstance(obj, (bytes, str)) else obj)
+        if isinstance(body, str):
+            body = body.encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_GET(self):
+        if self.path.split("?")[0] == "/healthz":
+            self._send(200, {"status": "ok"})
+            return
+        # No server-initiated SSE stream for this request/response tool server.
+        self.send_response(405)
+        self.send_header("Allow", "POST")
+        self.end_headers()
+
+    def do_POST(self):
+        if self.path.split("?")[0] != "/mcp":
+            self._send(404, {"error": "not_found"})
+            return
+        if not self._origin_ok():
+            self._send(403, {"error": "origin_not_allowed"})
+            return
+        if not self._authorized():
+            self.send_response(401)
+            self.send_header("WWW-Authenticate", 'Bearer realm="btq-cowork-reader"')
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(b'{"error":"unauthorized"}')
+            return
+        try:
+            length = int(self.headers.get("Content-Length", 0))
+            raw = self.rfile.read(length) if length else b""
+            msg = json.loads(raw.decode("utf-8") or "{}")
+        except (ValueError, json.JSONDecodeError):
+            self._send(400, _error(None, -32700, "parse error"))
+            return
+        # Support a single request or a batch.
+        if isinstance(msg, list):
+            responses = [r for r in (_handle_rpc(m) for m in msg if isinstance(m, dict)) if r is not None]
+            if not responses:
+                self.send_response(202)
+                self.end_headers()
+                return
+            self._send(200, responses)
+            return
+        resp = _handle_rpc(msg) if isinstance(msg, dict) else _error(None, -32600, "invalid request")
+        if resp is None:
+            self.send_response(202)  # notification accepted, no body
+            self.end_headers()
+            return
+        self._send(200, resp)
+
+    def log_message(self, fmt, *args):  # keep logs quiet/structured; redact ?token=
+        msg = re.sub(r"token=[^&\s\"]+", "token=***", fmt % args)
+        sys.stderr.write("%s - %s\n" % (self.address_string(), msg))
+
+
+def main() -> int:
+    if not os.environ.get("BTQ_COWORK_MCP_TOKEN"):
+        sys.stderr.write("FATAL: BTQ_COWORK_MCP_TOKEN is not set\n")
+        return 2
+    host = os.environ.get("BTQ_COWORK_MCP_HOST", "127.0.0.1")
+    port = int(os.environ.get("BTQ_COWORK_MCP_PORT", "8790"))
+    httpd = ThreadingHTTPServer((host, port), Handler)
+    sys.stderr.write(f"btq-cowork-reader-mcp listening on {host}:{port} (/mcp)\n")
+    try:
+        httpd.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

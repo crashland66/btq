@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+# btq-pull-vps-last-used — pull the VPS field-capture token last_used_at
+# values into the Pro's local token DB.
+#
+# The Pro's ops dashboard creates/revokes tokens in the Pro DB; the VPS's
+# btq-field-capture.service is the one that updates last_used_at when a
+# token authenticates. Without this puller, the Pro dashboard's "Last Used"
+# column drifts further behind the truth over time.
+#
+# Runs as a launchd cron (see scripts/install-vps-last-used-pull-launch-agent)
+# every 5 minutes, but is also safe to run by hand at any time.
+#
+# Idempotent: SQL UPDATE only fires when the VPS value is strictly newer
+# than what's already in the Pro DB (so re-runs are cheap and never clobber
+# a fresher local value, in the unlikely event one exists).
+#
+# Env overrides:
+#   BTQ_VPS_SSH_TARGET   (default: deploy@vps.example.com)
+#   BTQ_VPS_TOKEN_DB     (default: /srv/btq/data/field_capture_tokens.sqlite3)
+#   BTQ_RUNTIME_ROOT     (default: ${HOME}/btq_runtime)
+
+set -euo pipefail
+
+VPS="${BTQ_VPS_SSH_TARGET:-deploy@vps.example.com}"
+VPS_DB="${BTQ_VPS_TOKEN_DB:-/srv/btq/data/field_capture_tokens.sqlite3}"
+RUNTIME_ROOT="${BTQ_RUNTIME_ROOT:-${HOME}/btq_runtime}"
+PRO_DB="${RUNTIME_ROOT}/field_capture_tokens.sqlite3"
+
+if [[ ! -f "${PRO_DB}" ]]; then
+  echo "btq-pull-vps-last-used: Pro DB not found: ${PRO_DB}" >&2
+  exit 1
+fi
+
+ssh "${VPS}" "/usr/bin/python3 -c '
+import sqlite3, json
+c = sqlite3.connect(\"${VPS_DB}\")
+rows = c.execute(\"SELECT token_id, last_used_at FROM field_capture_tokens WHERE last_used_at IS NOT NULL\").fetchall()
+print(json.dumps(rows))
+'" | /usr/bin/python3 -c '
+import json, sqlite3, sys
+pro_db = sys.argv[1]
+rows = json.load(sys.stdin)
+dest = sqlite3.connect(pro_db)
+updated = 0
+for token_id, last in rows:
+    cur = dest.execute(
+        "UPDATE field_capture_tokens SET last_used_at = ? WHERE token_id = ? AND (last_used_at IS NULL OR last_used_at < ?)",
+        (last, token_id, last),
+    )
+    updated += cur.rowcount
+dest.commit()
+print(f"updated rows: {updated}")
+' "${PRO_DB}"

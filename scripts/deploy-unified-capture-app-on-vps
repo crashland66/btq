@@ -1,0 +1,229 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+SOURCE_ROOT="${UNIFIED_CAPTURE_SOURCE_ROOT:-$(cd "${SCRIPT_DIR}/.." && pwd)}"
+
+APP_DIR="${UNIFIED_CAPTURE_APP_DIR:-/srv/btq/apps/unified-capture}"
+BACKUP_ROOT="${UNIFIED_CAPTURE_BACKUP_ROOT:-/srv/btq/backups/unified-capture}"
+SERVICE="${UNIFIED_CAPTURE_SERVICE:-btq-unified-capture.service}"
+SYSTEMCTL="${UNIFIED_CAPTURE_SYSTEMCTL:-/usr/bin/systemctl}"
+SERVICE_USE_SUDO="${UNIFIED_CAPTURE_SERVICE_USE_SUDO:-1}"
+STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
+REMOTE_TMP="/tmp/btq-unified-capture-release-${STAMP}"
+USE_SUDO="${UNIFIED_CAPTURE_USE_SUDO:-1}"
+SUDO=(sudo)
+SERVICE_SUDO=(sudo -n)
+BACKUP_CP_ARGS=(-a)
+INSTALL_RSYNC_ARGS=(-a --delete)
+PYTHON_CACHE_RSYNC_EXCLUDES=(
+  --exclude '__pycache__/'
+  --exclude '*.pyc'
+  --exclude '.pytest_cache/'
+  --exclude '.mypy_cache/'
+  --exclude '.ruff_cache/'
+)
+
+if [[ "${USE_SUDO}" == "0" ]]; then
+  SUDO=()
+  BACKUP_CP_ARGS=(-a --no-preserve=ownership)
+  INSTALL_RSYNC_ARGS+=(--no-owner --no-group --no-perms --omit-dir-times)
+fi
+
+INSTALL_RSYNC_ARGS+=("${PYTHON_CACHE_RSYNC_EXCLUDES[@]}")
+
+if [[ "${SERVICE_USE_SUDO}" == "0" ]]; then
+  SERVICE_SUDO=()
+fi
+
+fail() {
+  echo "Deploy preflight failed: $*" >&2
+  exit 1
+}
+
+service_command() {
+  "${SERVICE_SUDO[@]}" "${SYSTEMCTL}" "$@" "${SERVICE}"
+}
+
+explain_service_sudo_failure() {
+  cat >&2 <<EOF
+
+Service management failed for ${SERVICE}.
+If deploying as the deploy user, sudoers must allow these exact noninteractive commands:
+  sudo -n ${SYSTEMCTL} daemon-reload
+  sudo -n ${SYSTEMCTL} restart ${SERVICE}
+  sudo -n ${SYSTEMCTL} is-active ${SERVICE}
+  sudo -n ${SYSTEMCTL} status ${SERVICE}
+EOF
+}
+
+reload_systemd() {
+  local output
+  if ! output="$("${SERVICE_SUDO[@]}" "${SYSTEMCTL}" daemon-reload 2>&1)"; then
+    echo "${output}" >&2
+    explain_service_sudo_failure
+    exit 1
+  fi
+}
+
+restart_service() {
+  local output
+  if ! output="$(service_command restart 2>&1)"; then
+    echo "${output}" >&2
+    explain_service_sudo_failure
+    exit 1
+  fi
+}
+
+verify_service_active() {
+  local output
+  if ! output="$(service_command is-active 2>&1)"; then
+    echo "${output}" >&2
+    explain_service_sudo_failure
+    exit 1
+  fi
+  echo "${output}"
+}
+
+check_writable_directory() {
+  local path="$1"
+  local label="$2"
+  local probe="${path}/.btq-deploy-write-test-${STAMP}-$$"
+
+  [[ -d "${path}" ]] || fail "${label} does not exist: ${path}"
+  [[ -w "${path}" ]] || fail "${label} is not writable by $(id -un): ${path}"
+  if ! : >"${probe}" 2>/dev/null; then
+    fail "${label} does not allow temp file creation by $(id -un): ${path}"
+  fi
+  rm -f "${probe}"
+}
+
+preflight_non_sudo_deploy() {
+  local backup_parent
+  local unwritable_dir
+  local unwritable_file
+
+  backup_parent="$(dirname "${BACKUP_ROOT}")"
+  check_writable_directory "${APP_DIR}" "live app directory"
+  check_writable_directory "${APP_DIR}/project/unified_capture" "live unified-capture static directory"
+  if [[ -d "${BACKUP_ROOT}" ]]; then
+    check_writable_directory "${BACKUP_ROOT}" "backup directory"
+  else
+    check_writable_directory "${backup_parent}" "backup parent directory"
+  fi
+
+  unwritable_dir="$(
+    find "${APP_DIR}" \
+      \( -name '__pycache__' -o -name '.pytest_cache' -o -name '.mypy_cache' -o -name '.ruff_cache' \) -prune \
+      -o -type d ! -writable -print -quit
+  )"
+  if [[ -n "${unwritable_dir}" ]]; then
+    fail "live app tree contains a directory that is not writable by $(id -un): ${unwritable_dir}"
+  fi
+
+  unwritable_file="$(
+    find "${APP_DIR}" \
+      \( -name '__pycache__' -o -name '.pytest_cache' -o -name '.mypy_cache' -o -name '.ruff_cache' \) -prune \
+      -o -type f ! -name '*.pyc' ! -writable -print -quit
+  )"
+  if [[ -n "${unwritable_file}" ]]; then
+    fail "live app tree contains a source file that is not writable by $(id -un): ${unwritable_file}"
+  fi
+
+  for runtime_dir in /srv/btq/runtime /srv/btq/runtime/uploads /srv/btq/runtime/queue /srv/btq/runtime/logs; do
+    [[ -d "${runtime_dir}" ]] || fail "runtime directory is missing: ${runtime_dir}"
+  done
+}
+
+if [[ ! -f "${SOURCE_ROOT}/project/unified_capture/server.py" ]]; then
+  echo "Source root does not look like the BTQ repo with unified capture: ${SOURCE_ROOT}" >&2
+  exit 1
+fi
+
+if [[ "$(cd "${SOURCE_ROOT}" && pwd)" == "$(cd "${APP_DIR}" 2>/dev/null && pwd 2>/dev/null || true)" ]]; then
+  echo "Refusing to deploy from the live app directory into itself: ${APP_DIR}" >&2
+  echo "Run this from a separate checkout or set UNIFIED_CAPTURE_SOURCE_ROOT to one." >&2
+  exit 1
+fi
+
+echo "Deploying unified-capture app on this VPS."
+echo "Source: ${SOURCE_ROOT}"
+echo "Target: ${APP_DIR}"
+echo "Service: ${SERVICE}"
+echo
+
+if [[ "${USE_SUDO}" == "0" ]]; then
+  echo "Running non-sudo deploy preflight..."
+  preflight_non_sudo_deploy
+fi
+
+if [[ ! -x "${SYSTEMCTL}" ]]; then
+  fail "systemctl executable not found or not executable: ${SYSTEMCTL}"
+fi
+
+echo "Staging release in ${REMOTE_TMP}..."
+rm -rf "${REMOTE_TMP}"
+mkdir -p "${REMOTE_TMP}"
+rsync -a \
+  --exclude '.git' \
+  --exclude '.venv' \
+  "${PYTHON_CACHE_RSYNC_EXCLUDES[@]}" \
+  --exclude 'btq_runtime' \
+  --exclude 'project/.runtime' \
+  --exclude 'project/.runtime-dry' \
+  "${SOURCE_ROOT}/README.md" \
+  "${SOURCE_ROOT}/config.json" \
+  "${SOURCE_ROOT}/pyproject.toml" \
+  "${SOURCE_ROOT}/project" \
+  "${REMOTE_TMP}/"
+
+echo "Installing release."
+"${SUDO[@]}" mkdir -p "${BACKUP_ROOT}"
+"${SUDO[@]}" cp "${BACKUP_CP_ARGS[@]}" "${APP_DIR}" "${BACKUP_ROOT}/unified-capture-${STAMP}"
+"${SUDO[@]}" rsync "${INSTALL_RSYNC_ARGS[@]}" "${REMOTE_TMP}/" "${APP_DIR}/"
+# Populate APP_DIR/dist/ from project/unified_capture/public/. Caddy serves the
+# SPA static assets from APP_DIR/dist/, while the Python backend remains the
+# loopback API/media process. --delete keeps dist/ a clean mirror of public/.
+"${SUDO[@]}" mkdir -p "${APP_DIR}/dist"
+"${SUDO[@]}" rsync -a --delete \
+  "${APP_DIR}/project/unified_capture/public/" "${APP_DIR}/dist/"
+# Materialize the shared PWA offline assets into dist/. The unified HTML loads
+# /static/db.js, so keep that path present in addition to the root-level db.js
+# used by the field-capture deploy pattern.
+"${SUDO[@]}" env PYTHONPATH="${APP_DIR}/project" python3 - "${APP_DIR}/dist" <<'PY'
+import sys
+from pathlib import Path
+from shared_pwa.assets import shared_db_bytes, render_service_worker
+dist = Path(sys.argv[1])
+db_bytes = shared_db_bytes()
+(dist / "db.js").write_bytes(db_bytes)
+(dist / "static").mkdir(parents=True, exist_ok=True)
+(dist / "static" / "db.js").write_bytes(db_bytes)
+(dist / "sw.js").write_text(render_service_worker("unified_capture"), encoding="utf-8")
+print(f"materialized shared PWA assets into {dist}: db.js, static/db.js, sw.js")
+PY
+"${SUDO[@]}" cp "${APP_DIR}/project/unified_capture/deploy/btq-unified-capture.service" "/etc/systemd/system/${SERVICE}"
+echo "Verifying shared runtime directories..."
+for runtime_dir in /srv/btq/runtime /srv/btq/runtime/uploads /srv/btq/runtime/queue /srv/btq/runtime/logs; do
+  [[ -d "${runtime_dir}" ]] || fail "runtime directory is missing: ${runtime_dir}"
+done
+
+echo "Reloading systemd unit metadata..."
+reload_systemd
+
+echo "Restarting ${SERVICE}..."
+restart_service
+sleep 2
+
+echo "Verifying local service..."
+verify_service_active
+curl -fsSL http://127.0.0.1:8081/api/health | grep -F '"app": "unified_capture"' >/dev/null
+
+rm -rf "${REMOTE_TMP}"
+
+echo
+echo "Deploy complete."
+echo "Backup: ${BACKUP_ROOT}/unified-capture-${STAMP}"
+echo "Target: ${APP_DIR}"
+echo "Service: ${SERVICE}"
+echo "Local health: http://127.0.0.1:8081/api/health"

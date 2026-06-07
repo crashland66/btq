@@ -1,0 +1,51 @@
+#!/bin/zsh
+# btq-prune-uploads — bound the local field-capture photo cache.
+#
+# btq_runtime/uploads holds field-capture photos partitioned into per-day
+# directories (uploads/YYYY-MM-DD/...). On the Pro these are local working
+# copies — the originals live in the VPS field-capture store, which is why
+# btq-backup-runtime deliberately excludes uploads from its snapshots. Old
+# local copies can therefore be dropped once they are well past active
+# review without losing the source images.
+#
+# This removes whole upload day-directories not modified in RETENTION_DAYS.
+# Run with --dry-run to preview without changing anything.
+#
+# Environment overrides:
+#   BTQ_UPLOADS_DIR             default: ~/btq_runtime/uploads
+#   BTQ_UPLOADS_RETENTION_DAYS  remove day-dirs older than this (default: 60)
+
+set -euo pipefail
+
+DRY_RUN=0
+if [[ "${1:-}" == "--dry-run" ]]; then
+  DRY_RUN=1
+elif [[ -n "${1:-}" ]]; then
+  echo "usage: btq-prune-uploads [--dry-run]" >&2
+  exit 2
+fi
+
+UPLOADS_DIR="${BTQ_UPLOADS_DIR:-$HOME/btq_runtime/uploads}"
+RETENTION_DAYS="${BTQ_UPLOADS_RETENTION_DAYS:-60}"
+
+removed_count=0
+removed_bytes=0
+
+if [[ -d "$UPLOADS_DIR" ]]; then
+  while IFS= read -r -d '' d; do
+    kb=$(du -sk "$d" 2>/dev/null | cut -f1)
+    bytes=$(( ${kb:-0} * 1024 ))
+    if (( DRY_RUN )); then
+      printf '  would remove %12d B  %s\n' "$bytes" "$d"
+    else
+      rm -rf "$d"
+    fi
+    removed_count=$(( removed_count + 1 ))
+    removed_bytes=$(( removed_bytes + bytes ))
+  done < <(find "$UPLOADS_DIR" -mindepth 1 -maxdepth 1 -type d -mtime +"${RETENTION_DAYS}" -print0)
+fi
+
+mode="applied"
+(( DRY_RUN )) && mode="dry-run"
+printf '%s btq-prune-uploads (%s): removed %d day-dir(s), %d B; retention=%dd; dir=%s\n' \
+  "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$mode" "$removed_count" "$removed_bytes" "$RETENTION_DAYS" "$UPLOADS_DIR"

@@ -1,0 +1,76 @@
+#!/bin/zsh
+# btq-backup-runtime — hourly point-in-time snapshot of ~/btq_runtime → VPS
+#
+# Tarballs the precious-but-small parts of btq_runtime (sidecars, transcripts,
+# semantics, queue, processed, reviews, tokens db, indexes) and ships the
+# archive to the VPS over SSH. Excludes raw uploads (recoverable from VPS
+# captures), audio (lives in iCloud), and rotated logs.
+#
+# Restore:
+#   ssh deploy@vps.example.com \
+#     cat /srv/btq/backups/runtime/btq_runtime-pro-<STAMP>.tar.gz | \
+#     tar -xzf - -C /tmp/btq_runtime_restore
+#
+# Environment overrides:
+#   BTQ_RUNTIME              source dir (default: ~/btq_runtime)
+#   BTQ_BACKUP_VPS_HOST      ssh target (default: deploy@vps.example.com)
+#   BTQ_BACKUP_VPS_PATH      remote dir (default: /srv/btq/backups/runtime)
+#   BTQ_BACKUP_RETENTION     keep last N tarballs (default: 48)
+
+set -euo pipefail
+
+PRO_RUNTIME="${BTQ_RUNTIME:-$HOME/btq_runtime}"
+VPS_HOST="${BTQ_BACKUP_VPS_HOST:-deploy@vps.example.com}"
+VPS_DEST="${BTQ_BACKUP_VPS_PATH:-/srv/btq/backups/runtime}"
+RETENTION_COUNT="${BTQ_BACKUP_RETENTION:-48}"
+HOST_LABEL="${HOST%%.*}"
+
+STAMP=$(date -u +%Y-%m-%dT%H%M%SZ)
+TARBALL="btq_runtime-${HOST_LABEL}-${STAMP}.tar.gz"
+STAGING_DIR=$(mktemp -d -t btq-backup)
+trap "rm -rf ${STAGING_DIR}" EXIT
+
+if [[ ! -d "${PRO_RUNTIME}" ]]; then
+  echo "ERROR: source not found: ${PRO_RUNTIME}" >&2
+  exit 1
+fi
+
+cd "$(dirname "${PRO_RUNTIME}")"
+RUNTIME_NAME=$(basename "${PRO_RUNTIME}")
+
+# Exclude the bulk that's either recreatable elsewhere or transient. Each
+# exclusion is anchored under the runtime root.
+#   uploads/  — raw images. Recoverable from VPS field_capture captures.
+#   logs/     — rotated; transient debug output.
+#   completed/audio/ — audio files mirrored in iCloud.
+#   quarantine/      — operator-acknowledged dead ends; not for restore.
+#   processing/, claimed/ — transient working state.
+#   *.tmp, .DS_Store — junk.
+tar -czf "${STAGING_DIR}/${TARBALL}" \
+  --exclude="${RUNTIME_NAME}/uploads" \
+  --exclude="${RUNTIME_NAME}/logs" \
+  --exclude="${RUNTIME_NAME}/completed/audio" \
+  --exclude="${RUNTIME_NAME}/quarantine" \
+  --exclude="${RUNTIME_NAME}/processing" \
+  --exclude="${RUNTIME_NAME}/claimed" \
+  --exclude="${RUNTIME_NAME}/temp" \
+  --exclude="${RUNTIME_NAME}/failed/quarantine" \
+  --exclude="*.tmp" \
+  --exclude=".DS_Store" \
+  "${RUNTIME_NAME}"
+
+size_bytes=$(stat -f %z "${STAGING_DIR}/${TARBALL}")
+size_human=$(du -h "${STAGING_DIR}/${TARBALL}" | cut -f1)
+
+# Ensure remote dir exists (one-time cost).
+ssh -o BatchMode=yes "${VPS_HOST}" "mkdir -p ${VPS_DEST}"
+
+# Upload as .tmp then rename so a partial transfer never looks like a complete backup.
+scp -q -o BatchMode=yes "${STAGING_DIR}/${TARBALL}" "${VPS_HOST}:${VPS_DEST}/${TARBALL}.tmp"
+ssh -o BatchMode=yes "${VPS_HOST}" "mv ${VPS_DEST}/${TARBALL}.tmp ${VPS_DEST}/${TARBALL}"
+
+# Prune: keep only the most recent RETENTION_COUNT tarballs matching our host label.
+ssh -o BatchMode=yes "${VPS_HOST}" "cd ${VPS_DEST} && ls -1t btq_runtime-${HOST_LABEL}-*.tar.gz 2>/dev/null | awk 'NR>${RETENTION_COUNT}' | xargs -r rm -f --"
+
+printf '%s btq-backup-runtime: uploaded %s (%s, %d bytes) → %s:%s; retention=%d\n' \
+  "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${TARBALL}" "${size_human}" "${size_bytes}" "${VPS_HOST}" "${VPS_DEST}" "${RETENTION_COUNT}"

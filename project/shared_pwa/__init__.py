@@ -1,0 +1,2 @@
+"""Shared PWA static assets."""
+

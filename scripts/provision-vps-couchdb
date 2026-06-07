@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ "${EUID}" -ne 0 ]]; then
+  echo "This script must be run as root (or with sudo)."
+  exit 1
+fi
+
+echo "[1/5] Adding Apache CouchDB signing key..."
+curl -fsSL https://couchdb.apache.org/repo/keys.asc \
+  | gpg --dearmor -o /usr/share/keyrings/couchdb-archive-keyring.gpg
+
+echo "[2/5] Adding Apache CouchDB apt repository..."
+echo "deb [signed-by=/usr/share/keyrings/couchdb-archive-keyring.gpg] https://apache.jfrog.io/artifactory/couchdb-deb/ $(lsb_release -cs) main" \
+  | tee /etc/apt/sources.list.d/couchdb.list
+
+echo "[3/5] Updating apt package metadata..."
+apt-get update -qq
+
+echo "[4/5] Installing standalone CouchDB..."
+echo "couchdb couchdb/mode select standalone" | debconf-set-selections
+echo "couchdb couchdb/bindaddress string 127.0.0.1" | debconf-set-selections
+DEBIAN_FRONTEND=noninteractive apt-get install -y couchdb
+
+echo "[5/5] Enabling and starting CouchDB..."
+systemctl enable couchdb
+systemctl start couchdb
+
+echo ""
+echo "CouchDB is running in admin-party mode (no admin set)."
+echo "Create an admin user before running setup:"
+echo ""
+echo "  curl -X PUT http://127.0.0.1:5984/_node/_local/_config/admins/<USERNAME> -d '\"<PASSWORD>\"'"
+echo ""
+echo "Then export the credentials and run setup:"
+echo ""
+echo "  export BTQ_COUCHDB_URL=http://127.0.0.1:5984"
+echo "  export BTQ_COUCHDB_USER=<USERNAME>"
+echo "  export BTQ_COUCHDB_PASSWORD=<PASSWORD>"
+echo "  cd /path/to/btq"
+echo "  ./scripts/btq setup-couchdb"
+echo ""
+echo "Run --with-replication from a configured BTQ checkout once Pro/VPS/Dell peer"
+echo "credentials are exported. Omit BTQ_DELL_* until the Dell CouchDB is running."

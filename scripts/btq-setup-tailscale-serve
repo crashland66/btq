@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+# btq-setup-tailscale-serve — front the local ops dashboard with HTTPS
+# via Tailscale Serve. Run once on the dashboard host (the Mac).
+#
+# The dashboard binds locally on http://127.0.0.1:8765 (per
+# scripts/btq ops-dashboard defaults). After this script runs, the
+# dashboard is reachable at:
+#
+#   https://<host>.<tailnet>.ts.net/
+#
+# Tailscale Serve persists across reboots once configured with --bg.
+# Re-running is idempotent — `tailscale serve reset` clears existing
+# configuration before applying.
+
+set -euo pipefail
+
+TS="/Applications/Tailscale.app/Contents/MacOS/Tailscale"
+TARGET="http://127.0.0.1:8765"
+
+if [[ ! -x "$TS" ]]; then
+  echo "error: Tailscale CLI not found at $TS" >&2
+  echo "Install the Tailscale Mac App Store app first." >&2
+  exit 1
+fi
+
+echo "→ resetting any existing tailscale serve config"
+"$TS" serve reset || true
+
+echo "→ provisioning tailnet HTTPS cert (may take a moment on first run)"
+HOSTNAME="$("$TS" status --json 2>/dev/null \
+  | python3 -c 'import json,sys; print(json.load(sys.stdin)["Self"]["DNSName"].rstrip("."))')"
+"$TS" cert "$HOSTNAME"
+
+echo "→ enabling tailscale serve: https://${HOSTNAME}/ → ${TARGET}"
+"$TS" serve --bg --https=443 "$TARGET"
+
+echo "→ verifying"
+"$TS" serve status
+
+echo
+echo "✓ Dashboard now reachable at: https://${HOSTNAME}/"

@@ -1,0 +1,68 @@
+#!/usr/bin/env bash
+# btq-deploy-pro — push current branch to VPS bare repo and pull on the Pro,
+# then restart the btq launchd daemons, then mirror to GitHub.
+#
+# Flow: push to origin (VPS bare) → SSH to Pro → fast-forward the working clone
+# at ~/btq → kickstart each daemon so it picks up the new code → push to the
+# `github` mirror remote (if configured) so the public GitHub repo stays in
+# sync with what's actually running.
+#
+# Pro daemons restarted:
+#   com.btq.couchdb-field-capture-watcher
+#   com.btq.couchdb-queue-watcher
+#   com.btq.field-capture-pipeline-watcher
+#   com.btq.ops-dashboard
+#   com.btq.queue-watch
+#   com.btq.whisper-watch
+#   com.btq.cowork-drop-watch  (skipped until first installed on the Pro)
+#   com.btq.cowork-read-watch  (skipped until first installed on the Pro)
+#
+# Usage:
+#   btq-deploy-pro [git-ref]   # ref defaults to current branch
+
+set -euo pipefail
+
+REF="${1:-$(git symbolic-ref --short HEAD)}"
+PRO="${BTQ_PRO_SSH_TARGET:-operator@workstation}"
+
+printf '→ pushing %s to origin\n' "$REF"
+git push origin "$REF"
+
+printf '→ updating ~/btq on Pro and restarting daemons\n'
+ssh "$PRO" bash <<EOF
+set -e
+cd ~/btq
+git fetch origin
+git checkout '${REF}'
+git merge --ff-only 'origin/${REF}'
+
+uid=\$(id -u)
+for d in com.btq.couchdb-field-capture-watcher \\
+         com.btq.couchdb-queue-watcher \\
+         com.btq.field-capture-pipeline-watcher \\
+         com.btq.ops-dashboard \\
+         com.btq.queue-watch \\
+         com.btq.whisper-watch \\
+         com.btq.cowork-drop-watch \\
+         com.btq.cowork-read-watch; do
+  printf '  restarting %s\n' "\$d"
+  launchctl kickstart -k "gui/\$uid/\$d" || printf '  (skipped %s — not installed yet; run its install-* script on the Pro)\n' "\$d"
+done
+EOF
+
+# Mirror to GitHub. Soft-fail: if the github remote isn't configured or the
+# push errors, the Pro is still on the new code and the daemons are running —
+# we warn but don't fail the deploy. Sync the mirror manually later with
+# `git push github ${REF}` if needed.
+if git remote get-url github >/dev/null 2>&1; then
+  printf '→ mirroring %s to github\n' "$REF"
+  if git push github "$REF"; then
+    printf '  github mirror synced\n'
+  else
+    printf '⚠ github push failed; deploy still succeeded but GitHub is out of sync — run `git push github %s` to retry\n' "$REF" >&2
+  fi
+else
+  printf '→ no github remote configured; skipping mirror push\n'
+fi
+
+printf '\n✓ Pro deploy complete\n'

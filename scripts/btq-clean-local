@@ -1,0 +1,179 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  cat >&2 <<'EOF'
+usage: btq-clean-local [--dry-run] [--apply] [--venv]
+
+Removes generated local workspace files from the resolved repository root.
+Default mode is --dry-run.
+
+Targets: __pycache__/, *.pyc, .DS_Store, .pytest_cache/.
+Use --venv with --apply to also remove project/.venv.
+EOF
+}
+
+DRY_RUN=1
+INCLUDE_VENV=0
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --dry-run)
+      DRY_RUN=1
+      ;;
+    --apply)
+      DRY_RUN=0
+      ;;
+    --venv)
+      INCLUDE_VENV=1
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      usage
+      exit 2
+      ;;
+  esac
+  shift
+done
+
+if [[ -n "${BTQ_CLEAN_ROOT:-}" ]]; then
+  ROOT="$(cd "$BTQ_CLEAN_ROOT" && pwd -P)"
+else
+  ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
+fi
+
+if [[ "$ROOT" == "/" ]]; then
+  echo "Refusing to clean filesystem root" >&2
+  exit 2
+fi
+
+GIT_TRACKING_AVAILABLE=0
+if git -C "$ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  GIT_ROOT="$(cd "$(git -C "$ROOT" rev-parse --show-toplevel)" && pwd -P)"
+  if [[ "$GIT_ROOT" == "$ROOT" ]]; then
+    GIT_TRACKING_AVAILABLE=1
+  fi
+fi
+
+contains_path() {
+  local path="$1"
+  local dir
+  if (( ${#DELETE_DIRS[@]} == 0 )); then
+    return 1
+  fi
+  for dir in "${DELETE_DIRS[@]}"; do
+    if [[ "$path" == "$dir/"* ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+contained_in_root() {
+  local path="$1"
+  [[ "$path" == "$ROOT" || "$path" == "$ROOT/"* ]]
+}
+
+has_tracked_file() {
+  local path="$1"
+  local rel
+  (( GIT_TRACKING_AVAILABLE )) || return 1
+  rel="${path#"$ROOT"/}"
+  if [[ -d "$path" ]]; then
+    [[ -n "$(git -C "$ROOT" ls-files -- "$rel/" "$rel")" ]]
+  else
+    git -C "$ROOT" ls-files --error-unmatch "$rel" >/dev/null 2>&1
+  fi
+}
+
+size_bytes() {
+  local path="$1"
+  local kb
+  kb="$(du -sk "$path" 2>/dev/null | cut -f1 || true)"
+  printf '%s\n' "$(( ${kb:-0} * 1024 ))"
+}
+
+DELETE_DIRS=()
+REPORT_FILES=()
+DELETE_FILES=()
+
+while IFS= read -r -d '' dir; do
+  has_tracked_file "$dir" && continue
+  DELETE_DIRS+=("$dir")
+done < <(find "$ROOT" \( -type d -name __pycache__ -o -type d -name .pytest_cache \) -print0)
+
+if (( INCLUDE_VENV )) && [[ -d "$ROOT/project/.venv" ]] && ! has_tracked_file "$ROOT/project/.venv"; then
+  DELETE_DIRS+=("$ROOT/project/.venv")
+fi
+
+while IFS= read -r -d '' file; do
+  has_tracked_file "$file" && continue
+  REPORT_FILES+=("$file")
+  contains_path "$file" || DELETE_FILES+=("$file")
+done < <(find "$ROOT" \( -type f -name '*.pyc' -o -type f -name .DS_Store \) -print0)
+
+removed_dirs=0
+removed_files=0
+freed_bytes=0
+
+mode="dry-run"
+(( DRY_RUN )) || mode="apply"
+printf 'btq-clean-local (%s): root=%s\n' "$mode" "$ROOT"
+
+if (( ${#DELETE_DIRS[@]} > 0 )); then
+  for dir in "${DELETE_DIRS[@]}"; do
+    contained_in_root "$dir" || {
+      echo "Refusing to delete outside root: $dir" >&2
+      exit 2
+    }
+    bytes="$(size_bytes "$dir")"
+    freed_bytes=$(( freed_bytes + bytes ))
+    removed_dirs=$(( removed_dirs + 1 ))
+    if (( DRY_RUN )); then
+      printf '  would remove dir  %12d B  %s\n' "$bytes" "$dir"
+    fi
+  done
+fi
+
+if (( ${#REPORT_FILES[@]} > 0 )); then
+  for file in "${REPORT_FILES[@]}"; do
+    if (( DRY_RUN )); then
+      if contains_path "$file"; then
+        printf '  would remove file %12s    %s (covered by dir)\n' "-" "$file"
+      else
+        bytes="$(size_bytes "$file")"
+        printf '  would remove file %12d B  %s\n' "$bytes" "$file"
+      fi
+    fi
+  done
+fi
+
+if (( ${#DELETE_FILES[@]} > 0 )); then
+  for file in "${DELETE_FILES[@]}"; do
+    contained_in_root "$file" || {
+      echo "Refusing to delete outside root: $file" >&2
+      exit 2
+    }
+    bytes="$(size_bytes "$file")"
+    freed_bytes=$(( freed_bytes + bytes ))
+    removed_files=$(( removed_files + 1 ))
+  done
+fi
+
+if (( ! DRY_RUN )); then
+  if (( ${#DELETE_FILES[@]} > 0 )); then
+    for file in "${DELETE_FILES[@]}"; do
+      rm -f "$file"
+    done
+  fi
+  if (( ${#DELETE_DIRS[@]} > 0 )); then
+    for dir in "${DELETE_DIRS[@]}"; do
+      rm -rf "$dir"
+    done
+  fi
+fi
+
+printf 'removed %d dirs, %d files, freed %d B\n' "$removed_dirs" "$removed_files" "$freed_bytes"

@@ -1,0 +1,634 @@
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Optional
+
+from config import require_directories
+from queue_processor.handlers import misc, people, site_flags_notes, supplies_equipment, supplies_equipment_transitions, unknowns, visits
+from queue_processor.handlers import _shared
+from queue_processor.processed_index import ProcessedJobIdLookup, append_record, build_record, load_processed_job_id_lookup, processed_job_id_exists as indexed_processed_job_id_exists
+from queue_processor.manifest import record_processed_mutation
+from queue_processor.processor_lock import ProcessorLock, ProcessorLockError
+from queue_processor.registry import JOB_HANDLERS, JobHandler, _handler_for_job_type
+from queue_spec import (
+    VAULT_RELATIVE_PATH_JOB_TYPES, normalize_vault_relative_path, validate_job,
+    JOB_ADD_PERSON, JOB_APPEND_TO_NOTE, JOB_CLOSE_RECRUITING, JOB_FLAG_ACCESS_CONSTRAINT, JOB_FLAG_RETENTION_RISK,
+    JOB_LOG_EQUIPMENT_REQUEST, JOB_LOG_PERSONNEL_EVENT, JOB_LOG_SITE_ISSUE, JOB_LOG_SUPPLY_NEED,
+    JOB_MARK_EQUIPMENT_APPROVED, JOB_MARK_EQUIPMENT_DENIED, JOB_MARK_EQUIPMENT_NO_ACTION_NEEDED,
+    JOB_MARK_EQUIPMENT_ORDERED, JOB_MARK_EQUIPMENT_PROVIDED, JOB_MARK_SUPPLY_DELIVERED,
+    JOB_MARK_SUPPLY_NO_ACTION_NEEDED, JOB_MARK_SUPPLY_ORDERED, JOB_MARK_SUPPLY_STOCKED,
+    JOB_PARSE_SUPPLY_EMAIL, JOB_PERSONAL_JOURNAL_ENTRY, JOB_PHOTO_CAPTURE, JOB_PROMOTE_PROSPECT,
+    JOB_RECLASSIFY_UNKNOWN, JOB_REMOVE_FROM_SCHEDULE, JOB_RETARGET_CAPTURE, JOB_TRIGGER_RECRUITING,
+    JOB_SET_ENTITY_STATUS, JOB_UPDATE_SITE_EQUIPMENT, JOB_VISIT_CREATE, JOB_VOICE_MEMO_NOTE,
+)
+
+_NON_QUEUE_JOB_TYPES = frozenset[str]()
+
+DEFAULT_CONFIG = _shared.DEFAULT_CONFIG
+DEFAULT_PROJECT_ROOT = _shared.DEFAULT_PROJECT_ROOT
+DEFAULT_VAULT_ROOT = _shared.DEFAULT_VAULT_ROOT
+DEFAULT_PERSONAL_VAULT_ROOT = _shared.DEFAULT_PERSONAL_VAULT_ROOT
+DEFAULT_RUNTIME_ROOT = _shared.DEFAULT_RUNTIME_ROOT
+DEFAULT_LOGS_ROOT = _shared.DEFAULT_LOGS_ROOT
+QueueProcessorError = _shared.QueueProcessorError
+QueueJobError = _shared.QueueJobError
+InvalidSiteIdError = _shared.InvalidSiteIdError
+QueueJob = _shared.QueueJob
+RunContext = _shared.RunContext
+validate_date_string = _shared.validate_date_string
+validate_payload_keys = _shared.validate_payload_keys
+compute_job_id = _shared.compute_job_id
+parse_frontmatter = _shared.parse_frontmatter
+get_frontmatter_value = _shared.get_frontmatter_value
+ensure_within_root = _shared.ensure_within_root
+ensure_within_any_root = _shared.ensure_within_any_root
+move_job_file = _shared.move_job_file
+atomic_write_text = _shared.atomic_write_text
+_vault_store = _shared._vault_store
+_reset_vault_store = _shared._reset_vault_store
+_canonical_vault_upsert = _shared._canonical_vault_upsert
+_field_capture_config = _shared._field_capture_config
+_field_capture_database = _shared._field_capture_database
+_site_id_registered = _shared._site_id_registered
+_find_prospect_captures = _shared._find_prospect_captures
+get_field_capture_document = _shared.get_field_capture_document
+put_field_capture_document = _shared.put_field_capture_document
+load_prospect = _shared.load_prospect
+write_prospect = _shared.write_prospect
+
+
+def processed_job_id_exists(runtime_root: Path, processed_dir: Path, job_id: str) -> tuple[bool, str]:
+    return indexed_processed_job_id_exists(runtime_root, processed_dir, job_id)
+
+process_visit_create_job = visits.process_visit_create_job
+process_photo_capture_job = visits.process_photo_capture_job
+process_add_person_job = people.process_add_person_job
+process_trigger_recruiting_job = people.process_trigger_recruiting_job
+process_close_recruiting_job = people.process_close_recruiting_job
+process_remove_from_schedule_job = people.process_remove_from_schedule_job
+process_log_personnel_event_job = people.process_log_personnel_event_job
+process_set_entity_status_job = people.process_set_entity_status_job
+process_log_supply_need_job = supplies_equipment.process_log_supply_need_job
+process_log_equipment_request_job = supplies_equipment.process_log_equipment_request_job
+process_update_site_equipment_job = supplies_equipment.process_update_site_equipment_job
+_process_mark_supply_job = supplies_equipment_transitions._process_mark_supply_job
+_process_mark_equipment_job = supplies_equipment_transitions._process_mark_equipment_job
+process_mark_supply_ordered_job = supplies_equipment_transitions.process_mark_supply_ordered_job
+process_mark_supply_delivered_job = supplies_equipment_transitions.process_mark_supply_delivered_job
+process_mark_supply_stocked_job = supplies_equipment_transitions.process_mark_supply_stocked_job
+process_mark_supply_no_action_needed_job = supplies_equipment_transitions.process_mark_supply_no_action_needed_job
+process_mark_equipment_approved_job = supplies_equipment_transitions.process_mark_equipment_approved_job
+process_mark_equipment_denied_job = supplies_equipment_transitions.process_mark_equipment_denied_job
+process_mark_equipment_ordered_job = supplies_equipment_transitions.process_mark_equipment_ordered_job
+process_mark_equipment_provided_job = supplies_equipment_transitions.process_mark_equipment_provided_job
+process_mark_equipment_no_action_needed_job = supplies_equipment_transitions.process_mark_equipment_no_action_needed_job
+process_log_site_issue_job = site_flags_notes.process_log_site_issue_job
+process_append_to_note_job = site_flags_notes.process_append_to_note_job
+process_flag_access_constraint_job = site_flags_notes.process_flag_access_constraint_job
+process_flag_retention_risk_job = site_flags_notes.process_flag_retention_risk_job
+process_reclassify_unknown_job = unknowns.process_reclassify_unknown_job
+process_unknowns = unknowns.process_unknowns
+handle_promote_prospect = misc.handle_promote_prospect
+handle_retarget_capture = misc.handle_retarget_capture
+process_promote_prospect_job = misc.process_promote_prospect_job
+process_retarget_capture_job = misc.process_retarget_capture_job
+process_voice_memo_note_job = misc.process_voice_memo_note_job
+process_personal_journal_entry_job = misc.process_personal_journal_entry_job
+process_parse_supply_email_job = misc.process_parse_supply_email_job
+# Re-exports for symbols still imported from queue_processor.main by other
+# modules/tests (replay, btq, voice-memo + journal tests) after the 181 move.
+canonical_person_path = people.canonical_person_path
+render_personal_journal_entry = misc.render_personal_journal_entry
+upsert_voice_memo_capture_id_frontmatter = misc.upsert_voice_memo_capture_id_frontmatter
+voice_memo_capture_id = misc.voice_memo_capture_id
+replace_or_insert_subsection = supplies_equipment.replace_or_insert_subsection
+validate_person_id = people.validate_person_id
+
+
+def ensure_local_runtime_root(runtime_root: Path) -> Path:
+    resolved_runtime_root = runtime_root.expanduser().resolve()
+    pipeline_dir = DEFAULT_CONFIG.pipeline_dir.expanduser()
+    if _shared.path_is_within(resolved_runtime_root, pipeline_dir):
+        raise QueueProcessorError(f"Runtime root must be local non-iCloud storage, not inside pipeline_dir: {resolved_runtime_root}")
+    if _shared.looks_like_icloud_path(resolved_runtime_root):
+        raise QueueProcessorError(f"Runtime root must not be inside an iCloud-managed path: {resolved_runtime_root}")
+    return resolved_runtime_root
+
+def validate_job_file_name(job_path: Path) -> None:
+    if job_path.suffix != ".json":
+        raise QueueProcessorError(f"Queue file must end with .json: {job_path.name}")
+
+def load_job_payload(job_path: Path) -> dict:
+    validate_job_file_name(job_path)
+    try:
+        raw_payload = json.loads(job_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise QueueProcessorError(f"Invalid JSON: {exc.msg}") from exc
+    if not isinstance(raw_payload, dict):
+        raise QueueProcessorError("Job payload must be a JSON object")
+    job_type = raw_payload.get("job_type")
+    payload = raw_payload.get("payload")
+    if job_type in VAULT_RELATIVE_PATH_JOB_TYPES and isinstance(payload, dict):
+        raw_path = payload.get("path")
+        if isinstance(raw_path, str):
+            normalized = normalize_vault_relative_path(raw_path)
+            if normalized and normalized != raw_path.strip():
+                payload["path"] = normalized
+    return raw_payload
+
+def load_job(job_path: Path) -> QueueJob:
+    raw_payload = load_job_payload(job_path)
+    if not validate_job(raw_payload):
+        raise QueueProcessorError("Job does not match queue_spec")
+    job_id = _shared.compute_job_id(raw_payload)
+    return QueueJob(
+        job_id=job_id,
+        job_type=str(raw_payload["job_type"]),
+        payload=dict(raw_payload["payload"]),
+        metadata=dict(raw_payload.get("metadata", {})) if isinstance(raw_payload.get("metadata"), dict) else {},
+        intent=dict(raw_payload.get("intent", {})) if isinstance(raw_payload.get("intent"), dict) else {},
+        idempotency_key=str(raw_payload["idempotency_key"]).strip() if isinstance(raw_payload.get("idempotency_key"), str) else None,
+    )
+
+def append_processed_index_record(job_path: Path, job: QueueJob, context: RunContext, target_path: str, processed_job_ids: ProcessedJobIdLookup | None = None) -> None:
+    if context.dry_run:
+        return
+    record = build_record(computed_job_id=job.job_id, job_type=job.job_type, target_path=target_path, source_queue_file=job_path, capture_id=_shared.capture_id_for_job(job), run_id=context.run_id)
+    try:
+        append_record(context.runtime_root / "processed_index.jsonl", record)
+        if processed_job_ids is not None:
+            processed_job_ids.mark_indexed(job.job_id)
+        if record.capture_id is not None:
+            record_processed_mutation(context.runtime_root, record.capture_id, computed_job_id=job.job_id, job_type=job.job_type, target_path=target_path, source_queue_file=str(job_path), processed_record=record.__dict__)
+        _shared.structured_log(context, "processed_index_appended", computed_job_id=job.job_id, job_type=job.job_type, source_queue_file=str(job_path), target_path=target_path, capture_id=_shared.capture_id_for_job(job))
+        if record.capture_id is not None:
+            _shared.structured_log(context, "manifest_created", capture_id=record.capture_id, computed_job_id=job.job_id, target_path=target_path)
+    except Exception as exc:
+        _shared.structured_log(context, "processed_index_append_failed", computed_job_id=job.job_id, job_type=job.job_type, source_queue_file=str(job_path), error=str(exc), capture_id=_shared.capture_id_for_job(job))
+        _shared.write_log_line(context.log_path, f"job_id={job.job_id} action=processed-index-append status=failure error={exc}")
+
+
+def _job_has_applied_marker(job: QueueJob, context: RunContext) -> tuple[bool, str | None]:
+    try:
+        target_hint = target_path_hint(job, context)
+    except Exception:
+        return False, None
+    for raw_target in target_hint.split(", "):
+        try:
+            target_path = Path(raw_target)
+        except Exception:
+            continue
+        if not target_path.is_absolute():
+            continue
+        if not (_shared.path_is_within(target_path, context.vault_root) or _shared.path_is_within(target_path, context.personal_vault_root)):
+            continue
+        if not target_path.exists() or not target_path.is_file():
+            continue
+        try:
+            if _shared.has_job_been_applied(target_path.read_text(encoding="utf-8"), job.job_id):
+                return True, str(target_path)
+        except Exception:
+            continue
+    return False, None
+
+
+def _archive_job_file(
+    job_path: Path,
+    destination_dir: Path,
+    context: RunContext,
+    *,
+    job: QueueJob | None,
+    already_handled: bool,
+    handled_source: str,
+    processed_job_ids: ProcessedJobIdLookup | None = None,
+) -> Path:
+    destination_path = destination_dir / job_path.name
+    try:
+        moved_path = _shared.move_job_file(job_path, destination_dir)
+        if job is not None and destination_dir.name == "processed" and processed_job_ids is not None:
+            processed_job_ids.mark_processed_archive(job.job_id)
+        return moved_path
+    except Exception as exc:
+        if not destination_path.exists():
+            raise
+        computed_job_id = job.job_id if job is not None else job_path.stem
+        job_type = job.job_type if job is not None else None
+        capture_id = _shared.capture_id_for_job(job) if job is not None else None
+        if already_handled:
+            source_removed = False
+            if not context.dry_run and job_path.exists():
+                job_path.unlink()
+                source_removed = True
+            if job is not None and destination_dir.name == "processed" and processed_job_ids is not None:
+                processed_job_ids.mark_processed_archive(job.job_id)
+            _shared.write_log_line(
+                context.log_path,
+                f"job_id={computed_job_id} action=archive-collision status=success reason=already-handled source={handled_source} destination={destination_path}",
+            )
+            _shared.structured_log(
+                context,
+                "queue_archive_collision_already_handled",
+                computed_job_id=computed_job_id,
+                job_type=job_type,
+                source_queue_file=str(job_path),
+                destination_path=str(destination_path),
+                destination_dir=destination_dir.name,
+                handled_source=handled_source,
+                source_removed=source_removed,
+                capture_id=capture_id,
+            )
+            return destination_path
+        _shared.structured_log(
+            context,
+            "queue_archive_collision_ambiguous",
+            computed_job_id=computed_job_id,
+            job_type=job_type,
+            source_queue_file=str(job_path),
+            destination_path=str(destination_path),
+            destination_dir=destination_dir.name,
+            error=str(exc),
+            capture_id=capture_id,
+        )
+        raise
+
+def parse_int_list_value(value: str) -> list[int] | None:
+    stripped_value = value.strip()
+    if not stripped_value.startswith("[") or not stripped_value.endswith("]"):
+        return None
+    inner = stripped_value[1:-1].strip()
+    if not inner:
+        return []
+    result: list[int] = []
+    for item in inner.split(","):
+        token = item.strip()
+        if not token:
+            return None
+        try:
+            result.append(int(token))
+        except ValueError:
+            return None
+    return result
+
+def get_frontmatter_raw_value(fields: list[tuple[str, Any]], key: str) -> Any | None:
+    for existing_key, value in fields:
+        if existing_key == key:
+            return value
+    return None
+
+def parse_int_list_frontmatter_value(value: Any) -> list[int] | None:
+    if isinstance(value, list):
+        result: list[int] = []
+        for item in value:
+            try:
+                result.append(int(str(item).strip()))
+            except ValueError:
+                return None
+        return result
+    if isinstance(value, str):
+        return parse_int_list_value(value)
+    return None
+
+def person_site_ids_from_frontmatter_fields(fields: list[tuple[str, Any]]) -> list[int] | None:
+    site_ids: list[int] = []
+    primary_job = _shared.get_frontmatter_value(fields, "job")
+    if primary_job is not None:
+        try:
+            site_ids.append(int(primary_job))
+        except ValueError:
+            return None
+    additional_jobs_value = get_frontmatter_raw_value(fields, "additional_jobs")
+    if additional_jobs_value is not None:
+        additional_jobs = parse_int_list_frontmatter_value(additional_jobs_value)
+        if additional_jobs is None:
+            return None
+        site_ids.extend(additional_jobs)
+    if not site_ids:
+        sites_value = _shared.get_frontmatter_value(fields, "sites")
+        if sites_value is None:
+            return None
+        legacy_sites = parse_int_list_value(sites_value)
+        if legacy_sites is None:
+            return None
+        site_ids.extend(legacy_sites)
+    deduped: list[int] = []
+    for site_id in site_ids:
+        if site_id not in deduped:
+            deduped.append(site_id)
+    return deduped
+
+def load_site_query_records(vault_root: Path) -> list[tuple[int, str, str, str]]:
+    sites_dir = _shared.ensure_within_root(vault_root / "Sites", vault_root, "Sites directory")
+    if not sites_dir.exists():
+        return []
+    records: list[tuple[int, str, str, str]] = []
+    for site_path in sorted(path for path in sites_dir.iterdir() if path.is_file()):
+        try:
+            fields, _body = _shared.parse_frontmatter(site_path.read_text(encoding="utf-8"))
+        except QueueProcessorError:
+            continue
+        site_id_value = _shared.get_frontmatter_value(fields, "site_id")
+        name = _shared.get_frontmatter_value(fields, "name")
+        status = _shared.get_frontmatter_value(fields, "status")
+        status_date = _shared.get_frontmatter_value(fields, "status_date")
+        if site_id_value is None or name is None or status is None or status_date is None:
+            continue
+        try:
+            site_id = int(site_id_value)
+        except ValueError:
+            continue
+        records.append((site_id, name, status, status_date))
+    return records
+
+def load_people_query_records(vault_root: Path) -> list[tuple[str, str, list[int]]]:
+    people_dir = _shared.ensure_within_root(vault_root / "People", vault_root, "People directory")
+    if not people_dir.exists():
+        return []
+    records: list[tuple[str, str, list[int]]] = []
+    for person_path in sorted(path for path in people_dir.iterdir() if path.is_file()):
+        try:
+            fields, _body = _shared.parse_frontmatter(person_path.read_text(encoding="utf-8"))
+        except QueueProcessorError:
+            continue
+        name = _shared.get_frontmatter_value(fields, "name")
+        status = _shared.get_frontmatter_value(fields, "status")
+        site_ids = person_site_ids_from_frontmatter_fields(fields)
+        if name is None or status is None or site_ids is None:
+            continue
+        records.append((name, status, site_ids))
+    return records
+
+def list_critical_sites(context: RunContext) -> None:
+    for site_id, name, status, status_date in load_site_query_records(context.vault_root):
+        if status == "critical":
+            print(f"{site_id} | {name} | {status_date}")
+
+def list_employees_by_site(context: RunContext, site_id: int) -> None:
+    site_records = load_site_query_records(context.vault_root)
+    valid_site_ids = {record_site_id for record_site_id, _name, _status, _status_date in site_records}
+    if site_id not in valid_site_ids:
+        print(f"Unknown site_id: {site_id}")
+        return
+    for employee_name, status, sites in load_people_query_records(context.vault_root):
+        if site_id in sites:
+            print(f"{employee_name} | {status}")
+
+def target_path_hint(job: QueueJob, context: RunContext) -> str:
+    payload = job.payload
+    try:
+        if job.job_type in {JOB_APPEND_TO_NOTE, JOB_RECLASSIFY_UNKNOWN}:
+            return str(_shared.ensure_within_root(context.vault_root / str(payload["path"]), context.vault_root, "Target path"))
+        if job.job_type == JOB_PERSONAL_JOURNAL_ENTRY:
+            date = _shared.validate_date_string(str(payload["date"]))
+            return str(context.personal_vault_root / "Journal" / f"{date}.md")
+        if job.job_type == JOB_VISIT_CREATE:
+            site_path = _shared.resolve_site_about_path(context, str(payload["site"]))
+            visit_date = datetime.now(timezone.utc).date().isoformat()
+            return str(site_path.parent / "Visits" / f"{visit_date}.md")
+        if job.job_type in {JOB_FLAG_ACCESS_CONSTRAINT, JOB_TRIGGER_RECRUITING, JOB_CLOSE_RECRUITING}:
+            return str(_shared.resolve_site_about_path(context, str(payload["site"])))
+        if job.job_type in {JOB_REMOVE_FROM_SCHEDULE, JOB_FLAG_RETENTION_RISK}:
+            return str(_shared.resolve_employee_file(context.vault_root, str(payload["employee"])))
+        if job.job_type == JOB_ADD_PERSON:
+            return str(people.canonical_person_path(context.vault_root, str(payload["name"])))
+        if job.job_type == JOB_PARSE_SUPPLY_EMAIL:
+            return str(misc.resolve_supply_email_path(context, str(payload["html_path"])))
+        if job.job_type == JOB_PHOTO_CAPTURE:
+            date = visits.photo_capture_date(payload)
+            return str(context.vault_root / "Journal" / f"{date}.md")
+        if job.job_type == JOB_PROMOTE_PROSPECT:
+            return f"prospect_{payload.get('prospect_id', '')}->{payload.get('site_id', '')}"
+        if job.job_type == JOB_RETARGET_CAPTURE:
+            return f"capture_{payload.get('capture_id', '')}->{payload.get('new_target_type', '')}:{payload.get('new_target_id', '')}"
+        if job.job_type == JOB_LOG_SITE_ISSUE:
+            site_path = _shared.resolve_site_about_path(context, str(payload["site_id"]))
+            return str(site_flags_notes.site_issue_path(context, site_path, payload))
+        if job.job_type == JOB_LOG_SUPPLY_NEED:
+            site_path = _shared.resolve_site_about_path(context, str(payload["site_id"]))
+            return str(supplies_equipment.supply_need_path(context, site_path, payload))
+        if job.job_type == JOB_LOG_EQUIPMENT_REQUEST:
+            site_path = _shared.resolve_site_about_path(context, str(payload["site_id"]))
+            return str(supplies_equipment.equipment_request_path(context, site_path, payload))
+        if job.job_type == JOB_LOG_PERSONNEL_EVENT:
+            return str(people.personnel_event_path(context, payload))
+        if job.job_type == JOB_SET_ENTITY_STATUS:
+            if payload.get("entity_type") == "site":
+                return str(_shared.resolve_site_about_path(context, str(payload["entity_id"])))
+            if payload.get("entity_type") == "employee":
+                return str(_shared.resolve_employee_file(context.vault_root, str(payload["entity_id"])))
+        if job.job_type == JOB_UPDATE_SITE_EQUIPMENT:
+            return str(_shared.resolve_site_about_path(context, str(payload.get("site_id") or payload["site"])))
+        if job.job_type in {JOB_MARK_SUPPLY_ORDERED, JOB_MARK_SUPPLY_DELIVERED, JOB_MARK_SUPPLY_STOCKED, JOB_MARK_SUPPLY_NO_ACTION_NEEDED}:
+            target_path = supplies_equipment_transitions.locate_supply_file_by_id(context, str(payload["supply_id"]))
+            return str(target_path) if target_path is not None else "unknown"
+        if job.job_type in {JOB_MARK_EQUIPMENT_APPROVED, JOB_MARK_EQUIPMENT_DENIED, JOB_MARK_EQUIPMENT_ORDERED, JOB_MARK_EQUIPMENT_PROVIDED, JOB_MARK_EQUIPMENT_NO_ACTION_NEEDED}:
+            target_path = supplies_equipment_transitions.locate_equipment_file_by_id(context, str(payload["equipment_id"]))
+            return str(target_path) if target_path is not None else "unknown"
+        if job.job_type == JOB_VOICE_MEMO_NOTE:
+            targets = misc.voice_memo_note_targets(payload, context)
+            return ", ".join(str(path) for path, _allow_create in targets)
+    except Exception:
+        return "unknown"
+    return "unknown"
+
+def process_job(job_path: Path, context: RunContext, processed_dir: Path, failed_dir: Path, processed_job_ids: ProcessedJobIdLookup | None = None) -> None:
+    job_path = context.assert_runtime_write_path(job_path, "queue job path")
+    processed_dir = context.assert_runtime_write_path(processed_dir, "processed queue directory")
+    failed_dir = context.assert_runtime_write_path(failed_dir, "failed queue directory")
+    job: QueueJob | None = None
+    try:
+        job = load_job(job_path)
+        _shared.structured_log(context, "queue_job_started", computed_job_id=job.job_id, job_type=job.job_type, source_queue_file=str(job_path), capture_id=_shared.capture_id_for_job(job))
+        _shared.structured_log(context, "runtime_process_start", computed_job_id=job.job_id, job_type=job.job_type, source_queue_file=str(job_path), capture_id=_shared.capture_id_for_job(job))
+        _shared.write_log_line(context.log_path, f"runtime_process_start job_id={job.job_id} job_type={job.job_type} path={job_path}")
+        already_processed, dedupe_source = (processed_job_ids.exists(job.job_id) if processed_job_ids is not None else processed_job_id_exists(context.runtime_root, processed_dir, job.job_id))
+        _shared.structured_log(context, "dedupe_decision", computed_job_id=job.job_id, job_type=job.job_type, source=dedupe_source, already_processed=already_processed, capture_id=_shared.capture_id_for_job(job))
+        if already_processed:
+            if job.job_type == JOB_ADD_PERSON and job.idempotency_key is None:
+                _shared.structured_log(context, "dedupe_bypassed", computed_job_id=job.job_id, job_type=job.job_type, reason="add-person-without-idempotency-key", source=dedupe_source, capture_id=_shared.capture_id_for_job(job))
+            else:
+                if context.dry_run:
+                    print(f"Job {job.job_id}: job_id already processed — skipping")
+                    _shared.write_log_line(context.log_path, f"job_id={job.job_id} action=skip status=success reason=job-id-already-processed")
+                    _shared.structured_log(context, "replay_skip", computed_job_id=job.job_id, job_type=job.job_type, reason="job-id-already-processed", source=dedupe_source, capture_id=_shared.capture_id_for_job(job))
+                    return
+                print(f"Job {job.job_id}: job_id already processed — skipping")
+                moved_path = _archive_job_file(job_path, processed_dir, context, job=job, already_handled=True, handled_source=dedupe_source, processed_job_ids=processed_job_ids)
+                print(f"Job {job.job_id}: moved queue file to {moved_path}")
+                _shared.write_log_line(context.log_path, f"job_id={job.job_id} action=skip status=success reason=job-id-already-processed")
+                append_processed_index_record(job_path, job, context, target_path_hint(job, context), processed_job_ids)
+                _shared.structured_log(context, "replay_skip", computed_job_id=job.job_id, job_type=job.job_type, reason="job-id-already-processed", source=dedupe_source, moved_to=str(moved_path), capture_id=_shared.capture_id_for_job(job))
+                return
+        processed_destination = processed_dir / job_path.name
+        if not context.dry_run and processed_destination.exists():
+            applied, applied_target = _job_has_applied_marker(job, context)
+            if applied:
+                print(f"Job {job.job_id}: job_id marker already present — skipping")
+                moved_path = _archive_job_file(job_path, processed_dir, context, job=job, already_handled=True, handled_source="applied-marker", processed_job_ids=processed_job_ids)
+                print(f"Job {job.job_id}: moved queue file to {moved_path}")
+                _shared.write_log_line(context.log_path, f"job_id={job.job_id} action=skip status=success reason=job-id-marker-present")
+                append_processed_index_record(job_path, job, context, target_path_hint(job, context), processed_job_ids)
+                _shared.structured_log(context, "replay_skip", computed_job_id=job.job_id, job_type=job.job_type, reason="job-id-marker-present", source="applied-marker", moved_to=str(moved_path), target_path=applied_target, capture_id=_shared.capture_id_for_job(job))
+                return
+        handler = JOB_HANDLERS.get(job.job_type)
+        if handler is None:
+            raise QueueProcessorError(f"Unsupported job type object: {job.job_type}")
+        handler(job_path, job, context, processed_dir)
+        if processed_destination.exists():
+            if processed_job_ids is not None:
+                processed_job_ids.mark_processed_archive(job.job_id)
+            append_processed_index_record(job_path, job, context, target_path_hint(job, context), processed_job_ids)
+            for event in ("queue_job_completed", "runtime_process_success"):
+                _shared.structured_log(context, event, computed_job_id=job.job_id, job_type=job.job_type, moved_to=str(processed_destination), target_path=target_path_hint(job, context), capture_id=_shared.capture_id_for_job(job))
+            _shared.write_log_line(context.log_path, f"runtime_process_success job_id={job.job_id} job_type={job.job_type} path={job_path}")
+        return
+    except Exception as exc:
+        job_id_for_log = job_path.stem
+        job_type_for_log = None
+        try:
+            payload = json.loads(job_path.read_text(encoding="utf-8"))
+            if isinstance(payload, dict) and isinstance(payload.get("job_id"), str) and payload["job_id"].strip():
+                job_id_for_log = payload["job_id"]
+            if isinstance(payload, dict) and isinstance(payload.get("job_type"), str):
+                job_type_for_log = payload["job_type"]
+        except Exception:
+            pass
+        error_message = str(exc)
+        print(f"Job {job_id_for_log}: failed")
+        print(f"Job {job_id_for_log}: error {error_message}")
+        if context.dry_run:
+            print(f"Job {job_id_for_log}: would move queue file to {failed_dir / job_path.name}")
+            reason = "invalid-site-id" if isinstance(exc, InvalidSiteIdError) else None
+            action = "fail" if reason else "dry-run-reject"
+            _shared.write_log_line(context.log_path, f"job_id={job_id_for_log} action={action} status=failure " + (f"reason={reason} " if reason else "") + f"error={error_message}")
+            _shared.structured_log(context, "queue_job_failed", job_id=job_id_for_log, job_type=job_type_for_log, reason=reason, error=error_message, dry_run=True)
+            return
+        try:
+            already_handled = False
+            handled_source = ""
+            if job is not None:
+                already_handled, handled_source = (processed_job_ids.exists(job.job_id) if processed_job_ids is not None else processed_job_id_exists(context.runtime_root, processed_dir, job.job_id))
+                if not already_handled:
+                    already_handled, applied_target = _job_has_applied_marker(job, context)
+                    if already_handled:
+                        handled_source = f"applied-marker:{applied_target}"
+            moved_path = _archive_job_file(job_path, failed_dir, context, job=job, already_handled=already_handled, handled_source=handled_source, processed_job_ids=processed_job_ids)
+            print(f"Job {job_id_for_log}: moved queue file to {moved_path}")
+        except Exception as move_exc:
+            error_message = f"{error_message}; failed to move queue file: {move_exc}"
+            print(f"Job {job_id_for_log}: error {error_message}")
+        reason = "invalid-site-id" if isinstance(exc, InvalidSiteIdError) else None
+        action = "fail" if reason else "reject"
+        _shared.write_log_line(context.log_path, f"job_id={job_id_for_log} action={action} status=failure " + (f"reason={reason} " if reason else "") + f"error={error_message}")
+        _shared.write_log_line(context.log_path, f"runtime_process_failure job_id={job_id_for_log} job_type={job_type_for_log} path={job_path} error={error_message}")
+        _shared.structured_log(context, "queue_job_failed", job_id=job_id_for_log, job_type=job_type_for_log, reason=reason, error=error_message)
+        _shared.structured_log(context, "runtime_process_failure", job_id=job_id_for_log, job_type=job_type_for_log, source_queue_file=str(job_path), reason=reason, error=error_message)
+
+def process_all(project_root: Path, vault_root: Path, runtime_root: Path, dry_run: bool, *, skip_unknowns: bool = False, personal_vault_root: Path | None = None) -> dict[str, object]:
+    runtime_root = ensure_local_runtime_root(runtime_root)
+    resolved_personal_vault_root = DEFAULT_PERSONAL_VAULT_ROOT if personal_vault_root is None else personal_vault_root
+    require_directories({"project_root": project_root, "vault_root": vault_root, "personal_vault_root": resolved_personal_vault_root})
+    logs_root = _shared.ensure_within_root(runtime_root / "logs" / "queue_processor", runtime_root, "queue processor logs directory")
+    queue_dir = _shared.ensure_within_root(runtime_root / "queue", runtime_root, "queue directory")
+    processed_dir = _shared.ensure_within_root(runtime_root / "processed", runtime_root, "processed queue directory")
+    failed_dir = _shared.ensure_within_root(runtime_root / "failed", runtime_root, "failed queue directory")
+    for directory in (queue_dir, processed_dir, failed_dir, logs_root):
+        directory.mkdir(parents=True, exist_ok=True)
+    run_timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    run_id = f"queue-run-{run_timestamp}"
+    log_path = logs_root / "queue_processor.log"
+    _shared.rotate_log_if_large(log_path)
+    structured_log_path = _shared.ensure_within_root(runtime_root / "logs" / "queue_processor_events.jsonl", runtime_root, "queue processor structured log path")
+    context = RunContext(project_root=project_root, vault_root=vault_root, personal_vault_root=resolved_personal_vault_root, runtime_root=runtime_root, log_path=log_path, dry_run=dry_run, run_id=run_id, structured_log_path=structured_log_path)
+    mode_label = "DRY RUN" if dry_run else "REAL RUN"
+    print("BTQ queue processor")
+    for label, value in (("Mode", mode_label), ("Project root", project_root), ("Vault root", vault_root), ("Runtime root", runtime_root), ("Queue dir", queue_dir), ("Processed dir", processed_dir), ("Failed dir", failed_dir), ("Log file", log_path), ("Skip unknown reclassification", skip_unknowns)):
+        print(f"{label}: {value}")
+    for line in (f"mode={mode_label}", f"project_root={project_root}", f"vault_root={vault_root}", f"runtime_root={runtime_root}", f"run_id={run_id}", f"skip_unknowns={skip_unknowns}"):
+        _shared.write_log_line(log_path, line)
+    report: dict[str, object] = {"discovered": 0, "processed": 0, "failed": 0, "skipped": 0, "queue_before": 0, "queue_after": 0, "failed_paths": [], "unknown_reclassification_jobs_created": 0, "unknown_reclassification_skipped": bool(skip_unknowns), "dry_run": bool(dry_run), "runtime_root": str(runtime_root), "queue_dir": str(queue_dir), "processed_dir": str(processed_dir), "failed_dir": str(failed_dir), "log_path": str(log_path)}
+    lock = ProcessorLock(runtime_root)
+    try:
+        lock_event = lock.acquire()
+    except ProcessorLockError as exc:
+        print(f"Queue processor lock refused: {exc}")
+        _shared.write_log_line(log_path, f"lock status=refused error={exc}")
+        _shared.structured_log(context, "processor_lock_refused", error=str(exc))
+        raise QueueProcessorError(str(exc)) from exc
+    try:
+        if lock_event == "stale_recovered":
+            _shared.write_log_line(log_path, "lock status=stale-recovered")
+            _shared.structured_log(context, "processor_lock_stale_recovered", lock_path=str(lock.path))
+        _shared.write_log_line(log_path, "lock status=acquired")
+        _shared.structured_log(context, "processor_lock_acquired", lock_path=str(lock.path))
+        queue_files = sorted(path for path in queue_dir.iterdir() if path.is_file())
+        report["discovered"] = len(queue_files)
+        report["queue_before"] = len(queue_files)
+        print(f"Queue files found: {len(queue_files)}")
+        _shared.write_log_line(log_path, f"queue_files_found={len(queue_files)}")
+        processed_before = {path.name for path in processed_dir.iterdir() if path.is_file()}
+        failed_before = {path.name for path in failed_dir.iterdir() if path.is_file()}
+        processed_job_ids = load_processed_job_id_lookup(runtime_root, processed_dir)
+        for job_path in queue_files:
+            print(f"Processing queue file: {job_path}")
+            process_job(job_path, context, processed_dir, failed_dir, processed_job_ids)
+        processed_after = {path.name for path in processed_dir.iterdir() if path.is_file()}
+        failed_after = {path.name for path in failed_dir.iterdir() if path.is_file()}
+        new_processed = sorted(processed_after - processed_before)
+        new_failed = sorted(failed_after - failed_before)
+        report["processed"] = len(new_processed)
+        report["failed"] = len(new_failed)
+        report["skipped"] = max(0, len(queue_files) - len(new_processed) - len(new_failed))
+        report["queue_after"] = len([path for path in queue_dir.iterdir() if path.is_file()])
+        report["failed_paths"] = [str(failed_dir / name) for name in new_failed]
+        unknown_jobs_created = 0 if skip_unknowns else unknowns.process_unknowns(context)
+        report["unknown_reclassification_jobs_created"] = unknown_jobs_created
+        print(f"Unknown reclassification jobs created: {unknown_jobs_created}")
+        _shared.write_log_line(log_path, f"unknown_reclassification_jobs_created={unknown_jobs_created}")
+    finally:
+        lock.release()
+        _shared.write_log_line(log_path, "lock status=released")
+        _shared.structured_log(context, "processor_lock_released", lock_path=str(lock.path))
+    return report
+
+def main() -> int:
+    if len(sys.argv) > 1 and sys.argv[1] in {"list-critical-sites", "list-employees-by-site"}:
+        parser = argparse.ArgumentParser(description="Run BTQ read-only vault queries.")
+        parser.add_argument("command", choices=["list-critical-sites", "list-employees-by-site"])
+        parser.add_argument("site_id", nargs="?")
+        args = parser.parse_args()
+        context = RunContext(project_root=DEFAULT_PROJECT_ROOT, vault_root=DEFAULT_VAULT_ROOT, personal_vault_root=DEFAULT_PERSONAL_VAULT_ROOT, runtime_root=DEFAULT_RUNTIME_ROOT, log_path=DEFAULT_LOGS_ROOT / "query.log", dry_run=False, valid_site_ids=set(), site_id_to_opportunities_dir={})
+        if args.command == "list-critical-sites":
+            list_critical_sites(context)
+            return 0
+        if args.site_id is None:
+            parser.error("list-employees-by-site requires a site_id")
+        try:
+            site_id = int(args.site_id)
+        except ValueError:
+            parser.error("site_id must be an integer")
+        list_employees_by_site(context, site_id)
+        return 0
+    parser = argparse.ArgumentParser(description="Run the BTQ queue processor.")
+    parser.add_argument("--project-root", required=True)
+    parser.add_argument("--vault-root", required=True)
+    parser.add_argument("--runtime-root", required=True)
+    parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--skip-unknowns", action="store_true")
+    args = parser.parse_args()
+    project_root = _shared.ensure_within_root(Path(args.project_root), DEFAULT_PROJECT_ROOT, "Project root")
+    vault_root = _shared.ensure_within_root(Path(args.vault_root), DEFAULT_VAULT_ROOT, "Vault root")
+    runtime_root = _shared.ensure_within_any_root(Path(args.runtime_root), [DEFAULT_CONFIG.local_runtime_dir, project_root], "Runtime root")
+    runtime_root = ensure_local_runtime_root(runtime_root)
+    try:
+        process_all(project_root=project_root, vault_root=vault_root, runtime_root=runtime_root, dry_run=args.dry_run, skip_unknowns=args.skip_unknowns)
+    except QueueProcessorError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    return 0
+
+if __name__ == "__main__":
+    raise SystemExit(main())

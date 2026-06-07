@@ -1,0 +1,69 @@
+#!/bin/zsh
+set -euo pipefail
+
+# Install the pipeline-observability metrics sampler as a launchd user agent on
+# the Pro. Fires every 15 minutes (StartInterval 900) to append one rolling
+# sample to runtime_root/metrics/pipeline_metrics.jsonl, feeding the /health
+# "Pipeline trend" panel (prompt 187). The sampler reads only local runtime
+# files (queue/claimed/failed counts + processed_index.jsonl), so it needs no
+# CouchDB credentials. Survives reboot and login.
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+BTQ="${REPO_ROOT}/scripts/btq"
+
+if [[ ! -x "${BTQ}" ]]; then
+  echo "ERROR: btq wrapper not executable: ${BTQ}" >&2
+  exit 1
+fi
+
+LAUNCH_AGENTS_DIR="${HOME}/Library/LaunchAgents"
+PLIST_PATH="${LAUNCH_AGENTS_DIR}/com.btq.pipeline-metrics-sample.plist"
+LOG_DIR="${HOME}/btq_runtime/logs"
+STDOUT_LOG="${LOG_DIR}/btq-metrics-sample.out.log"
+STDERR_LOG="${LOG_DIR}/btq-metrics-sample.err.log"
+
+mkdir -p "${LAUNCH_AGENTS_DIR}"
+mkdir -p "${LOG_DIR}"
+
+cat > "${PLIST_PATH}" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.btq.pipeline-metrics-sample</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>${BTQ}</string>
+    <string>pipeline-metrics-sample</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>${REPO_ROOT}</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>HOME</key>
+    <string>${HOME}</string>
+  </dict>
+  <key>StartInterval</key>
+  <integer>900</integer>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>${STDOUT_LOG}</string>
+  <key>StandardErrorPath</key>
+  <string>${STDERR_LOG}</string>
+</dict>
+</plist>
+EOF
+
+launchctl bootout "gui/$(id -u)/com.btq.pipeline-metrics-sample" >/dev/null 2>&1 || true
+launchctl bootstrap "gui/$(id -u)" "${PLIST_PATH}"
+
+printf 'Installed and scheduled %s\n' "${PLIST_PATH}"
+printf '  Fires every 900s (15 min); runs once now (RunAtLoad)\n'
+printf '  Logs: %s\n' "${STDOUT_LOG}"
+printf '\nRun once manually now:     %s pipeline-metrics-sample\n' "${BTQ}"
+printf 'Force a fire via launchd:  launchctl kickstart -k gui/$(id -u)/com.btq.pipeline-metrics-sample\n'

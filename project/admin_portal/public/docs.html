@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>BTQ Admin - Documentation</title>
+    <link rel="stylesheet" href="styles.css">
+  </head>
+  <body>
+    <header class="topbar">
+      <a class="brand" href="index.html"><span class="brand-mark">BTQ</span><span>Admin</span></a>
+      <nav class="nav" aria-label="Primary">
+        <a href="ops-dashboard.html">Ops</a>
+        <a aria-current="page" href="docs.html">Docs</a>
+        <a href="sites.html">Sites</a>
+        <a href="content-moderation.html">Moderation</a>
+        <a href="runtime-health.html">Health</a>
+      </nav>
+    </header>
+
+    <main class="page">
+      <section class="page-header">
+        <h1>Documentation</h1>
+        <p>
+          Key BTQ operator and architecture references. In deployment, publish
+          rendered copies behind the same admin protection.
+        </p>
+      </section>
+
+      <section class="doc-list" aria-label="BTQ documentation links">
+        <a href="../../docs/runbook.md">
+          <strong>Operator Runbook</strong>
+          <span>Daily operation, watchers, field-capture review, and troubleshooting.</span>
+          <code>project/docs/runbook.md</code>
+        </a>
+        <a href="../../docs/architecture/shared_processing_spine.md">
+          <strong>Shared Processing Spine</strong>
+          <span>Evidence-first pipeline boundaries and review-to-writer handoff.</span>
+          <code>project/docs/architecture/shared_processing_spine.md</code>
+        </a>
+        <a href="../../docs/architecture/system_overview.md">
+          <strong>System Overview</strong>
+          <span>BTQ components, directory map, and AI interaction boundaries.</span>
+          <code>project/docs/architecture/system_overview.md</code>
+        </a>
+        <a href="../../docs/architecture/runtime_flow.md">
+          <strong>Runtime Flow</strong>
+          <span>Audio ingestion, queue processing, replay, and vault mutation boundaries.</span>
+          <code>project/docs/architecture/runtime_flow.md</code>
+        </a>
+        <a href="../../field_capture/README.md">
+          <strong>Field Capture README</strong>
+          <span>Capture app behavior, token model, upload viewer, and testing notes.</span>
+          <code>project/field_capture/README.md</code>
+        </a>
+      </section>
+
+      <section class="notice">
+        <h2>Static Deploy Note</h2>
+        <p>
+          These links point at repository source paths for this proposal. A VPS
+          deployment should copy rendered or raw Markdown docs into a protected
+          static docs directory without introducing a database or runtime writer.
+        </p>
+      </section>
+    </main>
+  </body>
+</html>

@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>BTQ Admin - Sites</title>
+    <link rel="stylesheet" href="styles.css">
+  </head>
+  <body>
+    <header class="topbar">
+      <a class="brand" href="index.html"><span class="brand-mark">BTQ</span><span>Admin</span></a>
+      <nav class="nav" aria-label="Primary">
+        <a href="ops-dashboard.html">Ops</a>
+        <a href="docs.html">Docs</a>
+        <a aria-current="page" href="sites.html">Sites</a>
+        <a href="content-moderation.html">Moderation</a>
+        <a href="runtime-health.html">Health</a>
+      </nav>
+    </header>
+
+    <main class="page">
+      <section class="page-header">
+        <h1>Sites</h1>
+        <p>
+          Read-only V1 listing from the checked-in runtime registry in
+          <code>project/event_pipeline/sites.py</code>.
+        </p>
+      </section>
+
+      <section class="table-panel">
+        <table>
+          <thead>
+            <tr>
+              <th>Site ID</th>
+              <th>Canonical Site</th>
+              <th>Vault Note Path</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>7020</td>
+              <td>Lakeshore Community Health</td>
+              <td><code>Accounts/RHN/Locations/7020 - Lakeshore Community Health Center - RHN/about.md</code></td>
+            </tr>
+            <tr>
+              <td>7030</td>
+              <td>Western Gas Transmission</td>
+              <td><code>Accounts/Wgtco/Locations/7030 - Western Gas Transmission/about.md</code></td>
+            </tr>
+            <tr>
+              <td>7050</td>
+              <td>Summit Wire</td>
+              <td><code>Accounts/Summitsteel/Locations/7050 - Summit Wire/about.md</code></td>
+            </tr>
+            <tr>
+              <td>7070</td>
+              <td>Glenwood Elementary School</td>
+              <td><code>Accounts/Glenco/Locations/7070 - Glenwood Elementary School/about.md</code></td>
+            </tr>
+            <tr>
+              <td>7071</td>
+              <td>Glenwood High School</td>
+              <td><code>Accounts/Glenco/Locations/7071 - Glenwood High School/about.md</code></td>
+            </tr>
+            <tr>
+              <td>7080</td>
+              <td>Apex Powdered Metals</td>
+              <td><code>Accounts/Apexco/Locations/7080 - Apex Powdered Metals/about.md</code></td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section class="notice">
+        <h2>Future Source</h2>
+        <p>
+          A later version can generate this page from the vault and active site
+          registry during a protected static publish. V1 keeps the listing
+          static to avoid adding a database, dynamic extraction job, or mutation
+          path to the admin shell.
+        </p>
+      </section>
+    </main>
+  </body>
+</html>
+

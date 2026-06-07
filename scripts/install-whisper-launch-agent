@@ -1,0 +1,80 @@
+#!/bin/zsh
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+PROJECT_ROOT="${REPO_ROOT}/project"
+PYTHON_BIN="${PROJECT_ROOT}/.venv/bin/python"
+
+config_value() {
+  (cd "${PROJECT_ROOT}" && "${PYTHON_BIN}" -m config get "$1")
+}
+
+LAUNCH_AGENTS_DIR="${HOME}/Library/LaunchAgents"
+# Older installs may have registered this agent under a different label. Set
+# BTQ_WHISPER_LEGACY_LABELS to a space-separated list of previous labels to
+# boot them out before installing the current one (e.g. on a machine that ran
+# a pre-rename build). Empty by default for a clean first install.
+LEGACY_LABELS="${BTQ_WHISPER_LEGACY_LABELS:-}"
+LABEL="com.btq.whisper-watch"
+PLIST_PATH="${LAUNCH_AGENTS_DIR}/${LABEL}.plist"
+STDOUT_LOG="$(config_value whisper_launchd_stdout_log)"
+STDERR_LOG="$(config_value whisper_launchd_stderr_log)"
+
+mkdir -p "${LAUNCH_AGENTS_DIR}"
+mkdir -p "$(dirname "${STDOUT_LOG}")"
+
+cat > "${PLIST_PATH}" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>${LABEL}</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>${PYTHON_BIN}</string>
+    <string>-m</string>
+    <string>transcription_pipeline.main</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>${PROJECT_ROOT}</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>BTQ_WHISPER_INITIAL_PROMPT</key>
+    <string>${BTQ_WHISPER_INITIAL_PROMPT:-}</string>
+    <key>BTQ_VOICE_MEMO_SEMANTIC_ENGINE</key>
+    <string>${BTQ_VOICE_MEMO_SEMANTIC_ENGINE:-ollama}</string>
+    <key>BTQ_VOICE_MEMO_SEMANTIC_URL</key>
+    <string>${BTQ_VOICE_MEMO_SEMANTIC_URL:-http://127.0.0.1:11434}</string>
+    <key>BTQ_VOICE_MEMO_SEMANTIC_MODEL</key>
+    <string>${BTQ_VOICE_MEMO_SEMANTIC_MODEL:-qwen3:4b}</string>
+    <key>BTQ_VOICE_MEMO_SEMANTIC_DISABLE_THINKING</key>
+    <string>${BTQ_VOICE_MEMO_SEMANTIC_DISABLE_THINKING:-1}</string>
+    <key>BTQ_VOICE_MEMO_SEMANTIC_TIMEOUT_SECONDS</key>
+    <string>${BTQ_VOICE_MEMO_SEMANTIC_TIMEOUT_SECONDS:-180}</string>
+    <key>BTQ_VOICE_MEMO_SEMANTIC_KEEP_ALIVE</key>
+    <string>${BTQ_VOICE_MEMO_SEMANTIC_KEEP_ALIVE:-10m}</string>
+  </dict>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>${STDOUT_LOG}</string>
+  <key>StandardErrorPath</key>
+  <string>${STDERR_LOG}</string>
+</dict>
+</plist>
+EOF
+
+for legacy in ${LEGACY_LABELS}; do
+  launchctl bootout "gui/$(id -u)/${legacy}" >/dev/null 2>&1 || true
+done
+launchctl bootout "gui/$(id -u)/${LABEL}" >/dev/null 2>&1 || true
+launchctl bootstrap "gui/$(id -u)" "${PLIST_PATH}"
+launchctl kickstart -k "gui/$(id -u)/${LABEL}"
+
+printf 'Installed and started %s\n' "${PLIST_PATH}"

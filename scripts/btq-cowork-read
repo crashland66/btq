@@ -1,0 +1,164 @@
+#!/usr/bin/env python3
+"""btq-cowork-read - sandbox-safe file-drop queue read helper.
+
+Runs with only the Python standard library. It writes a read request into
+<pipeline_dir>/cowork_read/requests/, waits for the host watcher to write a
+matching response into responses/, and prints that response JSON to stdout.
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+import sys
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+CONFIG_PATH_ENV = "BT_PIPELINE_CONFIG_PATH"
+BASE_DIR_ENV = "BT_PIPELINE_BASE_DIR"
+DEFAULT_TIMEOUT_SECONDS = 30.0
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _config_path() -> Path:
+    if os.environ.get(CONFIG_PATH_ENV):
+        return Path(os.environ[CONFIG_PATH_ENV]).expanduser()
+    return REPO_ROOT / "config.json"
+
+
+def _load_pipeline_dir(config_path: Path | None = None) -> Path:
+    path = config_path or _config_path()
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(raw, dict):
+        raise ValueError(f"config must be a JSON object: {path}")
+    base_raw = raw.get("base_dir")
+    pipeline_raw = raw.get("pipeline_dir")
+    if not isinstance(base_raw, str) or not base_raw.strip():
+        raise ValueError("config key 'base_dir' must be a non-empty string")
+    if not isinstance(pipeline_raw, str) or not pipeline_raw.strip():
+        raise ValueError("config key 'pipeline_dir' must be a non-empty string")
+    base_dir = os.environ.get(BASE_DIR_ENV, base_raw)
+    return Path(pipeline_raw.replace("{base_dir}", base_dir)).expanduser()
+
+
+def _parse_arg(raw: str) -> tuple[str, Any]:
+    if "=" not in raw:
+        raise ValueError(f"--arg must be k=v: {raw!r}")
+    key, value = raw.split("=", 1)
+    if not key:
+        raise ValueError("--arg key must be non-empty")
+    try:
+        parsed: Any = json.loads(value)
+    except json.JSONDecodeError:
+        parsed = value
+    return key, parsed
+
+
+def _request_id(tool: str, args: dict[str, Any]) -> str:
+    created_ns = time.time_ns()
+    canonical = json.dumps({"tool": tool, "args": args, "created_ns": created_ns}, sort_keys=True, separators=(",", ":"))
+    digest = hashlib.sha1(canonical.encode("utf-8")).hexdigest()[:12]
+    return f"cwr-{created_ns}-{digest}"
+
+
+def _write_request(requests_dir: Path, request: dict[str, Any]) -> Path:
+    requests_dir.mkdir(parents=True, exist_ok=True)
+    path = requests_dir / f"{request['request_id']}.json"
+    tmp_path = requests_dir / f".{request['request_id']}.json.tmp"
+    tmp_path.write_text(json.dumps(request, indent=2, ensure_ascii=False), encoding="utf-8")
+    tmp_path.replace(path)
+    return path
+
+
+def _timeout_response(request_id: str, tool: str, timeout: float) -> dict[str, Any]:
+    return {
+        "request_id": request_id,
+        "ok": False,
+        "tool": tool,
+        "error": {
+            "code": "reader_timeout",
+            "message": f"no cowork_read response after {timeout:g}s; watcher may be down",
+        },
+        "completed_at": _now_iso(),
+    }
+
+
+def submit_and_wait(
+    tool: str,
+    args: dict[str, Any],
+    *,
+    timeout: float = DEFAULT_TIMEOUT_SECONDS,
+    pipeline_dir: Path | None = None,
+    request_id: str | None = None,
+) -> dict[str, Any]:
+    resolved_pipeline_dir = pipeline_dir or _load_pipeline_dir()
+    drop_root = resolved_pipeline_dir / "cowork_read"
+    request_id = request_id or _request_id(tool, args)
+    request = {"request_id": request_id, "tool": tool, "args": args, "created_at": _now_iso()}
+    _write_request(drop_root / "requests", request)
+
+    response_path = drop_root / "responses" / f"{request_id}.json"
+    deadline = time.monotonic() + timeout
+    while time.monotonic() <= deadline:
+        if response_path.exists():
+            try:
+                response = json.loads(response_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                time.sleep(0.1)
+                continue
+            if isinstance(response, dict):
+                return response
+            return {
+                "request_id": request_id,
+                "ok": False,
+                "tool": tool,
+                "error": {"code": "invalid_response", "message": "response JSON must be an object"},
+                "completed_at": _now_iso(),
+            }
+        time.sleep(0.1)
+    return _timeout_response(request_id, tool, timeout)
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--tool", choices=("queue_state", "list_queue_jobs", "get_job"), required=True)
+    parser.add_argument("--arg", action="append", default=[], help="Tool argument as k=v. Values are parsed as JSON when possible.")
+    parser.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT_SECONDS)
+    parser.add_argument("--request-id", help="Override request_id for idempotent/pinned polling.")
+    parser.add_argument("--pipeline-dir", type=Path, help="Override pipeline_dir for testing.")
+    args = parser.parse_args(argv)
+
+    payload: dict[str, Any] = {}
+    try:
+        for raw_arg in args.arg:
+            key, value = _parse_arg(raw_arg)
+            payload[key] = value
+        response = submit_and_wait(
+            args.tool,
+            payload,
+            timeout=args.timeout,
+            pipeline_dir=args.pipeline_dir,
+            request_id=args.request_id,
+        )
+    except Exception as exc:
+        response = {
+            "ok": False,
+            "error": {"code": "helper_error", "message": str(exc)},
+            "completed_at": _now_iso(),
+        }
+
+    print(json.dumps(response, sort_keys=True))
+    return 0 if response.get("ok") is True else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

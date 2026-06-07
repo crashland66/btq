@@ -1,0 +1,48 @@
+{
+  "exports": [
+    {
+      "source": "project/docs/ai/README_FIRST.md",
+      "target": "README_FIRST.md"
+    },
+    {
+      "source": "project/docs/claude_project_setup.md",
+      "target": "AI/claude_project_setup.md"
+    },
+    {
+      "source": "AGENTS.md",
+      "target": "AI/AGENTS.md"
+    },
+    {
+      "source": "project/docs/queue_authoring_guide.md",
+      "target": "Queue/queue_authoring_guide.md"
+    },
+    {
+      "source": "project/docs/vault_schema.md",
+      "target": "Queue/vault_schema.md"
+    },
+    {
+      "source": "project/docs/architecture/system_overview.md",
+      "target": "Architecture/system_overview.md"
+    },
+    {
+      "source": "project/docs/architecture/runtime_flow.md",
+      "target": "Architecture/runtime_flow.md"
+    },
+    {
+      "source": "project/docs/architecture/deterministic_contracts.md",
+      "target": "Architecture/deterministic_contracts.md"
+    },
+    {
+      "source": "project/docs/pipeline.md",
+      "target": "Runtime/pipeline.md"
+    },
+    {
+      "source": "project/docs/runbook.md",
+      "target": "Runtime/runbook.md"
+    },
+    {
+      "source": "project/docs/dell_deployment_checklist.md",
+      "target": "Deploy/dell_deployment_checklist.md"
+    }
+  ]
+}

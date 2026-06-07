@@ -1,0 +1,11 @@
+#!/bin/zsh
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+PROJECT_ROOT="${REPO_ROOT}/project"
+PYTHON_BIN="${PROJECT_ROOT}/.venv/bin/python"
+
+cd "${PROJECT_ROOT}"
+
+exec "${PYTHON_BIN}" -m nightly_digest_builder "$@"

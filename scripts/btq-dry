@@ -1,0 +1,23 @@
+#!/bin/zsh
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+PROJECT_ROOT="${REPO_ROOT}/project"
+PYTHON_BIN="${PROJECT_ROOT}/.venv/bin/python"
+
+config_value() {
+  (cd "${PROJECT_ROOT}" && "${PYTHON_BIN}" -m config get "$1")
+}
+
+VAULT_ROOT="$(config_value vault_dir)"
+RUN_ID="$(date -u '+%Y%m%dT%H%M%SZ')"
+RUNTIME_ROOT="$(config_value project_runtime_dry_root)/${RUN_ID}"
+
+cd "${PROJECT_ROOT}"
+
+exec "${PYTHON_BIN}" -m queue_processor.main \
+  --project-root "${PROJECT_ROOT}" \
+  --vault-root "${VAULT_ROOT}" \
+  --runtime-root "${RUNTIME_ROOT}" \
+  --dry-run

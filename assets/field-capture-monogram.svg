@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="Field Capture">
+  <!-- Concept 3: FC monogram in a rounded square; the C arc doubles as a capture/sound wave -->
+  <rect x="4" y="4" width="56" height="56" rx="14" fill="none" stroke="currentColor" stroke-width="3"/>
+  <!-- F in neutral -->
+  <g stroke="currentColor" stroke-width="5" stroke-linecap="round" fill="none">
+    <line x1="17" y1="18" x2="17" y2="46"/>
+    <line x1="17" y1="18" x2="30" y2="18"/>
+    <line x1="17" y1="32" x2="28" y2="32"/>
+  </g>
+  <!-- C as an open arc (capture bracket) in accent, opening toward a record dot -->
+  <path d="M50 24 a12 12 0 1 0 0 16" fill="none" stroke="#14B8A6" stroke-width="5" stroke-linecap="round"/>
+  <!-- record/capture point centered in the C's mouth -->
+  <circle cx="41" cy="32" r="3.4" fill="#14B8A6"/>
+</svg>

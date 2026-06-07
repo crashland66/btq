@@ -1,0 +1,123 @@
+#!/bin/zsh
+set -euo pipefail
+
+# Install the btq ops-dashboard as a launchd user agent on the Pro.
+# Matches the existing terminal invocation:
+#   @@BTQ_PROJECT_ROOT@@/scripts/btq ops-dashboard --host 0.0.0.0 --port 8765
+#
+# After install, the service runs on Pro startup, restarts on crash, and
+# survives terminal close. Use `launchctl kickstart -k gui/$(id -u)/com.btq.ops-dashboard`
+# to restart after a code pull (already wired into scripts/btq-deploy-pro).
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+BTQ_WRAPPER="${REPO_ROOT}/scripts/btq"
+
+if [[ ! -x "${BTQ_WRAPPER}" ]]; then
+  echo "btq wrapper not found or not executable: ${BTQ_WRAPPER}" >&2
+  exit 1
+fi
+
+LAUNCH_AGENTS_DIR="${HOME}/Library/LaunchAgents"
+PLIST_PATH="${LAUNCH_AGENTS_DIR}/com.btq.ops-dashboard.plist"
+WATCHER_PLIST="${LAUNCH_AGENTS_DIR}/com.btq.couchdb-field-capture-watcher.plist"
+WHISPER_PLIST="${LAUNCH_AGENTS_DIR}/com.btq.whisper-watch.plist"
+LOG_DIR="${HOME}/btq_runtime/logs"
+STDOUT_LOG="${LOG_DIR}/ops-dashboard.out.log"
+STDERR_LOG="${LOG_DIR}/ops-dashboard.err.log"
+
+HOST="${OPS_DASHBOARD_HOST:-0.0.0.0}"
+PORT="${OPS_DASHBOARD_PORT:-8765}"
+
+# CouchDB env: the sites editor needs BTQ_COUCHDB_URL / USER / PASSWORD to
+# read and write site documents. The field-capture watcher plist is the
+# canonical place these live on the Pro (populated once at first install,
+# never committed to git). Read from there so the two services stay in sync
+# automatically. Per-invocation env-var overrides win when set.
+read_plist_env() {
+  local plist="$1" key="$2"
+  [[ -f "${plist}" ]] || return 0
+  /usr/libexec/PlistBuddy -c "Print :EnvironmentVariables:${key}" "${plist}" 2>/dev/null || true
+}
+
+COUCHDB_URL="${BTQ_COUCHDB_URL:-$(read_plist_env "${WATCHER_PLIST}" BTQ_COUCHDB_URL)}"
+COUCHDB_USER="${BTQ_COUCHDB_USER:-$(read_plist_env "${WATCHER_PLIST}" BTQ_COUCHDB_USER)}"
+COUCHDB_PASSWORD="${BTQ_COUCHDB_PASSWORD:-$(read_plist_env "${WATCHER_PLIST}" BTQ_COUCHDB_PASSWORD)}"
+
+# Voice memo CouchDB env: the dashboard's Voice Memo panel queries the voice
+# memo CouchDB for live intake state. The whisper-watch plist is where these
+# live on the Pro; read from there so the services stay in sync.
+VM_COUCHDB_URL="${VOICE_MEMO_COUCHDB_URL:-$(read_plist_env "${WHISPER_PLIST}" VOICE_MEMO_COUCHDB_URL)}"
+VM_COUCHDB_USER="${VOICE_MEMO_COUCHDB_USER:-$(read_plist_env "${WHISPER_PLIST}" VOICE_MEMO_COUCHDB_USER)}"
+VM_COUCHDB_PASSWORD="${VOICE_MEMO_COUCHDB_PASSWORD:-$(read_plist_env "${WHISPER_PLIST}" VOICE_MEMO_COUCHDB_PASSWORD)}"
+VM_COUCHDB_DB="${VOICE_MEMO_COUCHDB_DB:-$(read_plist_env "${WHISPER_PLIST}" VOICE_MEMO_COUCHDB_DB)}"
+
+if [[ -z "${COUCHDB_URL}" ]]; then
+  echo "warn: BTQ_COUCHDB_URL not found in env or ${WATCHER_PLIST}; the sites editor will report 'BTQ_COUCHDB_URL must be set' until this is fixed" >&2
+fi
+if [[ -z "${VM_COUCHDB_URL}" ]]; then
+  echo "warn: VOICE_MEMO_COUCHDB_URL not found in env or ${WHISPER_PLIST}; the dashboard Voice Memo panel will show intake state as unavailable" >&2
+fi
+
+mkdir -p "${LAUNCH_AGENTS_DIR}"
+mkdir -p "${LOG_DIR}"
+
+cat > "${PLIST_PATH}" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.btq.ops-dashboard</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>${BTQ_WRAPPER}</string>
+    <string>ops-dashboard</string>
+    <string>--host</string>
+    <string>${HOST}</string>
+    <string>--port</string>
+    <string>${PORT}</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>${REPO_ROOT}</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>PYTHONUNBUFFERED</key>
+    <string>1</string>
+    <key>BTQ_COUCHDB_URL</key>
+    <string>${COUCHDB_URL}</string>
+    <key>BTQ_COUCHDB_USER</key>
+    <string>${COUCHDB_USER}</string>
+    <key>BTQ_COUCHDB_PASSWORD</key>
+    <string>${COUCHDB_PASSWORD}</string>
+    <key>VOICE_MEMO_COUCHDB_URL</key>
+    <string>${VM_COUCHDB_URL}</string>
+    <key>VOICE_MEMO_COUCHDB_USER</key>
+    <string>${VM_COUCHDB_USER}</string>
+    <key>VOICE_MEMO_COUCHDB_PASSWORD</key>
+    <string>${VM_COUCHDB_PASSWORD}</string>
+    <key>VOICE_MEMO_COUCHDB_DB</key>
+    <string>${VM_COUCHDB_DB}</string>
+  </dict>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>${STDOUT_LOG}</string>
+  <key>StandardErrorPath</key>
+  <string>${STDERR_LOG}</string>
+</dict>
+</plist>
+EOF
+
+launchctl bootout "gui/$(id -u)/com.btq.ops-dashboard" >/dev/null 2>&1 || true
+launchctl bootstrap "gui/$(id -u)" "${PLIST_PATH}"
+launchctl kickstart -k "gui/$(id -u)/com.btq.ops-dashboard"
+
+printf 'Installed and started %s\n' "${PLIST_PATH}"
+printf '  Host: %s:%s\n' "${HOST}" "${PORT}"
+printf '  Logs: %s\n' "${STDOUT_LOG}"
+printf '\nRestart after code updates: launchctl kickstart -k gui/$(id -u)/com.btq.ops-dashboard\n'

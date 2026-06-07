@@ -1,0 +1,212 @@
+# Extraction terms — tunable vocabulary for the event extractor.
+#
+# The event extractor (project/event_pipeline/extractor.py) and the audio
+# semantic classifiers (project/field_capture/audio_semantics.py) match
+# transcript text against named phrase lists. Those lists live here so they
+# are visible and tunable without a code change.
+#
+# Matching is case-insensitive substring matching. The extractor keeps its
+# own logic for category, confidence, and the emitted detail text — this file
+# only controls *which phrases* trigger each detector.
+#
+# Layering:
+#   global:        system-wide phrase lists; the default for every site.
+#   sites.<id>:    per-site adjustments applied on top of the global lists.
+#                  extend  — append phrases to a global list
+#                  remove  — drop phrases from a global list
+#                  replace — replace a global list entirely ([] disables it)
+#
+# Every list id referenced under sites.* must exist under global. To add
+# brand-new site-specific terms without touching code, extend one of the
+# *_extra lists below — they are empty globally and exist as extension points.
+#
+# This file is the Phase 1 home for these terms; the loader is designed so the
+# source can later move to CouchDB behind the same interface.
+
+version: 1
+
+global:
+  # --- Visit detection (audio_semantics.classify_visit / classify_qc_visit) ---
+  visit_completion:
+    - "all done"
+    - "all good"
+    - "looks good"
+    - "everything looks good"
+    - "everything's good"
+    - "everything is good"
+    - "finished"
+    - "completed"
+    - "wrapped up"
+    - "clean and good"
+    - "good condition"
+    - "no issues"
+    - "no problems"
+    - "everything clean"
+  qc_inspection:
+    - "quality check"
+    - "quality inspection"
+    - "qc visit"
+    - "qc walk"
+    - "site inspection"
+    - "inspection visit"
+    - "walked the"
+    - "walk-through"
+    - "walkthrough"
+    - "conducted a check"
+    - "conducting a check"
+    - "came by to check"
+    - "stopped by to check"
+    - "checked on the"
+
+  # --- Interview / recruiting observations (extractor.classify_observation) ---
+  obs_unprompted:
+    - "without prompting"
+    - "without being asked"
+    - "unprompted"
+  obs_drug_alcohol:
+    - "drug"
+    - "drugs"
+    - "alcohol"
+    - "drink"
+    - "drinking"
+    - "drug problem"
+  obs_phone_battery:
+    - "phone battery died"
+    - "battery died mid call"
+    - "battery died mid-call"
+    - "phone died mid call"
+    - "phone died mid-call"
+    - "low phone battery"
+    - "call ended early due to low phone battery"
+  obs_call_interrupted:
+    - "had to jump off the call"
+    - "had to hop off the call"
+    - "had to get off the call"
+    - "call got cut off"
+    - "call was cut off"
+    - "line cut out"
+    - "got cut off"
+  obs_urgency:
+    - "needed to call right away"
+    - "needed an answer right away"
+    - "said it was urgent"
+    - "said this was urgent"
+    - "needed to know tonight"
+    - "needed to know today"
+  interview_fact_keywords:
+    - "candidate"
+    - "interview"
+    - "call"
+    - "called"
+    - "availability"
+    - "available"
+    - "experience"
+    - "worked"
+    - "start"
+    - "starting"
+    - "phone"
+
+  # --- Employee onboarding (extractor.extract_employee_onboarding_event) ---
+  onboarding_triggers:
+    - "new employee"
+    - "training modules"
+    - "oriented"
+    - "started in cleaning"
+    - "was hired as"
+    - "hired as a"
+    - "hired as an"
+    - "started as a"
+    - "started as an"
+    - "we hired"
+  onboarding_role_cleaning:
+    - "started in cleaning"
+    - "got him started in cleaning"
+    - "got her started in cleaning"
+
+  # --- Staffing & retention risk (extractor.fallback_extract_events) ---
+  staffing_risk:
+    - "critically short"
+    - "short staffed"
+    - "short-staffed"
+    - "multiple resignations"
+    - "resigned"
+    - "openings"
+    - "employees left"
+    - "employees remaining"
+    - "positions now vacant"
+  retention_risk:
+    - "might leave"
+    - "thinking about quitting"
+    - "not ready to say"
+    - "circling that area"
+    - "thinking about it"
+    - "might not stay"
+    - "considering stepping back"
+
+  # --- Site observations (extractor.extract_site_observation) ---
+  # Physical condition / material vocabulary. These vary by building, so they
+  # are the most common candidates for per-site tuning.
+  site_obs_flooring:
+    - "carpet squares"
+    - "carpet tiles"
+    - "vinyl plank"
+    - "lvp"
+    - "vinyl flooring"
+    - "vinyl floors"
+    - "flooring is"
+    - "vct"
+  site_obs_hard_to_clean:
+    - "challenge to clean"
+    - "hard to clean"
+    - "difficult to clean"
+    - "marks on them"
+    - "doesn't come clean easily"
+    - "doesnt come clean easily"
+  site_obs_diamond_stall_trigger:
+    - "diamond textured metal stalls"
+  site_obs_diamond_stall_qualifier:
+    - "difficult to clean"
+    - "show marks"
+  site_obs_elevator_layout:
+    - "layout requires elevator access"
+  site_obs_traps_dirt:
+    - "material traps dirt"
+  # Per-site extension point: matched phrases emit a generic site_observation
+  # (category "condition"). Empty globally — extend per site.
+  site_obs_extra: []
+
+  # --- Access constraints (extractor.fallback_extract_events) ---
+  # access_badge_gate_elevator: all three phrases must be present together.
+  access_badge_gate_elevator:
+    - "badge"
+    - "gate"
+    - "elevator"
+  # access_badge_only: paired with the word "badge" present in the sentence.
+  access_badge_only:
+    - "only"
+    - "only one"
+    - "only john"
+  access_dependency:
+    - "only one with access"
+    - "only one that can clean"
+    - "only one that can access"
+    - "only one who can access"
+    - "only one who has access"
+    - "he is the only one with access"
+    - "he is the only one that can clean"
+    - "can't do much without"
+    - "cant do much without"
+    - "can't really do much without"
+    - "cant really do much without"
+    - "without the team present"
+  access_key_control:
+    - "only one key exists"
+    - "second cleaner cannot access"
+  access_key_holder:
+    - "without key holder"
+    - "cannot be performed"
+  # Per-site extension point for new access-constraint vocabulary.
+  access_extra: []
+
+# Per-site adjustments. Keys are site_id strings.
+sites: {}

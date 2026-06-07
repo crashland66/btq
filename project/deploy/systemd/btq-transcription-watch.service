@@ -1,0 +1,26 @@
+[Unit]
+Description=BTQ transcription watcher
+After=network.target
+
+[Service]
+Type=simple
+User=@@BTQ_SERVICE_USER@@
+Group=@@BTQ_SERVICE_GROUP@@
+WorkingDirectory=@@BTQ_PROJECT_ROOT@@
+Environment="PATH=@@BTQ_PATH@@"
+Environment="PYTHONUNBUFFERED=1"
+Environment="BTQ_COUCHDB_URL=@@BTQ_COUCHDB_URL@@"
+Environment="BTQ_COUCHDB_USER=@@BTQ_COUCHDB_USER@@"
+Environment="BTQ_COUCHDB_PASSWORD=@@BTQ_COUCHDB_PASSWORD@@"
+Environment="BTQ_RUNTIME_ROOT=@@BTQ_RUNTIME_ROOT@@"
+Environment="BTQ_VAULT_ROOT=@@BTQ_VAULT_ROOT@@"
+# Set @@BTQ_TRANSCRIPTION_WORKER_COUNT_ARGS@@ to empty for the Mac-equivalent
+# default, or to "--worker-count N" after sizing the Dell GPU/CPU.
+ExecStart=@@BTQ_PYTHON_BIN@@ -m transcription_pipeline.main @@BTQ_TRANSCRIPTION_WORKER_COUNT_ARGS@@
+Restart=always
+RestartSec=10
+StandardOutput=append:@@BTQ_LOG_DIR@@/btq-transcription-watch.out.log
+StandardError=append:@@BTQ_LOG_DIR@@/btq-transcription-watch.err.log
+
+[Install]
+WantedBy=multi-user.target

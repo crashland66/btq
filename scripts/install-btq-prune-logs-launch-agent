@@ -1,0 +1,74 @@
+#!/bin/zsh
+set -euo pipefail
+
+# Install the daily btq log-pruning sweep as a launchd user agent on the Pro.
+# Fires at 03:40 — a quiet hour, clear of the hourly backup (:17) and the
+# queue processor's :30 sweeps. Survives reboot and login.
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+PRUNE_SCRIPT="${REPO_ROOT}/scripts/btq-prune-logs"
+
+if [[ ! -x "${PRUNE_SCRIPT}" ]]; then
+  chmod +x "${PRUNE_SCRIPT}" 2>/dev/null || true
+fi
+if [[ ! -x "${PRUNE_SCRIPT}" ]]; then
+  echo "ERROR: prune script not executable: ${PRUNE_SCRIPT}" >&2
+  exit 1
+fi
+
+LAUNCH_AGENTS_DIR="${HOME}/Library/LaunchAgents"
+PLIST_PATH="${LAUNCH_AGENTS_DIR}/com.btq.prune-logs.plist"
+LOG_DIR="${HOME}/btq_runtime/logs"
+STDOUT_LOG="${LOG_DIR}/btq-prune-logs.out.log"
+STDERR_LOG="${LOG_DIR}/btq-prune-logs.err.log"
+
+mkdir -p "${LAUNCH_AGENTS_DIR}"
+mkdir -p "${LOG_DIR}"
+
+cat > "${PLIST_PATH}" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.btq.prune-logs</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>${PRUNE_SCRIPT}</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>${HOME}</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>HOME</key>
+    <string>${HOME}</string>
+  </dict>
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key>
+    <integer>3</integer>
+    <key>Minute</key>
+    <integer>40</integer>
+  </dict>
+  <key>RunAtLoad</key>
+  <false/>
+  <key>StandardOutPath</key>
+  <string>${STDOUT_LOG}</string>
+  <key>StandardErrorPath</key>
+  <string>${STDERR_LOG}</string>
+</dict>
+</plist>
+EOF
+
+launchctl bootout "gui/$(id -u)/com.btq.prune-logs" >/dev/null 2>&1 || true
+launchctl bootstrap "gui/$(id -u)" "${PLIST_PATH}"
+
+printf 'Installed and scheduled %s\n' "${PLIST_PATH}"
+printf '  Fires daily at 03:40\n'
+printf '  Logs: %s\n' "${STDOUT_LOG}"
+printf '\nRun once manually now:    %s\n' "${PRUNE_SCRIPT}"
+printf 'Preview without changes:  %s --dry-run\n' "${PRUNE_SCRIPT}"
+printf 'Force a fire via launchd: launchctl kickstart -k gui/$(id -u)/com.btq.prune-logs\n'

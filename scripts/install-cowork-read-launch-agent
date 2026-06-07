@@ -1,0 +1,185 @@
+#!/bin/zsh
+set -euo pipefail
+
+# Installs the launchd agent that answers Cowork queue read requests from the
+# file-drop bridge. Runs on the Pro (where CouchDB is local). Mirrors
+# install-cowork-drop-launch-agent.
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+PROJECT_ROOT="${REPO_ROOT}/project"
+PYTHON_BIN="${PROJECT_ROOT}/.venv/bin/python"
+LABEL="com.btq.cowork-read-watch"
+
+DRY_RUN="${BTQ_INSTALL_DRY_RUN:-0}"
+DRY_RUN_PATH="${BTQ_INSTALL_DRY_RUN_PATH:-}"
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --dry-run)
+      DRY_RUN=1
+      shift
+      ;;
+    --dry-run-output)
+      if [[ -z "${2:-}" ]]; then
+        printf 'usage: %s [--dry-run] [--dry-run-output PATH]\n' "$0" >&2
+        exit 2
+      fi
+      DRY_RUN=1
+      DRY_RUN_PATH="$2"
+      shift 2
+      ;;
+    *)
+      printf 'usage: %s [--dry-run] [--dry-run-output PATH]\n' "$0" >&2
+      exit 2
+      ;;
+  esac
+done
+
+config_value() {
+  (cd "${PROJECT_ROOT}" && "${PYTHON_BIN}" -m config get "$1")
+}
+
+LAUNCH_AGENTS_DIR="${HOME}/Library/LaunchAgents"
+PLIST_PATH="${LAUNCH_AGENTS_DIR}/${LABEL}.plist"
+LOGS_DIR="$(config_value logs_dir)"
+STDOUT_LOG="${LOGS_DIR}/cowork_read_watch_launchd_stdout.log"
+STDERR_LOG="${LOGS_DIR}/cowork_read_watch_launchd_stderr.log"
+
+if [[ "${DRY_RUN}" != "1" ]]; then
+  mkdir -p "${LAUNCH_AGENTS_DIR}"
+  mkdir -p "${LOGS_DIR}"
+fi
+
+# CouchDB connection info is baked into the plist below from BTQ_COUCHDB_* in
+# the environment. If those aren't in the install shell, source them from the
+# sibling queue-watch daemon's plist so the read watcher can authenticate.
+# Values are never printed (only a SET marker).
+SIBLING_PLIST="${LAUNCH_AGENTS_DIR}/com.btq.queue-watch.plist"
+if [[ -z "${BTQ_COUCHDB_URL:-}" && -f "${SIBLING_PLIST}" ]]; then
+  for k in BTQ_COUCHDB_URL BTQ_COUCHDB_USER BTQ_COUCHDB_PASSWORD BTQ_COUCHDB_QUEUE_DB BTQ_QUEUE_DATABASE; do
+    v="$(/usr/libexec/PlistBuddy -c "Print :EnvironmentVariables:${k}" "${SIBLING_PLIST}" 2>/dev/null || true)"
+    [[ -n "${v}" ]] && export "${k}=${v}"
+  done
+  printf 'sourced CouchDB env from sibling daemon plist: URL=%s\n' "${BTQ_COUCHDB_URL:+SET}"
+fi
+
+render_plist() {
+  local target="$1"
+  "${PYTHON_BIN}" - "${target}" "${PYTHON_BIN}" "${PROJECT_ROOT}" "${STDOUT_LOG}" "${STDERR_LOG}" <<'PY'
+from __future__ import annotations
+
+import os
+import plistlib
+import sys
+
+target, python_bin, project_root, stdout_log, stderr_log = sys.argv[1:6]
+env = {
+    "PATH": "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+}
+for key in ("BTQ_COUCHDB_URL", "BTQ_COUCHDB_USER", "BTQ_COUCHDB_PASSWORD"):
+    value = os.environ.get(key)
+    if value:
+        env[key] = value
+
+# cowork_read_watcher delegates CouchDB reads to couchdb_queue_reader, whose
+# canonical queue override is BTQ_COUCHDB_QUEUE_DB. Preserve legacy sourced
+# BTQ_QUEUE_DATABASE by writing the key the reader checks first.
+queue_db = os.environ.get("BTQ_COUCHDB_QUEUE_DB") or os.environ.get("BTQ_QUEUE_DATABASE")
+if queue_db:
+    env["BTQ_COUCHDB_QUEUE_DB"] = queue_db
+
+plist = {
+    "Label": "com.btq.cowork-read-watch",
+    "ProgramArguments": [
+        python_bin,
+        "-m",
+        "queue_processor.cowork_read_watcher",
+    ],
+    "WorkingDirectory": project_root,
+    "EnvironmentVariables": env,
+    "RunAtLoad": True,
+    "KeepAlive": True,
+    "StandardOutPath": stdout_log,
+    "StandardErrorPath": stderr_log,
+}
+with open(target, "wb") as handle:
+    plistlib.dump(plist, handle, sort_keys=False)
+PY
+}
+
+credential_marker() {
+  local queue_db_marker=""
+  [[ -n "${BTQ_COUCHDB_QUEUE_DB:-${BTQ_QUEUE_DATABASE:-}}" ]] && queue_db_marker="SET"
+  printf 'CouchDB env: URL=%s USER=%s PASSWORD=%s QUEUE_DB=%s\n' \
+    "${BTQ_COUCHDB_URL:+SET}" \
+    "${BTQ_COUCHDB_USER:+SET}" \
+    "${BTQ_COUCHDB_PASSWORD:+SET}" \
+    "${queue_db_marker}"
+}
+
+wait_for_service_gone() {
+  local service="$1"
+  local attempt
+  for attempt in {1..10}; do
+    if ! launchctl print "${service}" >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 1
+  done
+  printf 'Timed out waiting for launchd service to unload: %s\n' "${service}" >&2
+  return 1
+}
+
+bootstrap_with_retry() {
+  local domain="$1"
+  local plist_path="$2"
+  local attempt output bootstrap_status
+  for attempt in {1..3}; do
+    if output="$(launchctl bootstrap "${domain}" "${plist_path}" 2>&1)"; then
+      return 0
+    fi
+    bootstrap_status=$?
+    if [[ "${output}" != *"Input/output error"* && "${output}" != *"Bootstrap failed: 5"* ]]; then
+      printf 'launchctl bootstrap failed for %s (exit %s):\n%s\n' "${plist_path}" "${bootstrap_status}" "${output}" >&2
+      return "${bootstrap_status}"
+    fi
+    if [[ "${attempt}" -lt 3 ]]; then
+      printf 'launchctl bootstrap hit teardown race for %s; retrying (%s/3)\n' "${plist_path}" "${attempt}" >&2
+      sleep 2
+    fi
+  done
+  printf 'launchctl bootstrap failed after retries for %s; watcher may be down. Last launchctl output:\n%s\n' "${plist_path}" "${output}" >&2
+  return 1
+}
+
+if [[ "${DRY_RUN}" == "1" ]]; then
+  if [[ -z "${DRY_RUN_PATH}" ]]; then
+    DRY_RUN_PATH="$(mktemp "${TMPDIR:-/tmp}/btq-cowork-read-watch.XXXXXX.plist")"
+  fi
+  render_plist "${DRY_RUN_PATH}"
+  if command -v plutil >/dev/null 2>&1; then
+    plutil -lint "${DRY_RUN_PATH}" >/dev/null
+    printf 'plutil -lint: OK\n'
+  else
+    printf 'plutil -lint: SKIPPED (plutil not found)\n'
+  fi
+  credential_marker
+  printf 'Dry-run rendered %s\n' "${DRY_RUN_PATH}"
+  exit 0
+fi
+
+render_plist "${PLIST_PATH}"
+
+if command -v plutil >/dev/null 2>&1; then
+  plutil -lint "${PLIST_PATH}" >/dev/null
+fi
+
+USER_ID="$(id -u)"
+LAUNCHD_DOMAIN="gui/${USER_ID}"
+LAUNCHD_SERVICE="${LAUNCHD_DOMAIN}/${LABEL}"
+launchctl bootout "${LAUNCHD_SERVICE}" >/dev/null 2>&1 || true
+wait_for_service_gone "${LAUNCHD_SERVICE}"
+bootstrap_with_retry "${LAUNCHD_DOMAIN}" "${PLIST_PATH}"
+launchctl kickstart -k "${LAUNCHD_SERVICE}"
+
+printf 'Installed and started %s\n' "${PLIST_PATH}"

@@ -1,0 +1,36 @@
+# Proposed Caddy config for admin.example.com.
+#
+# This file is documentation/proposal only. Do not deploy it until access
+# protection is confirmed and placeholder paths are replaced.
+# Store password hashes and secrets outside the repo.
+
+admin.example.com {
+	root * /srv/www/admin.example.com
+
+	encode zstd gzip
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "same-origin"
+		Permissions-Policy "camera=(), microphone=(), geolocation=()"
+		Cache-Control "no-store"
+	}
+
+	# Preferred: protect this hostname with Cloudflare Access before it reaches
+	# Caddy. If using Caddy basic auth as fallback or defense in depth, provide a
+	# bcrypt hash through the environment, not from this repository.
+	#
+	# basicauth {
+	# 	jordan {$BTQ_ADMIN_GREG_BCRYPT_HASH}
+	# }
+
+	file_server
+
+	# Optional later proxy. Keep disabled for V1 unless the hostname is already
+	# protected and the VPS-to-Mac Tailscale path has been verified.
+	#
+	# handle_path /ops-dashboard/* {
+	# 	reverse_proxy http://100.64.0.10:8765
+	# }
+}

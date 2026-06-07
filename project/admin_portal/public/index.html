@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>BTQ Admin</title>
+    <link rel="stylesheet" href="styles.css">
+  </head>
+  <body>
+    <header class="topbar">
+      <a class="brand" href="index.html" aria-label="BTQ Admin home">
+        <span class="brand-mark">BTQ</span>
+        <span>Admin</span>
+      </a>
+      <nav class="nav" aria-label="Primary">
+        <a href="ops-dashboard.html">Ops</a>
+        <a href="docs.html">Docs</a>
+        <a href="sites.html">Sites</a>
+        <a href="content-moderation.html">Moderation</a>
+        <a href="runtime-health.html">Health</a>
+      </nav>
+    </header>
+
+    <main>
+      <section class="hero">
+        <div>
+          <h1>Protected BTQ Admin</h1>
+          <p>
+            A read-only operator shell for visibility into BTQ runtime status,
+            documentation, site context, and the moderation workflow.
+          </p>
+        </div>
+        <aside class="status-panel" aria-label="Portal status">
+          <div class="status-row">
+            <span>Mode</span>
+            <strong>Read-only</strong>
+          </div>
+          <div class="status-row">
+            <span>Runtime authority</span>
+            <strong>MacBook Pro</strong>
+          </div>
+          <div class="status-row">
+            <span>Host target</span>
+            <strong>admin.example.com</strong>
+          </div>
+        </aside>
+      </section>
+
+      <section class="section-grid" aria-label="Admin sections">
+        <a class="section-card" href="ops-dashboard.html">
+          <span class="card-icon" aria-hidden="true">O</span>
+          <h2>Ops Dashboard</h2>
+          <p>Protected link or future proxy to the Mac runtime dashboard.</p>
+        </a>
+        <a class="section-card" href="docs.html">
+          <span class="card-icon" aria-hidden="true">D</span>
+          <h2>Documentation</h2>
+          <p>Runbook, architecture, runtime flow, and field-capture docs.</p>
+        </a>
+        <a class="section-card" href="sites.html">
+          <span class="card-icon" aria-hidden="true">S</span>
+          <h2>Sites</h2>
+          <p>Read-only listing of known runtime registry sites.</p>
+        </a>
+        <a class="section-card" href="content-moderation.html">
+          <span class="card-icon" aria-hidden="true">M</span>
+          <h2>Content Moderation</h2>
+          <p>Human review path from transcript to client-facing copy.</p>
+        </a>
+        <a class="section-card" href="runtime-health.html">
+          <span class="card-icon" aria-hidden="true">H</span>
+          <h2>Runtime Health</h2>
+          <p>Read-only health surfaces and what should remain Mac-local.</p>
+        </a>
+      </section>
+
+      <section class="notice">
+        <h2>V1 Boundary</h2>
+        <p>
+          This portal contains no mutation controls, no approval controls, no
+          queue staging, no processor execution, and no vault write path.
+        </p>
+      </section>
+    </main>
+  </body>
+</html>
+

@@ -1,0 +1,28 @@
+.DS_Store
+.pytest_cache/
+__pycache__/
+*.pyc
+
+local/
+logs/
+runtime/
+data/
+
+project/.venv/
+project/.runtime/
+project/.runtime-dry/
+*.egg-info/
+
+.claude/
+
+# Real customer site registry — synthetic example is committed (prompt 301)
+project/event_pipeline/site_registry.json
+
+# Machine-specific real config — synthetic config.example.json committed + get_config falls back to it (prompt 304)
+config.json
+
+# Real supply/equipment brand keywords — synthetic example committed (prompt 305)
+project/event_pipeline/brand_keywords.json
+
+# Prod ops runbook — not for public repo (prompt 306)
+project/field_capture/PRODUCTION_AUTH_DATA.md

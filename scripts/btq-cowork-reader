@@ -1,0 +1,108 @@
+#!/usr/bin/env python3
+"""Read-only Cowork queue reader backend.
+
+This JSON CLI is intentionally narrow: it exposes queue reads only and never
+authors, mutates, retries, repairs, or acknowledges CouchDB jobs.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from pathlib import Path
+from typing import Any
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+PROJECT_ROOT = REPO_ROOT / "project"
+sys.path.insert(0, str(PROJECT_ROOT))
+
+from event_pipeline.couchdb_queue_reader import (  # type: ignore  # noqa: E402
+    CouchDBQueueReaderError,
+    get_job,
+    list_queue_jobs,
+    queue_state,
+)
+
+
+READ_TOOLS = ("queue_state", "list_queue_jobs", "get_queue_job")
+BROKER_TOOL_NAMES = ("btq_queue_state", "btq_list_queue_jobs", "btq_get_queue_job")
+TOOL_ALIASES = {
+    "btq_queue_state": "queue_state",
+    "btq_list_queue_jobs": "list_queue_jobs",
+    "btq_get_queue_job": "get_queue_job",
+}
+
+
+def dispatch(tool: str, args: dict[str, Any]) -> Any:
+    tool = TOOL_ALIASES.get(tool, tool)
+    if tool == "queue_state":
+        states = args.get("states")
+        if states is None:
+            return queue_state(recent_limit=int(args.get("recent_limit", 10)))
+        return queue_state(states=tuple(states), recent_limit=int(args.get("recent_limit", 10)))
+    if tool == "list_queue_jobs":
+        return list_queue_jobs(
+            date=args.get("date"),
+            since=args.get("since"),
+            state=args.get("state"),
+            all_dates=bool(args.get("all_dates", False)),
+            limit=args.get("limit"),
+        )
+    if tool == "get_queue_job":
+        job_id = args.get("job_id")
+        if not isinstance(job_id, str) or not job_id:
+            raise CouchDBQueueReaderError("invalid_request", "get_queue_job requires a non-empty job_id")
+        return get_job(job_id)
+    raise CouchDBQueueReaderError("invalid_tool", f"unknown read-only tool: {tool}")
+
+
+def _json_args(raw: str | None) -> dict[str, Any]:
+    if not raw:
+        return {}
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise CouchDBQueueReaderError("invalid_request", f"--json is not valid JSON: {exc}") from exc
+    if not isinstance(data, dict):
+        raise CouchDBQueueReaderError("invalid_request", "--json must be a JSON object")
+    return data
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--tool", choices=READ_TOOLS + BROKER_TOOL_NAMES, required=True)
+    parser.add_argument("--json", help="JSON object with tool arguments.")
+    parser.add_argument("--date")
+    parser.add_argument("--since")
+    parser.add_argument("--state")
+    parser.add_argument("--all-dates", action="store_true")
+    parser.add_argument("--limit", type=int)
+    parser.add_argument("--recent-limit", type=int)
+    parser.add_argument("--job-id")
+    args = parser.parse_args(argv)
+
+    payload = _json_args(args.json)
+    for key in ("date", "since", "state", "limit"):
+        value = getattr(args, key)
+        if value is not None:
+            payload[key] = value
+    if args.all_dates:
+        payload["all_dates"] = True
+    if args.recent_limit is not None:
+        payload["recent_limit"] = args.recent_limit
+    if args.job_id is not None:
+        payload["job_id"] = args.job_id
+
+    try:
+        result = dispatch(args.tool, payload)
+    except CouchDBQueueReaderError as exc:
+        print(json.dumps({"ok": False, "error": {"code": exc.code, "message": exc.message}}, sort_keys=True))
+        return 2 if exc.code in {"invalid_request", "invalid_tool"} else 1
+
+    print(json.dumps({"ok": True, "tool": TOOL_ALIASES.get(args.tool, args.tool), "result": result}, sort_keys=True))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

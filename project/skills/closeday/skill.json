@@ -1,0 +1,15 @@
+{
+  "id": "closeday",
+  "name": "Close Day",
+  "description": "End-of-day Area Manager Shift Report and session close-out (CouchDB-target, post-vault-cutover).",
+  "current_version": "v3",
+  "versions": ["v3"],
+  "status": "active",
+  "tags": ["daily", "shift-report", "journal"],
+  "inputs": [],
+  "outputs": ["shift_report", "session_file"],
+  "input_types": [],
+  "output_types": ["shift_report", "session_file"],
+  "origin": "operator-workflow",
+  "created_from": "operator-workflow"
+}

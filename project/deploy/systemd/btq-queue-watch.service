@@ -1,0 +1,24 @@
+[Unit]
+Description=BTQ queue watcher
+After=network.target
+
+[Service]
+Type=simple
+User=@@BTQ_SERVICE_USER@@
+Group=@@BTQ_SERVICE_GROUP@@
+WorkingDirectory=@@BTQ_PROJECT_ROOT@@
+Environment="PATH=@@BTQ_PATH@@"
+Environment="PYTHONUNBUFFERED=1"
+Environment="BTQ_COUCHDB_URL=@@BTQ_COUCHDB_URL@@"
+Environment="BTQ_COUCHDB_USER=@@BTQ_COUCHDB_USER@@"
+Environment="BTQ_COUCHDB_PASSWORD=@@BTQ_COUCHDB_PASSWORD@@"
+Environment="BTQ_RUNTIME_ROOT=@@BTQ_RUNTIME_ROOT@@"
+Environment="BTQ_VAULT_ROOT=@@BTQ_VAULT_ROOT@@"
+ExecStart=@@BTQ_PYTHON_BIN@@ -m queue_processor.watch
+Restart=always
+RestartSec=10
+StandardOutput=append:@@BTQ_LOG_DIR@@/btq-queue-watch.out.log
+StandardError=append:@@BTQ_LOG_DIR@@/btq-queue-watch.err.log
+
+[Install]
+WantedBy=multi-user.target

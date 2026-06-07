@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>BTQ Admin - Content Moderation</title>
+    <link rel="stylesheet" href="styles.css">
+  </head>
+  <body>
+    <header class="topbar">
+      <a class="brand" href="index.html"><span class="brand-mark">BTQ</span><span>Admin</span></a>
+      <nav class="nav" aria-label="Primary">
+        <a href="ops-dashboard.html">Ops</a>
+        <a href="docs.html">Docs</a>
+        <a href="sites.html">Sites</a>
+        <a aria-current="page" href="content-moderation.html">Moderation</a>
+        <a href="runtime-health.html">Health</a>
+      </nav>
+    </header>
+
+    <main class="page">
+      <section class="page-header">
+        <h1>Content Moderation</h1>
+        <p>
+          V1 explains the moderation workflow without exposing approval,
+          staging, publish, or vault mutation controls.
+        </p>
+      </section>
+
+      <section class="pipeline" aria-label="Moderation workflow">
+        <div>
+          <span>1</span>
+          <h2>Transcript</h2>
+          <p>Local transcription creates evidence from uploaded voice notes.</p>
+        </div>
+        <div>
+          <span>2</span>
+          <h2>Semantic Artifact</h2>
+          <p>Local semantic cleanup preserves provenance to raw transcript data.</p>
+        </div>
+        <div>
+          <span>3</span>
+          <h2>Client-Safe Summary</h2>
+          <p>A local LLM may draft sanitized, human-readable copy for review.</p>
+        </div>
+        <div>
+          <span>4</span>
+          <h2>Pending Review</h2>
+          <p>Human review decides whether wording is safe and accurate.</p>
+        </div>
+        <div>
+          <span>5</span>
+          <h2>Approved Copy</h2>
+          <p>Approved client-facing copy remains separate from raw evidence.</p>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2>V1 Guardrails</h2>
+        <ul class="check-list">
+          <li>No approval UI.</li>
+          <li>No publish UI.</li>
+          <li>No queue-job draft generation.</li>
+          <li>No staging into <code>&lt;runtime_root&gt;/queue/</code>.</li>
+          <li>No processor invocation or vault mutation.</li>
+        </ul>
+      </section>
+    </main>
+  </body>
+</html>
+

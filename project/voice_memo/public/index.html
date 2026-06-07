@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#f7f8f6">
+  <meta name="robots" content="noindex, nofollow">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <title>B&amp;T Voice Memo</title>
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="apple-touch-icon" sizes="180x180" href="/assets/icon-180.png">
+  <link rel="icon" type="image/png" sizes="192x192" href="/assets/icon-192.png">
+  <link rel="icon" type="image/png" sizes="512x512" href="/assets/icon-512.png">
+  <link rel="stylesheet" href="/styles.css?v=20260516-01">
+</head>
+<body>
+  <main class="app-shell">
+    <header class="app-header">
+      <div class="brand-lockup">
+        <img class="brand-logo" src="./assets/app-logo.png" alt="Clearpath Facilities" width="500" height="200">
+        <div id="statusText" class="status-text hero-status" role="status" aria-live="polite">Ready to capture voice memo</div>
+      </div>
+    </header>
+    <div id="queueStrip" class="queue-strip" role="status" aria-live="polite" hidden></div>
+    <div id="staleStrip" class="stale-strip" role="alert" aria-live="assertive" hidden></div>
+
+    <section class="details-panel mode-panel">
+      <fieldset class="mode-toggle" role="radiogroup" aria-label="Memo type">
+        <label>
+          <input type="radio" name="mode" value="operations" checked>
+          <span>Operations</span>
+        </label>
+        <label>
+          <input type="radio" name="mode" value="personal">
+          <span>Personal</span>
+        </label>
+      </fieldset>
+    </section>
+
+    <section class="details-panel operations-panel" id="operationsFields">
+      <label class="site-field" for="siteInput">
+        <span>Site</span>
+        <select id="siteInput" name="site_id">
+          <option value="">(no site)</option>
+        </select>
+      </label>
+      <div class="employees-and-notes">
+        <label class="employees-field" for="employeeInput">
+          <span>Employees</span>
+          <select id="employeeInput" name="employee_slugs" multiple size="6"></select>
+        </label>
+        <label class="note-field" for="noteInput">
+          <span>Notes</span>
+          <textarea id="noteInput" maxlength="2000" rows="6" placeholder="Optional context"></textarea>
+        </label>
+      </div>
+    </section>
+
+    <section class="details-panel personal-note-panel" id="personalFields" hidden>
+      <label class="note-field" for="personalNoteInput">
+        <span>Notes</span>
+        <textarea id="personalNoteInput" maxlength="2000" rows="6" placeholder="Optional context"></textarea>
+      </label>
+    </section>
+
+    <section class="details-panel voice-panel">
+      <div class="section-title">
+        <h2>Recorder</h2>
+        <span id="voiceStatus">Optional</span>
+      </div>
+      <div class="tape-deck">
+        <div class="tape-transport">
+          <button class="tape-btn tape-record" id="recordVoiceButton" type="button" title="Record">&#9679;</button>
+          <button class="tape-btn tape-stop" id="stopVoiceButton" type="button" title="Stop" disabled>&#9632;</button>
+        </div>
+        <button class="tape-btn tape-clear" id="clearVoiceButton" type="button" title="Erase recording" disabled>&#10005;</button>
+      </div>
+      <audio id="voicePreview" controls hidden></audio>
+      <p class="voice-support-message" id="voiceSupportMessage" hidden>Your browser does not support in-browser audio recording.</p>
+    </section>
+
+    <section class="details-panel submit-panel">
+      <p id="formError" class="form-error" role="alert" hidden></p>
+      <p id="lastSubmitted" class="last-submitted" hidden></p>
+      <p id="geoStatus" class="geo-status" hidden>Location: <span id="geoSummary"></span></p>
+      <button id="submitButton" class="primary-button" type="button">Save voice memo</button>
+    </section>
+
+    <footer class="app-footer" aria-label="Voice memo interface details">
+      <div>B&amp;T Voice Memo</div>
+      <div>Mode: <span id="footerMode">Operations</span></div>
+    </footer>
+  </main>
+  <script src="/db.js?v=20260528-01"></script>
+  <script src="/app.js?v=20260529-01"></script>
+</body>
+</html>
