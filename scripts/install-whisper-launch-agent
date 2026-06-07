@@ -57,6 +57,7 @@ cat > "${PLIST_PATH}" <<EOF
     <string>${BTQ_VOICE_MEMO_SEMANTIC_TIMEOUT_SECONDS:-180}</string>
     <key>BTQ_VOICE_MEMO_SEMANTIC_KEEP_ALIVE</key>
     <string>${BTQ_VOICE_MEMO_SEMANTIC_KEEP_ALIVE:-10m}</string>
+    ${BTQ_VAULT_PATH_PREFIXES:+<key>BTQ_VAULT_PATH_PREFIXES</key><string>${BTQ_VAULT_PATH_PREFIXES}</string>}
   </dict>
   <key>RunAtLoad</key>
   <true/>

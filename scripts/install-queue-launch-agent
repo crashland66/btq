@@ -37,7 +37,7 @@ cat > "${PLIST_PATH}" <<EOF
   <dict>
     <key>PATH</key>
     <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
-$(for var in BTQ_COUCHDB_URL BTQ_COUCHDB_USER BTQ_COUCHDB_PASSWORD BTQ_OLLAMA_URL BTQ_WHISPER_URL; do
+$(for var in BTQ_COUCHDB_URL BTQ_COUCHDB_USER BTQ_COUCHDB_PASSWORD BTQ_OLLAMA_URL BTQ_WHISPER_URL BTQ_VAULT_PATH_PREFIXES; do
   val="${(P)var:-}"
   if [[ -n "${val}" ]]; then
     printf '    <key>%s</key>\n    <string>%s</string>\n' "${var}" "${val}"

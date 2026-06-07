@@ -77,7 +77,7 @@ target, python_bin, project_root, stdout_log, stderr_log = sys.argv[1:6]
 env = {
     "PATH": "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
 }
-for key in ("BTQ_COUCHDB_URL", "BTQ_COUCHDB_USER", "BTQ_COUCHDB_PASSWORD"):
+for key in ("BTQ_COUCHDB_URL", "BTQ_COUCHDB_USER", "BTQ_COUCHDB_PASSWORD", "BTQ_VAULT_PATH_PREFIXES"):
     value = os.environ.get(key)
     if value:
         env[key] = value
