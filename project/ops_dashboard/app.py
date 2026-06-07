@@ -19,7 +19,7 @@ from config import get_config
 from field_capture.site_viewer import UnsafeMediaPath, resolve_media_request
 from ops_dashboard.common import SectionContext
 from ops_dashboard.layout import html_page
-from ops_dashboard.sections import admin, audio, batch_images, candidates, captures, drafts, employee_detail, employees, equipment, failed, field_photos, health, health_pipeline, help as help_section, home, inbox, issues, photos, prospect_detail, site_detail, sites, supplies, system, tokens
+from ops_dashboard.sections import admin, audio, batch_images, candidates, captures, drafts, employee_detail, employees, equipment, failed, field_photos, health, health_pipeline, help as help_section, home, inbox, issues, photos, prospect_detail, site_detail, sites, supplies, swipe, system, tokens
 from shared_pwa.assets import serve_static_asset
 
 # Cap concurrent request workers. stdlib ThreadingHTTPServer spawns an
@@ -52,7 +52,7 @@ def build_status(runtime_root: Path, *, log_lines: int = 40) -> dict[str, object
 
 
 SECTION_ROUTES = {
-    "/": home, "/inbox": inbox, "/admin": admin, "/health": health, "/health/pipeline": health_pipeline,
+    "/": home, "/inbox": inbox, "/swipe": swipe, "/admin": admin, "/health": health, "/health/pipeline": health_pipeline,
     "/candidates": candidates, "/field-capture/review": candidates, "/field-capture/issues": issues,
     "/supplies": supplies, "/supplies/mark-ordered-confirm": supplies, "/supplies/mark-delivered-confirm": supplies,
     "/supplies/mark-stocked-confirm": supplies, "/supplies/mark-no-action-needed-confirm": supplies,
@@ -206,6 +206,8 @@ def route_response_with_headers(method: str, path: str, runtime_root: Path, body
         return json_response(build_status(runtime_root))
     if route_path == "/api/inbox.json":
         return json_response(inbox.inbox_payload(ctx))
+    if route_path == "/api/swipe-queue.json":
+        return json_response(swipe.swipe_payload(runtime_root))
     if route_path == "/vault" or route_path.startswith("/vault/"):
         return serve_vault_response(route_path)
     if route_path.startswith("/static/"):

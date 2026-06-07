@@ -10,6 +10,7 @@ from ops_dashboard.common import LIGHTBOX_HTML
 
 NAV_ITEMS = (
     ("home", "Home", "/", "H"),
+    ("swipe", "Review", "/swipe", "R"),
     ("vault", "Vault", "/vault/types/index.html", "V"),
     ("field_photos", "Field Photos", "/field-photos", "P"),
     ("admin", "Admin", "/admin", "A"),

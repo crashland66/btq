@@ -893,3 +893,65 @@ details.raw-json pre { margin-top: 4px; }
     margin-right: 0;
   }
 }
+
+/* ---- Swipe review surface ------------------------------------------------ */
+.swipe-header { margin-bottom: 1rem; }
+.swipe-queues { display: flex; gap: 1.25rem; flex-wrap: wrap; margin-top: .5rem; }
+.swipe-queue { font-size: .9rem; color: var(--muted); }
+.swipe-queue strong { color: var(--text); font-size: 1.1rem; }
+
+.swipe-stage {
+  display: flex; justify-content: center; align-items: flex-start;
+  min-height: 320px; padding: 1rem 0;
+  transition: transform .18s ease, opacity .18s ease;
+}
+.swipe-stage.swiping-right { transform: translateX(40px); opacity: .25; }
+.swipe-stage.swiping-left  { transform: translateX(-40px); opacity: .25; }
+
+.swipe-card {
+  width: min(560px, 92vw);
+  background: var(--panel); border: 1px solid var(--line-strong);
+  border-radius: 14px; padding: 1.25rem 1.4rem;
+  box-shadow: 0 6px 22px rgba(0,0,0,.08);
+}
+.swipe-card-top { display: flex; justify-content: space-between; font-size: .8rem; color: var(--muted); }
+.swipe-conf { padding: .1rem .5rem; border-radius: 999px; background: var(--pill-bg); border: 1px solid var(--line); }
+.swipe-conf.conf-low, .swipe-conf.conf-unknown { color: var(--pending); }
+.swipe-conf.conf-high { color: var(--success); }
+.swipe-site { margin: .6rem 0 .1rem; font-size: 1.4rem; }
+.swipe-area { font-weight: 400; color: var(--muted); font-size: 1rem; }
+.swipe-type {
+  display: inline-block; margin: 0 0 .5rem; font-family: ui-monospace, monospace;
+  font-size: .85rem; color: var(--accent); background: var(--code-bg);
+  padding: .15rem .5rem; border-radius: 6px;
+}
+.swipe-summary { margin: .25rem 0 .5rem; }
+.swipe-evidence {
+  margin: .5rem 0; padding: .6rem .85rem; border-left: 3px solid var(--accent);
+  background: var(--panel-soft); border-radius: 0 8px 8px 0; font-style: italic;
+}
+.swipe-meta { font-size: .8rem; margin: .35rem 0 .6rem; }
+.swipe-detail summary { cursor: pointer; color: var(--muted); font-size: .85rem; }
+.swipe-payload { width: 100%; border-collapse: collapse; margin-top: .4rem; font-size: .82rem; }
+.swipe-payload th, .swipe-payload td { text-align: left; padding: .2rem .4rem; border-bottom: 1px solid var(--line); vertical-align: top; }
+.swipe-payload th { color: var(--muted); font-weight: 600; width: 35%; }
+.swipe-warn { color: var(--danger); font-size: .85rem; margin: .5rem 0 0; }
+
+.swipe-actions { display: flex; gap: .6rem; margin-top: 1.1rem; }
+.swipe-btn {
+  flex: 1; padding: .65rem; border-radius: 10px; cursor: pointer;
+  border: 1px solid var(--btn-border); background: var(--btn-bg); color: var(--text);
+  font-size: .95rem; font-weight: 600;
+}
+.swipe-btn:disabled { opacity: .4; cursor: not-allowed; }
+.swipe-btn.approve { background: var(--approve-bg); border-color: var(--approve-border); }
+.swipe-btn.reject  { background: var(--reject-bg);  border-color: var(--reject-border); }
+.swipe-btn.edit, .swipe-btn.defer { flex: .6; }
+
+.swipe-empty { text-align: center; color: var(--muted); padding: 3rem 1rem; }
+.swipe-empty-mark { font-size: 2.5rem; color: var(--success); margin: 0; }
+.swipe-help { text-align: center; margin-top: .75rem; }
+.swipe-help kbd {
+  background: var(--code-bg); border: 1px solid var(--line); border-radius: 4px;
+  padding: .05rem .35rem; font-family: ui-monospace, monospace; font-size: .8rem;
+}
