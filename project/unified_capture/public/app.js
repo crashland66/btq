@@ -4,7 +4,7 @@
   const INTERFACE_VERSION = "2026.06.08-photo-limit";
   // Previous INTERFACE_VERSION values: "2026.06.08-text-and-gating", "2026.06.06-unified-capture" (legacy static smoke tests).
   const PIPELINE_VERSION = "unified-capture-intake-v2";
-  const MAX_PHOTOS = 6; // keep in sync with the server --max-images default (6)
+  const DEFAULT_MAX_PHOTOS = 6; // fallback only; the live limit comes from /api/session.max_images
   const TOKEN_KEY = "unifiedCaptureToken";
   const SCREEN_MODE_KEY = "unifiedCaptureScreenMode";
   const RECENT_SITE_KEY = "unifiedCaptureSiteId";
@@ -28,6 +28,7 @@
     isProcessingPhotos: false,
     isSubmitting: false,
     session: null,
+    maxPhotos: DEFAULT_MAX_PHOTOS,
     sitesById: new Map(),
     formEnabled: false,
     isDraining: false,
@@ -402,6 +403,7 @@
       }
       const session = await response.json();
       state.session = session;
+      state.maxPhotos = Number(session.max_images) || DEFAULT_MAX_PHOTOS;
       elements.tokenPastePanel.hidden = true;
       elements.tokenPasteError.hidden = true;
       await stashTokenForServiceWorker(token);
@@ -845,9 +847,9 @@
       setStatus("No image selected", "warning");
       return;
     }
-    const room = MAX_PHOTOS - state.photos.length;
+    const room = state.maxPhotos - state.photos.length;
     if (room <= 0) {
-      setStatus(`Photo limit reached (${MAX_PHOTOS}). Remove one to add another.`, "warning");
+      setStatus(`Photo limit reached (${state.maxPhotos}). Remove one to add another.`, "warning");
       return;
     }
     const accepted = selected.slice(0, room);
@@ -860,7 +862,7 @@
         state.photos.push(await normalizeImage(file, file.name));
         renderPhotos();
       }
-      if (dropped > 0) setStatus(`Photo limit is ${MAX_PHOTOS}; ${dropped} not added.`, "warning");
+      if (dropped > 0) setStatus(`Photo limit is ${state.maxPhotos}; ${dropped} not added.`, "warning");
       else setStatus("Photo ready.");
     } catch (_error) {
       setStatus("Could not process selected photo.", "error");
@@ -896,7 +898,7 @@
       card.append(image, remove);
       elements.thumbnailGrid.append(card);
     });
-    elements.photoCount.textContent = `${state.photos.length} of ${MAX_PHOTOS}`;
+    elements.photoCount.textContent = `${state.photos.length} of ${state.maxPhotos}`;
     updateSubmitState();
   }
 

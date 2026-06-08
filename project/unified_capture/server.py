@@ -737,6 +737,7 @@ class UnifiedCaptureHandler(BaseHTTPRequestHandler):
             ],
             "can_submit": session.record.can_submit,
             "can_review": session.record.token_type == "admin_viewer",
+            "max_images": int(getattr(self.server, "max_images", 6)),
         }
         payload["inbox_count"] = self.inbox_count() if session.record.token_type == "admin_viewer" else 0
         self.write_json(payload, HTTPStatus.OK)
