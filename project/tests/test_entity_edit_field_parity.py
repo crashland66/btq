@@ -92,8 +92,8 @@ def test_edit_form_keeps_raw_name_attribute() -> None:
 
 def test_edit_form_label_text_is_humanized() -> None:
     out = entity_edit.render_editable_section(**_contact_args(edit_active=True))
-    assert "<label>Phone\n" in out
-    assert "<label>Email\n" in out
+    assert '<span class="field-row-label">Phone</span>' in out
+    assert '<span class="field-row-label">Email</span>' in out
 
 
 def test_edit_form_hidden_fields_save_action_and_submit_intact() -> None:

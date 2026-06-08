@@ -62,7 +62,7 @@ def test_employee_detail_summary_section_wraps_groups(monkeypatch: pytest.Monkey
     monkeypatch.setattr(
         employee_detail,
         "_load_vault_doc",
-        lambda _doc_id: _employee_doc(content="Some notes"),
+        lambda _doc_id: _employee_doc(content="Some notes", phone="555-1212", email="j@example.com"),
     )
 
     html = employee_detail.render(SimpleNamespace(query={}), "jordan")
@@ -71,7 +71,11 @@ def test_employee_detail_summary_section_wraps_groups(monkeypatch: pytest.Monkey
     summary_html = html.split("<h2>Summary</h2>", 1)[1].split("<h3>About</h3>", 1)[0]
     assert "<h3>Identity</h3>" in summary_html
     assert "<h3>Assignment</h3>" in summary_html
-    assert "<h3>Contact</h3>" in summary_html
+    # Phone/email are consolidated into Identity; no standalone Contact section.
+    assert "<h3>Contact</h3>" not in summary_html
+    identity_html = summary_html.split("<h3>Identity</h3>", 1)[1].split("<h3>Assignment</h3>", 1)[0]
+    assert "555-1212" in identity_html
+    assert "j@example.com" in identity_html
 
 
 def test_get_employee_detail_renders_about_section(monkeypatch: pytest.MonkeyPatch) -> None:

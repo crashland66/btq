@@ -31,9 +31,8 @@ def _load_vault_doc(doc_id: str) -> dict[str, Any] | None:
 
 
 _EMPLOYEE_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("Identity", ("first", "last", "preferred_name", "person_id", "status")),
+    ("Identity", ("first", "last", "preferred_name", "person_id", "status", "phone", "email")),
     ("Assignment", ("job", "additional_jobs", "sites", "role")),
-    ("Contact", ("phone", "email")),
 )
 
 _EMPLOYEE_SUPPRESSED = frozenset({
@@ -94,7 +93,6 @@ def render(ctx: object, employee_id: str) -> str:
         editable_sections = {
             "Identity": "identity",
             "Assignment": "assignment",
-            "Contact": "contact",
         }
         summary_sections = []
         for title, keys in _EMPLOYEE_GROUPS:
@@ -160,8 +158,9 @@ def handle_save_section(ctx: object, employee_id: str, body: bytes):
     section = first_query_value(form, "_section").strip()
 
     _ALLOWED_KEYS: dict[str, frozenset[str]] = {
-        "identity": frozenset(("first", "last", "preferred_name", "person_id", "status")),
+        "identity": frozenset(("first", "last", "preferred_name", "person_id", "status", "phone", "email")),
         "assignment": frozenset(("job", "additional_jobs", "sites", "role")),
+        # "contact" retained for backward-compatible saves; phone/email now live in identity.
         "contact": frozenset(("phone", "email")),
         "about": frozenset(("content",)),
     }

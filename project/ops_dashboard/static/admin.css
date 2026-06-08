@@ -618,6 +618,33 @@ details.raw-json pre { margin-top: 4px; }
 .admin-form textarea,
 .admin-form input { max-width: 860px; }
 
+/* Aligned label/input grid for entity edit forms (employee/site/prospect). */
+.entity-edit-form label.field-row {
+  display: grid;
+  grid-template-columns: 150px minmax(0, 1fr);
+  align-items: center;
+  gap: 12px;
+  max-width: 860px;
+  margin: 8px 0;
+}
+.entity-edit-form label.field-row .field-row-label {
+  font-weight: 600;
+  text-align: right;
+  color: var(--muted);
+}
+.entity-edit-form label.field-row input,
+.entity-edit-form label.field-row textarea {
+  max-width: none;
+  margin: 0;
+}
+@media (max-width: 520px) {
+  .entity-edit-form label.field-row {
+    grid-template-columns: 1fr;
+    gap: 4px;
+  }
+  .entity-edit-form label.field-row .field-row-label { text-align: left; }
+}
+
 @media (max-width: 760px) {
   .admin-shell,
   .admin-shell.nav-collapsed,

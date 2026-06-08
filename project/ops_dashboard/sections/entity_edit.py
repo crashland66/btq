@@ -51,13 +51,13 @@ def render_editable_section(
         escaped_value = _escaped(value)
         if key in long_text:
             controls.append(
-                f"    <label>{escaped_label}\n"
+                f'    <label class="field-row"><span class="field-row-label">{escaped_label}</span>\n'
                 f'      <textarea name="{escaped_key}">{escaped_value}</textarea>\n'
                 "    </label>"
             )
         else:
             controls.append(
-                f"    <label>{escaped_label}\n"
+                f'    <label class="field-row"><span class="field-row-label">{escaped_label}</span>\n'
                 f'      <input type="text" name="{escaped_key}" value="{escaped_value}">\n'
                 "    </label>"
             )
@@ -65,7 +65,7 @@ def render_editable_section(
     return (
         "<section>\n"
         f"  <h3>{escaped_title}</h3>\n"
-        f'  <form method="post" action="{_escaped(save_action)}">\n'
+        f'  <form method="post" action="{_escaped(save_action)}" class="admin-form entity-edit-form">\n'
         f'    <input type="hidden" name="_rev" value="{_escaped(doc["_rev"])}">\n'
         f'    <input type="hidden" name="_entity_id" value="{_escaped(entity_id)}">\n'
         f'    <input type="hidden" name="_section" value="{_escaped(slug)}">\n'
