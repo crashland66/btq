@@ -188,7 +188,11 @@
       return true;
     }
     token = localStorage.getItem(TOKEN_KEY) || readTokenCookie();
-    if (token) return true;
+    if (token) {
+      // Ensure the cookie is present so <img src="/media/..."> requests authenticate.
+      setTokenCookie(token);
+      return true;
+    }
     showTokenPasteUI("Paste your access token to enable capture.");
     return false;
   }

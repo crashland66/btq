@@ -37,10 +37,11 @@ from unified_capture.server import UnifiedCaptureHandler, UnifiedCaptureServer
 class _FakeServer:
     """Minimal stand-in carrying the attributes the handler reads off ``self.server``."""
 
-    def __init__(self, token_store: TokenStore, vault_root: Path) -> None:
+    def __init__(self, token_store: TokenStore, vault_root: Path, upload_dir: Path | None = None) -> None:
         self.token_store = token_store
         self.vault_root = vault_root
         self.data_dir = None
+        self.upload_dir = upload_dir
 
 
 class _Response:
@@ -63,6 +64,7 @@ def drive_request(
     method: str,
     path: str,
     headers: Optional[dict[str, str]] = None,
+    upload_dir: Optional[Path] = None,
 ) -> _Response:
     """Drive a single request through the real handler without opening a socket."""
     request_line = f"{method} {path} HTTP/1.1\r\n"
@@ -70,7 +72,7 @@ def drive_request(
     raw = (request_line + header_lines + "\r\n").encode("utf-8")
 
     handler = UnifiedCaptureHandler.__new__(UnifiedCaptureHandler)
-    handler.server = _FakeServer(token_store, vault_root)  # type: ignore[assignment]
+    handler.server = _FakeServer(token_store, vault_root, upload_dir)  # type: ignore[assignment]
     handler.client_address = ("127.0.0.1", 0)
     handler.rfile = io.BytesIO(raw)
     handler.wfile = io.BytesIO()
@@ -381,6 +383,59 @@ class SessionSitePayloadTests(unittest.TestCase):
     def test_capture_guidance_empty_string_when_absent(self) -> None:
         payload = self._payload("9999")
         self.assertEqual(payload["capture_guidance"], "")
+
+
+class MediaServingTests(unittest.TestCase):
+    """Regression: the unified app must serve /media/ for "My Submissions" images."""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.vault = Path(self.tmp.name)
+        self.upload_dir = self.vault / "uploads"
+        self.rel = "2026-06-08/cap-unified-x/photo.jpg"
+        target = self.upload_dir / self.rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(b"\xff\xd8\xff\xe0jpeg-body")
+
+    def tearDown(self) -> None:
+        self.tmp.cleanup()
+
+    def test_authorized_media_request_serves_the_file(self) -> None:
+        store, token = make_store(self.tmp.name, site_ids=["7060"])
+        started = install_couch_fakes(EMP_SINGLE, SITES_TWO)
+        try:
+            resp = drive_request(
+                store, self.vault, "GET", f"/media/{self.rel}",
+                {"Authorization": f"Bearer {token}"}, upload_dir=self.upload_dir,
+            )
+        finally:
+            stop_all(started)
+        self.assertEqual(resp.status, 200, resp.text)
+        self.assertEqual(resp.body, b"\xff\xd8\xff\xe0jpeg-body")
+        self.assertIn("image/jpeg", resp.headers.get("Content-Type", ""))
+
+    def test_media_request_without_token_is_unauthorized(self) -> None:
+        store, _token = make_store(self.tmp.name, site_ids=["7060"])
+        started = install_couch_fakes(EMP_SINGLE, SITES_TWO)
+        try:
+            resp = drive_request(
+                store, self.vault, "GET", f"/media/{self.rel}", upload_dir=self.upload_dir
+            )
+        finally:
+            stop_all(started)
+        self.assertEqual(resp.status, 401)
+
+    def test_media_request_for_missing_file_is_404(self) -> None:
+        store, token = make_store(self.tmp.name, site_ids=["7060"])
+        started = install_couch_fakes(EMP_SINGLE, SITES_TWO)
+        try:
+            resp = drive_request(
+                store, self.vault, "GET", "/media/2026-06-08/cap-unified-x/nope.jpg",
+                {"Authorization": f"Bearer {token}"}, upload_dir=self.upload_dir,
+            )
+        finally:
+            stop_all(started)
+        self.assertEqual(resp.status, 404)
 
 
 class SessionHappyPathTests(unittest.TestCase):

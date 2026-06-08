@@ -3,13 +3,14 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import mimetypes
 import os
 import sys
 from http.cookies import SimpleCookie
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, unquote, urlsplit
 
 from capture_ingest import (
     IngestLimits,
@@ -38,6 +39,7 @@ from field_capture import my_submissions as my_submissions_module
 from field_capture import photo_vision as photo_vision_module
 from field_capture.action_candidates import apply_candidate_review, list_action_candidates
 from field_capture.auth import AuthorizedSession, TokenStore, authorize_token
+from field_capture.site_viewer import resolve_media_request
 from field_capture.server import (
     AUDIO_ALLOWED_EXTENSIONS,
     AUDIO_MIME_EXTENSIONS,
@@ -125,6 +127,9 @@ class UnifiedCaptureHandler(BaseHTTPRequestHandler):
             if self.try_serve_shared_static(path):
                 return
             self.write_json({"error": "not_found"}, HTTPStatus.NOT_FOUND)
+            return
+        if path.startswith("/media/"):
+            self.handle_media(path[len("/media/"):])
             return
         if self.try_serve_public(path):
             return
@@ -246,6 +251,29 @@ class UnifiedCaptureHandler(BaseHTTPRequestHandler):
             },
             HTTPStatus.CREATED,
         )
+
+    def handle_media(self, media_path: str) -> None:
+        # Captured media can include resident-area photos, so never serve it
+        # anonymously. A valid session (token via Authorization header, ?token=,
+        # or the unifiedCaptureToken cookie that <img> requests carry) is required.
+        if self.authorize_token_from_request() is None:
+            self.send_error(HTTPStatus.UNAUTHORIZED)
+            return
+        try:
+            path = resolve_media_request(unquote(media_path), self.server.upload_dir)
+        except Exception:
+            self.send_error(HTTPStatus.NOT_FOUND)
+            return
+        if not path.is_file():
+            self.send_error(HTTPStatus.NOT_FOUND)
+            return
+        try:
+            body = path.read_bytes()
+        except OSError:
+            self.send_error(HTTPStatus.NOT_FOUND)
+            return
+        content_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+        self.write_bytes(body, content_type, cache_control="private, max-age=300")
 
     def handle_my_submissions(self) -> None:
         token_value = self.extract_token()
