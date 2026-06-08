@@ -160,6 +160,8 @@ def _make_registry(site_rows: list[dict[str, Any]], *, explode: bool = False):
         doc = {"_id": doc_id, "site_id": row["site_id"], "canonical": row["canonical"]}
         if "display_categories" in row:
             doc["display_categories"] = row["display_categories"]
+        if "capture_guidance" in row:
+            doc["capture_guidance"] = row["capture_guidance"]
         return doc
 
     registry._request_json = fake_request_json  # type: ignore[assignment]
@@ -348,6 +350,39 @@ class ScaffoldTests(unittest.TestCase):
 # --------------------------------------------------------------------------- #
 
 
+class _SiteStub:
+    def __init__(self, site_id: str, canonical_name: str) -> None:
+        self.site_id = site_id
+        self.canonical_name = canonical_name
+
+
+class _GuidanceRegistryStub:
+    def get_display_categories(self, site_id: str):
+        return None
+
+    def get_capture_guidance(self, site_id: str):
+        return "Areas only; never any person." if site_id == "7060" else None
+
+
+class SessionSitePayloadTests(unittest.TestCase):
+    """Unit-level: per-site capture_guidance from the registry reaches the payload."""
+
+    def _payload(self, site_id: str) -> dict:
+        handler = UnifiedCaptureHandler.__new__(UnifiedCaptureHandler)
+        return handler.session_site_payload(
+            _SiteStub(site_id, "Plant"), _GuidanceRegistryStub(), None, "cleaner"
+        )
+
+    def test_capture_guidance_included_when_present(self) -> None:
+        payload = self._payload("7060")
+        self.assertEqual(payload["capture_guidance"], "Areas only; never any person.")
+        self.assertEqual(payload["site_id"], "7060")
+
+    def test_capture_guidance_empty_string_when_absent(self) -> None:
+        payload = self._payload("9999")
+        self.assertEqual(payload["capture_guidance"], "")
+
+
 class SessionHappyPathTests(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
@@ -375,6 +410,9 @@ class SessionHappyPathTests(unittest.TestCase):
         # display_categories present (falls back to builtin if none configured).
         self.assertIsInstance(body["sites"][0]["display_categories"], list)
         self.assertTrue(body["sites"][0]["display_categories"])
+        # capture_guidance key is always present (empty here; registry path is
+        # unit-tested in SessionSitePayloadTests below).
+        self.assertIn("capture_guidance", body["sites"][0])
 
     def test_site_scoping_excludes_ungranted_site(self) -> None:
         # Token granted only 1200; 1300 exists in the registry but must NOT appear.

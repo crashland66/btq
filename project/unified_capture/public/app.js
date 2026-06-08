@@ -46,6 +46,7 @@
     staleStrip: document.querySelector("#staleStrip"),
     captureForm: document.querySelector("#captureForm"),
     siteInput: document.querySelector("#siteInput"),
+    siteGuidance: document.querySelector("#siteGuidance"),
     categoryInput: document.querySelector("#categoryInput"),
     canvas: document.querySelector("#captureCanvas"),
     thumbnailGrid: document.querySelector("#thumbnailGrid"),
@@ -360,11 +361,20 @@
     renderCategoriesForSelectedSite();
   }
 
+  function renderSiteGuidance(site) {
+    const target = elements.siteGuidance;
+    if (!target) return;
+    const guidance = site && typeof site.capture_guidance === "string" ? site.capture_guidance.trim() : "";
+    target.textContent = guidance;
+    target.hidden = !guidance;
+  }
+
   function renderCategoriesForSelectedSite() {
     const selected = elements.siteInput.selectedOptions[0];
     const siteId = selected?.dataset.siteId || "";
     if (siteId) localStorage.setItem(RECENT_SITE_KEY, siteId);
     const site = state.sitesById.get(siteId);
+    renderSiteGuidance(site);
     const categories = Array.isArray(site?.display_categories) ? site.display_categories : [];
     elements.categoryInput.replaceChildren();
     const placeholder = document.createElement("option");

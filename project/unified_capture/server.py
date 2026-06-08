@@ -751,14 +751,20 @@ class UnifiedCaptureHandler(BaseHTTPRequestHandler):
     ) -> dict[str, object]:
         site_id = str(site.site_id)
         display_categories = None
+        capture_guidance = None
         if registry is not None:
             try:
                 display_categories = registry.get_display_categories(site_id)
             except Exception as error:
                 self.log_message("WARNING: display_categories lookup failed site_id=%s error=%s", site_id, error)
+            try:
+                capture_guidance = registry.get_capture_guidance(site_id)
+            except Exception as error:
+                self.log_message("WARNING: capture_guidance lookup failed site_id=%s error=%s", site_id, error)
         return {
             "site_id": site_id,
             "label": site.canonical_name,
+            "capture_guidance": str(capture_guidance or ""),
             "display_categories": apply_role_category_filter(
                 resolve_display_categories(display_categories, default_categories),
                 role,
