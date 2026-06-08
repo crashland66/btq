@@ -34,7 +34,7 @@
 
   // ---- Config seam --------------------------------------------------------
   // One line flips mock -> live once Phase 3 endpoints land.
-  var INBOX_USE_MOCK = true;
+  var INBOX_USE_MOCK = false;
   // Empty = same origin. Set to e.g. "https://fc.gregstoltz.com" only if the
   // inbox API is ever served from a different host than the PWA.
   var INBOX_API_BASE = "";
