@@ -14,6 +14,7 @@ from urllib.parse import parse_qs, quote
 from field_capture.auth import TokenRecord, TokenStore, parse_timestamp
 from ops_dashboard.common import first_query_value, humanize_key, render_table
 from ops_dashboard.layout import html_page
+from .employees import _display_name, _string, load_employees
 
 
 LOGGER = logging.getLogger(__name__)
@@ -176,7 +177,7 @@ def render_set_raw_form(query: dict[str, list[str]]) -> str:
     </header>
     {error_html}
     <section>
-      <form method="post" action="/tokens/set-raw">
+      <form method="post" action="/tokens/set-raw" class="admin-form">
         <input type="hidden" name="token_id" value="{html.escape(token_id)}">
         <label>Raw token value <input type="password" name="raw_value" required autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false"></label>
         <button>Save</button>
@@ -187,16 +188,41 @@ def render_set_raw_form(query: dict[str, list[str]]) -> str:
     return html_page("Set raw value", body, active_section="tokens")
 
 
+def render_person_id_field(selected: str = "") -> str:
+    """A <select> of known people (person_id + readable name) to avoid typos.
+
+    Falls back to a free-text input if the roster can't be loaded, so token
+    issuance never hard-fails on a CouchDB hiccup.
+    """
+    try:
+        employees = load_employees()
+    except Exception:  # noqa: BLE001 — roster is a convenience; never block issuance
+        employees = []
+    if not employees:
+        return f'<input name="person_id" required value="{html.escape(selected)}" placeholder="person_id">'
+    options = [f'<option value="" disabled{"" if selected else " selected"}>Select a person…</option>']
+    for doc in employees:
+        person_id = _string(doc.get("person_id")) or _string(doc.get("_id")).removeprefix("employee_")
+        if not person_id:
+            continue
+        name = _display_name(doc)
+        label = f"{name} ({person_id})" if name and name != person_id else person_id
+        chosen = " selected" if person_id == selected else ""
+        options.append(f'<option value="{html.escape(person_id)}"{chosen}>{html.escape(label)}</option>')
+    return f'<select name="person_id" required>{"".join(options)}</select>'
+
+
 def render_new_form(query: dict[str, list[str]] | None = None) -> str:
     query = query or {}
     error = first_query_value(query, "error")
     error_html = f'<section class="error"><p>{html.escape(error)}</p></section>' if error else ""
+    selected_person = first_query_value(query, "person_id")
     body = f"""
     <header><h1>Issue Token</h1><p class="muted">Creates one field-capture token row. Coming in prompt references are complete here.</p></header>
     {error_html}
     <section>
-      <form method="post" action="/tokens/new">
-        <label>Person ID <input name="person_id" required></label>
+      <form method="post" action="/tokens/new" class="admin-form">
+        <label>Person ID {render_person_id_field(selected_person)}</label>
         <label>Label <input name="label" required></label>
         <label><input type="radio" name="token_type" value="capture" checked> Capture</label>
         <label><input type="radio" name="token_type" value="client_viewer"> Client Viewer</label>

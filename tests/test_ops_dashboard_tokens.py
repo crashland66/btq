@@ -624,3 +624,32 @@ def test_copy_button_data_copy_value_is_raw_token_for_new_token(tmp_path: Path) 
     assert 'data-copy-value="fc_' not in legacy_row
     assert 'href="/tokens/set-raw?token_id=fct_legacy"' in legacy_row
     assert "Set..." in legacy_row
+
+
+def test_new_form_uses_admin_form_layout_and_person_dropdown(monkeypatch) -> None:
+    # Layout fix: the issue-token form is width-constrained like sites/employees.
+    # Typo guard: person_id is a <select> of known people, not a free-text box.
+    monkeypatch.setattr(
+        tokens,
+        "load_employees",
+        lambda: [
+            {"person_id": "dalton_eric", "first": "Eric", "last": "Dalton", "type": "employee"},
+            {"person_id": "reed_taylor", "first": "Taylor", "last": "Reed", "type": "employee"},
+        ],
+    )
+    out = tokens.render_new_form({})
+    assert 'action="/tokens/new" class="admin-form"' in out
+    assert '<select name="person_id" required>' in out
+    assert '<option value="dalton_eric">Dalton, Eric (dalton_eric)</option>' in out
+    assert '<input name="person_id"' not in out  # no free-text fallback when roster loads
+
+
+def test_new_form_falls_back_to_text_input_when_roster_unavailable(monkeypatch) -> None:
+    def boom() -> list:
+        raise RuntimeError("couchdb unreachable")
+
+    monkeypatch.setattr(tokens, "load_employees", boom)
+    out = tokens.render_new_form({})
+    # Issuance must not hard-fail on a roster hiccup — degrade to free text.
+    assert '<input name="person_id" required' in out
+    assert 'class="admin-form"' in out
