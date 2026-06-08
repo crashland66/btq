@@ -1061,12 +1061,12 @@
     const qcCategory = elements.categoryInput.value;
     const note = elements.notesInput.value.trim();
     if (!target.site || !target.siteId || !qcCategory) throw new Error("Site and Area / QC Category are required.");
-    if (!state.photos.length && !state.audio) throw new Error("Add at least one photo or voice note.");
+    if (!state.photos.length && !state.audio && !note) throw new Error("Add a photo, voice note, or text note.");
     const capturedAt = localIsoTimestamp();
     const exportedAt = localIsoTimestamp();
     const suffix = randomSuffix();
     const captureId = `cap-unified-${capturedAt.replace(/[:.]/g, "-")}-${suffix}`;
-    const assetKind = state.photos.length && state.audio ? "photo-voice" : state.photos.length ? "photo" : "voice";
+    const assetKind = state.photos.length && state.audio ? "photo-voice" : state.photos.length ? "photo" : state.audio ? "voice" : "text";
     const jobId = `${exportedAt.replace(/[:.]/g, "-")}__${assetKind}-capture-${fileStem(target.site)}-${suffix}`;
     return {
       capture_id: captureId,
