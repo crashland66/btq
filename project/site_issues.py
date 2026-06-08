@@ -37,6 +37,98 @@ class SiteIssue:
 
 
 def discover_site_issues(vault_root: Path, *, site_id: str | None = None) -> dict[str, object]:
+    """Return site issues.
+
+    CouchDB (``btq_vault``) is the canonical store for site issues. When CouchDB
+    is configured (production) we read from it and never touch the filesystem
+    vault — that vault is an iCloud-synced Obsidian folder, and a background
+    launchd process scanning it (dataless materialization) blocks indefinitely.
+    With no CouchDB env (dev/CI) we fall back to the on-disk Markdown glob.
+    """
+    if _couchdb_site_issues_enabled():
+        return _discover_site_issues_couchdb(site_id=site_id)
+    return _discover_site_issues_filesystem(vault_root, site_id=site_id)
+
+
+def _couchdb_site_issues_enabled() -> bool:
+    import os
+
+    return bool(os.environ.get("BTQ_COUCHDB_URL", "").strip())
+
+
+def _site_issue_from_couch_doc(doc: dict[str, Any]) -> SiteIssue | None:
+    if not isinstance(doc, dict):
+        return None
+    site_id = clean_string(doc.get("site_id"))
+    issue_id = clean_string(doc.get("issue_id"))
+    if not site_id or not issue_id:
+        return None
+    status = clean_string(doc.get("status")) or "open"
+    if status not in ISSUE_STATUSES:
+        return None
+    return SiteIssue(
+        issue_id=issue_id,
+        site_id=site_id,
+        site=clean_string(doc.get("site_name") or doc.get("site")),
+        account=clean_string(doc.get("account")),
+        title=clean_string(doc.get("title")) or issue_id,
+        status=status,
+        priority=clean_string(doc.get("priority")) or "normal",
+        category=clean_string(doc.get("category")) or "other",
+        client_notified=bool(doc.get("client_notified")),
+        client_notified_at=clean_string(doc.get("client_notified_at")),
+        client_notified_by=clean_string(doc.get("client_notified_by")),
+        client_notified_method=clean_string(doc.get("client_notified_method")),
+        reported_by=clean_string(doc.get("reported_by")),
+        observed_at=clean_string(doc.get("observed_at")),
+        created_at=clean_string(doc.get("created_at")),
+        updated_at=clean_string(doc.get("updated_at")),
+        summary=clean_string(doc.get("summary")),
+        resolution_trigger=clean_string(doc.get("resolution_trigger")),
+        related_capture_ids=tuple(str(x) for x in (doc.get("btq_job_ids") or []) if x),
+        related_candidate_ids=tuple(str(x) for x in (doc.get("related_candidate_ids") or []) if x),
+        path=Path(str(doc.get("_id") or issue_id)),
+    )
+
+
+def _discover_site_issues_couchdb(*, site_id: str | None = None) -> dict[str, object]:
+    import json
+    from urllib import parse as urllib_parse, request as urllib_request
+
+    from event_pipeline import couchdb_config
+
+    cfg = couchdb_config.from_env()
+    db_name = couchdb_config.vault_database()
+    url = f"{cfg.base_url.rstrip('/')}/{urllib_parse.quote(db_name, safe='')}/_find"
+    selector: dict[str, object] = {"type": "site_issue"}
+    if site_id is not None:
+        selector["site_id"] = str(site_id)
+    payload = {"selector": selector, "limit": 100000}
+    headers = {"Content-Type": "application/json", "Accept": "application/json"}
+    headers.update(cfg.auth_header())
+    req = urllib_request.Request(url, data=json.dumps(payload).encode("utf-8"), headers=headers, method="POST")
+    try:
+        with urllib_request.urlopen(req, timeout=cfg.timeout) as resp:
+            response = json.loads(resp.read().decode("utf-8"))
+    except Exception as exc:  # noqa: BLE001 - degrade gracefully, never hang the page
+        return {
+            "issues": [],
+            "warnings": [{"path": db_name, "reason": f"couchdb_query_failed:{exc}"}],
+            "counts": issue_counts([]),
+        }
+    issues: list[SiteIssue] = []
+    for doc in response.get("docs", []):
+        issue = _site_issue_from_couch_doc(doc)
+        if issue is None:
+            continue
+        if site_id is not None and issue.site_id != str(site_id):
+            continue
+        issues.append(issue)
+    issues.sort(key=lambda item: (status_sort(item.status), item.site_id, item.priority, item.created_at, item.issue_id))
+    return {"issues": issues, "warnings": [], "counts": issue_counts(issues)}
+
+
+def _discover_site_issues_filesystem(vault_root: Path, *, site_id: str | None = None) -> dict[str, object]:
     issues: list[SiteIssue] = []
     warnings: list[dict[str, str]] = []
     root = vault_root.expanduser().resolve(strict=False)

@@ -1092,3 +1092,62 @@ textarea:focus {
     right: -2px;
   }
 }
+
+/* ---- Approval inbox ----------------------------------------------------- */
+.inbox-btn { display: inline-flex; align-items: center; justify-content: center; min-width: 38px; }
+.inbox-glyph { font-size: 16px; line-height: 1; }
+.inbox-badge {
+  position: absolute; top: -6px; right: -6px;
+  min-width: 18px; height: 18px; padding: 0 4px;
+  display: inline-flex; align-items: center; justify-content: center;
+  border-radius: 9px; background: var(--danger); color: #fff;
+  font-size: 11px; font-weight: 800; line-height: 1;
+  border: 1px solid var(--surface);
+}
+
+.inbox-section { gap: 12px; }
+.inbox-section-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.inbox-progress { color: var(--muted); font-size: 12px; font-weight: 700; }
+.inbox-message { margin: 0; padding: 8px 10px; border-radius: var(--radius); font-size: 13px; }
+.inbox-message[data-tone="error"] { background: rgba(163,58,42,0.1); color: var(--danger); }
+.inbox-message[data-tone="info"] { background: var(--accent-soft); color: var(--text); }
+.inbox-loading { color: var(--muted); text-align: center; padding: 2rem 0; }
+
+.inbox-card {
+  border: 1px solid var(--border); border-radius: var(--radius);
+  background: var(--surface); padding: 14px 16px; box-shadow: var(--shadow);
+  transition: transform .16s ease, opacity .16s ease;
+}
+.inbox-card.swiping-right { transform: translateX(36px); opacity: .25; }
+.inbox-card.swiping-left  { transform: translateX(-36px); opacity: .25; }
+.inbox-card-top { display: flex; justify-content: space-between; font-size: 12px; color: var(--muted); }
+.inbox-site { font-weight: 700; }
+.inbox-title { margin: 8px 0 2px; font-size: 17px; color: var(--text); }
+.inbox-jobtype {
+  display: inline-block; margin: 0 0 6px; font-family: ui-monospace, monospace;
+  font-size: 12px; color: var(--accent-dark);
+  background: var(--surface-strong); padding: 2px 7px; border-radius: 6px;
+}
+.inbox-summary { margin: 4px 0; font-size: 14px; }
+.inbox-evidence {
+  margin: 8px 0; padding: 8px 10px; border-left: 3px solid var(--accent);
+  background: var(--surface-strong); border-radius: 0 var(--radius) var(--radius) 0;
+  font-style: italic; font-size: 14px;
+}
+.inbox-meta { margin: 4px 0 0; color: var(--muted); font-size: 12px; }
+.inbox-detail summary { cursor: pointer; color: var(--muted); font-size: 13px; margin-top: 6px; }
+.inbox-payload { width: 100%; border-collapse: collapse; margin-top: 6px; font-size: 12px; }
+.inbox-payload th, .inbox-payload td { text-align: left; padding: 3px 6px; border-bottom: 1px solid var(--border); vertical-align: top; }
+.inbox-payload th { color: var(--muted); font-weight: 700; width: 38%; }
+
+.inbox-actions { display: flex; gap: 10px; margin-top: 14px; }
+.inbox-btn.approve, .inbox-btn.reject, .inbox-actions .inbox-btn {
+  flex: 1; min-height: 46px; border-radius: var(--radius); cursor: pointer;
+  font-size: 15px; font-weight: 800; border: 1px solid var(--border);
+}
+.inbox-actions .approve { background: var(--accent); border-color: var(--accent-dark); color: #06210a; }
+.inbox-actions .reject { background: var(--surface); color: var(--danger); border-color: var(--danger); }
+.inbox-btn:disabled { opacity: .5; cursor: not-allowed; }
+
+.inbox-empty { text-align: center; color: var(--muted); padding: 2.5rem 1rem; }
+.inbox-empty-mark { font-size: 2.2rem; color: var(--accent-dark); margin: 0 0 .25rem; }

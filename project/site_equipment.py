@@ -44,6 +44,102 @@ class EquipmentRequest:
 
 
 def discover_site_equipment(vault_root: Path, *, site_id: str | None = None, status: str | None = None) -> dict[str, object]:
+    """Equipment requests, from CouchDB ``btq_vault`` (canonical) when configured.
+
+    The on-disk vault is iCloud-synced; a background launchd daemon scanning it
+    blocks indefinitely. Read ``type: equipment_request`` docs from CouchDB in
+    prod; keep the Markdown glob only as a dev/CI fallback.
+    """
+    import os
+
+    if os.environ.get("BTQ_COUCHDB_URL", "").strip():
+        return _discover_site_equipment_couchdb(site_id=site_id, status=status)
+    return _discover_site_equipment_filesystem(vault_root, site_id=site_id, status=status)
+
+
+def _equipment_from_couch_doc(doc: dict[str, Any]) -> EquipmentRequest | None:
+    if not isinstance(doc, dict):
+        return None
+    site_id = clean_string(doc.get("site_id"))
+    equipment_id = clean_string(doc.get("equipment_id"))
+    equipment_name = clean_string(doc.get("equipment_name"))
+    if not site_id or not equipment_id or not equipment_name:
+        return None
+    status = clean_string(doc.get("status")) or "open"
+    if status not in EQUIPMENT_STATUSES:
+        return None
+    priority = clean_string(doc.get("priority")) or "normal"
+    if priority not in EQUIPMENT_PRIORITIES:
+        priority = "normal"
+    return EquipmentRequest(
+        equipment_id=equipment_id,
+        site_id=site_id,
+        site_name=clean_string(doc.get("site_name")),
+        account=clean_string(doc.get("account")),
+        equipment_name=equipment_name,
+        reason=clean_string(doc.get("reason")),
+        priority=priority,
+        requested_by=clean_string(doc.get("requested_by")),
+        observed_at=clean_string(doc.get("observed_at")),
+        source=clean_string(doc.get("source")),
+        status=status,
+        notes=clean_string(doc.get("notes")),
+        related_capture_ids=tuple(str(x) for x in (doc.get("related_capture_ids") or doc.get("btq_job_ids") or []) if x),
+        related_candidate_ids=tuple(str(x) for x in (doc.get("related_candidate_ids") or []) if x),
+        created_at=clean_string(doc.get("created_at")),
+        vault_path=clean_string(doc.get("_id")),
+        approved_at=clean_string(doc.get("approved_at")),
+        approved_by=clean_string(doc.get("approved_by")),
+        approval_note=clean_string(doc.get("approval_note")),
+        denied_at=clean_string(doc.get("denied_at")),
+        denied_by=clean_string(doc.get("denied_by")),
+        denial_note=clean_string(doc.get("denial_note")),
+        ordered_at=clean_string(doc.get("ordered_at")),
+        ordered_by=clean_string(doc.get("ordered_by")),
+        ordered_note=clean_string(doc.get("ordered_note")),
+        provided_at=clean_string(doc.get("provided_at")),
+        provided_by=clean_string(doc.get("provided_by")),
+        provided_note=clean_string(doc.get("provided_note")),
+    )
+
+
+def _discover_site_equipment_couchdb(*, site_id: str | None = None, status: str | None = None) -> dict[str, object]:
+    import json
+    from urllib import parse as urllib_parse, request as urllib_request
+
+    from event_pipeline import couchdb_config
+
+    cfg = couchdb_config.from_env()
+    db_name = couchdb_config.vault_database()
+    url = f"{cfg.base_url.rstrip('/')}/{urllib_parse.quote(db_name, safe='')}/_find"
+    selector: dict[str, object] = {"type": "equipment_request"}
+    if site_id is not None:
+        selector["site_id"] = str(site_id)
+    payload = {"selector": selector, "limit": 100000}
+    headers = {"Content-Type": "application/json", "Accept": "application/json"}
+    headers.update(cfg.auth_header())
+    req = urllib_request.Request(url, data=json.dumps(payload).encode("utf-8"), headers=headers, method="POST")
+    try:
+        with urllib_request.urlopen(req, timeout=cfg.timeout) as resp:
+            response = json.loads(resp.read().decode("utf-8"))
+    except Exception as exc:  # noqa: BLE001
+        return {"equipment": [], "warnings": [{"path": db_name, "reason": f"couchdb_query_failed:{exc}"}], "counts": equipment_counts([])}
+    status_filter = str(status).strip() if status is not None else None
+    equipment: list[EquipmentRequest] = []
+    for doc in response.get("docs", []):
+        request = _equipment_from_couch_doc(doc)
+        if request is None:
+            continue
+        if site_id is not None and request.site_id != str(site_id):
+            continue
+        if status_filter is not None and request.status != status_filter:
+            continue
+        equipment.append(request)
+    equipment.sort(key=lambda item: (status_sort(item.status), priority_sort(item.priority), item.site_id, item.created_at, item.equipment_id))
+    return {"equipment": equipment, "warnings": [], "counts": equipment_counts(equipment)}
+
+
+def _discover_site_equipment_filesystem(vault_root: Path, *, site_id: str | None = None, status: str | None = None) -> dict[str, object]:
     equipment: list[EquipmentRequest] = []
     warnings: list[dict[str, str]] = []
     root = vault_root.expanduser().resolve(strict=False)

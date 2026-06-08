@@ -168,6 +168,13 @@ def failed_photo_sidecar_rows(runtime_root: Path, limit: int = 5) -> tuple[int, 
 
 
 def unknown_capture_rows(ctx: object, limit: int = 5) -> tuple[int, list[dict[str, object]]]:
+    import os
+
+    # CouchDB is canonical. Never scan the iCloud-synced vault from this daemon —
+    # a background launchd process scanning it (dataless materialization) blocks
+    # indefinitely. (Sourcing unknown captures from CouchDB is a follow-up.)
+    if os.environ.get("BTQ_COUCHDB_URL", "").strip():
+        return 0, []
     vault_dir = ctx.config.vault_dir
     journal_dir = vault_dir / "Journal"
     paths = sorted(journal_dir.glob("*-unknown.md"), key=lambda item: item.stat().st_mtime if item.exists() else 0, reverse=True) if journal_dir.exists() else []

@@ -60,6 +60,10 @@
         <img class="brand-wordmark brand-wordmark--dark" src="/assets/field-capture-header-dark.svg" alt="" aria-hidden="true" width="276" height="56">
         <div class="header-status-row">
           <p id="statusText" class="status-text header-pill" role="status" aria-live="polite">Loading session...</p>
+          <button id="inboxBtn" class="my-subs-btn inbox-btn" type="button" aria-label="Approval inbox" title="Approval inbox">
+            <span class="inbox-glyph" aria-hidden="true">✉</span>
+            <span id="inboxBadge" class="inbox-badge" hidden><span id="inboxBadgeCount">0</span></span>
+          </button>
           <button id="mySubsBtn" class="my-subs-btn" type="button">
             <span>My Submissions</span>
             <span id="mySubsBadge" class="my-subs-badge" hidden></span>
@@ -169,6 +173,19 @@
       <ul id="submissionList" class="submission-list"></ul>
     </section>
 
+    <section id="inboxSection" class="details-panel inbox-section" hidden aria-label="Approval inbox">
+      <div class="inbox-section-head">
+        <button id="inboxBack" class="feed-back-btn" type="button">Back</button>
+        <span id="inboxProgress" class="inbox-progress" role="status" aria-live="polite"></span>
+      </div>
+      <p id="inboxMessage" class="inbox-message" role="status" aria-live="polite" hidden></p>
+      <div id="inboxCardMount"></div>
+      <div id="inboxEmpty" class="inbox-empty" hidden>
+        <p class="inbox-empty-mark" aria-hidden="true">✓</p>
+        <p>Nothing waiting for approval.</p>
+      </div>
+    </section>
+
     <footer class="app-footer">
       <div>Interface: <span id="interfaceVersion">2026.06.06-unified-capture</span></div>
     </footer>
@@ -176,5 +193,6 @@
   <script src="/static/db.js"></script>
   <script src="/static/recorder.js"></script>
   <script src="/app.js"></script>
+  <script src="/inbox.js"></script>
 </body>
 </html>
