@@ -43,7 +43,7 @@ def context(tmp_path: Path) -> VoiceMemoTranscriptContext:
     )
 
 
-def test_voice_memo_routes_status_change_through_shared_engine_and_collector(tmp_path: Path) -> None:
+def test_voice_memo_routes_status_change_through_shared_engine_and_collector(tmp_path: Path, couchdb_review) -> None:
     semantic_pass = run_semantic_pass(context(tmp_path), tmp_path / "runtime", engine=RuleCaptureEngine())
 
     assert semantic_pass.error == ""
@@ -59,7 +59,7 @@ def test_voice_memo_routes_status_change_through_shared_engine_and_collector(tmp
     assert artifact["review_required"] is True
     assert artifact["extracted_actions"][0]["job_type"] == "set_entity_status"
 
-    candidate = json.loads(semantic_pass.candidate_paths[0].read_text(encoding="utf-8"))
+    candidate = couchdb_review.review_payload_for(semantic_pass.candidate_paths[0])
     assert candidate["candidate_type"] == "voice_memo_operator_action"
     assert candidate["status"] == "pending_review"
     assert candidate["channel_metadata"]["channel"] == "voice_memo"
@@ -71,7 +71,7 @@ def test_voice_memo_routes_status_change_through_shared_engine_and_collector(tmp
     assert proposed["payload"]["status"] == "inactive"
 
 
-def test_employee_status_review_candidate_carries_employee_context(tmp_path: Path) -> None:
+def test_employee_status_review_candidate_carries_employee_context(tmp_path: Path, couchdb_review) -> None:
     transcript_path = tmp_path / "employee.webm.whisper.txt"
     transcript_path.write_text("Set Maria inactive.", encoding="utf-8")
     employee_context = VoiceMemoTranscriptContext(
@@ -86,7 +86,7 @@ def test_employee_status_review_candidate_carries_employee_context(tmp_path: Pat
     semantic_pass = run_semantic_pass(employee_context, tmp_path / "runtime", engine=RuleCaptureEngine())
 
     assert len(semantic_pass.candidate_paths) == 1
-    candidate = json.loads(semantic_pass.candidate_paths[0].read_text(encoding="utf-8"))
+    candidate = couchdb_review.review_payload_for(semantic_pass.candidate_paths[0])
     assert candidate["channel_metadata"]["employee_slugs"] == ["hutton-maria"]
     assert candidate["channel_metadata"]["employee_names"] == ["Maria Hutton"]
     proposed = candidate["approval_metadata"]["proposed_queue_job"]
@@ -96,7 +96,7 @@ def test_employee_status_review_candidate_carries_employee_context(tmp_path: Pat
     assert candidate["provenance"]["semantic_artifact_path"] == str(semantic_pass.artifact_path.resolve(strict=False))
 
 
-def test_voice_memo_rule_engine_writes_recruiting_candidate_with_proposed_job(tmp_path: Path) -> None:
+def test_voice_memo_rule_engine_writes_recruiting_candidate_with_proposed_job(tmp_path: Path, couchdb_review) -> None:
     transcript_path = tmp_path / "recruiting.webm.whisper.txt"
     transcript_path.write_text("Need recruiting coverage for the evening cleaner opening.", encoding="utf-8")
     memo_context = VoiceMemoTranscriptContext(
@@ -112,14 +112,14 @@ def test_voice_memo_rule_engine_writes_recruiting_candidate_with_proposed_job(tm
     semantic_pass = run_semantic_pass(memo_context, tmp_path / "runtime", engine=RuleCaptureEngine())
 
     assert len(semantic_pass.candidate_paths) == 1
-    candidate = json.loads(semantic_pass.candidate_paths[0].read_text(encoding="utf-8"))
+    candidate = couchdb_review.review_payload_for(semantic_pass.candidate_paths[0])
     assert candidate["status"] == "pending_review"
     proposed = candidate["approval_metadata"]["proposed_queue_job"]
     assert proposed["job_type"] == "trigger_recruiting"
     assert proposed["payload"]["site"] == "Hartwell Medical Center"
 
 
-def test_voice_memo_rule_engine_writes_retention_candidate_with_proposed_job(tmp_path: Path) -> None:
+def test_voice_memo_rule_engine_writes_retention_candidate_with_proposed_job(tmp_path: Path, couchdb_review) -> None:
     transcript_path = tmp_path / "retention.webm.whisper.txt"
     transcript_path.write_text("Maria may quit if we keep her on that schedule.", encoding="utf-8")
     memo_context = VoiceMemoTranscriptContext(
@@ -136,14 +136,14 @@ def test_voice_memo_rule_engine_writes_retention_candidate_with_proposed_job(tmp
     semantic_pass = run_semantic_pass(memo_context, tmp_path / "runtime", engine=RuleCaptureEngine())
 
     assert len(semantic_pass.candidate_paths) == 1
-    candidate = json.loads(semantic_pass.candidate_paths[0].read_text(encoding="utf-8"))
+    candidate = couchdb_review.review_payload_for(semantic_pass.candidate_paths[0])
     proposed = candidate["approval_metadata"]["proposed_queue_job"]
     assert proposed["job_type"] == "flag_retention_risk"
     assert proposed["payload"]["employee"] == "Maria Hutton"
     assert candidate["channel_metadata"]["channel"] == "voice_memo"
 
 
-def test_one_voice_transcript_fans_out_multiple_stable_candidates_without_duplicates(tmp_path: Path) -> None:
+def test_one_voice_transcript_fans_out_multiple_stable_candidates_without_duplicates(tmp_path: Path, couchdb_review) -> None:
     transcript_path = tmp_path / "multi.webm.whisper.txt"
     transcript = "Maria was late again at Hartwell. Also restock paper towels at Hartwell."
     transcript_path.write_text(transcript, encoding="utf-8")

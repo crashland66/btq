@@ -28,6 +28,10 @@ VAULT_MANGO_INDEXES = [
     {"index": {"fields": ["type", "status"]}, "name": "idx-type-status", "type": "json"},
 ]
 
+FIELD_CAPTURE_MANGO_INDEXES = [
+    {"index": {"fields": ["type", "status"]}, "name": "idx-type-status", "type": "json"},
+]
+
 
 class CouchDBSetupError(Exception):
     pass
@@ -141,6 +145,16 @@ def provision_vault_indexes(base_url: str, headers: dict[str, str]) -> dict[str,
     return index_outcomes
 
 
+def provision_field_capture_indexes(base_url: str, headers: dict[str, str]) -> dict[str, str]:
+    """Create btq_field_captures Mango indexes. Idempotent. DB itself is in REQUIRED_DATABASES."""
+    db_name = couchdb_config.DEFAULT_FIELD_CAPTURES_DB
+    index_outcomes: dict[str, str] = {}
+    for index_def in FIELD_CAPTURE_MANGO_INDEXES:
+        name = str(index_def.get("name") or "")
+        index_outcomes[name] = create_mango_index(db_name, index_def, base_url, headers)
+    return index_outcomes
+
+
 def main() -> int:
     config = couchdb_config.from_env()
     base_url = config.base_url
@@ -149,6 +163,7 @@ def main() -> int:
         version = verify_connection(base_url, headers)
         outcomes = create_required_databases(base_url, headers)
         vault_index_outcomes = provision_vault_indexes(base_url, headers)
+        field_capture_index_outcomes = provision_field_capture_indexes(base_url, headers)
         photo_vision_outcome = provision_photo_vision_database(base_url, headers)
     except CouchDBSetupError as exc:
         print(f"error: {exc}")
@@ -158,6 +173,9 @@ def main() -> int:
         print(f"{database}: {outcome}")
     print(f"{couchdb_config.DEFAULT_VAULT_DB} indexes:")
     for name, outcome in vault_index_outcomes.items():
+        print(f"  index {name}: {outcome}")
+    print(f"{couchdb_config.DEFAULT_FIELD_CAPTURES_DB} indexes:")
+    for name, outcome in field_capture_index_outcomes.items():
         print(f"  index {name}: {outcome}")
     pv_db_outcome = photo_vision_outcome.get("database", "")
     print(f"{couchdb_config.DEFAULT_PHOTO_VISION_DB}: {pv_db_outcome}")

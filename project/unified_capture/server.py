@@ -32,10 +32,12 @@ from event_pipeline.couchdb_capture_writer import (
     get_field_capture_document,
     put_field_capture_document,
 )
+from event_pipeline.couchdb_candidate_writer import CouchDBCandidateWriterError
 from event_pipeline.couchdb_registry import CouchDBSiteRegistry
 from field_capture import my_submissions as my_submissions_module
 from field_capture import photo_vision as photo_vision_module
-from field_capture.auth import TokenStore, authorize_token
+from field_capture.action_candidates import apply_candidate_review, list_action_candidates
+from field_capture.auth import AuthorizedSession, TokenStore, authorize_token
 from field_capture.server import (
     AUDIO_ALLOWED_EXTENSIONS,
     AUDIO_MIME_EXTENSIONS,
@@ -50,6 +52,7 @@ from field_capture.server import (
     resolve_submission_attribution,
     TERMINAL_PROSPECT_STATUSES,
 )
+from queue_spec import validate_job
 from shared_pwa.assets import render_service_worker_bytes, serve_static_asset
 from voice_memo.core import AUDIO_CONTENT_TYPES, MAX_AUDIO_BYTES, UploadedVoiceMemo, VoiceMemoError, audio_extension, validate_audio
 
@@ -105,6 +108,9 @@ class UnifiedCaptureHandler(BaseHTTPRequestHandler):
         if path == "/api/session":
             self.handle_session()
             return
+        if path == "/api/inbox":
+            self.handle_inbox()
+            return
         if path == "/api/my-submissions":
             self.handle_my_submissions()
             return
@@ -125,8 +131,15 @@ class UnifiedCaptureHandler(BaseHTTPRequestHandler):
         self.write_json({"error": "not_found"}, HTTPStatus.NOT_FOUND)
 
     def do_POST(self) -> None:
-        if urlsplit(self.path).path == "/api/submit":
+        path = urlsplit(self.path).path
+        if path == "/api/submit":
             self.handle_submit()
+            return
+        if path == "/api/inbox/approve":
+            self.handle_inbox_review("approve")
+            return
+        if path == "/api/inbox/reject":
+            self.handle_inbox_review("reject")
             return
         self.write_json({"error": "not_found"}, HTTPStatus.NOT_FOUND)
 
@@ -292,6 +305,224 @@ class UnifiedCaptureHandler(BaseHTTPRequestHandler):
             photo_vision_dir,
         )
         self.write_json({"submissions": submissions, "quality_summary": quality_summary}, HTTPStatus.OK)
+
+    def authorize_token_from_request(self) -> AuthorizedSession | None:
+        token_value = self.extract_token()
+        if not token_value:
+            self.write_json({"error": "missing_token"}, HTTPStatus.UNAUTHORIZED)
+            return None
+        try:
+            session = authorize_token(self.server.token_store, self.server.vault_root, token_value)
+        except Exception:
+            self.write_json({"error": "authorization_failed"}, HTTPStatus.FORBIDDEN)
+            return None
+        if session is None:
+            self.write_json({"error": "invalid_token"}, HTTPStatus.UNAUTHORIZED)
+            return None
+        return session
+
+    def authorize_inbox_operator(self) -> AuthorizedSession | None:
+        session = self.authorize_token_from_request()
+        if session is None:
+            return None
+        if session.record.token_type != "admin_viewer":
+            self.write_json({"error": "not_authorized"}, HTTPStatus.FORBIDDEN)
+            return None
+        return session
+
+    def handle_inbox(self) -> None:
+        if self.authorize_inbox_operator() is None:
+            return
+        couchdb_config = self.server.couchdb_config
+        if couchdb_config is None:
+            self.write_json(
+                {"error": "couchdb_unavailable", "message": "CouchDB inbox unavailable"},
+                HTTPStatus.SERVICE_UNAVAILABLE,
+            )
+            return
+        try:
+            items = self.inbox_items()
+        except CouchDBCandidateWriterError as error:
+            self.log_message("CouchDB inbox lookup unavailable error=%s", error)
+            self.write_json(
+                {"error": "couchdb_unavailable", "message": "CouchDB inbox unavailable"},
+                HTTPStatus.SERVICE_UNAVAILABLE,
+            )
+            return
+        self.write_json({"count": len(items), "items": items}, HTTPStatus.OK)
+
+    def handle_inbox_review(self, action: str) -> None:
+        session = self.authorize_inbox_operator()
+        if session is None:
+            return
+        couchdb_config = self.server.couchdb_config
+        if couchdb_config is None:
+            self.write_json(
+                {"error": "couchdb_unavailable", "message": "CouchDB inbox unavailable"},
+                HTTPStatus.SERVICE_UNAVAILABLE,
+            )
+            return
+        payload = self.read_json_payload(max_bytes=10_000)
+        if payload is None:
+            return
+        candidate_id = str(payload.get("candidate_id") or "").strip()
+        expected_rev = str(payload.get("_rev") or "").strip()
+        if not candidate_id or not expected_rev:
+            self.write_json({"error": "invalid_payload"}, HTTPStatus.BAD_REQUEST)
+            return
+        reason = payload.get("reason")
+        result = apply_candidate_review(
+            couchdb_config,
+            self.server.couchdb_database,
+            candidate_id,
+            action=action,
+            reviewer=str(session.person.person_id),
+            expected_rev=expected_rev,
+            rationale=str(reason).strip() if reason is not None else None,
+        )
+        if result.already_decided:
+            self.write_json({"error": "already_decided"}, HTTPStatus.OK)
+            return
+        if result.error:
+            self.write_json({"error": "review_failed", "message": result.error}, HTTPStatus.BAD_REQUEST)
+            return
+        status = "approved" if action == "approve" else "rejected"
+        self.write_json({"ok": True, "candidate_id": result.candidate_id, "status": status}, HTTPStatus.OK)
+
+    def read_json_payload(self, *, max_bytes: int) -> dict[str, object] | None:
+        raw_length = self.headers.get("Content-Length")
+        try:
+            content_length = int(raw_length or "0")
+        except ValueError:
+            self.write_json({"error": "invalid_content_length"}, HTTPStatus.BAD_REQUEST)
+            return None
+        if content_length <= 0 or content_length > max_bytes:
+            self.write_json({"error": "invalid_body"}, HTTPStatus.BAD_REQUEST)
+            return None
+        try:
+            payload = json.loads(self.rfile.read(content_length).decode("utf-8"))
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            self.write_json({"error": "invalid_json"}, HTTPStatus.BAD_REQUEST)
+            return None
+        if not isinstance(payload, dict):
+            self.write_json({"error": "invalid_payload"}, HTTPStatus.BAD_REQUEST)
+            return None
+        return payload
+
+    def inbox_items(self) -> list[dict[str, object]]:
+        docs = list_action_candidates(
+            self.server.couchdb_config,
+            self.server.couchdb_database,
+            status="pending_review",
+        )
+        registry = self.site_registry()
+        items: list[dict[str, object]] = []
+        for doc in docs:
+            item = self.inbox_item(doc, registry)
+            if item is not None:
+                items.append(item)
+        return items
+
+    def inbox_count(self) -> int:
+        couchdb_config = getattr(self.server, "couchdb_config", None)
+        if couchdb_config is None:
+            return 0
+        try:
+            return len(self.inbox_items())
+        except Exception as error:
+            self.log_message("WARNING: inbox_count unavailable: %s", error)
+            return 0
+
+    def inbox_item(self, doc: dict[str, object], registry: object | None) -> dict[str, object] | None:
+        proposed = doc.get("proposed_queue_job")
+        if not isinstance(proposed, dict):
+            return None
+        job_type = str(proposed.get("job_type") or "").strip()
+        payload = proposed.get("payload")
+        if not isinstance(payload, dict):
+            return None
+        proposed_job = {"job_type": job_type, "payload": dict(payload)}
+        try:
+            if not validate_job(proposed_job):
+                return None
+        except Exception:
+            return None
+
+        source_detail = doc.get("source_detail") if isinstance(doc.get("source_detail"), dict) else {}
+        channel_metadata = source_detail.get("channel_metadata") if isinstance(source_detail.get("channel_metadata"), dict) else {}
+        approval_metadata = source_detail.get("approval_metadata") if isinstance(source_detail.get("approval_metadata"), dict) else {}
+        extracted_action = approval_metadata.get("extracted_action") if isinstance(approval_metadata.get("extracted_action"), dict) else {}
+        site_id = str(doc.get("site_id") or "").strip()
+        summary = str(doc.get("summary") or "").strip()
+        return {
+            "candidate_id": str(doc.get("candidate_id") or ""),
+            "_rev": str(doc.get("_rev") or ""),
+            "capture_id": str(doc.get("capture_id") or ""),
+            "source": self.inbox_source(doc),
+            "summary": summary,
+            "evidence": self.inbox_evidence(doc),
+            "site": self.site_label(site_id, registry),
+            "created_at": str(doc.get("created_at") or ""),
+            "proposed_action": {
+                "action_key": str(
+                    channel_metadata.get("action_key")
+                    or extracted_action.get("action_key")
+                    or job_type
+                ),
+                "title": self.proposed_action_title(summary, payload),
+                "job_type": job_type,
+                "payload": dict(payload),
+            },
+        }
+
+    def inbox_source(self, doc: dict[str, object]) -> str:
+        source_kind = str(doc.get("source_kind") or "").lower()
+        if "voice" in source_kind or "audio" in source_kind:
+            return "voice"
+        if "photo" in source_kind or "image" in source_kind:
+            return "photo"
+        if "text" in source_kind:
+            return "text"
+        return "note"
+
+    def inbox_evidence(self, doc: dict[str, object]) -> str:
+        evidence = doc.get("evidence")
+        if isinstance(evidence, dict):
+            for key in ("source_text", "source_context", "rationale"):
+                value = str(evidence.get(key) or "").strip()
+                if value:
+                    return value
+        return ""
+
+    def proposed_action_title(self, summary: str, payload: dict[str, object]) -> str:
+        for key in ("title", "summary", "name", "path"):
+            value = str(payload.get(key) or "").strip()
+            if value:
+                return value
+        return summary
+
+    def site_registry(self) -> object | None:
+        registry = getattr(self.server, "site_registry", None)
+        if registry is not None:
+            return registry
+        if os.environ.get("BTQ_COUCHDB_URL"):
+            try:
+                return CouchDBSiteRegistry()
+            except Exception as error:
+                self.log_message("WARNING: site registry unavailable for /api/inbox: %s", error)
+        return None
+
+    def site_label(self, site_id: str, registry: object | None) -> str:
+        if not site_id:
+            return ""
+        if registry is not None:
+            try:
+                canonical = registry.resolve_canonical(site_id)
+                if canonical:
+                    return str(canonical)
+            except Exception as error:
+                self.log_message("WARNING: site label lookup failed site_id=%s error=%s", site_id, error)
+        return site_id
 
     def read_multipart_submission(self) -> tuple[dict[str, str], list[UploadedFile], list[UploadedFile]]:
         request_max_bytes = int(getattr(self.server, "request_max_bytes"))
@@ -491,23 +722,22 @@ class UnifiedCaptureHandler(BaseHTTPRequestHandler):
                 self.log_message("WARNING: site registry unavailable for /api/session: %s", error)
         default_categories = system_defaults.get("default_display_categories") if isinstance(system_defaults, dict) else None
 
-        self.write_json(
-            {
-                "person": {
-                    "person_id": str(session.person.person_id),
-                    "name": session.person.canonical_name,
-                },
-                "token": {
-                    "token_id": session.record.token_id,
-                    "label": session.record.label,
-                },
-                "sites": [
-                    self.session_site_payload(site, registry, default_categories, session.record.role) for site in session.sites
-                ],
-                "can_submit": session.record.can_submit,
+        payload: dict[str, object] = {
+            "person": {
+                "person_id": str(session.person.person_id),
+                "name": session.person.canonical_name,
             },
-            HTTPStatus.OK,
-        )
+            "token": {
+                "token_id": session.record.token_id,
+                "label": session.record.label,
+            },
+            "sites": [
+                self.session_site_payload(site, registry, default_categories, session.record.role) for site in session.sites
+            ],
+            "can_submit": session.record.can_submit,
+        }
+        payload["inbox_count"] = self.inbox_count() if session.record.token_type == "admin_viewer" else 0
+        self.write_json(payload, HTTPStatus.OK)
 
     def session_site_payload(
         self,

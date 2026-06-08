@@ -67,7 +67,7 @@ def test_inbox_cards_includes_pipeline_health(monkeypatch: pytest.MonkeyPatch, t
     assert card["see_all"] == "/health/pipeline"
 
 
-def test_inbox_cards_partition_captures_with_note_and_pending(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_inbox_cards_partition_captures_with_note_and_pending(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, couchdb_review) -> None:
     runtime_root = tmp_path / "runtime"
     vault_root = tmp_path / "vault"
     write_pending_candidate(runtime_root, "ac_note_1", source_transcript_path=str(runtime_root / "transcripts" / "note-1.json"))
@@ -86,7 +86,7 @@ def test_inbox_cards_partition_captures_with_note_and_pending(monkeypatch: pytes
     assert int(captures_with_note["count"]) + int(pending_candidates["count"]) == 3
 
 
-def test_inbox_renders_multi_candidate_capture_signal(tmp_path: Path) -> None:
+def test_inbox_renders_multi_candidate_capture_signal(tmp_path: Path, couchdb_review) -> None:
     runtime_root = tmp_path / "runtime"
     vault_root = tmp_path / "vault"
     write_pending_candidate(runtime_root, "ac_multi_1", capture_id="cap-multi")

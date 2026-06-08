@@ -4,35 +4,31 @@ import urllib.parse
 from pathlib import Path
 
 
-def test_completion_dismiss_handler_writes_dismissed_with_reason(tmp_path):
+def test_completion_dismiss_handler_writes_dismissed_with_reason(tmp_path, couchdb_review):
+    # 308c: the completion-dismiss handler now routes through the shared CouchDB
+    # review fn (apply_candidate_review -> reject) carrying the "completion"
+    # rationale, instead of patching a filesystem candidate artifact. Seed the
+    # candidate into CouchDB (the sole canonical store) and assert the CouchDB
+    # doc flips to rejected with the completion marker.
     from ops_dashboard.sections import candidates
     from ops_dashboard.common import SectionContext
-    from processing_core.artifacts import write_json_object, read_json_object
-    from field_capture.action_candidates import default_candidate_dir
 
-    runtime_root = tmp_path
-    candidate_dir = default_candidate_dir(runtime_root)
-    candidate_dir.mkdir(parents=True, exist_ok=True)
-
-    candidate_id = "test_cand_001"
-    candidate_path = candidates._candidate_path_for_id(runtime_root, candidate_id)
-    candidate_path.parent.mkdir(parents=True, exist_ok=True)
-    write_json_object(candidate_path, {
-        "type": "action_candidate_review",
-        "candidate_id": candidate_id,
+    candidate_id = couchdb_review.seed_doc({
+        "candidate_id": "test_cand_001",
+        "candidate_type": "field_capture_follow_up",
+        "summary": "All done",
         "status": "pending_review",
-        "channel_metadata": {},
+        "channel_metadata": {"channel": "field_capture", "site_id": "7050"},
     })
 
     body = urllib.parse.urlencode({"candidate_id": candidate_id, "reviewer": "operator"}).encode()
-    # 179: handler now takes a SectionContext (config unused here; runtime_root only).
-    ctx = SectionContext(runtime_root, lambda: None)
+    ctx = SectionContext(tmp_path, lambda: None)
     candidates._handle_completion_dismiss(ctx, body)
 
-    written = read_json_object(candidate_path)
-    assert written["status"] == "rejected"
-    assert written["resolution"]["status"] == "dismissed"
-    assert written["resolution"]["dismiss_reason"] == "completion"
+    doc = couchdb_review.docs[f"action_candidate_{candidate_id}"]
+    assert doc["status"] == "rejected"
+    assert doc["review_rationale"] == candidates.DISMISS_REASON_COMPLETION
+    assert doc["reviewer"] == "operator"
 
 
 def test_completion_dismiss_endpoint_registered_in_app():

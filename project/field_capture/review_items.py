@@ -5,10 +5,13 @@ import json
 from pathlib import Path
 
 from config import get_config
+from event_pipeline import couchdb_config
+from event_pipeline.couchdb_candidate_writer import CouchDBCandidateWriterError, get_action_candidate
 from field_capture.action_candidates import (
     candidate_list_item,
+    couchdb_action_candidate_to_review_payload,
+    couchdb_candidate_config_or_none,
     default_candidate_dir,
-    find_candidate_artifacts,
 )
 from field_capture.approved_job_drafts import (
     default_draft_dir,
@@ -92,12 +95,17 @@ def show_candidate(
 ) -> dict[str, object]:
     candidate_root = candidate_dir.expanduser().resolve(strict=False)
     resolve_within_root(candidate_root, runtime_root.expanduser().resolve(strict=False))
-    matches = find_candidate_artifacts(candidate_root, candidate_id)
-    if not matches:
+    config = couchdb_candidate_config_or_none()
+    if config is None:
+        raise ReviewItemError("CouchDB action candidate store is not configured")
+    try:
+        doc = get_action_candidate(config, couchdb_config.field_captures_database(), candidate_id)
+    except CouchDBCandidateWriterError as exc:
+        raise ReviewItemError(str(exc)) from exc
+    if doc is None:
         raise ReviewItemError(f"candidate not found: {candidate_id}")
-    if len(matches) > 1:
-        raise ReviewItemError(f"multiple candidate artifacts found for candidate_id: {candidate_id}")
-    path, payload = matches[0]
+    path = Path("couchdb") / couchdb_config.field_captures_database() / str(doc.get("_id") or "")
+    payload = couchdb_action_candidate_to_review_payload(doc)
     return {"channel": "field_capture", "item_type": "candidate", "item": candidate_detail_item(path, payload)}
 
 

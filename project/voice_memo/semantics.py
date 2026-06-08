@@ -287,7 +287,7 @@ def candidate_paths_for_artifact(artifact_path: Path, payload: dict[str, object]
     for candidate in action_candidates.payloads_from_semantic(artifact_path, payload):
         candidate_id = str(candidate.get("candidate_id") or "")
         if candidate_id:
-            paths.append(action_candidates.action_candidate_review_path(candidate_dir, candidate_id))
+            paths.append(action_candidates.couchdb_candidate_artifact_path_for_id(candidate_id))
     return tuple(paths)
 
 

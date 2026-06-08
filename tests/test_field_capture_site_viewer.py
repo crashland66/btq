@@ -821,7 +821,7 @@ def test_site_viewer_groups_uploads_by_date_newest_first(tmp_path: Path) -> None
     assert payload["dates"][1]["date"] == "2026-05-01"
 
 
-def test_export_field_capture_site_status_creates_safe_review_json(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+def test_export_field_capture_site_status_creates_safe_review_json(tmp_path: Path, capsys: pytest.CaptureFixture[str], couchdb_review) -> None:
     runtime_root = tmp_path / "runtime"
     queue_dir = runtime_root / "queue"
     upload_dir = runtime_root / "uploads"
@@ -948,7 +948,7 @@ def test_site_viewer_renders_open_issues_from_export_without_issue_export_requir
     assert "Raw Capture Stream" in html
 
 
-def test_mark_client_informed_cli_writes_sidecar_and_preserves_history(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+def test_mark_client_informed_cli_writes_sidecar_and_preserves_history(tmp_path: Path, capsys: pytest.CaptureFixture[str], couchdb_review) -> None:
     runtime_root = tmp_path / "runtime"
     write_approved_candidate(runtime_root, capture_id="cap-reviewed")
     candidate_dir = runtime_root / "reviews" / "action_candidates" / "field_capture"
@@ -1009,37 +1009,35 @@ def test_mark_client_informed_cli_writes_sidecar_and_preserves_history(tmp_path:
     assert sidecar["updated_at"]
 
 
-def test_mark_client_informed_cli_fails_closed_for_invalid_candidates(tmp_path: Path) -> None:
+def test_mark_client_informed_cli_fails_closed_for_invalid_candidates(tmp_path: Path, couchdb_review) -> None:
     runtime_root = tmp_path / "runtime"
     approved = write_approved_candidate(runtime_root, capture_id="cap-approved")
     candidate_dir = runtime_root / "reviews" / "action_candidates" / "field_capture"
     [candidate_path] = sorted(candidate_dir.glob("*.json"))
+    doc_id = f"action_candidate_{approved['candidate_id']}"
 
+    # missing candidate -> fail closed (NameError on this path was a real 308c bug,
+    # now fixed: client_notifications imports CandidateReviewError).
     with pytest.raises(SystemExit):
         btq.run(["mark-client-informed", "--runtime-root", str(runtime_root), "--candidate-id", "missing", "--method", "email", "--by", "Jordan"])
 
-    pending = json.loads(candidate_path.read_text(encoding="utf-8"))
-    pending["status"] = "pending_review"
-    candidate_path.write_text(json.dumps(pending), encoding="utf-8")
+    # 308c: the approved-status guard reads the CANONICAL CouchDB doc, not the
+    # filesystem artifact. Mutate the canonical store to exercise fail-closed.
+    couchdb_review.docs[doc_id]["status"] = "pending_review"
     with pytest.raises(SystemExit):
         btq.run(["mark-client-informed", "--runtime-root", str(runtime_root), "--candidate-id", approved["candidate_id"], "--method", "email", "--by", "Jordan"])
 
-    pending["status"] = "rejected"
-    candidate_path.write_text(json.dumps(pending), encoding="utf-8")
+    couchdb_review.docs[doc_id]["status"] = "rejected"
     with pytest.raises(SystemExit):
         btq.run(["mark-client-informed", "--runtime-root", str(runtime_root), "--candidate-id", approved["candidate_id"], "--method", "email", "--by", "Jordan"])
 
-    pending["status"] = "approved"
-    candidate_path.write_text(json.dumps(pending), encoding="utf-8")
-    duplicate_path = candidate_dir / "duplicate.json"
-    duplicate_path.write_text(candidate_path.read_text(encoding="utf-8"), encoding="utf-8")
-    with pytest.raises(SystemExit):
-        btq.run(["mark-client-informed", "--runtime-root", str(runtime_root), "--candidate-id", approved["candidate_id"], "--method", "email", "--by", "Jordan"])
-
+    # (The pre-308c "duplicate filesystem artifact" fail-closed case no longer
+    # exists: CouchDB keys candidates by a unique _id, so a duplicate is
+    # structurally impossible on the canonical read path.)
     assert not (runtime_root / "reviews" / "client_notifications").exists()
 
 
-def test_mark_client_informed_sidecar_suppresses_raw_tokens(tmp_path: Path) -> None:
+def test_mark_client_informed_sidecar_suppresses_raw_tokens(tmp_path: Path, couchdb_review) -> None:
     runtime_root = tmp_path / "runtime"
     candidate = write_approved_candidate(runtime_root, capture_id="cap-reviewed")
 
@@ -1059,7 +1057,7 @@ def test_mark_client_informed_sidecar_suppresses_raw_tokens(tmp_path: Path) -> N
     assert "/Users/jordan" not in serialized
 
 
-def test_site_status_export_is_deterministic_with_fixed_timestamp(tmp_path: Path) -> None:
+def test_site_status_export_is_deterministic_with_fixed_timestamp(tmp_path: Path, couchdb_review) -> None:
     runtime_root = tmp_path / "runtime"
     queue_dir = runtime_root / "queue"
     upload_dir = runtime_root / "uploads"
@@ -1097,7 +1095,7 @@ def test_site_status_export_is_deterministic_with_fixed_timestamp(tmp_path: Path
     assert first["reviewed_items"][0]["priority"] > 100
 
 
-def test_export_field_capture_site_status_does_not_invoke_queue_or_mutate_vault(tmp_path: Path, monkeypatch) -> None:
+def test_export_field_capture_site_status_does_not_invoke_queue_or_mutate_vault(tmp_path: Path, monkeypatch, couchdb_review) -> None:
     runtime_root = tmp_path / "runtime"
     vault = tmp_path / "vault"
     vault.mkdir()
@@ -1405,7 +1403,7 @@ def test_site_viewer_renders_audio_player(tmp_path: Path) -> None:
     assert 'type="audio/webm"' in html
 
 
-def test_site_viewer_renders_reviewed_important_items_from_export(tmp_path: Path) -> None:
+def test_site_viewer_renders_reviewed_important_items_from_export(tmp_path: Path, couchdb_review) -> None:
     runtime_root = tmp_path / "runtime"
     queue_dir = runtime_root / "queue"
     upload_dir = runtime_root / "uploads"
@@ -1460,7 +1458,7 @@ def test_site_viewer_renders_reviewed_important_items_from_export(tmp_path: Path
     assert len(payload["important_items"]) == 1
 
 
-def test_site_viewer_export_and_card_show_client_informed(tmp_path: Path) -> None:
+def test_site_viewer_export_and_card_show_client_informed(tmp_path: Path, couchdb_review) -> None:
     runtime_root = tmp_path / "runtime"
     queue_dir = runtime_root / "queue"
     upload_dir = runtime_root / "uploads"
@@ -1503,7 +1501,7 @@ def test_site_viewer_export_and_card_show_client_informed(tmp_path: Path) -> Non
     assert "Client informed at 2026-05-08T16:00:00+00:00" in html
 
 
-def test_site_viewer_card_shows_not_yet_informed_for_maintenance_issue(tmp_path: Path) -> None:
+def test_site_viewer_card_shows_not_yet_informed_for_maintenance_issue(tmp_path: Path, couchdb_review) -> None:
     runtime_root = tmp_path / "runtime"
     queue_dir = runtime_root / "queue"
     upload_dir = runtime_root / "uploads"
@@ -1530,7 +1528,7 @@ def test_site_viewer_card_shows_not_yet_informed_for_maintenance_issue(tmp_path:
     assert "Client not yet informed" in html
 
 
-def test_reviewed_item_image_uses_photo_vision_alt_and_visible_context(tmp_path: Path) -> None:
+def test_reviewed_item_image_uses_photo_vision_alt_and_visible_context(tmp_path: Path, couchdb_review) -> None:
     runtime_root = tmp_path / "runtime"
     queue_dir = runtime_root / "queue"
     upload_dir = runtime_root / "uploads"
@@ -1775,7 +1773,7 @@ def test_site_viewer_marks_context_and_renders_importance_filter(tmp_path: Path)
     assert "Raw Capture Stream" in html
 
 
-def test_reviewed_item_without_joined_media_falls_back_cleanly(tmp_path: Path) -> None:
+def test_reviewed_item_without_joined_media_falls_back_cleanly(tmp_path: Path, couchdb_review) -> None:
     runtime_root = tmp_path / "runtime"
     queue_dir = runtime_root / "queue"
     upload_dir = runtime_root / "uploads"

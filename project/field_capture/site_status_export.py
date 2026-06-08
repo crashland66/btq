@@ -7,7 +7,7 @@ from pathlib import Path
 from urllib.parse import quote
 
 from config import get_config
-from field_capture.action_candidates import default_candidate_dir, iter_candidate_artifacts
+from field_capture.action_candidates import couchdb_candidate_payloads, default_candidate_dir
 from field_capture.client_notifications import default_notification_dir, load_notification, safe_text
 from processing_core.artifacts import read_json_object, write_json_object
 from site_issues import discover_site_issues, issue_as_export
@@ -359,7 +359,7 @@ def build_site_status_export(
     captures = read_capture_jobs(queue_dir=queue_root, intake_dir=intake_root, site_id=site_id)
     reviewed_items = [
         item
-        for path, candidate in iter_candidate_artifacts(candidate_root)
+        for path, candidate in couchdb_candidate_payloads(status=None)
         if (
             item := reviewed_item_from_candidate(
                 path,

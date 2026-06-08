@@ -553,10 +553,11 @@ def test_audio_processing_page_shows_recent_voice_memo_couchdb_docs(tmp_path: Pa
     assert "completed audio" in body
 
 
-def test_review_approve_appends_redacted_audit_line(tmp_path: Path) -> None:
+def test_review_approve_appends_redacted_audit_line(tmp_path: Path, couchdb_review) -> None:
     runtime_root = tmp_path / "runtime"
     write_field_capture_fixture(runtime_root)
     candidate_id = candidate_id_for(runtime_root)
+    couchdb_review.seed_from_fs(runtime_root)
 
     status, _content_type, _body = route_response(
         "POST",
@@ -566,11 +567,13 @@ def test_review_approve_appends_redacted_audit_line(tmp_path: Path) -> None:
     )
 
     assert status == HTTPStatus.SEE_OTHER
+    # 308b: the shared CouchDB review fn still records the redacted audit line.
     [line] = (runtime_root / "logs" / "admin_audit.log").read_text(encoding="utf-8").splitlines()
     payload = json.loads(line)
     assert payload["route"] == "/field-capture/review/approve"
     assert payload["payload"]["password"] == "[REDACTED]"
     assert "success" in payload["result_summary"]
+    assert couchdb_review.status_of(candidate_id) == "approved"
 
 
 def test_review_reject_appends_redacted_audit_line(tmp_path: Path) -> None:
@@ -612,7 +615,7 @@ def test_audit_redacts_token_and_password_fields() -> None:
     }
 
 
-def test_legacy_review_url_still_serves_same_form_shape(tmp_path: Path) -> None:
+def test_legacy_review_url_still_serves_same_form_shape(tmp_path: Path, couchdb_review) -> None:
     runtime_root = tmp_path / "runtime"
     write_field_capture_fixture(runtime_root)
 
@@ -642,7 +645,7 @@ def test_candidates_route_renders_200_and_contains_filter_rail(tmp_path: Path) -
         assert label in body
 
 
-def test_legacy_review_url_still_aliases_to_candidates(tmp_path: Path) -> None:
+def test_legacy_review_url_still_aliases_to_candidates(tmp_path: Path, couchdb_review) -> None:
     runtime_root = tmp_path / "runtime"
     write_field_capture_fixture(runtime_root)
 
@@ -779,7 +782,7 @@ def test_inbox_compact_summary_row_lists_low_signal_cards(tmp_path: Path) -> Non
         assert label in summary
 
 
-def test_inbox_see_all_hidden_when_count_zero(tmp_path: Path) -> None:
+def test_inbox_see_all_hidden_when_count_zero(tmp_path: Path, couchdb_review) -> None:
     empty_status, _content_type, empty_body = request_text("GET", "/inbox", tmp_path / "runtime-empty")
     runtime_root = tmp_path / "runtime"
     write_field_capture_fixture(runtime_root)
@@ -796,7 +799,7 @@ def test_inbox_see_all_hidden_when_count_zero(tmp_path: Path) -> None:
     assert "See all" in rendered_card(populated_body, "pending_candidates")
 
 
-def test_api_inbox_json_route_serves_inbox_payload(tmp_path: Path) -> None:
+def test_api_inbox_json_route_serves_inbox_payload(tmp_path: Path, couchdb_review) -> None:
     runtime_root = tmp_path / "runtime"
     write_field_capture_fixture(runtime_root)
 
@@ -1015,7 +1018,7 @@ def test_inbox_card_order_places_structured_open_items_after_intake_cards(tmp_pa
     ]
 
 
-def test_inbox_uploaded_without_candidate_excludes_those_with_candidate(tmp_path: Path) -> None:
+def test_inbox_uploaded_without_candidate_excludes_those_with_candidate(tmp_path: Path, couchdb_review) -> None:
     runtime_root = tmp_path / "runtime"
     write_field_capture_fixture(runtime_root, include_candidate=False)
     status, _content_type, body = request_text("GET", "/inbox", runtime_root)
@@ -1057,7 +1060,7 @@ def test_api_inbox_json_shape_matches_html_card_counts(tmp_path: Path) -> None:
         assert str(card["count"]) in html_body
 
 
-def test_api_inbox_json_includes_deep_links_per_row(tmp_path: Path) -> None:
+def test_api_inbox_json_includes_deep_links_per_row(tmp_path: Path, couchdb_review) -> None:
     runtime_root = tmp_path / "runtime"
     write_field_capture_fixture(runtime_root)
     candidate_dir = runtime_root / "reviews" / "action_candidates" / "field_capture"
@@ -1073,7 +1076,7 @@ def test_api_inbox_json_includes_deep_links_per_row(tmp_path: Path) -> None:
     assert pending["top"][0]["deep_link"].startswith("/candidates?candidate_id=")
 
 
-def test_inbox_table_renders_relative_time_not_raw_seconds(tmp_path: Path, monkeypatch) -> None:
+def test_inbox_table_renders_relative_time_not_raw_seconds(tmp_path: Path, monkeypatch, couchdb_review) -> None:
     runtime_root = tmp_path / "runtime"
     vault = tmp_path / "vault"
     write_vault_site_about(vault, site_id="7050", account="Summitsteel", name="Summit Wire")
@@ -1088,7 +1091,7 @@ def test_inbox_table_renders_relative_time_not_raw_seconds(tmp_path: Path, monke
     assert "<td>3720</td>" not in body
 
 
-def test_inbox_capture_shape_card_has_five_columns(tmp_path: Path) -> None:
+def test_inbox_capture_shape_card_has_five_columns(tmp_path: Path, couchdb_review) -> None:
     runtime_root = tmp_path / "runtime"
     write_field_capture_fixture(runtime_root)
     candidate_dir = runtime_root / "reviews" / "action_candidates" / "field_capture"
@@ -1137,7 +1140,7 @@ def test_inbox_gap_items_render_in_compact_summary_row(tmp_path: Path) -> None:
     assert 'data-card-id="approved_drafts_not_staged"' not in body
 
 
-def test_inbox_count_bucket_high_for_large_counts(tmp_path: Path) -> None:
+def test_inbox_count_bucket_high_for_large_counts(tmp_path: Path, couchdb_review) -> None:
     runtime_root = tmp_path / "runtime"
     write_field_capture_fixture(runtime_root)
     candidate_dir = runtime_root / "reviews" / "action_candidates" / "field_capture"
@@ -1186,7 +1189,7 @@ def test_captures_filter_uses_datalist_for_site(tmp_path: Path) -> None:
     assert '<option value="7050">' in body
 
 
-def test_candidates_filter_by_status_and_site(tmp_path: Path) -> None:
+def test_candidates_filter_by_status_and_site(tmp_path: Path, couchdb_review) -> None:
     runtime_root = tmp_path / "runtime"
     write_field_capture_fixture(runtime_root)
 
@@ -1199,7 +1202,7 @@ def test_candidates_filter_by_status_and_site(tmp_path: Path) -> None:
     assert "No candidates match this filter." in empty_body
 
 
-def test_candidates_filter_has_photo_and_has_audio(tmp_path: Path) -> None:
+def test_candidates_filter_has_photo_and_has_audio(tmp_path: Path, couchdb_review) -> None:
     runtime_root = tmp_path / "runtime"
     write_field_capture_fixture(runtime_root)
 
@@ -1209,7 +1212,7 @@ def test_candidates_filter_has_photo_and_has_audio(tmp_path: Path) -> None:
     assert "Review test note." in body
 
 
-def test_candidates_grouped_by_capture(tmp_path: Path) -> None:
+def test_candidates_grouped_by_capture(tmp_path: Path, couchdb_review) -> None:
     runtime_root = tmp_path / "runtime"
     write_field_capture_fixture(runtime_root)
     candidate_dir = runtime_root / "reviews" / "action_candidates" / "field_capture"
@@ -1225,7 +1228,7 @@ def test_candidates_grouped_by_capture(tmp_path: Path) -> None:
     assert "Second candidate same capture." in body
 
 
-def test_candidates_render_multi_candidate_capture_signal(tmp_path: Path) -> None:
+def test_candidates_render_multi_candidate_capture_signal(tmp_path: Path, couchdb_review) -> None:
     runtime_root = tmp_path / "runtime"
     write_field_capture_fixture(runtime_root)
     candidate_dir = runtime_root / "reviews" / "action_candidates" / "field_capture"
@@ -1249,7 +1252,7 @@ def test_candidates_render_multi_candidate_capture_signal(tmp_path: Path) -> Non
     assert "1 pending candidates from this capture" not in body
 
 
-def test_candidates_context_panel_includes_transcript_and_semantic(tmp_path: Path) -> None:
+def test_candidates_context_panel_includes_transcript_and_semantic(tmp_path: Path, couchdb_review) -> None:
     runtime_root = tmp_path / "runtime"
     write_field_capture_fixture(runtime_root)
 
@@ -1260,7 +1263,7 @@ def test_candidates_context_panel_includes_transcript_and_semantic(tmp_path: Pat
     assert "field_audio_semantic_summary" in body
 
 
-def test_legacy_review_url_aliases_to_candidates(tmp_path: Path) -> None:
+def test_legacy_review_url_aliases_to_candidates(tmp_path: Path, couchdb_review) -> None:
     runtime_root = tmp_path / "runtime"
     write_field_capture_fixture(runtime_root)
 
@@ -1271,7 +1274,7 @@ def test_legacy_review_url_aliases_to_candidates(tmp_path: Path) -> None:
     assert legacy == alias
 
 
-def test_candidates_deep_link_scrolls_to_single_candidate(tmp_path: Path) -> None:
+def test_candidates_deep_link_scrolls_to_single_candidate(tmp_path: Path, couchdb_review) -> None:
     runtime_root = tmp_path / "runtime"
     write_field_capture_fixture(runtime_root)
     candidate_id = candidate_id_for(runtime_root)

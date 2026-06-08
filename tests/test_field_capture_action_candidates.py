@@ -139,7 +139,7 @@ def write_semantic_artifact(path: Path, payload: dict[str, object]) -> None:
     path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
 
 
-def test_collect_action_candidates_walks_audio_text_and_voice_dirs(tmp_path: Path) -> None:
+def test_collect_action_candidates_walks_audio_text_and_voice_dirs(tmp_path: Path, couchdb_review) -> None:
     audio_dir = tmp_path / "field_capture" / "audio_semantics"
     text_dir = tmp_path / "field_capture" / "semantics"
     voice_dir = tmp_path / "voice_memo" / "semantics"
@@ -164,7 +164,7 @@ def test_collect_action_candidates_walks_audio_text_and_voice_dirs(tmp_path: Pat
     }
 
 
-def test_collect_action_candidates_accepts_scalar_path_for_back_compat(tmp_path: Path) -> None:
+def test_collect_action_candidates_accepts_scalar_path_for_back_compat(tmp_path: Path, couchdb_review) -> None:
     semantic_dir = tmp_path / "field_capture" / "audio_semantics"
     candidate_dir = tmp_path / "reviews" / "action_candidates" / "field_capture"
     write_semantic_artifact(semantic_dir / "audio.json", semantic_payload(semantic_type="field_audio_semantic_summary"))
@@ -186,7 +186,7 @@ def test_default_semantic_dirs_returns_audio_then_text_then_voice_in_order(tmp_p
     )
 
 
-def test_collect_action_candidates_handles_missing_text_semantics_dir(tmp_path: Path) -> None:
+def test_collect_action_candidates_handles_missing_text_semantics_dir(tmp_path: Path, couchdb_review) -> None:
     audio_dir = tmp_path / "field_capture" / "audio_semantics"
     text_dir = tmp_path / "field_capture" / "semantics"
     candidate_dir = tmp_path / "reviews" / "action_candidates" / "field_capture"
@@ -199,7 +199,7 @@ def test_collect_action_candidates_handles_missing_text_semantics_dir(tmp_path: 
     assert len(sorted(candidate_dir.glob("*.json"))) == 1
 
 
-def test_collect_action_candidates_interim_text_semantic_legacy_strings_still_emit_candidate(tmp_path: Path) -> None:
+def test_collect_action_candidates_interim_text_semantic_legacy_strings_still_emit_candidate(tmp_path: Path, couchdb_review) -> None:
     semantic_dir = tmp_path / "field_capture" / "semantics"
     candidate_dir = tmp_path / "reviews" / "action_candidates" / "field_capture"
     artifact = run_text_semantic_pipeline("soap is low", site_id="7050", upload_id="typed-note-interim")
@@ -286,7 +286,7 @@ def supply_action(**overrides: object) -> dict[str, object]:
     return action
 
 
-def test_collect_action_candidates_fans_out_structured_actions_with_per_action_targets(tmp_path: Path) -> None:
+def test_collect_action_candidates_fans_out_structured_actions_with_per_action_targets(tmp_path: Path, couchdb_review) -> None:
     semantic_dir = tmp_path / "field_capture" / "semantics"
     candidate_dir = tmp_path / "reviews" / "action_candidates" / "field_capture"
     semantic_path = semantic_dir / "typed-note-254.json"
@@ -316,10 +316,13 @@ def test_collect_action_candidates_fans_out_structured_actions_with_per_action_t
     assert supply["status"] == "pending_review"
     assert supply["channel_metadata"]["target_type"] == "site"
     assert supply["channel_metadata"]["target_label"] == "Summit Wire"
-    assert "approval_metadata" not in supply
+    # 308c: the CouchDB round-trip materializes an empty approval_metadata dict
+    # where the FS-original omitted the key; the load-bearing fact is that the
+    # candidate carries NO proposed queue job.
+    assert not supply.get("approval_metadata")
 
 
-def test_collect_action_candidates_does_not_collapse_same_type_same_target_structured_actions(tmp_path: Path) -> None:
+def test_collect_action_candidates_does_not_collapse_same_type_same_target_structured_actions(tmp_path: Path, couchdb_review) -> None:
     semantic_dir = tmp_path / "field_capture" / "semantics"
     candidate_dir = tmp_path / "reviews" / "action_candidates" / "field_capture"
     write_semantic_artifact(
@@ -349,7 +352,7 @@ def test_collect_action_candidates_does_not_collapse_same_type_same_target_struc
     assert {candidate["channel_metadata"]["target_id"] for candidate in candidates} == {"emp-bruce-keller"}
 
 
-def test_collect_action_candidates_carries_only_valid_structured_proposed_queue_jobs(tmp_path: Path) -> None:
+def test_collect_action_candidates_carries_only_valid_structured_proposed_queue_jobs(tmp_path: Path, couchdb_review) -> None:
     semantic_dir = tmp_path / "field_capture" / "semantics"
     candidate_dir = tmp_path / "reviews" / "action_candidates" / "field_capture"
     valid_job = {
@@ -394,7 +397,9 @@ def test_collect_action_candidates_carries_only_valid_structured_proposed_queue_
 
     without_job = next(candidate for candidate in candidates if candidate["channel_metadata"]["action_key"] == "attendance:bruce-keller:invalid")
     assert without_job["status"] == "pending_review"
-    assert "approval_metadata" not in without_job
+    # 308c: empty approval_metadata dict survives the CouchDB round-trip; the
+    # load-bearing fact is no usable proposed queue job is carried.
+    assert not without_job.get("approval_metadata")
 
 
 def test_plan_candidates_from_semantic_rejects_unknown_semantic_type(tmp_path: Path) -> None:

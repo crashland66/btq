@@ -294,7 +294,7 @@ def test_site_viewer_shows_raw_internal_transcript_when_artifact_exists(tmp_path
     assert "Raw sink note." in html
 
 
-def test_field_capture_pipeline_cycle_runs_safe_steps_in_order_and_limits_transcription(tmp_path: Path) -> None:
+def test_field_capture_pipeline_cycle_runs_safe_steps_in_order_and_limits_transcription(tmp_path: Path, couchdb_review) -> None:
     runtime_root = tmp_path / "runtime"
     vault_root = tmp_path / "vault"
     vault_root.mkdir()
@@ -355,7 +355,7 @@ def test_field_capture_pipeline_cycle_runs_safe_steps_in_order_and_limits_transc
     assert sentinel.read_text(encoding="utf-8") == "do not touch\n"
 
 
-def test_field_capture_pipeline_repeated_cycles_are_idempotent(tmp_path: Path) -> None:
+def test_field_capture_pipeline_repeated_cycles_are_idempotent(tmp_path: Path, couchdb_review) -> None:
     runtime_root = tmp_path / "runtime"
     write_capture_with_audio(runtime_root / "field_capture" / "intake", runtime_root / "uploads", capture_id="cap-audio-1")
 

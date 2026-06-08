@@ -61,7 +61,7 @@ from field_capture.auth import (
 )
 from field_capture.identity import first_name_from_canonical
 from field_capture import my_submissions as my_submissions_module
-from field_capture.action_candidates import iter_candidate_artifacts
+from field_capture.action_candidates import couchdb_candidate_payloads
 from field_capture import photo_vision as photo_vision_module
 from field_capture.prospects import TERMINAL_PROSPECT_STATUSES, list_active_prospects, load_prospect
 from field_capture.site_viewer import SiteUploadsNotFound, build_prospect_payload, build_site_payload, render_prospect_page, render_site_page, resolve_media_request
@@ -1254,12 +1254,8 @@ def _retarget_stage_for_capture(server: object, capture_id: str) -> str:
 
 
 def _retarget_candidates_for_capture(server: object, capture_id: str) -> list[dict[str, str]]:
-    runtime_root = Path(getattr(server, "upload_dir")).expanduser().resolve(strict=False).parent
-    candidates_dir = runtime_root / "reviews" / "action_candidates" / "field_capture"
     candidates: list[dict[str, str]] = []
-    if not candidates_dir.is_dir():
-        return candidates
-    for _path, candidate in iter_candidate_artifacts(candidates_dir):
+    for _path, candidate in couchdb_candidate_payloads(status=None):
         if str(candidate.get("capture_id") or "") != capture_id:
             continue
         status = str(candidate.get("status") or "")

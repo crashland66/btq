@@ -4,18 +4,30 @@ from event_pipeline.site_registry_data import load_brand_keywords
 import argparse
 import hashlib
 import json
+import logging
+import os
+from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterable, Sequence
+from typing import Any, Iterable, Iterator, Sequence
 
 from config import get_config
+from event_pipeline import couchdb_config
+from event_pipeline.couchdb_candidate_writer import (
+    AlreadyDecided,
+    CouchDBCandidateWriterError,
+    action_candidate_doc_id,
+    get_action_candidate,
+    list_action_candidates,
+    set_action_candidate_status,
+    upsert_action_candidate,
+)
 from processing_core.action_candidates import (
     REVIEW_STATUSES,
     action_candidate_payload,
     action_candidate_review_path,
-    write_action_candidate_review,
 )
-from processing_core.artifacts import read_json_object, resolve_within_root, write_json_object
+from processing_core.artifacts import read_json_object, resolve_within_root
 from processing_core.extracted_actions import (
     EXTRACTED_ACTION_SCHEMA_VERSION,
     EXTRACTED_ACTIONS_KEY,
@@ -53,10 +65,100 @@ LISTABLE_STATUSES = sorted(REVIEW_STATUSES)
 CANDIDATE_PLAN_WOULD_CREATE = "would_create"
 CANDIDATE_PLAN_SKIPPED = "skipped"
 CANDIDATE_PLAN_FAILED = "failed"
+COUCHDB_CANDIDATE_WRITE_ENV = "BTQ_COUCHDB_ACTION_CANDIDATE_WRITE"
+LOGGER = logging.getLogger(__name__)
 
 
 class CandidateReviewError(RuntimeError):
     """Raised when a candidate review update is unsafe."""
+
+
+@dataclass(frozen=True)
+class ReviewResult:
+    candidate_id: str
+    status: str
+    already_decided: bool
+    error: str | None
+    new_rev: str | None
+
+    def to_dict(self) -> dict[str, object]:
+        return asdict(self)
+
+    def __getitem__(self, key: str) -> object:
+        return self.to_dict()[key]
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self.to_dict())
+
+
+def couchdb_candidate_write_enabled() -> bool:
+    raw = os.environ.get(COUCHDB_CANDIDATE_WRITE_ENV, "1").strip().lower()
+    return raw not in {"0", "false", "no", "off", "disabled"}
+
+
+def couchdb_candidate_store_configured() -> bool:
+    """Return true when candidates must be written/read from CouchDB.
+
+    ``BTQ_COUCHDB_ACTION_CANDIDATE_WRITE=0`` remains a hard local-dev off
+    switch. Otherwise, CouchDB is considered configured when any CouchDB env is
+    present, or when the candidate switch is explicitly enabled. With no
+    CouchDB env in dev/CI, candidate writes are skipped and listings are empty.
+    """
+    if not couchdb_candidate_write_enabled():
+        return False
+    explicit_write = COUCHDB_CANDIDATE_WRITE_ENV in os.environ
+    couchdb_env_names = (
+        "BTQ_COUCHDB_URL",
+        "BTQ_COUCHDB_USER",
+        "BTQ_COUCHDB_PASSWORD",
+        "BTQ_COUCHDB_FIELD_CAPTURES_DB",
+    )
+    return explicit_write or any(os.environ.get(name) for name in couchdb_env_names)
+
+
+def couchdb_candidate_config_or_none() -> couchdb_config.CouchDBConfig | None:
+    if not couchdb_candidate_store_configured():
+        return None
+    return couchdb_config.from_env()
+
+
+def couchdb_action_candidate_exists_required_when_configured(candidate_id: str) -> bool | None:
+    config = couchdb_candidate_config_or_none()
+    if config is None:
+        return None
+    candidate_id_text = str(candidate_id or "")
+    try:
+        return get_action_candidate(config, couchdb_config.field_captures_database(), candidate_id_text) is not None
+    except CouchDBCandidateWriterError as exc:
+        LOGGER.error(
+            "field action candidate CouchDB existence check failed: candidate_id=%s error=%s",
+            candidate_id_text,
+            exc,
+        )
+        raise
+
+
+def write_candidate_to_couchdb_required_when_configured(payload: dict[str, object]) -> bool | None:
+    config = couchdb_candidate_config_or_none()
+    if config is None:
+        return None
+    candidate_id = str(payload.get("candidate_id") or "")
+    if couchdb_action_candidate_exists_required_when_configured(candidate_id):
+        return False
+    try:
+        upsert_action_candidate(
+            config,
+            couchdb_config.field_captures_database(),
+            payload,
+        )
+        return True
+    except CouchDBCandidateWriterError as exc:
+        LOGGER.error(
+            "field action candidate CouchDB write failed: candidate_id=%s error=%s",
+            candidate_id,
+            exc,
+        )
+        raise
 
 
 def default_runtime_root() -> Path:
@@ -120,6 +222,124 @@ def semantic_provenance(path: Path, payload: dict[str, object]) -> dict[str, obj
 
 
 normalize_vault_relative_path = _normalize_vault_relative_path
+
+
+def apply_candidate_review(
+    config: couchdb_config.CouchDBConfig,
+    db: str,
+    candidate_id: str,
+    action: str,
+    reviewer: str,
+    *,
+    expected_rev: str | None = None,
+    rationale: str | None = None,
+) -> ReviewResult:
+    candidate_id_text = str(candidate_id or "").strip()
+    reviewer_text = str(reviewer or "").strip()
+    action_text = str(action or "").strip().lower()
+    if not candidate_id_text:
+        return ReviewResult("", "", False, "candidate_id is required", None)
+    if not reviewer_text:
+        return ReviewResult(candidate_id_text, "", False, "reviewer is required", None)
+    if action_text not in {"approve", "reject"}:
+        return ReviewResult(candidate_id_text, "", False, f"unsupported review action: {action}", None)
+
+    try:
+        doc = get_action_candidate(config, db, candidate_id_text)
+    except CouchDBCandidateWriterError as exc:
+        return ReviewResult(candidate_id_text, "", False, str(exc), None)
+    if doc is None:
+        return ReviewResult(candidate_id_text, "", False, f"candidate not found: {candidate_id_text}", None)
+    current_rev = str(doc.get("_rev") or "")
+    if expected_rev is not None and str(expected_rev) != current_rev:
+        return ReviewResult(candidate_id_text, str(doc.get("status") or ""), True, None, current_rev or None)
+
+    prior_status = str(doc.get("status") or "")
+    if prior_status != "pending_review":
+        return ReviewResult(candidate_id_text, prior_status, False, f"candidate status is not pending_review: {prior_status}", current_rev or None)
+    if str(doc.get("type") or "") != "action_candidate":
+        return ReviewResult(candidate_id_text, prior_status, False, "candidate document type is not action_candidate", current_rev or None)
+    if action_text == "approve":
+        error = _validate_couchdb_candidate_proposed_queue_job(doc)
+        if error:
+            return ReviewResult(candidate_id_text, prior_status, False, error, current_rev or None)
+
+    target_status = "approved" if action_text == "approve" else "rejected"
+    try:
+        updated = set_action_candidate_status(
+            config,
+            db,
+            candidate_id_text,
+            status=target_status,
+            reviewed_by=reviewer_text,
+            rationale=str(rationale if rationale is not None else "No rationale provided."),
+            expected_rev=expected_rev,
+        )
+    except AlreadyDecided:
+        latest = get_action_candidate(config, db, candidate_id_text)
+        latest_status = str(latest.get("status") or prior_status) if latest else prior_status
+        latest_rev = str(latest.get("_rev") or "") if latest else current_rev
+        return ReviewResult(candidate_id_text, latest_status, True, None, latest_rev or None)
+    except CouchDBCandidateWriterError as exc:
+        return ReviewResult(candidate_id_text, prior_status, False, str(exc), current_rev or None)
+    return ReviewResult(candidate_id_text, target_status, False, None, str(updated.get("_rev") or "") or None)
+
+
+def _validate_couchdb_candidate_proposed_queue_job(doc: dict[str, Any]) -> str:
+    from field_capture import approved_job_drafts
+    from queue_spec import validate_job
+
+    candidate = couchdb_action_candidate_to_review_payload(doc)
+    proposed_jobs = approved_job_drafts.proposed_queue_jobs(candidate)
+    if not proposed_jobs:
+        return "candidate has no proposed queue job"
+    for proposed_job_type, proposed_payload, proposed_error in proposed_jobs:
+        if proposed_error or not proposed_job_type or not proposed_payload:
+            return str(proposed_error or "candidate has an invalid proposed queue job")
+        if not validate_job({"job_type": proposed_job_type, "payload": proposed_payload}):
+            return "candidate has an invalid proposed queue job"
+    return ""
+
+
+def couchdb_action_candidate_to_review_payload(doc: dict[str, Any]) -> dict[str, object]:
+    source = doc.get("source") if isinstance(doc.get("source"), dict) else {}
+    if not source:
+        source = doc.get("source_detail") if isinstance(doc.get("source_detail"), dict) else {}
+    evidence = doc.get("evidence") if isinstance(doc.get("evidence"), dict) else {}
+    provenance = source.get("provenance") if isinstance(source.get("provenance"), dict) else {}
+    channel_metadata = source.get("channel_metadata") if isinstance(source.get("channel_metadata"), dict) else {}
+    approval_metadata = source.get("approval_metadata") if isinstance(source.get("approval_metadata"), dict) else {}
+    proposed_queue_job = doc.get("proposed_queue_job")
+    if isinstance(proposed_queue_job, dict):
+        approval_metadata = {**approval_metadata, "proposed_queue_job": dict(proposed_queue_job)}
+    return {
+        "type": "action_candidate_review",
+        "candidate_id": str(doc.get("candidate_id") or ""),
+        "candidate_type": str(doc.get("candidate_type") or ""),
+        "summary": str(doc.get("summary") or ""),
+        "rationale": str(source.get("rationale") or evidence.get("rationale") or ""),
+        "confidence": source.get("confidence", evidence.get("confidence")),
+        "status": str(doc.get("status") or ""),
+        "created_at": str(doc.get("created_at") or ""),
+        "reviewer": str(doc.get("reviewer") or doc.get("reviewed_by") or ""),
+        "reviewed_by": str(doc.get("reviewed_by") or doc.get("reviewer") or ""),
+        "reviewed_at": str(doc.get("reviewed_at") or ""),
+        "review_rationale": str(doc.get("review_rationale") or ""),
+        "prior_status": str(doc.get("prior_status") or ""),
+        "review_history": doc.get("review_history") if isinstance(doc.get("review_history"), list) else [],
+        "source_text": str(source.get("source_text") or evidence.get("source_text") or ""),
+        "source_context": str(source.get("source_context") or evidence.get("source_context") or ""),
+        "provenance": dict(provenance),
+        "channel_metadata": dict(channel_metadata),
+        "approval_metadata": dict(approval_metadata),
+        "error": source.get("error", evidence.get("error")),
+        "resolution": doc.get("resolution") if isinstance(doc.get("resolution"), dict) else {},
+        "_id": str(doc.get("_id") or ""),
+        "_rev": str(doc.get("_rev") or ""),
+        "site_id": str(doc.get("site_id") or ""),
+        "person_id": str(doc.get("person_id") or ""),
+        "capture_id": str(doc.get("capture_id") or ""),
+    }
 
 
 def semantic_channel_metadata(payload: dict[str, object]) -> dict[str, object]:
@@ -521,22 +741,23 @@ def plan_candidates_from_semantic(
                     candidate_path=candidate_path,
                 )
             )
-        elif candidate_path is not None and candidate_path.exists():
-            results.append(
-                candidate_collection_result(
-                    semantic_path=semantic_path,
-                    status=CANDIDATE_PLAN_SKIPPED,
-                    reason="action candidate already exists",
-                    candidate=candidate,
-                    candidate_path=candidate_path,
-                )
-            )
         else:
+            if couchdb_action_candidate_exists_required_when_configured(candidate_id):
+                results.append(
+                    candidate_collection_result(
+                        semantic_path=semantic_path,
+                        status=CANDIDATE_PLAN_SKIPPED,
+                        reason="candidate already exists in CouchDB",
+                        candidate=candidate,
+                        candidate_path=candidate_path,
+                    )
+                )
+                continue
             results.append(
                 candidate_collection_result(
                     semantic_path=semantic_path,
                     status=CANDIDATE_PLAN_WOULD_CREATE,
-                    reason="would create action candidate review artifact",
+                    reason="would write action candidate to CouchDB when configured",
                     candidate=candidate,
                     candidate_path=candidate_path,
                 )
@@ -551,6 +772,7 @@ def collect_action_candidates(
     runtime_root: Path | None = None,
 ) -> dict[str, int]:
     counts = result_counts("discovered", "skipped", "completed", "failed")
+    couch_written = 0
     dirs = (semantic_dirs,) if isinstance(semantic_dirs, Path) else tuple(semantic_dirs)
     candidate_root = candidate_dir.expanduser().resolve(strict=False)
     if runtime_root is not None:
@@ -571,16 +793,17 @@ def collect_action_candidates(
                 continue
             counts["discovered"] += len(payloads)
             for payload in payloads:
-                candidate_id = str(payload.get("candidate_id") or "")
-                candidate_path = action_candidate_review_path(candidate_root, candidate_id) if candidate_id else None
-                if candidate_path is not None and candidate_path.exists():
+                couch_result = write_candidate_to_couchdb_required_when_configured(payload)
+                if couch_result is True:
+                    couch_written += 1
+                if couch_result is False:
                     counts["skipped"] += 1
-                    continue
-                write_action_candidate_review(candidate_root, payload)
-                if payload.get("status") == "failed":
+                elif payload.get("status") == "failed":
                     counts["failed"] += 1
                 else:
                     counts["completed"] += 1
+    if couch_written:
+        LOGGER.info("field action candidates CouchDB: written=%s", couch_written)
     return counts
 
 
@@ -682,6 +905,35 @@ def candidate_list_item(path: Path, payload: dict[str, object], *, include_sourc
     return item
 
 
+def _couchdb_candidate_artifact_path(doc: dict[str, Any]) -> Path:
+    doc_id = str(doc.get("_id") or "")
+    return Path("couchdb") / couchdb_config.field_captures_database() / doc_id
+
+
+def couchdb_candidate_artifact_path_for_id(candidate_id: str) -> Path:
+    return Path("couchdb") / couchdb_config.field_captures_database() / action_candidate_doc_id(candidate_id)
+
+
+def couchdb_candidate_payloads(
+    *,
+    status: str | None = None,
+    person_id: str | None = None,
+) -> list[tuple[Path, dict[str, object]]]:
+    config = couchdb_candidate_config_or_none()
+    if config is None:
+        return []
+    docs = list_action_candidates(
+        config,
+        couchdb_config.field_captures_database(),
+        status=status,
+        person_id=person_id,
+    )
+    return [
+        (_couchdb_candidate_artifact_path(doc), couchdb_action_candidate_to_review_payload(doc))
+        for doc in docs
+    ]
+
+
 def list_action_candidates_report(
     candidate_dir: Path,
     *,
@@ -699,7 +951,7 @@ def list_action_candidates_report(
         counts[candidate_status] = 0
 
     items: list[dict[str, object]] = []
-    for path, payload in iter_candidate_artifacts(candidate_root):
+    for path, payload in couchdb_candidate_payloads(status=None):
         payload_status = str(payload.get("status") or "")
         counts["total"] += 1
         if payload_status in counts:
@@ -735,52 +987,29 @@ def review_candidate(
     if not rationale.strip():
         raise CandidateReviewError("review rationale is required")
 
-    candidate_root = candidate_dir.expanduser().resolve(strict=False)
-    if runtime_root is not None:
-        resolve_within_root(candidate_root, runtime_root.expanduser().resolve(strict=False))
-    matches = find_candidate_artifacts(candidate_root, candidate_id)
-    if not matches:
-        raise CandidateReviewError(f"candidate not found: {candidate_id}")
-    if len(matches) > 1:
-        raise CandidateReviewError(f"multiple candidate artifacts found for candidate_id: {candidate_id}")
-
-    path, payload = matches[0]
-    if payload.get("type") != "action_candidate_review":
-        raise CandidateReviewError("candidate artifact type is not action_candidate_review")
-    if payload.get("status") == "failed" or payload.get("error") is not None:
-        raise CandidateReviewError("failed or malformed candidate cannot be reviewed")
-    if not str(payload.get("summary") or "").strip() or not str(payload.get("candidate_type") or "").strip():
-        raise CandidateReviewError("malformed candidate cannot be reviewed")
-
-    prior_status = str(payload.get("status") or "")
-    timestamp = reviewed_at or datetime.now(timezone.utc).isoformat()
-    history = payload.get("review_history")
-    review_history = list(history) if isinstance(history, list) else []
-    review_entry = {
-        "reviewer": reviewer,
-        "reviewed_at": timestamp,
-        "review_rationale": rationale,
-        "prior_status": prior_status,
-        "status": status,
-    }
-    review_history.append(review_entry)
-    updated = {
-        **payload,
-        "status": status,
-        "reviewer": reviewer,
-        "reviewed_at": timestamp,
-        "review_rationale": rationale,
-        "prior_status": prior_status,
-        "review_history": review_history,
-    }
-    write_json_object(path, updated)
+    config = couchdb_candidate_config_or_none()
+    if config is None:
+        raise CandidateReviewError("CouchDB action candidate store is not configured")
+    action = "approve" if status == "approved" else "reject"
+    result = apply_candidate_review(
+        config,
+        couchdb_config.field_captures_database(),
+        candidate_id,
+        action,
+        reviewer,
+        rationale=rationale,
+    )
+    if result.error:
+        raise CandidateReviewError(result.error)
+    if result.already_decided:
+        raise CandidateReviewError(f"candidate was already decided: {candidate_id}")
     return {
         "candidate_id": candidate_id,
-        "candidate_path": str(path),
-        "prior_status": prior_status,
-        "status": status,
+        "candidate_path": str(Path("couchdb") / couchdb_config.field_captures_database() / action_candidate_doc_id(candidate_id)),
+        "prior_status": "",
+        "status": result.status,
         "reviewer": reviewer,
-        "changed": prior_status != status,
+        "changed": True,
     }
 
 

@@ -55,6 +55,14 @@ def run_setup(
         # setup_databases.main(), which this command does not invoke).
         vault_index_outcomes = setup_databases.provision_vault_indexes(base_url, headers)
         vault_index_text = " ".join(f"{name}={outcome}" for name, outcome in vault_index_outcomes.items())
+        field_capture_index_outcomes = (
+            setup_databases.provision_field_capture_indexes(base_url, headers)
+            if setup_databases.couchdb_config.DEFAULT_FIELD_CAPTURES_DB in outcomes
+            else {}
+        )
+        field_capture_index_text = " ".join(
+            f"{name}={outcome}" for name, outcome in field_capture_index_outcomes.items()
+        )
         # Provision photo-vision database/indexes as part of database creation.
         # Folded into this step (not a new numbered step) so the step counter is
         # unchanged; without this the operator-facing `btq setup-couchdb` never
@@ -67,6 +75,7 @@ def run_setup(
         )
         print(
             f"[{step}/{total}] Creating databases... {outcome_text} | btq_vault indexes: {vault_index_text} "
+            f"| btq_field_captures indexes: {field_capture_index_text} "
             f"| btq_photo_vision: {pv_db} indexes: {pv_index_text}"
         )
 

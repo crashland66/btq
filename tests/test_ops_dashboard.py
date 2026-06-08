@@ -701,12 +701,13 @@ def test_health_page_surfaces_latest_critical_alert(tmp_path: Path) -> None:
     assert "queue backlog above threshold (101&gt;100)" in body
 
 
-def test_field_capture_review_page_renders_pending_candidates(tmp_path: Path) -> None:
+def test_field_capture_review_page_renders_pending_candidates(tmp_path: Path, couchdb_review) -> None:
     runtime_root = tmp_path / "runtime"
     write_field_capture_fixture(runtime_root)
     candidate_dir = runtime_root / "reviews" / "action_candidates" / "field_capture"
     [candidate_path] = sorted(candidate_dir.glob("*.json"))
     candidate_id = json.loads(candidate_path.read_text(encoding="utf-8"))["candidate_id"]
+    couchdb_review.seed_from_fs(runtime_root)
     status_code, content_type, body = request_text("GET", "/field-capture/review?status=pending_review", runtime_root)
 
     assert status_code == HTTPStatus.OK
@@ -732,10 +733,11 @@ def test_field_capture_review_page_renders_pending_candidates(tmp_path: Path) ->
     assert "Leave the data unchanged." in body
 
 
-def test_candidate_card_approve_form_precedes_kv_table(tmp_path: Path) -> None:
+def test_candidate_card_approve_form_precedes_kv_table(tmp_path: Path, couchdb_review) -> None:
     runtime_root = tmp_path / "runtime"
     write_field_capture_fixture(runtime_root)
 
+    couchdb_review.seed_from_fs(runtime_root)
     status_code, _content_type, body = request_text("GET", "/field-capture/review?status=pending_review", runtime_root)
 
     assert status_code == HTTPStatus.OK
@@ -743,10 +745,11 @@ def test_candidate_card_approve_form_precedes_kv_table(tmp_path: Path) -> None:
     assert article.index('class="proposed-job"') < article.index('class="review-action-form approve-form"')
 
 
-def test_pending_voice_status_candidate_shows_proposed_job_deck(tmp_path: Path) -> None:
+def test_pending_voice_status_candidate_shows_proposed_job_deck(tmp_path: Path, couchdb_review) -> None:
     runtime_root = tmp_path / "runtime"
     candidate = write_voice_status_candidate(runtime_root, site_id="812")
 
+    couchdb_review.seed_from_fs(runtime_root)
     status_code, _content_type, body = request_text("GET", "/field-capture/review?status=pending_review", runtime_root)
 
     assert status_code == HTTPStatus.OK
@@ -760,9 +763,12 @@ def test_pending_voice_status_candidate_shows_proposed_job_deck(tmp_path: Path) 
     assert f'value="{candidate["candidate_id"]}"' in body
 
 
-def test_approving_voice_status_candidate_generates_and_stages_queue_job(tmp_path: Path) -> None:
+def test_approving_voice_status_candidate_generates_and_stages_queue_job(tmp_path: Path, couchdb_review) -> None:
+    # 308b: approve flips CouchDB status (no inline staging); the watcher then
+    # stages the set_entity_status job through the real draft/queue pipeline.
     runtime_root = tmp_path / "runtime"
     candidate = write_voice_status_candidate(runtime_root, site_id="812")
+    couchdb_review.seed_from_fs(runtime_root)
     body = f"candidate_id={candidate['candidate_id']}&reviewer=Jordan&rationale=looks-right"
 
     status, _content_type, _body, headers = ops_app.route_response_with_headers(
@@ -773,10 +779,13 @@ def test_approving_voice_status_candidate_generates_and_stages_queue_job(tmp_pat
     )
 
     assert status == HTTPStatus.SEE_OTHER
-    assert "message=approved+and+staged" in headers["Location"]
-    [candidate_path] = sorted((runtime_root / "reviews" / "action_candidates" / "field_capture").glob("*.json"))
-    reviewed = json.loads(candidate_path.read_text(encoding="utf-8"))
-    assert reviewed["status"] == "approved"
+    # No inline staging: the redirect message is "approved" (not "and staged").
+    assert "message=approved" in headers["Location"]
+    assert couchdb_review.status_of(candidate["candidate_id"]) == "approved"
+    assert not (runtime_root / "queue").exists()
+
+    # Watcher stages exactly one set_entity_status queue job.
+    couchdb_review.run_watcher(runtime_root, stub_stage=False)
     [draft_path] = sorted((runtime_root / "reviews" / "approved_job_drafts" / "field_capture").glob("*.json"))
     draft = json.loads(draft_path.read_text(encoding="utf-8"))
     assert draft["proposed_job_type"] == "set_entity_status"
@@ -786,9 +795,10 @@ def test_approving_voice_status_candidate_generates_and_stages_queue_job(tmp_pat
     assert queue_job["payload"]["entity_type"] == "site"
     assert queue_job["payload"]["entity_id"] == "812"
     assert queue_job["payload"]["status"] == "inactive"
+    assert couchdb_review.staged_at_of(candidate["candidate_id"])
 
 
-def test_approving_multi_employee_status_candidate_stages_one_job_per_employee(tmp_path: Path) -> None:
+def test_approving_multi_employee_status_candidate_stages_one_job_per_employee(tmp_path: Path, couchdb_review) -> None:
     runtime_root = tmp_path / "runtime"
     candidate = action_candidate_payload(
         candidate_type="voice_memo_operator_action",
@@ -807,6 +817,7 @@ def test_approving_multi_employee_status_candidate_stages_one_job_per_employee(t
         },
     )
     write_action_candidate_review(runtime_root / "reviews" / "action_candidates" / "field_capture", candidate)
+    couchdb_review.seed_from_fs(runtime_root)
     body = f"candidate_id={candidate['candidate_id']}&reviewer=Jordan&rationale=looks-right"
 
     status, _content_type, _body, headers = ops_app.route_response_with_headers(
@@ -817,15 +828,22 @@ def test_approving_multi_employee_status_candidate_stages_one_job_per_employee(t
     )
 
     assert status == HTTPStatus.SEE_OTHER
-    assert "message=approved+and+staged" in headers["Location"]
+    # 308b: approve flips CouchDB status; no inline staging.
+    assert "message=approved" in headers["Location"]
+    assert couchdb_review.status_of(candidate["candidate_id"]) == "approved"
+    assert not (runtime_root / "queue").exists()
+
+    # The watcher stages one job per employee through the real pipeline.
+    couchdb_review.run_watcher(runtime_root, stub_stage=False)
     queue_jobs = [json.loads(path.read_text(encoding="utf-8")) for path in sorted((runtime_root / "queue").glob("*.json"))]
     assert {job["payload"]["entity_id"] for job in queue_jobs} == {"Maria Hutton", "Alex Taylor"}
     assert {job["payload"]["status"] for job in queue_jobs} == {"inactive"}
 
 
-def test_denying_voice_status_candidate_does_not_stage_queue_job(tmp_path: Path) -> None:
+def test_denying_voice_status_candidate_does_not_stage_queue_job(tmp_path: Path, couchdb_review) -> None:
     runtime_root = tmp_path / "runtime"
     candidate = write_voice_status_candidate(runtime_root, site_id="812")
+    couchdb_review.seed_from_fs(runtime_root)
     body = f"candidate_id={candidate['candidate_id']}&reviewer=Jordan&rationale=nope"
 
     status, _content_type, _body, headers = ops_app.route_response_with_headers(
@@ -837,10 +855,13 @@ def test_denying_voice_status_candidate_does_not_stage_queue_job(tmp_path: Path)
 
     assert status == HTTPStatus.SEE_OTHER
     assert "message=denied" in headers["Location"]
+    assert couchdb_review.status_of(candidate["candidate_id"]) == "rejected"
+    # Nothing staged, even after a watcher pass (watcher only stages approved).
+    couchdb_review.run_watcher(runtime_root, stub_stage=False)
     assert not (runtime_root / "queue").exists()
 
 
-def test_candidate_internal_paths_collapsed_behind_details_summary(tmp_path: Path) -> None:
+def test_candidate_internal_paths_collapsed_behind_details_summary(tmp_path: Path, couchdb_review) -> None:
     runtime_root = tmp_path / "runtime"
     write_field_capture_fixture(runtime_root)
     candidate_dir = runtime_root / "reviews" / "action_candidates" / "field_capture"
@@ -848,6 +869,7 @@ def test_candidate_internal_paths_collapsed_behind_details_summary(tmp_path: Pat
     candidate = json.loads(candidate_path.read_text(encoding="utf-8"))
     source_transcript_path = candidate["provenance"]["source_transcript_path"]
 
+    couchdb_review.seed_from_fs(runtime_root)
     status_code, _content_type, body = request_text("GET", "/field-capture/review?status=pending_review", runtime_root)
 
     assert status_code == HTTPStatus.OK
@@ -858,7 +880,7 @@ def test_candidate_internal_paths_collapsed_behind_details_summary(tmp_path: Pat
     assert source_transcript_path in internals_body
 
 
-def test_field_capture_review_page_hides_action_forms_for_non_pending_candidates(tmp_path: Path) -> None:
+def test_field_capture_review_page_hides_action_forms_for_non_pending_candidates(tmp_path: Path, couchdb_review) -> None:
     runtime_root = tmp_path / "runtime"
     write_field_capture_fixture(runtime_root)
     candidate_dir = runtime_root / "reviews" / "action_candidates" / "field_capture"
@@ -866,6 +888,7 @@ def test_field_capture_review_page_hides_action_forms_for_non_pending_candidates
     candidate = json.loads(candidate_path.read_text(encoding="utf-8"))
     candidate["status"] = "approved"
     write_json_object(candidate_path, candidate)
+    couchdb_review.seed_from_fs(runtime_root)
 
     status_code, _content_type, body = request_text("GET", "/field-capture/review?status=approved", runtime_root)
 
@@ -878,7 +901,7 @@ def test_field_capture_review_page_hides_action_forms_for_non_pending_candidates
     assert "Mark Client Informed" in body
 
 
-def test_field_capture_review_page_shows_client_informed_status_for_approved_candidate(tmp_path: Path) -> None:
+def test_field_capture_review_page_shows_client_informed_status_for_approved_candidate(tmp_path: Path, couchdb_review) -> None:
     runtime_root = tmp_path / "runtime"
     write_field_capture_fixture(runtime_root)
     candidate_dir = runtime_root / "reviews" / "action_candidates" / "field_capture"
@@ -888,6 +911,7 @@ def test_field_capture_review_page_shows_client_informed_status_for_approved_can
     candidate["reviewer"] = "Jordan"
     candidate["review_rationale"] = "Looks right"
     write_json_object(candidate_path, candidate)
+    couchdb_review.seed_from_fs(runtime_root)
 
     status_code, _content_type, body = request_text("GET", "/field-capture/review?status=approved", runtime_root)
 
@@ -987,10 +1011,11 @@ def test_candidate_filter_resolution_status_open_excludes_resolved(tmp_path: Pat
     assert [candidate["candidate_id"] for candidate in filtered] == ["open"]
 
 
-def test_field_capture_review_page_shows_submitter_from_intake_without_token(tmp_path: Path) -> None:
+def test_field_capture_review_page_shows_submitter_from_intake_without_token(tmp_path: Path, couchdb_review) -> None:
     runtime_root = tmp_path / "runtime"
     write_field_capture_fixture(runtime_root, submitter=True)
 
+    couchdb_review.seed_from_fs(runtime_root)
     status_code, _content_type, body = request_text("GET", "/field-capture/review?status=pending_review", runtime_root)
 
     assert status_code == HTTPStatus.OK
@@ -1020,11 +1045,12 @@ def test_ops_dashboard_status_includes_photo_vision_counts(tmp_path: Path) -> No
     assert photo_vision["recent_warnings"] == []
 
 
-def test_field_capture_review_page_renders_photo_vision_sidecar(tmp_path: Path) -> None:
+def test_field_capture_review_page_renders_photo_vision_sidecar(tmp_path: Path, couchdb_review) -> None:
     runtime_root = tmp_path / "runtime"
     write_field_capture_fixture(runtime_root)
     write_photo_vision_sidecar(runtime_root)
 
+    couchdb_review.seed_from_fs(runtime_root)
     status_code, content_type, body = request_text("GET", "/field-capture/review?status=pending_review", runtime_root)
 
     assert status_code == HTTPStatus.OK
@@ -1038,7 +1064,7 @@ def test_field_capture_review_page_renders_photo_vision_sidecar(tmp_path: Path) 
     assert "0.82" in body
 
 
-def test_candidate_vision_items_wrapped_in_details_expander(tmp_path: Path) -> None:
+def test_candidate_vision_items_wrapped_in_details_expander(tmp_path: Path, couchdb_review) -> None:
     runtime_root = tmp_path / "runtime"
     write_field_capture_fixture(runtime_root)
     sidecar_path = write_photo_vision_sidecar(runtime_root)
@@ -1049,6 +1075,7 @@ def test_candidate_vision_items_wrapped_in_details_expander(tmp_path: Path) -> N
     second_sidecar["description"] = "A second photo shows stocked supplies."
     write_json_object(sidecar_path.with_name("photo-asset-second.json"), second_sidecar)
 
+    couchdb_review.seed_from_fs(runtime_root)
     status_code, _content_type, body = request_text("GET", "/field-capture/review?status=pending_review", runtime_root)
 
     assert status_code == HTTPStatus.OK
@@ -1060,10 +1087,11 @@ def test_candidate_vision_items_wrapped_in_details_expander(tmp_path: Path) -> N
     assert "A second photo shows stocked supplies." in body
 
 
-def test_field_capture_review_page_handles_missing_photo_vision(tmp_path: Path) -> None:
+def test_field_capture_review_page_handles_missing_photo_vision(tmp_path: Path, couchdb_review) -> None:
     runtime_root = tmp_path / "runtime"
     write_field_capture_fixture(runtime_root)
 
+    couchdb_review.seed_from_fs(runtime_root)
     status_code, _content_type, body = request_text("GET", "/field-capture/review?status=pending_review", runtime_root)
 
     assert status_code == HTTPStatus.OK
@@ -1198,7 +1226,7 @@ def test_capture_detail_malformed_sidecar_does_not_crash(tmp_path: Path) -> None
     assert "Capture Detail" in body
 
 
-def test_field_capture_review_post_approve_updates_one_pending_candidate(tmp_path: Path, monkeypatch) -> None:
+def test_field_capture_review_post_approve_updates_one_pending_candidate(tmp_path: Path, monkeypatch, couchdb_review) -> None:
     runtime_root = tmp_path / "runtime"
     vault = tmp_path / "vault"
     vault.mkdir()
@@ -1208,6 +1236,7 @@ def test_field_capture_review_post_approve_updates_one_pending_candidate(tmp_pat
     candidate_dir = runtime_root / "reviews" / "action_candidates" / "field_capture"
     [candidate_path] = sorted(candidate_dir.glob("*.json"))
     candidate_id = json.loads(candidate_path.read_text(encoding="utf-8"))["candidate_id"]
+    couchdb_review.seed_from_fs(runtime_root)
     queue_processor_called = {"called": False}
 
     def fail_if_queue_processor_runs(*_args: object, **_kwargs: object) -> None:
@@ -1223,25 +1252,31 @@ def test_field_capture_review_post_approve_updates_one_pending_candidate(tmp_pat
         f"candidate_id={candidate_id}&reviewer=Jordan&rationale=Looks+right",
     )
 
-    updated = json.loads(candidate_path.read_text(encoding="utf-8"))
     assert status_code == HTTPStatus.SEE_OTHER
     assert "text/html" in content_type
     assert "Return to Captures" in body
-    assert updated["status"] == "approved"
-    assert updated["reviewer"] == "Jordan"
-    assert updated["review_rationale"] == "Looks right"
+    # 308b: review status + reviewer/rationale now live on the CouchDB doc.
+    doc = couchdb_review.docs[f"action_candidate_{candidate_id}"]
+    assert doc["status"] == "approved"
+    assert doc["reviewed_by"] == "Jordan"
+    assert doc["review_rationale"] == "Looks right"
+    # Approve does NOT stage inline; the watcher does (and never the queue
+    # processor from the review UI).
+    assert not (runtime_root / "queue").exists()
+    couchdb_review.run_watcher(runtime_root, stub_stage=False)
     assert (runtime_root / "reviews" / "approved_job_drafts").exists()
     assert (runtime_root / "queue").exists()
     assert sentinel.read_text(encoding="utf-8") == "do not touch\n"
     assert queue_processor_called["called"] is False
 
 
-def test_field_capture_review_post_reject_updates_one_pending_candidate(tmp_path: Path) -> None:
+def test_field_capture_review_post_reject_updates_one_pending_candidate(tmp_path: Path, couchdb_review) -> None:
     runtime_root = tmp_path / "runtime"
     write_field_capture_fixture(runtime_root)
     candidate_dir = runtime_root / "reviews" / "action_candidates" / "field_capture"
     [candidate_path] = sorted(candidate_dir.glob("*.json"))
     candidate_id = json.loads(candidate_path.read_text(encoding="utf-8"))["candidate_id"]
+    couchdb_review.seed_from_fs(runtime_root)
 
     status_code, _content_type, _body = request_text(
         "POST",
@@ -1250,20 +1285,24 @@ def test_field_capture_review_post_reject_updates_one_pending_candidate(tmp_path
         f"candidate_id={candidate_id}&reviewer=Jordan&rationale=Not+useful",
     )
 
-    updated = json.loads(candidate_path.read_text(encoding="utf-8"))
     assert status_code == HTTPStatus.SEE_OTHER
-    assert updated["status"] == "rejected"
-    assert updated["review_rationale"] == "Not useful"
+    # 308b: status + rationale on the CouchDB doc.
+    doc = couchdb_review.docs[f"action_candidate_{candidate_id}"]
+    assert doc["status"] == "rejected"
+    assert doc["review_rationale"] == "Not useful"
+    # Reject stages nothing, even after a watcher pass.
+    couchdb_review.run_watcher(runtime_root, stub_stage=False)
     assert not (runtime_root / "reviews" / "approved_job_drafts").exists()
     assert not (runtime_root / "queue").exists()
 
 
-def test_open_issue_post_redirects_to_inbox(tmp_path: Path) -> None:
+def test_open_issue_post_redirects_to_inbox(tmp_path: Path, couchdb_review) -> None:
     runtime_root = tmp_path / "runtime"
     write_field_capture_fixture(runtime_root)
     candidate_dir = runtime_root / "reviews" / "action_candidates" / "field_capture"
     [candidate_path] = sorted(candidate_dir.glob("*.json"))
     candidate = json.loads(candidate_path.read_text(encoding="utf-8"))
+    couchdb_review.seed_from_fs(runtime_root)
 
     status_code, _content_type, _body, headers = _handle_review_post(
         "approve",
@@ -1272,15 +1311,19 @@ def test_open_issue_post_redirects_to_inbox(tmp_path: Path) -> None:
     )
 
     assert status_code == HTTPStatus.SEE_OTHER
-    assert headers["Location"] == "/?message=approved+and+staged"
+    # 308b: approve no longer stages inline -> redirect is "approved", not
+    # "approved+and+staged".
+    assert headers["Location"] == "/?message=approved"
+    assert couchdb_review.status_of(candidate["candidate_id"]) == "approved"
 
 
-def test_open_issue_post_succeeds_without_rationale(tmp_path: Path) -> None:
+def test_open_issue_post_succeeds_without_rationale(tmp_path: Path, couchdb_review) -> None:
     runtime_root = tmp_path / "runtime"
     write_field_capture_fixture(runtime_root)
     candidate_dir = runtime_root / "reviews" / "action_candidates" / "field_capture"
     [candidate_path] = sorted(candidate_dir.glob("*.json"))
     candidate = json.loads(candidate_path.read_text(encoding="utf-8"))
+    couchdb_review.seed_from_fs(runtime_root)
 
     status_code, _content_type, body = request_text(
         "POST",
@@ -1289,19 +1332,21 @@ def test_open_issue_post_succeeds_without_rationale(tmp_path: Path) -> None:
         f"candidate_id={candidate['candidate_id']}&reviewer=Jordan&rationale=",
     )
 
-    updated = json.loads(candidate_path.read_text(encoding="utf-8"))
     assert status_code != HTTPStatus.BAD_REQUEST
     assert "review rationale is required" not in body
-    assert updated["status"] == "approved"
-    assert updated["review_rationale"] == ""
+    # 308b: approve succeeds with an empty rationale; status on CouchDB doc.
+    doc = couchdb_review.docs[f"action_candidate_{candidate['candidate_id']}"]
+    assert doc["status"] == "approved"
+    assert doc["review_rationale"] == ""
 
 
-def test_field_capture_review_post_reapprove_fails_closed(tmp_path: Path) -> None:
+def test_field_capture_review_post_reapprove_fails_closed(tmp_path: Path, couchdb_review) -> None:
     runtime_root = tmp_path / "runtime"
     write_field_capture_fixture(runtime_root)
     candidate_dir = runtime_root / "reviews" / "action_candidates" / "field_capture"
     [candidate_path] = sorted(candidate_dir.glob("*.json"))
     candidate_id = json.loads(candidate_path.read_text(encoding="utf-8"))["candidate_id"]
+    couchdb_review.seed_from_fs(runtime_root)
     request_text(
         "POST",
         "/field-capture/review/approve",
@@ -1309,6 +1354,8 @@ def test_field_capture_review_post_reapprove_fails_closed(tmp_path: Path) -> Non
         f"candidate_id={candidate_id}&reviewer=Jordan&rationale=Looks+right",
     )
 
+    # 308b: the second approve hits the status guard (already approved) and does
+    # NOT re-mutate -- fails closed via the shared fn, not the filesystem.
     request_text(
         "POST",
         "/field-capture/review/approve",
@@ -1316,10 +1363,12 @@ def test_field_capture_review_post_reapprove_fails_closed(tmp_path: Path) -> Non
         f"candidate_id={candidate_id}&reviewer=Jordan&rationale=Second+approval",
     )
 
-    updated = json.loads(candidate_path.read_text(encoding="utf-8"))
-    assert updated["status"] == "approved"
-    assert updated["review_rationale"] == "Looks right"
-    assert len(updated["review_history"]) == 1
+    doc = couchdb_review.docs[f"action_candidate_{candidate_id}"]
+    assert doc["status"] == "approved"
+    assert doc["review_rationale"] == "Looks right"
+    assert len(doc["review_history"]) == 1
+    # The watcher stages exactly one queue job for the single approval.
+    couchdb_review.run_watcher(runtime_root, stub_stage=False)
     assert len(list((runtime_root / "queue").glob("*.json"))) == 1
 
 
@@ -1347,7 +1396,7 @@ def test_field_capture_review_post_duplicate_candidate_id_fails_closed(tmp_path:
     assert not (runtime_root / "queue").exists()
 
 
-def test_field_capture_review_post_client_informed_writes_notification_and_resolution(tmp_path: Path, monkeypatch) -> None:
+def test_field_capture_review_post_client_informed_writes_notification_and_resolution(tmp_path: Path, monkeypatch, couchdb_review) -> None:
     runtime_root = tmp_path / "runtime"
     vault = tmp_path / "vault"
     vault.mkdir()
@@ -1361,6 +1410,10 @@ def test_field_capture_review_post_client_informed_writes_notification_and_resol
     candidate["reviewer"] = "Jordan"
     candidate["review_rationale"] = "Approved"
     write_json_object(candidate_path, candidate)
+    # 308c: validate_approved_candidate reads the approved candidate from CouchDB
+    # (sole canonical store) before recording the client notification; the
+    # resolution patch still writes the filesystem artifact. Seed both.
+    couchdb_review.seed_from_fs(runtime_root)
     queue_processor_called = {"called": False}
 
     def fail_if_queue_processor_runs(*_args: object, **_kwargs: object) -> None:
@@ -1441,10 +1494,11 @@ def test_field_capture_review_post_client_informed_fails_for_pending_candidate(t
     assert not (runtime_root / "queue").exists()
 
 
-def test_ops_dashboard_status_includes_field_capture_review_summary(tmp_path: Path) -> None:
+def test_ops_dashboard_status_includes_field_capture_review_summary(tmp_path: Path, couchdb_review) -> None:
     runtime_root = tmp_path / "runtime"
     write_field_capture_fixture(runtime_root)
 
+    couchdb_review.seed_from_fs(runtime_root)
     payload = build_status(runtime_root)
 
     assert payload["health"]["field_capture_intake_count"] == 1

@@ -420,7 +420,7 @@ def test_proposed_job_builder_bug_records_generic_reason(monkeypatch: pytest.Mon
     assert result.proposed_queue_job_error == "builder_error:RuntimeError"
 
 
-def test_serialized_candidate_includes_proposed_job_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_serialized_candidate_includes_proposed_job_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, couchdb_review) -> None:
     def unavailable(_site_name: str) -> str | None:
         raise CouchDBRegistryError("registry unavailable")
 
@@ -469,7 +469,7 @@ def test_serialized_candidate_includes_proposed_job_error(tmp_path: Path, monkey
 
     assert counts == {"discovered": 2, "skipped": 0, "completed": 2, "failed": 0}
     assert error_candidate["channel_metadata"]["proposed_queue_job_error"] == "site_registry_unavailable"
-    assert "approval_metadata" not in error_candidate
+    assert not error_candidate.get("approval_metadata")  # 308c: empty dict survives CouchDB round-trip; no proposed job
     assert "proposed_queue_job_error" not in clean_candidate["channel_metadata"]
 
 
@@ -514,7 +514,7 @@ def test_semantic_prompt_routes_equipment_loss() -> None:
     assert "Do NOT emit update_site_equipment for attribute-less loss or movement" in prompt
 
 
-def test_text_artifact_collects_multiple_structured_candidates(tmp_path: Path) -> None:
+def test_text_artifact_collects_multiple_structured_candidates(tmp_path: Path, couchdb_review) -> None:
     semantic_dir = tmp_path / "field_capture" / "semantics"
     candidate_dir = tmp_path / "reviews" / "action_candidates" / "field_capture"
     engine = LocalModelCaptureEngine(
@@ -672,13 +672,13 @@ def stage_single_structured_action(tmp_path: Path, raw_action: dict[str, object]
     return {"candidate": candidate, "queue_job": queue_job}
 
 
-def test_operator_structured_actions_stage_valid_queue_jobs_end_to_end(tmp_path: Path) -> None:
+def test_operator_structured_actions_stage_valid_queue_jobs_end_to_end(tmp_path: Path, couchdb_review) -> None:
     for job_type in ("log_personnel_event", "flag_retention_risk", "trigger_recruiting", "remove_from_schedule"):
         result = stage_single_structured_action(tmp_path / job_type, operator_action(job_type))
         assert result["queue_job"]["job_type"] == job_type
 
 
-def test_structured_action_builder_fails_soft_without_required_target(tmp_path: Path) -> None:
+def test_structured_action_builder_fails_soft_without_required_target(tmp_path: Path, couchdb_review) -> None:
     semantic_dir = tmp_path / "runtime" / "field_capture" / "semantics"
     candidate_dir = tmp_path / "runtime" / "reviews" / "action_candidates" / "field_capture"
     engine = LocalModelCaptureEngine(
@@ -713,7 +713,7 @@ def test_structured_action_builder_fails_soft_without_required_target(tmp_path: 
 
     assert counts == {"discovered": 1, "skipped": 0, "completed": 1, "failed": 0}
     assert candidate["status"] == "pending_review"
-    assert "approval_metadata" not in candidate
+    assert not candidate.get("approval_metadata")  # 308c: empty dict survives CouchDB round-trip; no proposed job
 
 
 def test_model_payload_fields_are_honored_for_valid_personnel_payload() -> None:

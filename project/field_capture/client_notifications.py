@@ -6,7 +6,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from config import get_config
-from field_capture.action_candidates import CandidateReviewError, default_candidate_dir, find_candidate_artifacts
+from event_pipeline import couchdb_config
+from event_pipeline.couchdb_candidate_writer import CouchDBCandidateWriterError, get_action_candidate
+from field_capture.action_candidates import (
+    CandidateReviewError,
+    couchdb_action_candidate_to_review_payload,
+    couchdb_candidate_config_or_none,
+    default_candidate_dir,
+)
 from processing_core.artifacts import read_json_object, resolve_within_root, write_json_object
 
 
@@ -78,17 +85,20 @@ def validate_approved_candidate(candidate_dir: Path, candidate_id: str, *, runti
     candidate_root = candidate_dir.expanduser().resolve(strict=False)
     if runtime_root is not None:
         resolve_within_root(candidate_root, runtime_root.expanduser().resolve(strict=False))
-    matches = find_candidate_artifacts(candidate_root, candidate_id)
-    if not matches:
+    config = couchdb_candidate_config_or_none()
+    if config is None:
+        raise ClientNotificationError("CouchDB action candidate store is not configured")
+    try:
+        doc = get_action_candidate(config, couchdb_config.field_captures_database(), candidate_id)
+    except CouchDBCandidateWriterError as exc:
+        raise ClientNotificationError(str(exc)) from exc
+    if doc is None:
         raise ClientNotificationError(f"candidate not found: {candidate_id}")
-    if len(matches) > 1:
-        raise ClientNotificationError(f"multiple candidate artifacts found for candidate_id: {candidate_id}")
-    _path, candidate = matches[0]
-    if candidate.get("type") != "action_candidate_review":
-        raise ClientNotificationError("candidate artifact type is not action_candidate_review")
-    if str(candidate.get("status") or "") != "approved":
-        raise ClientNotificationError(f"candidate status is not approved: {candidate.get('status')}")
-    return candidate
+    if str(doc.get("type") or "") != "action_candidate":
+        raise ClientNotificationError("candidate document type is not action_candidate")
+    if str(doc.get("status") or "") != "approved":
+        raise ClientNotificationError(f"candidate status is not approved: {doc.get('status')}")
+    return couchdb_action_candidate_to_review_payload(doc)
 
 
 def mark_client_informed(

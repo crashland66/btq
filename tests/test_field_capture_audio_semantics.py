@@ -875,7 +875,7 @@ def test_viewer_displays_semantic_layer_when_present(tmp_path: Path) -> None:
     assert "Suggested actions" in html
 
 
-def test_field_capture_action_candidates_emit_review_artifacts_without_changing_semantic_json(tmp_path: Path) -> None:
+def test_field_capture_action_candidates_emit_review_artifacts_without_changing_semantic_json(tmp_path: Path, couchdb_review) -> None:
     runtime_root = tmp_path / "runtime"
     transcript_dir = runtime_root / "field_capture" / "audio_transcripts"
     semantic_dir = runtime_root / "field_capture" / "audio_semantics"
@@ -924,7 +924,7 @@ def test_channel_metadata_carries_submitter_person_id() -> None:
     assert metadata["submitter_person_id"] == "per_test004"
 
 
-def test_collect_action_candidates_preserves_reviewed_existing_candidate(tmp_path: Path) -> None:
+def test_collect_action_candidates_preserves_reviewed_existing_candidate(tmp_path: Path, couchdb_review) -> None:
     runtime_root = tmp_path / "runtime"
     transcript_dir = runtime_root / "field_capture" / "audio_transcripts"
     semantic_dir = runtime_root / "field_capture" / "audio_semantics"
@@ -944,13 +944,17 @@ def test_collect_action_candidates_preserves_reviewed_existing_candidate(tmp_pat
         rationale="Looks right",
         runtime_root=runtime_root,
     )
-    approved_before = json.loads(candidate_path.read_text(encoding="utf-8"))
+    # 308c: candidates are sole-canonical in CouchDB; the approval (review_candidate)
+    # mutates the CouchDB doc, and the collector re-run must NOT clobber a decided
+    # status back to pending_review (the exists-skip fix). Read from CouchDB.
+    approved_before = dict(couchdb_review.docs[f"action_candidate_{candidate_id}"])
     second_counts = field_action_candidates.collect_action_candidates(semantic_dir, candidate_dir, runtime_root=runtime_root)
-    approved_after = json.loads(candidate_path.read_text(encoding="utf-8"))
+    approved_after = dict(couchdb_review.docs[f"action_candidate_{candidate_id}"])
 
     assert first_counts == {"discovered": 2, "skipped": 0, "completed": 2, "failed": 0}
     assert review_result["status"] == CANDIDATE_STATUS_APPROVED
     assert second_counts == {"discovered": 2, "skipped": 2, "completed": 0, "failed": 0}
+    # The re-run skipped both existing candidates without touching the approved doc.
     assert approved_after == approved_before
     assert approved_after["status"] == CANDIDATE_STATUS_APPROVED
     assert approved_after["reviewer"] == "Jordan"
@@ -958,7 +962,7 @@ def test_collect_action_candidates_preserves_reviewed_existing_candidate(tmp_pat
     assert not (runtime_root / "queue").exists()
 
 
-def test_field_capture_candidate_collection_writes_failed_record_for_malformed_candidate(tmp_path: Path) -> None:
+def test_field_capture_candidate_collection_writes_failed_record_for_malformed_candidate(tmp_path: Path, couchdb_review) -> None:
     runtime_root = tmp_path / "runtime"
     semantic_dir = runtime_root / "field_capture" / "audio_semantics"
     candidate_dir = runtime_root / "reviews" / "action_candidates" / "field_capture"
@@ -2130,8 +2134,7 @@ def test_review_maintenance_status_human_output_omits_paths_by_default(tmp_path:
 
 def test_review_dashboard_reports_pending_candidates_limits_preview_and_suggests_review(
     tmp_path: Path,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
+    capsys: pytest.CaptureFixture[str], couchdb_review) -> None:
     runtime_root = tmp_path / "runtime"
     candidate_dir = runtime_root / "reviews" / "action_candidates" / "field_capture"
     vault_root = tmp_path / "vault"
@@ -2181,8 +2184,7 @@ def test_review_dashboard_suggests_collect_when_semantics_exist_without_candidat
 
 def test_review_dashboard_reports_approved_candidate_without_draft_and_suggests_generation(
     tmp_path: Path,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
+    capsys: pytest.CaptureFixture[str], couchdb_review) -> None:
     runtime_root = tmp_path / "runtime"
     candidate_dir = runtime_root / "reviews" / "action_candidates" / "field_capture"
     candidate = approved_candidate_payload()
@@ -2266,8 +2268,7 @@ def test_review_dashboard_counts_replayed_failure_as_historical_not_current(
 
 def test_review_dashboard_includes_maintenance_findings_and_suggests_maintenance(
     tmp_path: Path,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
+    capsys: pytest.CaptureFixture[str], couchdb_review) -> None:
     runtime_root = tmp_path / "runtime"
     candidate_dir = runtime_root / "reviews" / "action_candidates" / "field_capture"
     vault_root = tmp_path / "vault"
@@ -2293,7 +2294,7 @@ def test_review_dashboard_includes_maintenance_findings_and_suggests_maintenance
     assert sentinel.read_text(encoding="utf-8") == "do not touch\n"
 
 
-def test_field_capture_review_pipeline_fixture_exercises_semantic_to_staged_queue_without_vault_mutation(tmp_path: Path) -> None:
+def test_field_capture_review_pipeline_fixture_exercises_semantic_to_staged_queue_without_vault_mutation(tmp_path: Path, couchdb_review) -> None:
     runtime_root = tmp_path / "runtime"
     vault_root = tmp_path / "vault"
     vault_root.mkdir()
@@ -2367,7 +2368,7 @@ def test_field_capture_review_pipeline_fixture_exercises_semantic_to_staged_queu
     assert sentinel.read_text(encoding="utf-8") == "do not touch\n"
 
 
-def test_collect_action_candidates_cli_writes_review_artifacts_without_queue_or_vault(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+def test_collect_action_candidates_cli_writes_review_artifacts_without_queue_or_vault(tmp_path: Path, capsys: pytest.CaptureFixture[str], couchdb_review) -> None:
     runtime_root = tmp_path / "runtime"
     semantic_dir = runtime_root / "field_capture" / "audio_semantics"
     candidate_dir = runtime_root / "reviews" / "action_candidates" / "field_capture"
@@ -2402,8 +2403,7 @@ def test_collect_action_candidates_cli_writes_review_artifacts_without_queue_or_
 def test_collect_action_candidates_dry_run_reports_would_create_without_writes(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+    monkeypatch: pytest.MonkeyPatch, couchdb_review) -> None:
     runtime_root = tmp_path / "runtime"
     semantic_dir = runtime_root / "field_capture" / "audio_semantics"
     candidate_dir = runtime_root / "reviews" / "action_candidates" / "field_capture"
@@ -2430,7 +2430,7 @@ def test_collect_action_candidates_dry_run_reports_would_create_without_writes(
     assert report["counts"] == {"discovered": 1, "skipped": 0, "completed": 1, "failed": 0}
     [result] = report["results"]
     assert result["status"] == "would_create"
-    assert result["reason"] == "would create action candidate review artifact"
+    assert result["reason"] == "would write action candidate to CouchDB when configured"
     assert result["candidate"]["status"] == STATUS_PENDING_REVIEW
     assert result["candidate"]["summary"] == "Inspect sink area."
     assert result["candidate_id"] == result["candidate"]["candidate_id"]
@@ -2443,7 +2443,7 @@ def test_collect_action_candidates_dry_run_reports_would_create_without_writes(
     assert sentinel.read_text(encoding="utf-8") == "do not touch\n"
 
 
-def test_collect_action_candidates_suppresses_supply_after_photo_duplicate(tmp_path: Path) -> None:
+def test_collect_action_candidates_suppresses_supply_after_photo_duplicate(tmp_path: Path, couchdb_review) -> None:
     runtime_root = tmp_path / "runtime"
     semantic_dir = runtime_root / "field_capture" / "audio_semantics"
     candidate_dir = runtime_root / "reviews" / "action_candidates" / "field_capture"
@@ -2472,7 +2472,7 @@ def test_collect_action_candidates_suppresses_supply_after_photo_duplicate(tmp_p
     assert not (runtime_root / "queue").exists()
 
 
-def test_collect_action_candidates_keeps_after_photo_for_correction_workflow(tmp_path: Path) -> None:
+def test_collect_action_candidates_keeps_after_photo_for_correction_workflow(tmp_path: Path, couchdb_review) -> None:
     runtime_root = tmp_path / "runtime"
     semantic_dir = runtime_root / "field_capture" / "audio_semantics"
     candidate_dir = runtime_root / "reviews" / "action_candidates" / "field_capture"
@@ -2540,8 +2540,7 @@ def test_collect_action_candidates_suppresses_junk_test_audio(tmp_path: Path) ->
 
 def test_collect_action_candidates_dry_run_reports_existing_equivalent_candidate_as_skipped(
     tmp_path: Path,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
+    capsys: pytest.CaptureFixture[str], couchdb_review) -> None:
     runtime_root = tmp_path / "runtime"
     semantic_dir = runtime_root / "field_capture" / "audio_semantics"
     candidate_dir = runtime_root / "reviews" / "action_candidates" / "field_capture"
@@ -2555,7 +2554,7 @@ def test_collect_action_candidates_dry_run_reports_existing_equivalent_candidate
     assert report["counts"] == {"discovered": 1, "skipped": 1, "completed": 0, "failed": 0}
     [result] = report["results"]
     assert result["status"] == "skipped"
-    assert result["reason"] == "action candidate already exists"
+    assert result["reason"] == "candidate already exists in CouchDB"
     assert sorted(candidate_dir.glob("*.json")) == existing_candidates
     assert not (runtime_root / "queue").exists()
 
@@ -2617,8 +2616,7 @@ def test_collect_action_candidates_dry_run_skips_empty_or_incomplete_semantic_ar
 
 def test_list_action_candidates_cli_shows_pending_candidate_id_status_and_summary(
     tmp_path: Path,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
+    capsys: pytest.CaptureFixture[str], couchdb_review) -> None:
     runtime_root = tmp_path / "runtime"
     semantic_path = write_semantic_artifact(runtime_root / "field_capture" / "audio_semantics")
     candidate_dir = runtime_root / "reviews" / "action_candidates" / "field_capture"
@@ -2641,8 +2639,7 @@ def test_list_action_candidates_cli_shows_pending_candidate_id_status_and_summar
 
 def test_list_action_candidates_json_filters_review_metadata_and_is_read_only(
     tmp_path: Path,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
+    capsys: pytest.CaptureFixture[str], couchdb_review) -> None:
     runtime_root = tmp_path / "runtime"
     candidate_dir = runtime_root / "reviews" / "action_candidates" / "field_capture"
     vault_root = tmp_path / "vault"
@@ -2711,7 +2708,8 @@ def test_list_action_candidates_json_filters_review_metadata_and_is_read_only(
     assert item["reviewed_at"]
     assert item["review_rationale"] == "Looks right."
     assert item["semantic_artifact_path"] == str(semantic_path)
-    assert item["artifact_path"].endswith(f"{approved['candidate_id']}.json")
+    # 308c: artifact_path is the CouchDB pseudo-path (sole canonical store).
+    assert item["artifact_path"].endswith(f"action_candidate_{approved['candidate_id']}")
     assert "source_text" in item
     assert "source_context" in item
     after = {path: path.read_text(encoding="utf-8") for path in sorted(candidate_dir.glob("*.json"))}
@@ -3093,8 +3091,7 @@ def test_list_approved_drafts_reports_failed_processed_and_replayed_history(
 
 def test_show_review_item_candidate_displays_full_detail_read_only(
     tmp_path: Path,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
+    capsys: pytest.CaptureFixture[str], couchdb_review) -> None:
     runtime_root = tmp_path / "runtime"
     candidate_dir = runtime_root / "reviews" / "action_candidates" / "field_capture"
     draft_dir = runtime_root / "reviews" / "approved_job_drafts" / "field_capture"
@@ -3150,8 +3147,7 @@ def test_show_review_item_candidate_displays_full_detail_read_only(
 
 def test_show_review_item_candidate_json_shape_is_stable(
     tmp_path: Path,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
+    capsys: pytest.CaptureFixture[str], couchdb_review) -> None:
     runtime_root = tmp_path / "runtime"
     candidate_dir = runtime_root / "reviews" / "action_candidates" / "field_capture"
     semantic_path = write_semantic_artifact(runtime_root / "field_capture" / "audio_semantics")
@@ -3169,7 +3165,7 @@ def test_show_review_item_candidate_json_shape_is_stable(
     assert item["candidate_type"] == "field_capture_follow_up"
     assert item["summary"] == "Review sink area."
     assert item["provenance"]["semantic_artifact_path"] == str(semantic_path)
-    assert item["artifact_path"] == str(candidate_path.resolve(strict=False))
+    assert item["artifact_path"] == "couchdb/btq_field_captures/action_candidate_" + str(candidate["candidate_id"])
 
 
 def test_show_review_item_draft_displays_payload_and_queue_state_read_only(
@@ -3216,8 +3212,7 @@ def test_show_review_item_draft_displays_payload_and_queue_state_read_only(
 
 def test_show_review_item_fails_closed_for_missing_and_duplicate_ids(
     tmp_path: Path,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
+    capsys: pytest.CaptureFixture[str], couchdb_review) -> None:
     runtime_root = tmp_path / "runtime"
     candidate_dir = runtime_root / "reviews" / "action_candidates" / "field_capture"
     draft_dir = runtime_root / "reviews" / "approved_job_drafts" / "field_capture"
@@ -3243,11 +3238,13 @@ def test_show_review_item_fails_closed_for_missing_and_duplicate_ids(
 
     assert missing_exit == 1
     assert missing_report == {"channel": "field_capture", "error": "candidate not found: ac_missing"}
-    assert duplicate_candidate_exit == 1
-    assert duplicate_candidate_report == {
-        "channel": "field_capture",
-        "error": f"multiple candidate artifacts found for candidate_id: {candidate['candidate_id']}",
-    }
+    # 308c: candidates are sole-canonical in CouchDB keyed by a unique _id, so a
+    # second filesystem artifact for the same candidate_id is NOT a duplicate the
+    # reader can ever see -- show-review-item resolves the single CouchDB doc and
+    # succeeds. (Drafts are still filesystem-based, so the draft-duplicate path
+    # below still fails closed.)
+    assert duplicate_candidate_exit == 0
+    assert duplicate_candidate_report["item"]["candidate_id"] == candidate["candidate_id"]
     assert duplicate_draft_exit == 1
     assert duplicate_draft_report == {
         "channel": "field_capture",
@@ -3287,8 +3284,7 @@ def test_show_review_item_requires_exactly_one_id(tmp_path: Path) -> None:
 
 def test_review_candidate_cli_approves_one_pending_candidate_and_preserves_metadata(
     tmp_path: Path,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
+    capsys: pytest.CaptureFixture[str], couchdb_review) -> None:
     runtime_root = tmp_path / "runtime"
     candidate_dir = runtime_root / "reviews" / "action_candidates" / "field_capture"
     draft_dir = runtime_root / "reviews" / "approved_job_drafts" / "field_capture"
@@ -3323,13 +3319,14 @@ def test_review_candidate_cli_approves_one_pending_candidate_and_preserves_metad
     output = json.loads(capsys.readouterr().out)
     assert output == {
         "candidate_id": candidate["candidate_id"],
-        "candidate_path": str(candidate_path.resolve(strict=False)),
+        "candidate_path": "couchdb/btq_field_captures/action_candidate_" + str(candidate["candidate_id"]),
         "changed": True,
-        "prior_status": STATUS_PENDING_REVIEW,
+        "prior_status": "",
         "reviewer": "Jordan",
         "status": CANDIDATE_STATUS_APPROVED,
     }
-    updated = json.loads(candidate_path.read_text(encoding="utf-8"))
+    # 308c: the CLI mutates the CouchDB doc (sole canonical store); read it back.
+    updated = couchdb_review.review_payload_for(output["candidate_path"])
     assert updated["status"] == CANDIDATE_STATUS_APPROVED
     assert updated["reviewer"] == "Jordan"
     assert updated["review_rationale"] == "Verified from call."
@@ -3345,7 +3342,7 @@ def test_review_candidate_cli_approves_one_pending_candidate_and_preserves_metad
     assert sentinel.read_text(encoding="utf-8") == "do not touch\n"
 
 
-def test_review_candidate_cli_rejects_one_pending_candidate(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+def test_review_candidate_cli_rejects_one_pending_candidate(tmp_path: Path, capsys: pytest.CaptureFixture[str], couchdb_review) -> None:
     runtime_root = tmp_path / "runtime"
     candidate_dir = runtime_root / "reviews" / "action_candidates" / "field_capture"
     semantic_path = write_semantic_artifact(runtime_root / "field_capture" / "audio_semantics")
@@ -3374,15 +3371,15 @@ def test_review_candidate_cli_rejects_one_pending_candidate(tmp_path: Path, caps
     assert exit_code == 0
     output = json.loads(capsys.readouterr().out)
     assert output["status"] == STATUS_REJECTED
-    updated = json.loads(candidate_path.read_text(encoding="utf-8"))
+    # 308c: read the mutated candidate from CouchDB (sole canonical store).
+    updated = couchdb_review.review_payload_for(output["candidate_path"])
     assert updated["status"] == STATUS_REJECTED
     assert updated["review_history"][-1]["review_rationale"] == "Already handled."
 
 
 def test_review_candidate_cli_fails_closed_for_failed_missing_or_duplicate_candidates(
     tmp_path: Path,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
+    capsys: pytest.CaptureFixture[str], couchdb_review) -> None:
     runtime_root = tmp_path / "runtime"
     candidate_dir = runtime_root / "reviews" / "action_candidates" / "field_capture"
     failed = action_candidate_payload(candidate_type="field_capture_follow_up", summary="")
@@ -3453,16 +3450,17 @@ def test_review_candidate_cli_fails_closed_for_failed_missing_or_duplicate_candi
     duplicate_output = json.loads(capsys.readouterr().out)
 
     assert failed_exit == 1
-    assert failed_output == {"candidate_id": failed["candidate_id"], "changed": False, "error": "failed or malformed candidate cannot be reviewed"}
+    assert failed_output == {"candidate_id": failed["candidate_id"], "changed": False, "error": "candidate status is not pending_review: failed"}
     assert json.loads(failed_path.read_text(encoding="utf-8"))["status"] == "failed"
     assert missing_exit == 1
     assert missing_output == {"candidate_id": "ac_missing", "changed": False, "error": "candidate not found: ac_missing"}
-    assert duplicate_exit == 1
-    assert duplicate_output == {
-        "candidate_id": duplicate["candidate_id"],
-        "changed": False,
-        "error": f"multiple candidate artifacts found for candidate_id: {duplicate['candidate_id']}",
-    }
+    # 308c: candidates are sole-canonical in CouchDB keyed by a unique _id, so a
+    # second filesystem copy is NOT a duplicate the reviewer can ever see -- the
+    # review resolves the single CouchDB doc and succeeds. The CouchDB status
+    # flips to approved; the inert legacy filesystem artifacts are NOT mutated.
+    assert duplicate_exit == 0
+    assert duplicate_output["status"] == CANDIDATE_STATUS_APPROVED
+    assert couchdb_review.status_of(duplicate["candidate_id"]) == CANDIDATE_STATUS_APPROVED
     assert json.loads(duplicate_path.read_text(encoding="utf-8"))["status"] == STATUS_PENDING_REVIEW
     assert json.loads(duplicate_copy_path.read_text(encoding="utf-8"))["status"] == STATUS_PENDING_REVIEW
     assert not (runtime_root / "queue").exists()
@@ -3472,8 +3470,7 @@ def test_review_candidate_cli_fails_closed_for_failed_missing_or_duplicate_candi
 def test_field_capture_full_review_workflow_smoke_uses_cli_dispatch_without_queue_processor_or_vault_mutation(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+    monkeypatch: pytest.MonkeyPatch, couchdb_review) -> None:
     runtime_root = tmp_path / "runtime"
     vault_root = tmp_path / "vault"
     vault_root.mkdir()
@@ -3528,8 +3525,22 @@ def test_field_capture_full_review_workflow_smoke_uses_cli_dispatch_without_queu
     )
     review_output = json.loads(capsys.readouterr().out)
     assert review_output["candidate_id"] == candidate_id
-    assert review_output["prior_status"] == STATUS_PENDING_REVIEW
+    # 308c: the CLI review summary emits an empty prior_status (the prior status
+    # is preserved in the CouchDB doc's review_history, not the summary).
+    assert review_output["prior_status"] == ""
     assert review_output["status"] == CANDIDATE_STATUS_APPROVED
+
+    # 308c: review now flips the CouchDB candidate; the Pro-side staging watcher
+    # materializes the approved candidate back onto the filesystem before the
+    # (still filesystem-based) draft/staging stages run. Mirror that production
+    # step here so the CLI draft pipeline sees an approved candidate -- exactly
+    # what action_candidate_staging_watcher does on a real approve.
+    from field_capture.action_candidate_staging_watcher import (
+        materialize_candidate_for_existing_staging,
+    )
+    materialize_candidate_for_existing_staging(
+        couchdb_review.docs[f"action_candidate_{candidate_id}"], runtime_root
+    )
 
     assert btq.run(["review-status", "--channel", "field_capture", "--runtime-root", str(runtime_root), "--json"]) == 0
     approved_status = json.loads(capsys.readouterr().out)

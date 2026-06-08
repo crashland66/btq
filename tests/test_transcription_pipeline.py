@@ -648,7 +648,7 @@ def western_gas_sidecar(**overrides: Any) -> dict[str, Any]:
     return payload
 
 
-def test_voice_memo_semantics_stages_reviewable_site_inactive_action(tmp_path: Path, monkeypatch) -> None:
+def test_voice_memo_semantics_stages_reviewable_site_inactive_action(tmp_path: Path, monkeypatch, couchdb_review) -> None:
     root = tmp_path
     audio = root / "western-gas.webm"
     audio.write_bytes(b"audio")
@@ -698,13 +698,21 @@ def test_voice_memo_semantics_stages_reviewable_site_inactive_action(tmp_path: P
     job = json.loads(job_path.read_text(encoding="utf-8"))
     assert job["job_type"] == "voice_memo_note"
     assert job["metadata"]["semantic_artifact_path"] == str(semantic_path)
-    assert job["metadata"]["action_candidate_paths"] == [str(candidates[0])]
+    # 308c: the job references the candidate by its CouchDB pseudo-path (sole
+    # canonical store), not the legacy filesystem artifact path.
+    assert job["metadata"]["action_candidate_paths"] == [
+        "couchdb/btq_field_captures/action_candidate_" + candidate["candidate_id"]
+    ]
     assert job["payload"]["semantic_intent"] == "site_status_change"
     assert job["payload"]["semantic_primary_intent"] == "site_status_change"
     assert job["payload"]["semantic_action_count"] == 1
     assert job["payload"]["semantic_review_required"] is True
-    assert job["payload"]["action_candidate_path"] == str(candidates[0])
-    assert job["payload"]["action_candidate_paths"] == [str(candidates[0])]
+    assert job["payload"]["action_candidate_path"] == (
+        "couchdb/btq_field_captures/action_candidate_" + candidate["candidate_id"]
+    )
+    assert job["payload"]["action_candidate_paths"] == [
+        "couchdb/btq_field_captures/action_candidate_" + candidate["candidate_id"]
+    ]
 
 
 def test_voice_memo_semantic_failure_falls_back_to_voice_memo_note(tmp_path: Path, monkeypatch) -> None:

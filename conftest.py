@@ -55,3 +55,11 @@ def _pin_synthetic_site_registry() -> None:
 
     srd.load_site_registry(force_reload=True)
     srd.load_brand_keywords("supply", force_reload=True)
+
+
+# --------------------------------------------------------------------------- #
+# Prompt 308b: shared CouchDB candidate-review double (INDEPENDENT VERIFIER).
+# Re-exported here so the ops-dashboard + swipe test trees can request the
+# `couchdb_review` fixture that drives the new CouchDB `_rev` review contract.
+# --------------------------------------------------------------------------- #
+from test_helpers.couchdb_review_double import couchdb_review  # noqa: E402,F401

@@ -90,7 +90,7 @@ def swipe_card(
     """
     provenance = payload.get("provenance") if isinstance(payload.get("provenance"), dict) else {}
     metadata = payload.get("channel_metadata") if isinstance(payload.get("channel_metadata"), dict) else {}
-    capture_id = str(metadata.get("upload_id") or "")
+    capture_id = str(metadata.get("upload_id") or payload.get("capture_id") or "")
     submitter = submitters.get(capture_id, {})
 
     proposed_jobs = approved_job_drafts.proposed_queue_jobs(payload, runtime_root=runtime_root)
@@ -109,7 +109,7 @@ def swipe_card(
     return {
         "candidate_id": str(payload.get("candidate_id") or ""),
         "status": str(payload.get("status") or ""),
-        "site_id": str(metadata.get("site_id") or provenance.get("site_id") or ""),
+        "site_id": str(metadata.get("site_id") or provenance.get("site_id") or payload.get("site_id") or ""),
         "area": str(metadata.get("area") or ""),
         "submitter_name": str(
             metadata.get("submitter_name") or submitter.get("submitter_name") or UNKNOWN_SUBMITTER
@@ -125,21 +125,15 @@ def swipe_card(
         "approvable": approvable,
         "age_seconds": _age_seconds_from_timestamp(payload.get("created_at")),
         "artifact_path": str(path),
+        "_rev": str(payload.get("_rev") or ""),
     }
 
 
 def collect_cards(runtime_root: Path, *, status: str = QUEUE_NEEDS_APPROVAL) -> list[dict[str, object]]:
-    candidate_dir = field_action_candidates.default_candidate_dir(runtime_root)
-    candidate_root = candidate_dir.expanduser().resolve(strict=False)
-    field_action_candidates.resolve_within_root(
-        candidate_root, runtime_root.expanduser().resolve(strict=False)
-    )
     submitters = submitters_by_capture(runtime_root)
     cards: list[dict[str, object]] = []
-    for path, payload in field_action_candidates.iter_candidate_artifacts(candidate_root):
+    for path, payload in field_action_candidates.couchdb_candidate_payloads(status=status):
         if payload.get("type") != "action_candidate_review":
-            continue
-        if payload.get("status") != status:
             continue
         cards.append(swipe_card(path, payload, runtime_root=runtime_root, submitters=submitters))
     # Oldest first: the operator clears the backlog tail, and ordering is stable
@@ -211,6 +205,7 @@ def render(request_ctx: object) -> str:
 
     <form id="swipe-action-form" method="post" hidden>
       <input type="hidden" name="candidate_id" value="">
+      <input type="hidden" name="_rev" value="">
       <input type="hidden" name="reviewer" value="">
       <input type="hidden" name="rationale" value="">
     </form>
@@ -320,6 +315,7 @@ window.__btqSwipeInit = function () {
     var route = action === 'approve' ? '/field-capture/review/approve' : '/field-capture/review/reject';
     var body = new URLSearchParams();
     body.set('candidate_id', card.candidate_id);
+    body.set('_rev', card._rev || '');
     body.set('reviewer', reviewer);
     body.set('rationale', '');
     var stage = mount.parentElement;

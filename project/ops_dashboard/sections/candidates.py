@@ -10,8 +10,9 @@ from urllib.parse import parse_qs, urlencode
 
 from field_capture import approved_job_drafts
 from field_capture import action_candidates as field_action_candidates
-from field_capture import draft_staging
+from field_capture import candidate_staging
 from field_capture import client_notifications as field_client_notifications
+from event_pipeline import couchdb_config
 from ops_dashboard import audit
 from ops_dashboard.common import (
     apply_pending_candidate_counts,
@@ -43,7 +44,6 @@ from processing_core.action_candidates import (
     RESOLUTION_RESOLVED,
     patch_candidate_resolution,
 )
-from processing_core.artifacts import write_json_object
 
 
 UNKNOWN_SUBMITTER = "Unknown submitter"
@@ -110,9 +110,9 @@ def candidate_detail(
     return {
         "candidate_id": str(payload.get("candidate_id") or ""),
         "status": str(payload.get("status") or ""),
-        "site_id": str(metadata.get("site_id") or provenance.get("site_id") or ""),
+        "site_id": str(metadata.get("site_id") or provenance.get("site_id") or payload.get("site_id") or ""),
         "area": str(metadata.get("area") or ""),
-        "capture_id": str(metadata.get("upload_id") or ""),
+        "capture_id": str(metadata.get("upload_id") or payload.get("capture_id") or ""),
         "captured_at": str(metadata.get("captured_at") or payload.get("created_at") or ""),
         "submitter_name": str(metadata.get("submitter_name") or ""),
         "submitter_id": str(metadata.get("submitter_id") or metadata.get("person_id") or ""),
@@ -134,6 +134,7 @@ def candidate_detail(
         "proposed_job_type": str(proposed_job_type or ""),
         "proposed_payload": proposed_payload if isinstance(proposed_payload, dict) else {},
         "proposed_job_error": str(proposed_error or ""),
+        "_rev": str(payload.get("_rev") or ""),
         "proposed_jobs": [
             {"job_type": str(job_type or ""), "payload": payload if isinstance(payload, dict) else {}, "error": str(error or "")}
             for job_type, payload, error in proposed_jobs
@@ -142,20 +143,15 @@ def candidate_detail(
 
 
 def review_candidates(candidate_dir: Path, status: str | None, runtime_root: Path) -> list[dict[str, object]]:
-    candidate_root = candidate_dir.expanduser().resolve(strict=False)
-    if runtime_root is not None:
-        field_action_candidates.resolve_within_root(candidate_root, runtime_root.expanduser().resolve(strict=False))
     candidates: list[dict[str, object]] = []
     vision_by_capture = photo_vision_by_capture(runtime_root)
     submitters = submitters_by_capture(runtime_root)
     notification_dir = field_client_notifications.default_notification_dir(runtime_root)
-    for path, payload in field_action_candidates.iter_candidate_artifacts(candidate_root):
+    for path, payload in field_action_candidates.couchdb_candidate_payloads(status=status):
         if payload.get("type") != "action_candidate_review":
             continue
-        if status is not None and payload.get("status") != status:
-            continue
         metadata = payload.get("channel_metadata") if isinstance(payload.get("channel_metadata"), dict) else {}
-        capture_id = str(metadata.get("upload_id") or "")
+        capture_id = str(metadata.get("upload_id") or payload.get("capture_id") or "")
         candidate_id = str(payload.get("candidate_id") or "")
         notification = field_client_notifications.load_notification(notification_dir, candidate_id)
         candidate = candidate_detail(path, payload, runtime_root, vision_by_capture.get(capture_id, []), notification)
@@ -507,6 +503,7 @@ def render_candidate_card(candidate: dict[str, object], thumb_urls: list[str] | 
               Stage this job for processing.
             </p>
             <input type="hidden" name="candidate_id" value="{candidate_id}">
+            <input type="hidden" name="_rev" value="{html.escape(str(candidate.get('_rev') or ''), quote=True)}">
             <label>Reviewer</label>
             <input name="reviewer" value="Jordan" required>
             <label>Note</label>
@@ -520,6 +517,7 @@ def render_candidate_card(candidate: dict[str, object], thumb_urls: list[str] | 
               Leave the data unchanged.
             </p>
             <input type="hidden" name="candidate_id" value="{candidate_id}">
+            <input type="hidden" name="_rev" value="{html.escape(str(candidate.get('_rev') or ''), quote=True)}">
             <label>Reviewer</label>
             <input name="reviewer" value="Jordan" required>
             <label>Note</label>
@@ -857,44 +855,11 @@ def latest_draft_id_for_candidate(runtime_root: Path, candidate_id: str) -> str:
 
 
 def latest_draft_ids_for_candidate(runtime_root: Path, candidate_id: str) -> list[str]:
-    draft_dir = approved_job_drafts.default_draft_dir(runtime_root)
-    if not draft_dir.exists():
-        return []
-    matches: list[tuple[float, str]] = []
-    for path in sorted(draft_dir.glob("*.json")):
-        payload, _error = read_json_artifact(path)
-        if not payload or str(payload.get("candidate_id") or "") != candidate_id:
-            continue
-        try:
-            mtime = path.stat().st_mtime
-        except OSError:
-            mtime = 0.0
-        matches.append((mtime, str(payload.get("draft_id") or path.stem)))
-    matches.sort()
-    return [draft_id for _mtime, draft_id in matches]
+    return candidate_staging.latest_draft_ids_for_candidate(runtime_root, candidate_id)
 
 
 def stage_candidate_job_after_approval(runtime_root: Path, candidate_id: str) -> str:
-    candidate_dir = field_action_candidates.default_candidate_dir(runtime_root)
-    draft_dir = approved_job_drafts.default_draft_dir(runtime_root)
-    draft_counts = approved_job_drafts.create_approved_job_drafts(
-        candidate_dir,
-        draft_dir,
-        runtime_root=runtime_root,
-        candidate_ids={candidate_id},
-    )
-    if draft_counts.get("completed", 0) < 1:
-        raise field_action_candidates.CandidateReviewError(f"approved candidate did not produce a queue draft: {draft_counts}")
-    draft_ids = latest_draft_ids_for_candidate(runtime_root, candidate_id)
-    if not draft_ids:
-        raise field_action_candidates.CandidateReviewError("approved candidate draft was created without a discoverable draft_id")
-    staging_report = draft_staging.stage_field_capture_drafts_report(runtime_root=runtime_root, draft_ids=set(draft_ids), dry_run=False)
-    results = staging_report.get("results") if isinstance(staging_report.get("results"), list) else []
-    failed = [result for result in results if isinstance(result, dict) and result.get("status") == "failed"]
-    if failed:
-        raise field_action_candidates.CandidateReviewError(f"approved draft failed to stage: {failed[0].get('reason')}")
-    staged_count = sum(1 for result in results if isinstance(result, dict) and result.get("status") == "staged")
-    return f"draft_ids={','.join(draft_ids)} staged={staged_count}"
+    return candidate_staging.stage_candidate_job_after_approval(runtime_root, candidate_id)
 
 
 def _handle_review_post(action: str, ctx: object, body: bytes) -> tuple[HTTPStatus, str, bytes, dict[str, str]]:
@@ -902,7 +867,7 @@ def _handle_review_post(action: str, ctx: object, body: bytes) -> tuple[HTTPStat
     candidate_id = first_query_value(form, "candidate_id").strip()
     reviewer = first_query_value(form, "reviewer").strip()
     rationale = first_query_value(form, "rationale").strip()
-    target_status = "approved" if action == "approve" else "rejected"
+    expected_rev = first_query_value(form, "_rev").strip() or None
     route = f"/field-capture/review/{action}"
     runtime_resolved = ctx.runtime_root
     if not candidate_id:
@@ -928,53 +893,20 @@ def _handle_review_post(action: str, ctx: object, body: bytes) -> tuple[HTTPStat
         )
         return redirect_to_inbox(error="reviewer is required")
 
-    candidate_dir = field_action_candidates.default_candidate_dir(runtime_resolved)
     try:
-        matches = field_action_candidates.find_candidate_artifacts(candidate_dir, candidate_id)
-        if not matches:
-            raise field_action_candidates.CandidateReviewError(f"candidate not found: {candidate_id}")
-        if len(matches) > 1:
-            raise field_action_candidates.CandidateReviewError(f"multiple candidate artifacts found for candidate_id: {candidate_id}")
-        prior_status = str(matches[0][1].get("status") or "")
-        if prior_status != "pending_review":
-            raise field_action_candidates.CandidateReviewError(f"candidate status is not pending_review: {prior_status}")
-        if action == "approve":
-            proposed_jobs = approved_job_drafts.proposed_queue_jobs(matches[0][1], runtime_root=runtime_resolved)
-            if not proposed_jobs:
-                raise field_action_candidates.CandidateReviewError("candidate has no proposed queue job")
-            for proposed_job_type, proposed_payload, proposed_error in proposed_jobs:
-                if proposed_error or not proposed_job_type or not proposed_payload:
-                    raise field_action_candidates.CandidateReviewError(proposed_error or "candidate has an invalid proposed queue job")
-        result = field_action_candidates.review_candidate(
-            candidate_dir,
+        cdb_config = couchdb_config.from_env()
+        result = field_action_candidates.apply_candidate_review(
+            cdb_config,
+            couchdb_config.field_captures_database(),
             candidate_id=candidate_id,
-            status=target_status,
+            action=action,
             reviewer=reviewer,
-            rationale=rationale or "No rationale provided.",
-            runtime_root=runtime_resolved,
+            expected_rev=expected_rev,
+            rationale=rationale,
         )
-        try:
-            patch_candidate_resolution(
-                candidate_dir,
-                candidate_id,
-                resolution_status=RESOLUTION_OPEN if action == "approve" else RESOLUTION_DISMISSED,
-                by=reviewer,
-                runtime_root=runtime_resolved,
-            )
-        except Exception as exc:
-            LOGGER.warning("could not patch candidate resolution after review: %s", exc)
-        if not rationale:
-            reviewed_payload, _error = read_json_artifact(matches[0][0])
-            if isinstance(reviewed_payload, dict):
-                reviewed_payload["review_rationale"] = ""
-                review_history = reviewed_payload.get("review_history")
-                if isinstance(review_history, list) and review_history and isinstance(review_history[-1], dict):
-                    review_history[-1]["review_rationale"] = ""
-                write_json_object(matches[0][0], reviewed_payload)
-        stage_summary = ""
-        if action == "approve":
-            stage_summary = stage_candidate_job_after_approval(runtime_resolved, candidate_id)
-    except field_action_candidates.CandidateReviewError as exc:
+        if result.error:
+            raise field_action_candidates.CandidateReviewError(result.error)
+    except (field_action_candidates.CandidateReviewError, couchdb_config.CouchDBConfigError) as exc:
         audit.append_audit(
             runtime_resolved,
             {
@@ -985,16 +917,27 @@ def _handle_review_post(action: str, ctx: object, body: bytes) -> tuple[HTTPStat
             },
         )
         return redirect_to_inbox(error=str(exc))
+    if result.already_decided:
+        audit.append_audit(
+            runtime_resolved,
+            {
+                "route": route,
+                "actor": "localhost",
+                "payload": ctx.form_payload(form),
+                "result_summary": f"already_decided: {result.candidate_id} status={result.status}",
+            },
+        )
+        return redirect_to_inbox(error="candidate was already decided")
     audit.append_audit(
         runtime_resolved,
         {
             "route": route,
             "actor": "localhost",
             "payload": ctx.form_payload(form),
-            "result_summary": f"success: {result['candidate_id']} marked {result['status']} {stage_summary}".strip(),
+            "result_summary": f"success: {result.candidate_id} marked {result.status}",
         },
     )
-    message = "approved and staged" if action == "approve" else "denied"
+    message = "approved" if action == "approve" else "denied"
     return redirect_to_inbox(message=message)
 
 
@@ -1147,39 +1090,31 @@ def _handle_resolve_post(ctx: object, body: bytes) -> tuple[HTTPStatus, str, byt
     return redirect_to_review(message="resolved", status="approved")
 
 
-def _candidate_path_for_id(runtime_root: Path, candidate_id: str) -> Path:
-    runtime_resolved = runtime_root.expanduser().resolve(strict=False)
-    candidate_dir = field_action_candidates.default_candidate_dir(runtime_resolved)
-    from processing_core.action_candidates import action_candidate_review_path
-    return action_candidate_review_path(candidate_dir, candidate_id)
-
-
 def _handle_completion_dismiss(ctx: object, body: bytes) -> tuple[HTTPStatus, str, bytes, dict[str, str]]:
-    from datetime import datetime, timezone as _timezone
     form = parse_qs(body.decode("utf-8", errors="replace"), keep_blank_values=True)
     candidate_id = first_query_value(form, "candidate_id").strip()
     reviewer = first_query_value(form, "reviewer").strip()
+    expected_rev = first_query_value(form, "_rev").strip() or None
     runtime_resolved = ctx.runtime_root
     if not candidate_id:
         return redirect_to_inbox(error="candidate_id is required")
     if not reviewer:
         return redirect_to_inbox(error="reviewer is required")
-    candidate_dir = field_action_candidates.default_candidate_dir(runtime_resolved)
-    from processing_core.action_candidates import action_candidate_review_path
-    candidate_path = action_candidate_review_path(candidate_dir, candidate_id)
-    if not candidate_path.exists():
-        return redirect_to_inbox(error="candidate not found")
-    payload, _err = read_json_artifact(candidate_path)
-    if not isinstance(payload, dict):
-        return redirect_to_inbox(error="candidate not found")
-    if payload.get("status") != "pending_review":
-        return redirect_to_inbox(error="candidate already reviewed")
-    payload["status"] = "rejected"
-    payload["reviewer"] = reviewer
-    payload["reviewed_at"] = datetime.now(_timezone.utc).isoformat()
-    payload["resolution"] = {
-        "status": RESOLUTION_DISMISSED,
-        "dismiss_reason": DISMISS_REASON_COMPLETION,
-    }
-    write_json_object(candidate_path, payload)
+    try:
+        cdb_config = couchdb_config.from_env()
+        result = field_action_candidates.apply_candidate_review(
+            cdb_config,
+            couchdb_config.field_captures_database(),
+            candidate_id=candidate_id,
+            action="reject",
+            reviewer=reviewer,
+            expected_rev=expected_rev,
+            rationale=DISMISS_REASON_COMPLETION,
+        )
+        if result.error:
+            return redirect_to_inbox(error=result.error)
+        if result.already_decided:
+            return redirect_to_inbox(error="candidate was already decided")
+    except couchdb_config.CouchDBConfigError as exc:
+        return redirect_to_inbox(error=str(exc))
     return redirect_to_inbox()

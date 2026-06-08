@@ -207,12 +207,15 @@ def test_get_retarget_preview_returns_current_target_label_and_stage(tmp_path: P
     assert body["retargetable"] is True
 
 
-def test_get_retarget_preview_lists_pending_candidates_with_auto_action(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_get_retarget_preview_lists_pending_candidates_with_auto_action(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, couchdb_review) -> None:
     server, token, runtime = build_server(tmp_path, monkeypatch)
     patch_capture(monkeypatch, capture_doc())
     candidate_dir = runtime / "reviews" / "action_candidates" / "field_capture"
     candidate_dir.mkdir(parents=True)
-    (candidate_dir / "ac-1.json").write_text(json.dumps({"capture_id": "cap-1", "candidate_id": "ac-1", "status": "pending_review", "job_type": "log_site_issue"}), encoding="utf-8")
+    (candidate_dir / "ac-1.json").write_text(json.dumps({"capture_id": "cap-1", "candidate_id": "ac-1", "status": "pending_review", "job_type": "log_site_issue", "channel_metadata": {"channel": "field_capture", "site_id": "7050", "upload_id": "cap-1"}}), encoding="utf-8")
+    # 308c: the retarget endpoint reads candidates from CouchDB (sole canonical
+    # store). Seed the just-written FS candidate into the double so it surfaces.
+    couchdb_review.seed_from_fs(runtime)
 
     status, body = request(server, token, "GET", "/api/retarget-preview?capture_id=cap-1")
 

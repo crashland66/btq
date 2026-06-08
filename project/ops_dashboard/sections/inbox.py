@@ -64,25 +64,21 @@ def review_candidates(
     *,
     submitters: dict[str, dict[str, str]] | None = None,
 ) -> list[dict[str, object]]:
-    candidate_root = candidate_dir.expanduser().resolve(strict=False)
-    field_action_candidates.resolve_within_root(candidate_root, runtime_root.expanduser().resolve(strict=False))
     candidates: list[dict[str, object]] = []
     if submitters is None:
         submitters = submitters_by_capture(runtime_root)
-    for path, payload in field_action_candidates.iter_candidate_artifacts(candidate_root):
+    for path, payload in field_action_candidates.couchdb_candidate_payloads(status=status):
         if payload.get("type") != "action_candidate_review":
-            continue
-        if status is not None and payload.get("status") != status:
             continue
         provenance = payload.get("provenance") if isinstance(payload.get("provenance"), dict) else {}
         metadata = payload.get("channel_metadata") if isinstance(payload.get("channel_metadata"), dict) else {}
-        capture_id = str(metadata.get("upload_id") or "")
+        capture_id = str(metadata.get("upload_id") or payload.get("capture_id") or "")
         submitter = submitters.get(capture_id, {})
         candidates.append(
             {
                 "candidate_id": str(payload.get("candidate_id") or ""),
                 "status": str(payload.get("status") or ""),
-                "site_id": str(metadata.get("site_id") or provenance.get("site_id") or ""),
+                "site_id": str(metadata.get("site_id") or provenance.get("site_id") or payload.get("site_id") or ""),
                 "area": str(metadata.get("area") or ""),
                 "capture_id": capture_id,
                 "captured_at": str(metadata.get("captured_at") or payload.get("created_at") or ""),
