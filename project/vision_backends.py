@@ -250,7 +250,7 @@ class MlxVisionClient:
         self.max_tokens = max_tokens
         self.engine_name = f"mlx:{model}"
         logger.info("mlx: loading model %s", model)
-        self._model, self._processor = load(model, processor_config={"use_fast": False})
+        self._model, self._processor = load(model, use_fast=False)
         self._config = load_config(model)
         self._apply_chat_template = apply_chat_template
         self._generate = mlx_generate
@@ -286,7 +286,7 @@ class MlxVisionClient:
         formatted = self._apply_chat_template(
             self._processor, self._config, prompt, num_images=1
         )
-        return self._generate(
+        result = self._generate(
             self._model,
             self._processor,
             formatted,
@@ -294,6 +294,8 @@ class MlxVisionClient:
             max_tokens=self.max_tokens,
             verbose=False,
         )
+        # mlx-vlm >=0.6.0 returns a GenerationResult, not a str; older returns str.
+        return getattr(result, "text", result)
 
 
 class MlxTextClient:
@@ -313,7 +315,7 @@ class MlxTextClient:
         self.model = model
         self.max_tokens = max_tokens
         logger.info("mlx-vlm text: loading model %s", model)
-        self._model, self._processor = load(model, processor_config={"use_fast": False})
+        self._model, self._processor = load(model, use_fast=False)
         self._config = load_config(model)
         self._apply_chat_template = apply_chat_template
         self._stream_generate = stream_generate

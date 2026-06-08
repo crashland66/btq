@@ -40,11 +40,16 @@ def _install_fake_mlx(monkeypatch: pytest.MonkeyPatch) -> None:
     utils = types.ModuleType("mlx_vlm.utils")
     mlx_vlm.__path__ = []  # type: ignore[attr-defined]
 
-    def load(model: str, processor_config: dict[str, object]) -> tuple[object, object]:
+    def load(model: str, *, use_fast: bool = True) -> tuple[object, object]:
         return object(), object()
 
-    def generate(*args: object, **kwargs: object) -> str:
-        return "{}"
+    class _GenerationResult:
+        # mlx-vlm >=0.6.0 returns an object with a .text attr, not a bare str.
+        def __init__(self, text: str) -> None:
+            self.text = text
+
+    def generate(*args: object, **kwargs: object) -> object:
+        return _GenerationResult("{}")
 
     def stream_generate(*args: object, **kwargs: object) -> list[object]:
         return []
@@ -166,8 +171,8 @@ def test_mlx_text_client_uses_vlm_text_only_generation(monkeypatch: pytest.Monke
     model_obj = object()
     processor_obj = object()
 
-    def load(model: str, processor_config: dict[str, object]) -> tuple[object, object]:
-        calls["load"] = (model, processor_config)
+    def load(model: str, *, use_fast: bool = True) -> tuple[object, object]:
+        calls["load"] = (model, use_fast)
         return model_obj, processor_obj
 
     class Chunk:
@@ -199,7 +204,7 @@ def test_mlx_text_client_uses_vlm_text_only_generation(monkeypatch: pytest.Monke
     client = vision_backends.MlxTextClient(model="mlx-community/test-vlm", max_tokens=123)
 
     assert client.generate_json("Return JSON") == {"issue_type": "other"}
-    assert calls["load"] == ("mlx-community/test-vlm", {"use_fast": False})
+    assert calls["load"] == ("mlx-community/test-vlm", False)
     template_args, template_kwargs = calls["template"]
     assert template_args[0] is processor_obj
     assert template_kwargs["num_images"] == 1
