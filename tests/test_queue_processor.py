@@ -2119,10 +2119,10 @@ def test_add_person_creates_canonical_person_file(tmp_path: Path, legacy_markdow
     assert (
         "---\n"
         "type: person\n"
-        "person_id: per_"
+        "person_id: dalton_eric\n"
     ) in text
     person_id = frontmatter_value(target_path, "person_id")
-    assert qp.validate_person_id(person_id)
+    assert person_id == "dalton_eric"
     assert (
         "name: Eric Daniel Dalton\n"
         "first: Eric Daniel\n"
@@ -2212,6 +2212,52 @@ def test_add_person_duplicate_name_fails_safely(
     assert "Duplicate person name for add_person: Eric Daniel Dalton" in log_text
 
 
+def test_add_person_duplicate_reversed_name_fails_safely(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Regression: an existing "First Last" record must be recognized as a duplicate
+    # of an incoming "Last, First M." record (the formatting that slipped past the
+    # original exact-name guard and produced two of the same worker).
+    project_root, vault_root, runtime_root, log_path = make_roots(tmp_path)
+    store = use_recording_vault_store(monkeypatch)
+    store.upsert({
+        "_id": "employee_dalton_eric",
+        "type": "employee",
+        "person_id": "dalton_eric",
+        "name": "Eric Daniel Dalton",
+    })
+    payload = add_person_job_payload("job-add-person-reversed-name")
+    payload["payload"]["name"] = "Dalton, Eric D."
+    payload["payload"].pop("employee_id", None)
+    write_job(runtime_root / "queue", "reversed-name.json", payload)
+
+    _stdout, log_text = run_jobs(project_root, vault_root, runtime_root, log_path)
+
+    assert (runtime_root / "failed" / "reversed-name.json").exists()
+    assert "Duplicate person name for add_person: Dalton, Eric D." in log_text
+
+
+def test_add_person_assigns_readable_lastname_firstname_id(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The readable id is derived from last + first token (no middle initial),
+    # even when the incoming name is in "Last, First M." form.
+    project_root, vault_root, runtime_root, log_path = make_roots(tmp_path)
+    store = use_recording_vault_store(monkeypatch)
+    payload = add_person_job_payload("job-add-person-readable-id")
+    payload["payload"]["name"] = "Dalton, Eric D."
+    payload["payload"]["employee_id"] = "1265"
+    write_job(runtime_root / "queue", "readable-id.json", payload)
+
+    _stdout, log_text = run_jobs(project_root, vault_root, runtime_root, log_path)
+
+    created = recording_doc(store, "employee_dalton_eric")
+    assert created["person_id"] == "dalton_eric"
+    assert "action=add-person status=success" in log_text
+
+
 def test_add_person_duplicate_name_in_couchdb_fails_without_markdown(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -2287,24 +2333,23 @@ def test_add_person_person_id_uniqueness_checks_canonical(
     monkeypatch.delenv("BTQ_VAULT_MARKDOWN_WRITE", raising=False)
     project_root, vault_root, runtime_root, log_path = make_roots(tmp_path)
     store = use_recording_vault_store(monkeypatch)
-    taken_id = "per_01HX7M4H8J00000000000000"
-    fresh_id = "per_01HX7M4H8J11111111111111"
+    # An existing person whose readable id base ("dalton_eric") collides with the
+    # incoming hire, but whose name differs (accent) enough to clear the
+    # duplicate-name guard — so the id must disambiguate with a numeric suffix.
     store.upsert({
-        "_id": f"employee_{taken_id}",
+        "_id": "employee_dalton_eric",
         "type": "employee",
-        "person_id": taken_id,
-        "name": "Existing Person",
+        "person_id": "dalton_eric",
+        "name": "Éric Dalton",
         "employee_id": "999",
     })
-    generated_ids = iter([taken_id, fresh_id])
-    monkeypatch.setattr(qp.people, "generate_person_id", lambda: next(generated_ids))
     payload = add_person_job_payload("job-add-person-canonical-person-id")
     write_job(runtime_root / "queue", "canonical-person-id.json", payload)
 
     _stdout, log_text = run_jobs(project_root, vault_root, runtime_root, log_path)
 
-    created = recording_doc(store, f"employee_{fresh_id}")
-    assert created["person_id"] == fresh_id
+    created = recording_doc(store, "employee_dalton_eric_2")
+    assert created["person_id"] == "dalton_eric_2"
     assert created["name"] == "Eric Daniel Dalton"
     assert "action=add-person status=success" in log_text
 
@@ -2419,8 +2464,8 @@ def test_add_person_generates_unique_person_ids(tmp_path: Path, legacy_markdown_
 
     first_id = frontmatter_value(vault_root / "People" / "Dalton, Eric Daniel.md", "person_id")
     second_id = frontmatter_value(vault_root / "People" / "Reed, Taylor Jordan.md", "person_id")
-    assert qp.validate_person_id(first_id)
-    assert qp.validate_person_id(second_id)
+    assert first_id == "dalton_eric"
+    assert second_id == "reed_taylor"
     assert first_id != second_id
 
 

@@ -101,6 +101,42 @@ def validate_person_id(value: str) -> bool:
         return False
     return all(character in CROCKFORD_BASE32 for character in value[4:])
 
+def person_name_key(record: dict) -> tuple[str, str]:
+    # Order/middle-initial-insensitive (last, first-token) key: both
+    # "Dalton, Eric D." and "Eric Daniel Dalton" yield ("dalton", "eric").
+    # Used to derive a readable person_id and to catch format-only duplicates.
+    first = str(record.get("first") or "").strip()
+    last = str(record.get("last") or "").strip()
+    if not (first and last):
+        name = " ".join(str(record.get("name") or "").strip().split())
+        if "," in name:
+            last_part, first_part = [part.strip() for part in name.split(",", 1)]
+            last = last or last_part
+            first = first or first_part
+        else:
+            parts = name.split()
+            if len(parts) >= 2:
+                first = first or " ".join(parts[:-1])
+                last = last or parts[-1]
+            elif parts:
+                last = last or parts[0]
+    first_tokens = first.split()
+    first_token = first_tokens[0] if first_tokens else ""
+    return (last.lower(), first_token.lower())
+
+def derive_person_id_base(payload: dict) -> Optional[str]:
+    # Build a readable `lastname_firstname` base; None if no name slug is possible
+    # (caller then falls back to an opaque id).
+    last, first = person_name_key(payload)
+    last_slug = slugify_issue_component(last).replace("-", "_")
+    first_slug = slugify_issue_component(first).replace("-", "_")
+    if last_slug and first_slug:
+        return f"{last_slug}_{first_slug}"
+    if last_slug:
+        return last_slug
+    whole = slugify_issue_component(str(payload.get("name") or "")).replace("-", "_")
+    return whole or None
+
 def canonical_person_path(vault_root: Path, name: str) -> Path:
     people_dir = _shared.ensure_within_root(vault_root / "People", vault_root, "People directory")
     return _shared.ensure_within_root(people_dir / _shared.person_file_name(name), vault_root, "Person target")
@@ -117,16 +153,32 @@ def employee_doc_id_from_person_file(path: Path) -> str:
         raise QueueProcessorError(f"Employee status update cannot derive employee document id: {path}")
     return f"employee_{slug}"
 
-def generate_unique_person_id_canonical(store) -> str:
+def _employee_doc_id_taken(store, doc_id: str) -> bool:
+    get_optional = getattr(store, "get_optional", None)
+    docs = getattr(store, "docs", None)
+    if get_optional is not None:
+        return get_optional(doc_id) is not None
+    return any(doc.get("_id") == doc_id for doc in docs)
+
+def generate_unique_person_id_canonical(store, payload: Optional[dict] = None) -> str:
     get_optional = getattr(store, "get_optional", None)
     docs = getattr(store, "docs", None)
     if get_optional is None and not (store.__class__.__name__ == "RecordingVaultStore" and isinstance(docs, list)):
         raise AttributeError(f"{store.__class__.__name__} object has no attribute 'get_optional'")
+    # Prefer a readable `lastname_firstname` id (matches the established convention
+    # for the bulk of the roster); disambiguate same-name collisions with a numeric
+    # suffix. Fall back to an opaque id only when the name yields no slug.
+    base = derive_person_id_base(payload) if payload else None
+    if base:
+        if not _employee_doc_id_taken(store, f"employee_{base}"):
+            return base
+        for suffix in range(2, 100):
+            candidate = f"{base}_{suffix}"
+            if not _employee_doc_id_taken(store, f"employee_{candidate}"):
+                return candidate
     for _ in range(10):
         person_id = generate_person_id()
-        doc_id = f"employee_{person_id}"
-        existing = get_optional(doc_id) if get_optional is not None else next((doc for doc in docs if doc.get("_id") == doc_id), None)
-        if existing is None:
+        if not _employee_doc_id_taken(store, f"employee_{person_id}"):
             return person_id
     raise _shared.QueueProcessorError("Could not generate unique person_id")
 
@@ -138,9 +190,14 @@ def canonical_employee_name(doc: dict[str, Any]) -> str:
     last = str(doc.get("last") or "").strip()
     return f"{first} {last}".strip()
 
-def ensure_canonical_person_does_not_exist(job: QueueJob, name: str, employee_id: Optional[object]) -> None:
+def ensure_canonical_person_does_not_exist(
+    job: QueueJob, name: str, employee_id: Optional[object], payload: Optional[dict] = None
+) -> None:
     normalized_name = normalize_employee_name(name)
     normalized_employee_id = None if employee_id is None else str(employee_id).strip()
+    # Order/middle-initial-insensitive key so "Dalton, Eric D." is recognized
+    # as a duplicate of an existing "Eric Daniel Dalton".
+    new_key = person_name_key(payload if payload is not None else {"name": name})
     try:
         docs = _shared._vault_store().find_employee_docs()
     except Exception as exc:
@@ -155,6 +212,8 @@ def ensure_canonical_person_does_not_exist(job: QueueJob, name: str, employee_id
             raise _shared.QueueProcessorError(f"Duplicate employee_id for add_person: {normalized_employee_id}")
         existing_name = canonical_employee_name(doc)
         if existing_name and normalize_employee_name(existing_name) == normalized_name:
+            raise _shared.QueueProcessorError(f"Duplicate person name for add_person: {name}")
+        if new_key[0] and new_key[1] and person_name_key(doc) == new_key:
             raise _shared.QueueProcessorError(f"Duplicate person name for add_person: {name}")
 
 def personnel_event_id(payload: dict) -> str:
@@ -324,11 +383,11 @@ def process_add_person_job(job_path: Path, job: QueueJob, context: RunContext, p
         _shared.write_log_line(context.log_path, f"job_id={job.job_id} action=skip status=success reason=idempotency-key-already-completed")
         return
 
-    ensure_canonical_person_does_not_exist(job, name, payload.get("employee_id"))
+    ensure_canonical_person_does_not_exist(job, name, payload.get("employee_id"), payload)
 
     created_date = datetime.now(timezone.utc).date().isoformat()
     try:
-        person_id = generate_unique_person_id_canonical(_shared._vault_store())
+        person_id = generate_unique_person_id_canonical(_shared._vault_store(), payload)
     except _shared.QueueProcessorError:
         raise
     except Exception as exc:
