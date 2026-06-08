@@ -2,7 +2,7 @@
 
 ## Reporting a Vulnerability
 
-Please report security issues privately through the repository security contact or by email to **security@example.com**.
+Please report security issues privately through the repository security contact or by email to **security@gregstoltz.com**.
 Do not open a public issue for security reports.
 
 Include where relevant:
