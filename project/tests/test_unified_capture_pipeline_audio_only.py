@@ -136,12 +136,27 @@ def test_validate_combined_photos_and_audio_true() -> None:
 
 
 def test_validate_both_empty_no_audio_key_false() -> None:
-    job = _photo_capture_job({"photos": []})
+    # Prompt-310 relaxed the gate to "photo OR audio OR note". A TRULY empty
+    # capture (no photos, no audio, AND no/blank note) must STILL be rejected.
+    job = _photo_capture_job({"photos": [], "note": ""})
     assert validate_job(job) is False
 
 
 def test_validate_both_empty_empty_audio_list_false() -> None:
-    job = _photo_capture_job({"photos": [], "audio": []})
+    # Truly empty (blank note too) -> still rejected after prompt-310.
+    job = _photo_capture_job({"photos": [], "audio": [], "note": ""})
+    assert validate_job(job) is False
+
+
+def test_validate_note_only_no_media_true_prompt310() -> None:
+    # Prompt-310 new contract: a non-empty note with no photos/audio validates.
+    job = _photo_capture_job({"photos": [], "note": "Restroom out of paper towels."})
+    assert validate_job(job) is True
+
+
+def test_validate_blank_note_whitespace_only_no_media_false_prompt310() -> None:
+    # Whitespace-only note is NOT a real note -> truly empty -> rejected.
+    job = _photo_capture_job({"photos": [], "note": "   \n\t "})
     assert validate_job(job) is False
 
 
@@ -239,7 +254,9 @@ def test_adapter_combined_produces_valid_intake_with_both(tmp_path: Path) -> Non
 
 
 def test_adapter_both_empty_raises(tmp_path: Path) -> None:
-    doc = sample_doc(photos=[])  # no audio key at all
+    # Prompt-310: rejection now requires no photos AND no audio AND no note.
+    # sample_doc seeds a note, so blank it to test the TRULY-empty case.
+    doc = sample_doc(photos=[], note="")  # no audio key at all, blank note
     with pytest.raises(CaptureAdapterError):
         import_couchdb_capture(
             doc=doc,
@@ -251,7 +268,8 @@ def test_adapter_both_empty_raises(tmp_path: Path) -> None:
 
 
 def test_adapter_both_empty_empty_audio_list_raises(tmp_path: Path) -> None:
-    doc = sample_doc(photos=[], audio=[])
+    # Truly empty (blank note too) -> still raises after prompt-310.
+    doc = sample_doc(photos=[], audio=[], note="")
     with pytest.raises(CaptureAdapterError):
         import_couchdb_capture(
             doc=doc,
@@ -260,6 +278,24 @@ def test_adapter_both_empty_empty_audio_list_raises(tmp_path: Path) -> None:
             registry=FakeRegistry(),
             runner=_audio_runner(),
         )
+
+
+def test_adapter_note_only_no_media_imports_prompt310(tmp_path: Path) -> None:
+    # Prompt-310 new contract: a note-only doc (no photos, no audio) imports.
+    doc = sample_doc(photos=[], audio=[], note="Restroom out of paper towels.")
+    result = import_couchdb_capture(
+        doc=doc,
+        runtime_root=tmp_path,
+        remote_host="vps.example",
+        registry=FakeRegistry(),
+        runner=_audio_runner(),
+    )
+    assert result["ok"] is True
+    intake = read_intake(tmp_path, "cap-2026-05-09-abc123")
+    assert intake["payload"]["photos"] == []
+    assert "audio" not in intake["payload"]  # build_intake_job omits empty audio
+    assert intake["payload"]["note"] == "Restroom out of paper towels."
+    assert validate_job(intake) is True
 
 
 def test_adapter_photo_only_still_works_and_validates(tmp_path: Path) -> None:

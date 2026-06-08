@@ -682,6 +682,44 @@ class InboxCountTests(_AdminInboxMixin, unittest.TestCase):
         self.assertEqual(r.status, 200, r.text)
         self.assertEqual(r.json().get("inbox_count"), 0)
 
+    # ----- prompt-310: can_review gating on /api/session ------------------- #
+
+    def test_session_can_review_true_for_admin_viewer(self) -> None:
+        # Prompt-310: /api/session exposes a boolean can_review that is True for
+        # an admin_viewer token (drives inbox-button visibility in inbox.js).
+        started = install_couch_fakes(EMP_SINGLE, SITES_TWO)
+        srv = self._server()
+        try:
+            r = drive_inbox_request(srv, "GET", "/api/session", headers={"Authorization": f"Bearer {self.token}"})
+        finally:
+            stop_all(started)
+        self.assertEqual(r.status, 200, r.text)
+        body = r.json()
+        self.assertIn("can_review", body)
+        self.assertIs(body["can_review"], True)
+        # Raw token_type must NOT be exposed.
+        self.assertNotIn("token_type", body)
+
+    def test_session_can_review_false_for_capture_token(self) -> None:
+        # A non-admin (capture) token gets can_review False and inbox_count 0.
+        worker_store = TokenStore(Path(tempfile.mkdtemp(dir=self.tmp.name)) / "w_canreview.sqlite3")
+        worker_store.initialize()
+        created = worker_store.create_token(
+            person_id="per_unified01", label="w", role="cleaner", token_type="capture", site_ids=["7060"]
+        )
+        started = install_couch_fakes(EMP_SINGLE, SITES_TWO)
+        srv = _InboxFakeServer(worker_store, self.vault, site_registry=None)
+        try:
+            r = drive_inbox_request(srv, "GET", "/api/session", headers={"Authorization": f"Bearer {created.token_value}"})
+        finally:
+            stop_all(started)
+        self.assertEqual(r.status, 200, r.text)
+        body = r.json()
+        self.assertIn("can_review", body)
+        self.assertIs(body["can_review"], False)
+        self.assertEqual(body.get("inbox_count"), 0)
+        self.assertNotIn("token_type", body)
+
 
 # --------------------------------------------------------------------------- #
 # 6. Graceful degrade when site-label lookup fails

@@ -60,7 +60,7 @@
         <img class="brand-wordmark brand-wordmark--dark" src="/assets/field-capture-header-dark.svg" alt="" aria-hidden="true" width="276" height="56">
         <div class="header-status-row">
           <p id="statusText" class="status-text header-pill" role="status" aria-live="polite">Loading session...</p>
-          <button id="inboxBtn" class="my-subs-btn inbox-btn" type="button" aria-label="Approval inbox" title="Approval inbox">
+          <button id="inboxBtn" class="my-subs-btn inbox-btn" type="button" aria-label="Approval inbox" title="Approval inbox" hidden>
             <span class="inbox-glyph" aria-hidden="true">✉</span>
             <span id="inboxBadge" class="inbox-badge" hidden><span id="inboxBadgeCount">0</span></span>
           </button>
@@ -148,7 +148,7 @@
     </section>
 
     <section class="details-panel note-panel">
-      <p id="submitSummary" class="submit-summary">Add a photo or voice note to enable submit.</p>
+      <p id="submitSummary" class="submit-summary">Add a photo, voice note, or text note to enable submit.</p>
       <div class="note-affordance" id="noteAffordance">
         <input id="notesInput" name="note" type="hidden">
         <button id="noteToggle" class="note-toggle" type="button" aria-label="Add location or short note" aria-expanded="false" aria-controls="noteEditorPanel">✎</button>
@@ -187,7 +187,8 @@
     </section>
 
     <footer class="app-footer">
-      <div>Interface: <span id="interfaceVersion">2026.06.06-unified-capture</span></div>
+      <div>Interface: <span id="interfaceVersion">2026.06.08-text-and-gating</span></div>
+      <div>Pipeline: <span id="pipelineVersion">unified-capture-intake-v2</span></div>
     </footer>
   </main>
   <script src="/static/db.js"></script>

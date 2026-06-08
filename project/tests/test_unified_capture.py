@@ -1778,9 +1778,38 @@ class SubmitBehaviorTests(unittest.TestCase):
     # ----- validation / fail-closed --------------------------------------- #
 
     def test_missing_asset_is_400_no_doc(self) -> None:
-        resp = self.submit(_valid_submit_fields())  # no photos, no audio
+        # Prompt-310 relaxed submit to "photo OR audio OR note". A TRULY empty
+        # submit (no photos, no audio, AND a blank note) must STILL be 400 and
+        # write no doc / no media. _valid_submit_fields seeds a note, so blank it.
+        resp = self.submit(_valid_submit_fields(extra={"note": ""}))  # no photos, no audio, blank note
         self.assertEqual(resp.status, 400, resp.text)
         self.assertEqual(len(self.writer.put_calls), 0)
+        self.assertEqual(self._uploaded_files(), [])
+
+    def test_whitespace_only_note_no_media_is_400_no_doc(self) -> None:
+        # Whitespace-only note is not a real note -> still 400, no doc.
+        resp = self.submit(_valid_submit_fields(extra={"note": "   \t\n "}))
+        self.assertEqual(resp.status, 400, resp.text)
+        self.assertEqual(len(self.writer.put_calls), 0)
+        self.assertEqual(self._uploaded_files(), [])
+
+    def test_note_only_no_media_writes_one_field_capture_doc(self) -> None:
+        # Prompt-310 new contract: a non-empty note alone (no photos, no audio)
+        # is accepted (201) and writes exactly one field_capture doc with the note.
+        resp = self.submit(
+            _valid_submit_fields(extra={"note": "Restroom out of paper towels; please restock."})
+        )
+        self.assertEqual(resp.status, 201, resp.text)
+        self.assertEqual(len(self.writer.put_calls), 1, "exactly one doc written")
+        doc = self.writer.put_calls[0]
+        self.assertEqual(doc["type"], "field_capture")
+        self.assertEqual(doc["source"], "unified_capture_app")
+        self.assertEqual(doc["processing_state"], "pending")
+        self.assertEqual(doc["capture_id"], doc["_id"])
+        self.assertEqual(doc.get("photos"), [])
+        self.assertFalse(doc.get("audio"))
+        self.assertEqual(doc.get("note"), "Restroom out of paper towels; please restock.")
+        # note-only: no media files persisted on disk.
         self.assertEqual(self._uploaded_files(), [])
 
     def test_unauthenticated_is_401_no_doc_no_media(self) -> None:

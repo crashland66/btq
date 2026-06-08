@@ -533,8 +533,9 @@ class UnifiedCaptureHandler(BaseHTTPRequestHandler):
         fields, uploads = parse_multipart(self.rfile.read(content_length), content_type)
         photos = [upload for upload in uploads if upload.field_name == "photos"]
         audio_files = [upload for upload in uploads if upload.field_name == "audio"]
-        if len(photos) + len(audio_files) < 1:
-            raise SubmissionError(HTTPStatus.BAD_REQUEST, "missing_asset", "Add at least one photo or voice note")
+        note = fields.get("note", "").strip()
+        if len(photos) + len(audio_files) < 1 and not note:
+            raise SubmissionError(HTTPStatus.BAD_REQUEST, "missing_asset", "Add at least one photo, voice note, or text note")
         if photos:
             validate_uploaded_photos(photos, self.photo_ingest_limits())
         self.validate_uploaded_audio(audio_files)
@@ -735,6 +736,7 @@ class UnifiedCaptureHandler(BaseHTTPRequestHandler):
                 self.session_site_payload(site, registry, default_categories, session.record.role) for site in session.sites
             ],
             "can_submit": session.record.can_submit,
+            "can_review": session.record.token_type == "admin_viewer",
         }
         payload["inbox_count"] = self.inbox_count() if session.record.token_type == "admin_viewer" else 0
         self.write_json(payload, HTTPStatus.OK)

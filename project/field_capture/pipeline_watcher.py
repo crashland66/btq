@@ -18,6 +18,7 @@ from field_capture import action_candidates
 from field_capture import audio_semantics
 from field_capture import audio_transcription
 from field_capture import photo_vision
+from field_capture import text_semantics
 from processing_core.artifacts import write_json_object
 from transcription_pipeline.main import (
     DEFAULT_INITIAL_PROMPT,
@@ -49,6 +50,7 @@ TranscriberFactory = Callable[[Path, logging.Logger], Callable[[Path], str]]
 VisionDescribeFactory = Callable[[str, str, float], Callable[[photo_vision.FieldPhotoAsset], photo_vision.VisionDescription]]
 PhotoVisionFunc = Callable[..., dict[str, int]]
 SemanticEngineFactory = Callable[[], Callable[[audio_semantics.FieldAudioTranscript], audio_semantics.SemanticResult]]
+TextSemanticEngineFactory = Callable[[], object]
 
 
 def default_runtime_root() -> Path:
@@ -58,6 +60,74 @@ def default_runtime_root() -> Path:
 def default_log_path(runtime_root: Path | None = None) -> Path:
     root = default_runtime_root() if runtime_root is None else runtime_root
     return root / "logs" / "field_capture_pipeline_watch.log"
+
+
+def _payload_from_intake(path: Path) -> tuple[dict[str, object], dict[str, object]] | None:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
+    body = payload.get("payload") if isinstance(payload.get("payload"), dict) else {}
+    return metadata, body
+
+
+def process_note_only_text_semantics(
+    intake_dir: Path,
+    semantic_dir: Path,
+    *,
+    runtime_root: Path | None = None,
+    engine: object | None = None,
+) -> dict[str, int]:
+    counts = {"discovered": 0, "completed": 0, "failed": 0, "skipped": 0}
+    intake_root = intake_dir.expanduser().resolve(strict=False)
+    semantic_root = semantic_dir.expanduser().resolve(strict=False)
+    if runtime_root is not None:
+        runtime_resolved = runtime_root.expanduser().resolve(strict=False)
+        from processing_core.artifacts import resolve_within_root
+
+        resolve_within_root(intake_root, runtime_resolved)
+        resolve_within_root(semantic_root, runtime_resolved)
+
+    for intake_path in sorted(intake_root.glob("*.json")):
+        resolved = intake_path.resolve(strict=False)
+        parsed = _payload_from_intake(resolved)
+        if parsed is None:
+            counts["skipped"] += 1
+            continue
+        metadata, body = parsed
+        note = str(body.get("note") or "").strip()
+        photos = body.get("photos") if isinstance(body.get("photos"), list) else []
+        audio = body.get("audio") if isinstance(body.get("audio"), list) else []
+        if not note or photos or audio:
+            continue
+        counts["discovered"] += 1
+        capture_id = str(metadata.get("capture_id") or body.get("capture_id") or intake_path.stem).strip() or intake_path.stem
+        semantic_path = semantic_root / f"{capture_id}.json"
+        if semantic_path.exists():
+            counts["skipped"] += 1
+            continue
+        try:
+            artifact = text_semantics.run_text_semantic_pipeline(
+                note,
+                site_id=str(metadata.get("site_id") or body.get("site_id") or ""),
+                upload_id=capture_id,
+                area=str(body.get("qc_category") or ""),
+                person_id=str(metadata.get("person_id") or ""),
+                site_label=str(body.get("site") or ""),
+                captured_at=str(body.get("captured_at") or ""),
+                engine=engine,
+            )
+            artifact["source_kind"] = "field_capture_text_note"
+            artifact["source_intake_path"] = str(resolved)
+            write_json_object(semantic_path, artifact)
+            counts["completed"] += 1
+        except Exception:  # noqa: BLE001
+            counts["failed"] += 1
+            raise
+    return counts
 
 
 def configure_logger(log_path: Path) -> logging.Logger:
@@ -558,6 +628,7 @@ def run_cycle(
     photo_vision_func: PhotoVisionFunc = photo_vision.process_photo_assets,
     vision_describe_factory: VisionDescribeFactory = default_vision_describe_factory,
     semantic_engine_factory: SemanticEngineFactory = cached_semantic_engine_factory,
+    text_semantic_engine_factory: TextSemanticEngineFactory | None = None,
     run_transcribe: bool = True,
     run_semantics: bool = True,
     run_vision: bool = True,
@@ -631,7 +702,20 @@ def run_cycle(
         except Exception as exc:  # noqa: BLE001
             cycle["ok"] = False
             steps.append(step_result("process_field_audio_semantics", "failed", error=str(exc)))
-            logger.exception("field-capture semantic processing failed")
+            logger.exception("field-capture audio semantic processing failed")
+        try:
+            text_counts = process_note_only_text_semantics(
+                audio_transcription.default_intake_dir(runtime_resolved),
+                action_candidates.default_text_semantic_dir(runtime_resolved),
+                runtime_root=runtime_resolved,
+                engine=text_semantic_engine_factory() if text_semantic_engine_factory is not None else None,
+            )
+            if any(int(text_counts.get(key, 0)) for key in ("discovered", "completed", "failed", "skipped")):
+                steps.append(step_result("process_field_text_semantics", "completed", text_counts))
+        except Exception as exc:  # noqa: BLE001
+            cycle["ok"] = False
+            steps.append(step_result("process_field_text_semantics", "failed", error=str(exc)))
+            logger.exception("field-capture text semantic processing failed")
     else:
         steps.append(step_result("process_field_audio_semantics", "skipped", error="disabled"))
 

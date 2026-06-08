@@ -879,7 +879,8 @@ def validate_job(job: dict) -> bool:
                 return False
         else:
             audio = []
-        if not photos and not audio:
+        note = payload.get("note")
+        if not photos and not audio and (not isinstance(note, str) or not note.strip()):
             return False
         for photo in photos:
             if not isinstance(photo, dict):

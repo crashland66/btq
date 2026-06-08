@@ -17,6 +17,24 @@ import pytest
 from event_pipeline import site_registry_data as srd
 
 
+@pytest.fixture(autouse=True)
+def _reset_brand_cache():
+    """Reset the module-level ``_brand_cache`` around every test in this file.
+
+    These tests load brand keywords from throwaway tmp files via
+    ``force_reload=True`` and (for the error-path cases) leave a poisoned cache
+    behind. Without this reset the global cache leaks into the rest of the suite
+    (e.g. any later test that runs ``classify_issue`` -> ``load_brand_keywords``
+    with no force_reload), causing order-dependent failures. Reset before AND
+    after so the next reload re-resolves the real/committed file.
+    """
+    srd._brand_cache = None
+    try:
+        yield
+    finally:
+        srd._brand_cache = None
+
+
 def _write_brand_file(path: Path, payload: dict) -> None:
     path.write_text(json.dumps(payload), encoding="utf-8")
 

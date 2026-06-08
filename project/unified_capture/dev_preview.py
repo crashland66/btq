@@ -62,6 +62,7 @@ FAKE_SESSION = {
         {"site_id": "7060", "label": "7060 — Continental Metalworks", "display_categories": []},
     ],
     "can_submit": True,
+    "can_review": True,
     "inbox_count": 3,
 }
 

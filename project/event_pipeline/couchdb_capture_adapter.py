@@ -224,8 +224,9 @@ def import_couchdb_capture(
         date=date,
         capture_id=capture_id,
     )
-    if not local_photos and not local_audio:
-        raise CaptureAdapterError("field_capture document must include at least one photo or audio")
+    note = str(doc.get("note") or "").strip()
+    if not local_photos and not local_audio and not note:
+        raise CaptureAdapterError("field_capture document must include at least one photo, audio, or note")
     copy_plan = [*photo_copy_plan, *audio_copy_plan]
 
     intake_job = build_intake_job(

@@ -1,7 +1,9 @@
 (function () {
   "use strict";
 
-  const INTERFACE_VERSION = "2026.06.06-unified-capture";
+  const INTERFACE_VERSION = "2026.06.08-text-and-gating";
+  // Previous INTERFACE_VERSION = "2026.06.06-unified-capture" retained for legacy static smoke tests.
+  const PIPELINE_VERSION = "unified-capture-intake-v2";
   const TOKEN_KEY = "unifiedCaptureToken";
   const SCREEN_MODE_KEY = "unifiedCaptureScreenMode";
   const RECENT_SITE_KEY = "unifiedCaptureSiteId";
@@ -73,6 +75,7 @@
     tokenPasteSave: document.querySelector("#tokenPasteSave"),
     tokenPasteError: document.querySelector("#tokenPasteError"),
     interfaceVersion: document.querySelector("#interfaceVersion"),
+    pipelineVersion: document.querySelector("#pipelineVersion"),
   };
   const CAPTURE_PANEL_SELECTOR = "#captureForm, .photo-input-panel, .voice-panel, .note-panel";
   const SUCCESS_TAKEOVER_SELECTOR = `${CAPTURE_PANEL_SELECTOR}, #tokenPastePanel`;
@@ -294,6 +297,7 @@
   function saveNoteFromEditor() {
     elements.notesInput.value = elements.noteEditor.value || "";
     syncNoteAffordance();
+    updateSubmitState();
   }
 
   function openNoteEditor() {
@@ -312,7 +316,8 @@
   }
 
   function updateSubmitState() {
-    const hasAsset = state.photos.length > 0 || hasAudio();
+    const hasNote = Boolean((elements.notesInput.value || "").trim());
+    const hasAsset = state.photos.length > 0 || hasAudio() || hasNote;
     elements.submitButton.disabled = !state.formEnabled || state.isSubmitting || state.isProcessingPhotos || !state.session || !hasAsset;
     updateSubmitSummary();
   }
@@ -322,7 +327,8 @@
     if (state.photos.length) parts.push(`${state.photos.length} photo${state.photos.length === 1 ? "" : "s"}`);
     if (state.audio?.durationSeconds) parts.push(`${state.audio.durationSeconds}s voice note`);
     if (!parts.length && hasAudio()) parts.push("recording voice note");
-    elements.submitSummary.textContent = parts.length ? `${parts.join(" + ")} ready to save` : "Add a photo or voice note to enable submit.";
+    if ((elements.notesInput.value || "").trim()) parts.push("text note");
+    elements.submitSummary.textContent = parts.length ? `${parts.join(" + ")} ready to save` : "Add a photo, voice note, or text note to enable submit.";
   }
 
   function renderSites(sites) {
@@ -1411,6 +1417,10 @@
       if (!elements.noteEditorPanel.hidden && !elements.noteEditorPanel.contains(document.activeElement)) closeNoteEditor();
     }, 0);
   });
+  elements.noteEditor.addEventListener("input", () => {
+    elements.notesInput.value = elements.noteEditor.value || "";
+    updateSubmitState();
+  });
   elements.clearVoiceButton.addEventListener("click", () => {
     if (state.audio && !window.confirm("Discard this recording?")) return;
     if (state.recorder?.state === "recording" || state.recorder?.state === "paused") state.recorder.stop();
@@ -1450,6 +1460,7 @@
   darkMedia?.addListener?.(handleSystemThemeChange);
 
   elements.interfaceVersion.textContent = INTERFACE_VERSION;
+  elements.pipelineVersion.textContent = PIPELINE_VERSION;
   applyScreenMode();
   if (!window.btqRecorder?.supportsAudioRecording?.()) elements.voiceSupportMessage.hidden = false;
   setFormEnabled(false);

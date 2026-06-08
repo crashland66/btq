@@ -6,7 +6,8 @@
  * rejects one card at a time. It is the /swipe card model, mobile.
  *
  * Contract (ai-methodology/.../inbox_couchdb_candidates_spec.md):
- *   GET  /api/session         -> { ..., inbox_count: N }     (drives the badge)
+ *   GET  /api/session         -> { ..., can_review, inbox_count: N }
+ *                                  (drives visibility and the badge)
  *   GET  /api/inbox           -> { count, items: [ { candidate_id, _rev,
  *                                  capture_id, source, summary, evidence, site,
  *                                  created_at, proposed_action: { action_key,
@@ -55,7 +56,8 @@
   };
   if (!els.btn || !els.section || !els.mount) return; // markup not present
 
-  var state = { items: [], index: 0, loading: false };
+  var state = { items: [], index: 0, loading: false, canReview: false };
+  els.btn.hidden = true;
 
   // ---- Token (read exactly as app.js does) --------------------------------
   function currentToken() {
@@ -89,13 +91,12 @@
       .then(handleJson);
   }
 
-  function getInboxCount() {
+  function getReviewSession() {
     // The badge rides on /api/session.inbox_count so the poll is one cheap
     // call shared with session refresh, not a full inbox fetch.
-    if (INBOX_USE_MOCK) return Promise.resolve(MOCK.count());
+    if (INBOX_USE_MOCK) return Promise.resolve({ can_review: true, inbox_count: MOCK.count() });
     return fetch(apiUrl("/api/session"), { headers: authHeaders(), cache: "no-store" })
-      .then(handleJson)
-      .then(function (s) { return Number(s && s.inbox_count) || 0; });
+      .then(handleJson);
   }
 
   function postDecision(kind, item, reason) {
@@ -138,7 +139,19 @@
 
   function refreshBadge() {
     if (!currentToken()) return Promise.resolve();
-    return getInboxCount().then(setBadge).catch(function () {});
+    return getReviewSession().then(function (s) {
+      state.canReview = Boolean(s && (s.can_review || !Object.prototype.hasOwnProperty.call(s, "can_review")));
+      els.btn.hidden = !state.canReview;
+      if (!state.canReview) {
+        setBadge(0);
+        return;
+      }
+      setBadge(Number(s && s.inbox_count) || 0);
+    }).catch(function () {
+      state.canReview = false;
+      els.btn.hidden = true;
+      setBadge(0);
+    });
   }
 
   // ---- Rendering ----------------------------------------------------------
@@ -246,6 +259,7 @@
 
   // ---- Open / close panel -------------------------------------------------
   function open() {
+    if (!state.canReview) return;
     if (!currentToken()) { flash("Paste your access token first.", "error"); return; }
     // Mirror app.js: hide the capture/success takeover panels when a feed opens.
     document.querySelectorAll(".quick-fields, .photo-input-panel, .voice-panel, .note-panel, #successScreen, #feedSection")
