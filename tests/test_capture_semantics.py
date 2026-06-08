@@ -61,7 +61,7 @@ def extracted_action(**overrides: object) -> ExtractedAction:
         "action_key": "personnel_attendance",
         "candidate_type": "personnel_attendance",
         "target_type": "employee",
-        "target_id": "emp-scott",
+        "target_id": "emp-bruce",
         "target_label": "Bruce Keller",
         "summary": "Review Bruce Keller attendance.",
         "rationale": "",
@@ -109,7 +109,7 @@ def test_model_multi_action_array_resolves_targets_and_drops_malformed() -> None
             "Bruce Keller was late. Summit Wire is missing an unopened backpack vacuum.",
             selected_employees=[
                 {"id": "emp-damon", "name": "Damon Carver"},
-                {"id": "emp-scott", "name": "Bruce Keller"},
+                {"id": "emp-bruce", "name": "Bruce Keller"},
             ],
         )
     )
@@ -121,7 +121,7 @@ def test_model_multi_action_array_resolves_targets_and_drops_malformed() -> None
         validate_extracted_action(payload)
     personnel = next(action for action in result.extracted_actions or [] if action.target_type == "employee")
     site = next(action for action in result.extracted_actions or [] if action.target_type == "site")
-    assert personnel.target_id == "emp-scott"
+    assert personnel.target_id == "emp-bruce"
     assert personnel.target_label == "Bruce Keller"
     assert site.target_id == "7050"
     assert site.target_label == "Summit Wire"
@@ -165,14 +165,14 @@ def test_incident_regression_model_target_resolution_does_not_default_to_first_e
             note,
             selected_employees=[
                 {"id": "emp-damon", "name": "Damon Carver"},
-                {"id": "emp-scott", "name": "Bruce Keller"},
+                {"id": "emp-bruce", "name": "Bruce Keller"},
             ],
         )
     )
 
     personnel = next(action for action in result.extracted_actions or [] if action.target_type == "employee")
     supply = next(action for action in result.extracted_actions or [] if action.action_key == "supply_equipment_shrinkage")
-    assert personnel.target_id == "emp-scott"
+    assert personnel.target_id == "emp-bruce"
     assert personnel.target_label == "Bruce Keller"
     assert personnel.proposed_queue_job is not None
     assert validate_job(personnel.proposed_queue_job)
@@ -210,7 +210,7 @@ def test_rule_fallback_structured_actions_floor() -> None:
         ("Just noting that the lobby looked normal today.", None),
     ]
     for text, expected_key in cases:
-        result = engine(capture_input(text, selected_employees=[{"id": "emp-scott", "name": "Bruce Keller"}]))
+        result = engine(capture_input(text, selected_employees=[{"id": "emp-bruce", "name": "Bruce Keller"}]))
         keys = [action.action_key for action in result.extracted_actions or []]
         if expected_key is None:
             assert keys == []
@@ -228,7 +228,7 @@ def test_rule_engine_coemits_retention_risk_with_attendance() -> None:
     )
     engine = RuleCaptureEngine()
 
-    result = engine(capture_input(text, selected_employees=[{"id": "emp-scott", "name": "Bruce Keller"}]))
+    result = engine(capture_input(text, selected_employees=[{"id": "emp-bruce", "name": "Bruce Keller"}]))
     actions = result.extracted_actions or []
     attendance = next(
         action
@@ -258,7 +258,7 @@ def test_rule_engine_coemits_retention_risk_with_attendance() -> None:
 def test_rule_engine_retention_cue_variants(cue: str, text: str) -> None:
     engine = RuleCaptureEngine()
 
-    result = engine(capture_input(text, selected_employees=[{"id": "emp-scott", "name": "Bruce Keller"}]))
+    result = engine(capture_input(text, selected_employees=[{"id": "emp-bruce", "name": "Bruce Keller"}]))
     retention = next(action for action in result.extracted_actions or [] if action.job_type == "flag_retention_risk")
 
     assert cue in retention.evidence_terms
@@ -283,7 +283,7 @@ def test_rule_engine_no_false_retention_on_plain_attendance() -> None:
     result = engine(
         capture_input(
             "Bruce Keller was late and a no-show today. Coverage at Summit Wire is otherwise fine.",
-            selected_employees=[{"id": "emp-scott", "name": "Bruce Keller"}],
+            selected_employees=[{"id": "emp-bruce", "name": "Bruce Keller"}],
         )
     )
 
@@ -547,7 +547,7 @@ def test_text_artifact_collects_multiple_structured_candidates(tmp_path: Path, c
         site_id="7050",
         site_label="Summit Wire",
         upload_id="typed-multi",
-        selected_employees=[{"id": "emp-damon", "name": "Damon Carver"}, {"id": "emp-scott", "name": "Bruce Keller"}],
+        selected_employees=[{"id": "emp-damon", "name": "Damon Carver"}, {"id": "emp-bruce", "name": "Bruce Keller"}],
         engine=engine,
     )
     write_json_object(semantic_dir / "typed-multi.json", artifact)
@@ -631,7 +631,7 @@ def stage_single_structured_action(tmp_path: Path, raw_action: dict[str, object]
         upload_id="typed-operator-action",
         person_id="operator",
         captured_at="2026-06-04T12:00:00-04:00",
-        selected_employees=[{"id": "emp-scott", "name": "Bruce Keller"}],
+        selected_employees=[{"id": "emp-bruce", "name": "Bruce Keller"}],
         engine=engine,
     )
     write_json_object(semantic_dir / "typed-operator-action.json", artifact)
@@ -742,7 +742,7 @@ def test_model_payload_fields_are_honored_for_valid_personnel_payload() -> None:
         )
     )
 
-    result = engine(capture_input("Bruce got a client compliment.", selected_employees=[{"id": "emp-scott", "name": "Bruce Keller"}]))
+    result = engine(capture_input("Bruce got a client compliment.", selected_employees=[{"id": "emp-bruce", "name": "Bruce Keller"}]))
     [action] = result.extracted_actions or []
 
     assert action.proposed_queue_job == {"job_type": "log_personnel_event", "payload": explicit_payload}

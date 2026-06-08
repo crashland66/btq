@@ -148,7 +148,7 @@ def test_person_id_for_raises_when_name_missing() -> None:
 
 
 def test_person_id_for_handles_diacritics() -> None:
-    assert person_id_for({"first": "José", "last": "Caraballo Ortiz"}) == "caraballo-ortiz-jose"
+    assert person_id_for({"first": "José", "last": "Reyes Castillo"}) == "reyes-castillo-jose"
 
 
 def test_refresh_run_doc_body_keeps_ehub_id(tmp_path: Path) -> None:

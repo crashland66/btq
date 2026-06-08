@@ -52,7 +52,7 @@ def test_backfill_creates_missing_employee_docs_from_active_tokens_and_people_fi
     )
     write_person(vault_root, "Worker, TokenScoped.md", "first: TokenScoped\nlast: Worker\nstatus: active\n")
     token_store = TokenStore(tmp_path / "field_capture_tokens.sqlite3")
-    token_store.create_token("keller-bruce", label="Scott phone", site_ids=["9999"])
+    token_store.create_token("keller-bruce", label="Bruce phone", site_ids=["9999"])
     token_store.create_token("worker-tokenscoped", label="Token scoped", site_ids=["7040"])
     revoked = token_store.create_token("revoked-person", label="Revoked")
     token_store.revoke_token(revoked.record.token_id)

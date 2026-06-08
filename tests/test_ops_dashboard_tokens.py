@@ -166,14 +166,14 @@ def test_build_person_name_map_resolves_token_slug_from_employee_doc() -> None:
 
     docs = [
         {"type": "employee", "_id": "employee_mercer_glen", "first": "Glen", "last": "Mercer"},
-        {"type": "employee", "_id": "employee_caraballo_ortiz_ramon", "name": "Ramon Caraballo Ortiz"},
+        {"type": "employee", "_id": "employee_reyes_castillo_jose", "name": "José Reyes Castillo"},
         {"type": "site_issue", "_id": "iss_1"},
     ]
     names = _build_person_name_map(docs)
 
     # token person_id is the de-prefixed dash slug of the employee doc id
     assert names["mercer-glen"] == "Glen Mercer"
-    assert names["caraballo-ortiz-ramon"] == "Ramon Caraballo Ortiz"
+    assert names["reyes-castillo-jose"] == "José Reyes Castillo"
     # raw doc id also resolves; non-person docs are ignored
     assert names["employee_mercer_glen"] == "Glen Mercer"
     assert "iss_1" not in names

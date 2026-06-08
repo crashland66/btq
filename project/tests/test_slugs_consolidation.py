@@ -19,7 +19,7 @@ def test_core_lower_dash_slug_unchanged() -> None:
     cases = [
         ("Hello, World!", "fallback", "hello-world"),
         ("  A__B  ", "fallback", "a-b"),
-        ("José Caraballo", "fallback", "jos-caraballo"),
+        ("José Reyes", "fallback", "jos-reyes"),
         ("", "fallback", "fallback"),
         ("!!!", "fallback", "fallback"),
     ]
@@ -34,7 +34,7 @@ def test_event_schema_slugify_output_matches_pre_consolidation() -> None:
 
 
 def test_vault_sync_slugify_output_matches_pre_consolidation() -> None:
-    assert vault_sync_slugify("José Caraballo Ortiz") == "jose-caraballo-ortiz"
+    assert vault_sync_slugify("José Reyes Castillo") == "jose-reyes-castillo"
     assert vault_sync_slugify("  A__B  ") == "a-b"
     assert vault_sync_slugify(None) == ""
 
