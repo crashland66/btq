@@ -1152,17 +1152,16 @@ textarea:focus {
 .inbox-empty { text-align: center; color: var(--muted); padding: 2.5rem 1rem; }
 .inbox-empty-mark { font-size: 2.2rem; color: var(--accent-dark); margin: 0 0 .25rem; }
 
-/* Per-site capture guidance shown under the Site selector */
+/* Per-site capture guidance — compact note inside the Photos panel */
 .site-guidance {
-  margin: 0 0 0.5rem;
-  padding: 0.6rem 0.75rem;
-  border: 1px solid var(--warning);
-  border-left-width: 4px;
-  border-radius: var(--radius);
+  margin: 0 0 0.6rem;
+  padding: 0.45rem 0.6rem;
+  border-left: 3px solid var(--warning);
+  border-radius: 4px;
   background: var(--surface);
-  color: var(--text);
-  font-size: 14px;
-  line-height: 1.4;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.35;
   white-space: pre-wrap;
 }
 .site-guidance[hidden] { display: none; }
