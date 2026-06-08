@@ -1,9 +1,10 @@
 (function () {
   "use strict";
 
-  const INTERFACE_VERSION = "2026.06.08-text-and-gating";
-  // Previous INTERFACE_VERSION = "2026.06.06-unified-capture" retained for legacy static smoke tests.
+  const INTERFACE_VERSION = "2026.06.08-photo-limit";
+  // Previous INTERFACE_VERSION values: "2026.06.08-text-and-gating", "2026.06.06-unified-capture" (legacy static smoke tests).
   const PIPELINE_VERSION = "unified-capture-intake-v2";
+  const MAX_PHOTOS = 6; // keep in sync with the server --max-images default (6)
   const TOKEN_KEY = "unifiedCaptureToken";
   const SCREEN_MODE_KEY = "unifiedCaptureScreenMode";
   const RECENT_SITE_KEY = "unifiedCaptureSiteId";
@@ -844,15 +845,23 @@
       setStatus("No image selected", "warning");
       return;
     }
+    const room = MAX_PHOTOS - state.photos.length;
+    if (room <= 0) {
+      setStatus(`Photo limit reached (${MAX_PHOTOS}). Remove one to add another.`, "warning");
+      return;
+    }
+    const accepted = selected.slice(0, room);
+    const dropped = selected.length - accepted.length;
     state.isProcessingPhotos = true;
     updateSubmitState();
-    setStatus(`Processing ${selected.length} photo${selected.length === 1 ? "" : "s"}...`);
+    setStatus(`Processing ${accepted.length} photo${accepted.length === 1 ? "" : "s"}...`);
     try {
-      for (const file of selected) {
+      for (const file of accepted) {
         state.photos.push(await normalizeImage(file, file.name));
         renderPhotos();
       }
-      setStatus("Photo ready.");
+      if (dropped > 0) setStatus(`Photo limit is ${MAX_PHOTOS}; ${dropped} not added.`, "warning");
+      else setStatus("Photo ready.");
     } catch (_error) {
       setStatus("Could not process selected photo.", "error");
     } finally {
@@ -887,7 +896,7 @@
       card.append(image, remove);
       elements.thumbnailGrid.append(card);
     });
-    elements.photoCount.textContent = `${state.photos.length} attached`;
+    elements.photoCount.textContent = `${state.photos.length} of ${MAX_PHOTOS}`;
     updateSubmitState();
   }
 
