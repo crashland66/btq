@@ -58,57 +58,13 @@ ADVISORY_WARNING = (
 )
 JUDGMENT_LANGUAGE_REMOVED_WARNING = "possible_judgment_language_removed"
 SCREENSHOT_OR_APP_UI_WARNING = "screenshot_or_app_ui"
-FORBIDDEN_JUDGMENT_TERMS = (
-    "cleanliness",
-    "tidy",
-    "tidiness",
-    "dirty",
-    "clean",
-    "cleaner",
-    "good job",
-    "bad job",
-    "acceptable",
-    "unacceptable",
-    "pass",
-    "fail",
-    "need for cleaning",
-    "needs cleaning",
-    "may need cleaning",
-    "might need cleaning",
-    "should be cleaned",
-    "requires cleaning",
-    "needs attention",
-    "work quality",
-    "score",
-    "rating",
-    "best",
-)
-JUDGMENT_REPLACEMENTS = (
-    (re.compile(r"\bmay\s+need\s+cleaning\b", re.IGNORECASE), "visible residue, debris, or marks"),
-    (re.compile(r"\bmight\s+need\s+cleaning\b", re.IGNORECASE), "visible residue, debris, or marks"),
-    (re.compile(r"\bshould\s+be\s+cleaned\b", re.IGNORECASE), "visible residue, debris, or marks"),
-    (re.compile(r"\brequires\s+cleaning\b", re.IGNORECASE), "visible residue, debris, or marks"),
-    (re.compile(r"\bneed\s+for\s+cleaning\b", re.IGNORECASE), "visible residue, debris, or marks"),
-    (re.compile(r"\bneeds\s+cleaning\b", re.IGNORECASE), "visible residue, debris, or marks"),
-    (re.compile(r"\bneeds\s+attention\b", re.IGNORECASE), "visible condition for human review"),
-    (re.compile(r"\bcleaning\s+supplies\b", re.IGNORECASE), "maintenance supplies"),
-    (re.compile(r"\bcleanliness\b", re.IGNORECASE), "visible condition"),
-    (re.compile(r"\btidiness\b", re.IGNORECASE), "item placement"),
-    (re.compile(r"\btidy\b", re.IGNORECASE), "arranged"),
-    (re.compile(r"\bdirty\b", re.IGNORECASE), "visible debris or marks"),
-    (re.compile(r"\bcleaner\b", re.IGNORECASE), "maintenance item"),
-    (re.compile(r"\bclean\b", re.IGNORECASE), "reset"),
-    (re.compile(r"\bgood\s+job\b", re.IGNORECASE), "visible completed action"),
-    (re.compile(r"\bbad\s+job\b", re.IGNORECASE), "visible exception"),
-    (re.compile(r"\bunacceptable\b", re.IGNORECASE), "visible condition for human review"),
-    (re.compile(r"\bacceptable\b", re.IGNORECASE), "visible condition"),
-    (re.compile(r"\bpass\b", re.IGNORECASE), "human review item"),
-    (re.compile(r"\bfail\b", re.IGNORECASE), "human review item"),
-    (re.compile(r"\bwork\s+quality\b", re.IGNORECASE), "visible condition"),
-    (re.compile(r"\bscore\b", re.IGNORECASE), "visual note"),
-    (re.compile(r"\brating\b", re.IGNORECASE), "visual note"),
-    (re.compile(r"\bbest\b", re.IGNORECASE), "selected"),
-)
+# Judgment-language scrubbing was intentionally DISABLED 2026-06-08 (internal "candid
+# mode"): the operator wants the vision model's unfiltered assessment of condition
+# (e.g. "dirty", "needs cleaning") to reach review rather than be rewritten. The
+# sanitizer functions below are kept as no-ops so existing call sites and the optional
+# reprocess-maintenance path stay wired; nothing is forbidden or rewritten.
+FORBIDDEN_JUDGMENT_TERMS: tuple[str, ...] = ()
+JUDGMENT_REPLACEMENTS: tuple[tuple[re.Pattern[str], str], ...] = ()
 logger = logging.getLogger(__name__)
 
 
@@ -566,11 +522,11 @@ def prompt_for(asset: FieldPhotoAsset) -> str:
         "exam_room, lobby, supply_closet, janitor_closet, exterior, other. Do not echo any operator-provided label.\n"
         "  visible_objects (array of strings): each entry is one common noun naming one identified object. "
         "List each distinct object once; do not repeat the same noun.\n"
-        "  possible_conditions (array of strings): observable facts about state, e.g. \"paper towel on floor\", "
-        "\"trash receptacle appears near full\", \"streaks visible on mirror\". possible_conditions must be visible "
-        "facts only, not judgments.\n"
-        "  possible_issues (array of strings): concrete visible exceptions a human reviewer might want to act on. "
-        "Empty array if none. possible_issues must be concrete visible exceptions only, not quality ratings.\n"
+        "  possible_conditions (array of strings): observable facts about the state and condition, e.g. "
+        "\"paper towel on floor\", \"trash receptacle appears near full\", \"streaks visible on mirror\", "
+        "\"floor looks dirty\", \"dust on shelf\", \"area looks like it still needs cleaning\". Be candid.\n"
+        "  possible_issues (array of strings): concrete visible exceptions a human reviewer might want to act on, "
+        "including anything that looks dirty, dusty, missed, or still needing cleaning. Empty array if none.\n"
         "  confidence (number 0.0-1.0): how confident you are. Lower this when the image is unclear, blurry, "
         "partly obscured, or shows an ambiguous angle. Do not return 0.95 for a vague description.\n"
         "  needs_human_review (boolean): true if the image is ambiguous, contains people, is partly obscured, "
@@ -584,14 +540,11 @@ def prompt_for(asset: FieldPhotoAsset) -> str:
         "\n"
         "Hard rules:\n"
         "  - Describe only what is visible. Do not invent objects, scenes, or hidden facts.\n"
-        "  - Do not use these words or phrases: cleanliness, tidy, tidiness, dirty, clean, cleaner, good job, "
-        "bad job, acceptable, unacceptable, pass, fail, needs cleaning, needs attention, work quality, score, "
-        "rating, best, worst.\n"
-        "  - Do not rate, judge, score, approve, reject, or evaluate work quality.\n"
-        "  - Do not decide whether work is complete. Do not decide whether an area is acceptable.\n"
-        "  - Do not infer employee performance. Do not identify any specific person.\n"
-        "  - Do not say needs cleaning. Describe the visible fact instead: visible paper on floor, "
-        "trash liner appears full, streaks visible on mirror, supplies visible on counter.\n"
+        "  - This is an INTERNAL operations review. Assess the condition directly and honestly: if a surface "
+        "looks dirty, dusty, streaked, smudged, neglected, or like it still needs cleaning, say so plainly. "
+        "Do not soften, hedge, sanitize, or omit observations — report what you actually see.\n"
+        "  - Privacy: do not identify any specific person — no names, and no identifying descriptions of "
+        "individuals. Flag people only via contains_people / needs_human_review.\n"
         "  - If the image is clearly a phone screenshot, an app screen, a browser/computer UI, or an "
         "error message/dialog rather than a real photo of a physical space, set area_guess to \"other\", "
         "include \"unanalyzable\" in quality_flags, set needs_human_review to true, include "

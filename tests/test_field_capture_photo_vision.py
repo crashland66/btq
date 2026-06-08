@@ -195,7 +195,7 @@ def test_site_vision_context_for_logs_and_returns_none_on_registry_error(monkeyp
     assert "registry unavailable" in caplog.text
 
 
-def test_prompt_contains_explicit_no_judgment_and_no_scoring_rules(tmp_path: Path, monkeypatch) -> None:
+def test_prompt_invites_candid_condition_assessment_and_keeps_privacy(tmp_path: Path, monkeypatch) -> None:
     install_summit_vision_registry(monkeypatch)
     intake_dir = tmp_path / "runtime" / "field_capture" / "intake"
     upload_dir = tmp_path / "runtime" / "uploads"
@@ -204,14 +204,19 @@ def test_prompt_contains_explicit_no_judgment_and_no_scoring_rules(tmp_path: Pat
 
     prompt = photo_vision.prompt_for(asset)
 
+    # Anti-hallucination is kept.
     assert "Describe only what is visible" in prompt
-    assert "Do not rate, judge, score, approve, reject, or evaluate work quality." in prompt
-    assert "cleanliness, tidy, tidiness, dirty, clean, cleaner" in prompt
-    assert "Do not infer employee performance." in prompt
-    assert "Do not decide whether work is complete." in prompt
-    assert "Do not say needs cleaning." in prompt
-    assert "possible_conditions must be visible facts only" in prompt
-    assert "possible_issues must be concrete visible exceptions only" in prompt
+    # Candid-mode instruction is present.
+    assert "Assess the condition directly and honestly" in prompt
+    assert "Do not soften, hedge, sanitize, or omit observations" in prompt
+    # Privacy is kept; people are still flagged, not described.
+    assert "do not identify any specific person" in prompt
+    # The old judgment gag is gone.
+    assert "Do not rate, judge, score" not in prompt
+    assert "cleanliness, tidy, tidiness, dirty, clean, cleaner" not in prompt
+    assert "Do not say needs cleaning." not in prompt
+    assert "must be visible facts only" not in prompt
+    # Site context still threaded in.
     assert "Summit Wire" in prompt
     assert "industrial manufacturing / wire facility" in prompt
     assert "Do not invent details from the context" in prompt
@@ -370,7 +375,9 @@ def test_image_from_intake_produces_vision_sidecar_with_provenance(tmp_path: Pat
     assert photo_vision.ADVISORY_WARNING in payload["warnings"]
 
 
-def test_judgment_language_is_neutralized_and_flagged(tmp_path: Path) -> None:
+def test_judgment_language_is_preserved_not_neutralized(tmp_path: Path) -> None:
+    # Candid mode (2026-06-08): the vision model's own assessment of condition is
+    # passed through verbatim — no word-scrubbing, no JUDGMENT_LANGUAGE_REMOVED flag.
     runtime_root = tmp_path / "runtime"
     intake_dir = runtime_root / "field_capture" / "intake"
     upload_dir = runtime_root / "uploads"
@@ -382,14 +389,17 @@ def test_judgment_language_is_neutralized_and_flagged(tmp_path: Path) -> None:
     assert counts == {"discovered": 1, "would_create": 0, "would_replace": 0, "completed": 1, "failed": 0, "skipped": 0}
     payload = json.loads(next(vision_dir.glob("*.json")).read_text(encoding="utf-8"))
     assert payload["status"] == "completed"
-    assert payload["description"]
+    assert payload["description"] == "The restroom cleanliness is poor and needs cleaning."
     assert payload["area_guess"] == "Restrooms"
-    assert payload["visible_objects"] == ["toilet", "maintenance supplies"]
-    assert payload["possible_conditions"] == ["visible condition", "visible debris or marks floor"]
-    assert payload["possible_issues"] == ["General item placement", "visible condition for human review"]
+    assert payload["visible_objects"] == ["toilet", "cleaning supplies"]
+    assert payload["possible_conditions"] == ["Cleanliness", "dirty floor"]
+    assert payload["possible_issues"] == ["General tidiness", "needs attention"]
     assert payload["confidence"] == 0.55
-    assert photo_vision.JUDGMENT_LANGUAGE_REMOVED_WARNING in payload["warnings"]
-    assert not photo_vision.contains_forbidden_judgment_language(joined_payload_text(payload))
+    # Candid language survives; the removed-language warning is no longer emitted.
+    assert photo_vision.JUDGMENT_LANGUAGE_REMOVED_WARNING not in payload["warnings"]
+    assert "needs cleaning" in payload["warnings"]
+    # Advisory framing (vision is advisory, human review authoritative) is retained.
+    assert photo_vision.ADVISORY_WARNING in payload["warnings"]
 
 
 def test_concrete_visible_facts_pass_without_sanitizer_warning() -> None:
@@ -541,7 +551,9 @@ def test_replace_failed_does_not_replace_completed_sidecar(tmp_path: Path) -> No
     assert client.calls == []
 
 
-def test_replace_flagged_judgment_language_regenerates_flagged_completed_sidecar(tmp_path: Path) -> None:
+def test_flagged_judgment_language_replacement_is_noop_in_candid_mode(tmp_path: Path) -> None:
+    # Candid mode (2026-06-08): condition words like "Cleanliness"/"need for cleaning"
+    # are no longer "flagged", so the opt-in reprocess pass leaves the sidecar alone.
     runtime_root = tmp_path / "runtime"
     intake_dir = runtime_root / "field_capture" / "intake"
     upload_dir = runtime_root / "uploads"
@@ -564,13 +576,12 @@ def test_replace_flagged_judgment_language_regenerates_flagged_completed_sidecar
         replace_flagged_judgment_language=True,
     )
 
-    assert counts == {"discovered": 1, "would_create": 0, "would_replace": 0, "completed": 1, "failed": 0, "skipped": 0}
-    assert len(client.calls) == 1
-    replaced = json.loads(sidecar_path.read_text(encoding="utf-8"))
-    assert replaced["replaced_existing_sidecar"] is True
-    assert replaced["replacement_reason"] == "flagged_judgment_language"
-    assert replaced["previous_status"] == "completed"
-    assert replaced["possible_conditions"] == ["appears reset"]
+    assert counts == {"discovered": 1, "would_create": 0, "would_replace": 0, "completed": 0, "failed": 0, "skipped": 1}
+    assert client.calls == []
+    # The injected condition language is left intact.
+    after = json.loads(sidecar_path.read_text(encoding="utf-8"))
+    assert after["possible_conditions"] == ["Cleanliness"]
+    assert after["possible_issues"] == ["need for cleaning"]
 
 
 def test_replace_flagged_judgment_language_does_not_replace_clean_completed_sidecar(tmp_path: Path) -> None:
@@ -627,7 +638,9 @@ def test_advisory_warning_text_avoids_search_noisy_terms() -> None:
     assert not any(term in photo_vision.ADVISORY_WARNING.lower() for term in noisy_terms)
 
 
-def test_sanitizer_catches_cleaning_need_phrases() -> None:
+def test_sanitizer_preserves_candid_condition_language() -> None:
+    # Candid mode (2026-06-08): the sanitizer no longer rewrites condition phrases;
+    # it only appends the advisory framing and de-dupes lists.
     description = photo_vision.VisionDescription(
         description="The blinds may need cleaning and the vent requires cleaning.",
         area_guess="Office",
@@ -640,22 +653,12 @@ def test_sanitizer_catches_cleaning_need_phrases() -> None:
     )
 
     sanitized = photo_vision.sanitize_vision_description(description)
-    payload_text = " ".join(
-        [
-            sanitized.description,
-            " ".join(sanitized.visible_objects),
-            " ".join(sanitized.possible_conditions),
-            " ".join(sanitized.possible_issues),
-        ]
-    )
 
-    assert "may need cleaning" not in payload_text.lower()
-    assert "requires cleaning" not in payload_text.lower()
-    assert "might need cleaning" not in payload_text.lower()
-    assert "should be cleaned" not in payload_text.lower()
-    assert "needs cleaning" not in payload_text.lower()
-    assert photo_vision.JUDGMENT_LANGUAGE_REMOVED_WARNING in sanitized.warnings
-    assert not photo_vision.contains_forbidden_judgment_language(payload_text)
+    assert sanitized.description == "The blinds may need cleaning and the vent requires cleaning."
+    assert sanitized.possible_conditions == ["might need cleaning", "should be cleaned"]
+    assert sanitized.possible_issues == ["needs cleaning"]
+    assert photo_vision.JUDGMENT_LANGUAGE_REMOVED_WARNING not in sanitized.warnings
+    assert photo_vision.ADVISORY_WARNING in sanitized.warnings
 
 
 def test_missing_image_fails_closed_with_failed_artifact(tmp_path: Path) -> None:
