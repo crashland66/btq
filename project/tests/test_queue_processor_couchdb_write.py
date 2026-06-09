@@ -43,6 +43,9 @@ class FailingVaultStore:
     def find_visit_docs(self, site_id: str, date: str, *, limit: int = 10000) -> list[dict]:
         return []
 
+    def find_open_site_issue_docs(self, site_id: str, *, limit: int = 500) -> list[dict]:
+        return []
+
     def upsert(self, doc: dict) -> None:
         self.docs.append(doc)
         raise RuntimeError("boom")
@@ -59,6 +62,22 @@ class RecordingRmwVaultStore(RecordingVaultStore):
             if doc.get("_id") == doc_id:
                 return dict(doc)
         return None
+
+    def find_open_site_issue_docs(self, site_id: str, *, limit: int = 500) -> list[dict[str, Any]]:
+        site_id_variants = {str(site_id), f'"{site_id}"'}
+        matches = [
+            {
+                "_id": doc.get("_id"),
+                "issue_id": doc.get("issue_id"),
+                "title": doc.get("title"),
+                "status": doc.get("status"),
+            }
+            for doc in self.docs
+            if doc.get("type") == "site_issue"
+            and str(doc.get("site_id")) in site_id_variants
+            and str(doc.get("status") or "").strip() == "open"
+        ]
+        return matches[:limit]
 
     def update_doc(
         self,

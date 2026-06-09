@@ -45,6 +45,22 @@ class RecordingVaultStore:
         ]
         return visits[:limit]
 
+    def find_open_site_issue_docs(self, site_id: str, *, limit: int = 500) -> list[dict[str, Any]]:
+        site_id_variants = {str(site_id), f'"{site_id}"'}
+        matches = [
+            {
+                "_id": doc.get("_id"),
+                "issue_id": doc.get("issue_id"),
+                "title": doc.get("title"),
+                "status": doc.get("status"),
+            }
+            for doc in self.docs
+            if doc.get("type") == "site_issue"
+            and str(doc.get("site_id")) in site_id_variants
+            and str(doc.get("status") or "").strip() == "open"
+        ]
+        return matches[:limit]
+
     def find_supply_need_docs_by_supply_id(self, supply_id: str, *, limit: int = 10) -> list[dict[str, Any]]:
         matches = [
             dict(doc)

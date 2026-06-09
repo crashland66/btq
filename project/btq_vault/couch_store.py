@@ -26,6 +26,7 @@ EMPLOYEE_DUPLICATE_QUERY_LIMIT = 10000
 VISIT_DEDUP_QUERY_LIMIT = 10000
 UNKNOWN_CAPTURE_QUERY_LIMIT = 10000
 JOB_ID_SCAN_QUERY_LIMIT = 100000
+SITE_ISSUE_DEDUP_QUERY_LIMIT = 500
 
 
 class CouchDBEntityStoreError(Exception):
@@ -250,6 +251,30 @@ class CouchDBEntityStore:
         docs = response.get("docs")
         if not isinstance(docs, list):
             raise CouchDBEntityStoreError("CouchDB visit dedup query returned no docs list")
+        return [doc for doc in docs if isinstance(doc, dict)]
+
+    def find_open_site_issue_docs(self, site_id: str, *, limit: int = SITE_ISSUE_DEDUP_QUERY_LIMIT) -> list[dict[str, Any]]:
+        """Return open site_issue docs for a site needed for content dedup checks."""
+        canonical_site_id = str(site_id)
+        response = self._request_json(
+            "POST",
+            "_find",
+            {
+                "selector": {
+                    "type": "site_issue",
+                    "status": "open",
+                    "$or": [
+                        {"site_id": canonical_site_id},
+                        {"site_id": json.dumps(canonical_site_id)},
+                    ],
+                },
+                "fields": ["_id", "issue_id", "title", "status"],
+                "limit": limit,
+            },
+        )
+        docs = response.get("docs")
+        if not isinstance(docs, list):
+            raise CouchDBEntityStoreError("CouchDB open site_issue dedup query returned no docs list")
         return [doc for doc in docs if isinstance(doc, dict)]
 
     def find_supply_need_docs_by_supply_id(self, supply_id: str, *, limit: int = 10) -> list[dict[str, Any]]:

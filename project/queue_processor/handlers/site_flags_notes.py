@@ -55,6 +55,9 @@ def client_notification_field(payload: dict, modern: str, legacy: str) -> str:
         value = payload.get(legacy)
     return str(value or "").strip()
 
+def _normalized_site_issue_title(value: object) -> str:
+    return " ".join(str(value or "").strip().casefold().split())
+
 def _build_site_issue_entity_doc(payload: dict, job: QueueJob, site_ctx: SiteContext, issue_id: str, created_at: str) -> dict:
     return {
         "_id": f"site_issue_{issue_id}",
@@ -70,7 +73,8 @@ def _build_site_issue_entity_doc(payload: dict, job: QueueJob, site_ctx: SiteCon
 
 def process_log_site_issue_job(job_path: Path, job: QueueJob, context: RunContext, processed_dir: Path) -> None:
     payload = job.payload
-    site_ctx = resolve_site_context(_shared._vault_store(), str(payload["site_id"]))
+    store = _shared._vault_store()
+    site_ctx = resolve_site_context(store, str(payload["site_id"]))
     issue_id = site_issue_id(payload)
     processed_destination = processed_dir / job_path.name
     if not context.dry_run and processed_destination.exists():
@@ -89,6 +93,45 @@ def process_log_site_issue_job(job_path: Path, job: QueueJob, context: RunContex
         allow_create=True,
         require_existing=False,
     )
+
+    try:
+        current_doc = store.get_optional(target.doc_id)
+    except Exception as exc:
+        entity_id = target.doc_id
+        raise _shared.QueueJobError(
+            "canonical couchdb write failed "
+            f"job_type={job.job_type} job_id={job.job_id} entity_id={entity_id}: {exc}"
+        ) from exc
+    current_job_ids = [str(item).strip() for item in (current_doc or {}).get("btq_job_ids") or [] if str(item).strip()]
+    if job.job_id in current_job_ids:
+        print(f"Job {job.job_id}: job_id marker already present — skipping")
+        moved_path = _shared.move_job_file(job_path, processed_dir)
+        print(f"Job {job.job_id}: moved queue file to {moved_path}")
+        _shared.write_log_line(context.log_path, f"job_id={job.job_id} action=skip status=success reason=job-id-marker-present")
+        return
+    normalized_title = _normalized_site_issue_title(payload.get("title"))
+    if current_doc is None and normalized_title:
+        try:
+            open_site_issues = store.find_open_site_issue_docs(site_ctx.site_id)
+        except Exception as exc:
+            entity_id = target.doc_id
+            raise _shared.QueueJobError(
+                "canonical couchdb write failed "
+                f"job_type={job.job_type} job_id={job.job_id} entity_id={entity_id}: {exc}"
+            ) from exc
+        for existing_issue in open_site_issues:
+            existing_issue_id = str(existing_issue.get("issue_id") or "").strip()
+            if not existing_issue_id:
+                existing_doc_id = str(existing_issue.get("_id") or "").strip()
+                existing_issue_id = existing_doc_id.removeprefix("site_issue_")
+            if existing_issue_id == issue_id:
+                continue
+            if _normalized_site_issue_title(existing_issue.get("title")) == normalized_title:
+                print(f"Job {job.job_id}: duplicate site_issue content skipped")
+                moved_path = _shared.move_job_file(job_path, processed_dir)
+                print(f"Job {job.job_id}: moved queue file to {moved_path}")
+                _shared.write_log_line(context.log_path, f"job_id={job.job_id} action=log-site-issue status=success reason=duplicate-site-issue-content")
+                return
 
     def transform(state: CanonicalEntityState) -> CanonicalMutation:
         is_new_doc = state.doc is None or set(state.doc) <= {"_id", "type"}
@@ -109,7 +152,7 @@ def process_log_site_issue_job(job_path: Path, job: QueueJob, context: RunContex
         return CanonicalMutation(doc=doc, evidence_text=f"site_issue {issue_id}")
 
     try:
-        canonical_doc = apply_canonical_rmw(_shared._vault_store(), target, job.job_id, transform)
+        canonical_doc = apply_canonical_rmw(store, target, job.job_id, transform)
     except Exception as exc:
         entity_id = target.doc_id
         raise _shared.QueueJobError(

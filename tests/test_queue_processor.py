@@ -239,6 +239,9 @@ class RmwRecordingVaultStore(RecordingVaultStore):
         locations = [dict(doc) for doc in self.docs if doc.get("type") == "location"]
         return locations[:limit]
 
+    def find_open_site_issue_docs(self, site_id: str, *, limit: int = 500) -> list[dict[str, Any]]:
+        return super().find_open_site_issue_docs(site_id, limit=limit)
+
     def job_id_applied_doc_id(self, job_id: str) -> str | None:
         for doc in self.docs:
             job_ids = doc.get("btq_job_ids")
@@ -336,6 +339,23 @@ def test_recording_vault_store_scan_job_id_docs_returns_non_empty_job_id_docs() 
     ]
 
 
+def test_recording_vault_store_find_open_site_issue_docs_filters_site_and_status() -> None:
+    store = RmwRecordingVaultStore()
+    store.docs.extend(
+        [
+            {"_id": "site_issue_open", "type": "site_issue", "issue_id": "open", "site_id": "7050", "status": "open", "title": "Drain"},
+            {"_id": "site_issue_quoted", "type": "site_issue", "issue_id": "quoted", "site_id": '"7050"', "status": "open", "title": "Sink"},
+            {"_id": "site_issue_closed", "type": "site_issue", "issue_id": "closed", "site_id": "7050", "status": "resolved", "title": "Drain"},
+            {"_id": "site_issue_other", "type": "site_issue", "issue_id": "other", "site_id": "7060", "status": "open", "title": "Drain"},
+        ]
+    )
+
+    assert store.find_open_site_issue_docs("7050") == [
+        {"_id": "site_issue_open", "issue_id": "open", "title": "Drain", "status": "open"},
+        {"_id": "site_issue_quoted", "issue_id": "quoted", "title": "Sink", "status": "open"},
+    ]
+
+
 def test_couchdb_entity_store_job_id_applied_doc_id_hit_and_miss(monkeypatch: pytest.MonkeyPatch) -> None:
     store = CouchDBEntityStore("http://couchdb.invalid", {}, "btq_vault")
     calls: list[tuple[str, str, dict[str, Any] | None]] = []
@@ -398,6 +418,44 @@ def test_couchdb_entity_store_scan_job_id_docs(monkeypatch: pytest.MonkeyPatch) 
                 "selector": {"btq_job_ids": {"$exists": True}},
                 "fields": ["_id", "type", "btq_job_ids", "content"],
                 "limit": 100000,
+            },
+        )
+    ]
+
+
+def test_couchdb_entity_store_find_open_site_issue_docs(monkeypatch: pytest.MonkeyPatch) -> None:
+    store = CouchDBEntityStore("http://couchdb.invalid", {}, "btq_vault")
+    calls: list[tuple[str, str, dict[str, Any] | None]] = []
+
+    def fake_request_json(method: str, doc_id: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        calls.append((method, doc_id, payload))
+        return {
+            "docs": [
+                {"_id": "site_issue_iss_one", "issue_id": "iss_one", "title": "Drain", "status": "open"},
+                "ignored",
+            ]
+        }
+
+    monkeypatch.setattr(store, "_request_json", fake_request_json)
+
+    assert store.find_open_site_issue_docs("7050") == [
+        {"_id": "site_issue_iss_one", "issue_id": "iss_one", "title": "Drain", "status": "open"}
+    ]
+    assert calls == [
+        (
+            "POST",
+            "_find",
+            {
+                "selector": {
+                    "type": "site_issue",
+                    "status": "open",
+                    "$or": [
+                        {"site_id": "7050"},
+                        {"site_id": '"7050"'},
+                    ],
+                },
+                "fields": ["_id", "issue_id", "title", "status"],
+                "limit": 500,
             },
         )
     ]
@@ -1605,6 +1663,132 @@ def test_process_durable_queue_accepts_field_capture_log_site_issue_draft_shape(
     assert issue_doc["site_id"] == "7050"
     assert issue_doc["title"] == "Restroom drain backup and inoperable stall"
     assert issue_doc["summary"] == "Drain backed up and the sink drain pushed water onto the restroom floor."
+
+
+def test_log_site_issue_skips_same_site_same_title_new_issue_id(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = use_recording_vault_store(monkeypatch)
+    project_root, vault_root, runtime_root, log_path = make_roots(tmp_path)
+    write_summit_wire_site(vault_root)
+    first_job = log_site_issue_job_payload("job-site-issue-first")
+    second_job = log_site_issue_job_payload("job-site-issue-second")
+    second_job["payload"]["observed_at"] = "2026-05-09T18:27:03-04:00"
+    second_job["payload"]["related_capture_ids"] = ["cap-photo-summit-drain-second"]
+    write_job(runtime_root / "queue", "001-first-site-issue.json", first_job)
+    write_job(runtime_root / "queue", "002-second-site-issue.json", second_job)
+
+    _stdout, log_text = run_jobs(project_root, vault_root, runtime_root, log_path)
+
+    assert "reason=duplicate-site-issue-content" in log_text
+    issue_docs = [doc for doc in store.docs if doc.get("type") == "site_issue"]
+    assert len(issue_docs) == 1
+    assert issue_docs[0]["title"] == "Restroom drain backup and inoperable stall"
+    # btq_job_ids holds the COMPUTED job id; the skipped duplicate must NOT be merged in -> still one.
+    assert len(issue_docs[0]["btq_job_ids"]) == 1
+    assert len(list((runtime_root / "processed").glob("*.json"))) == 2
+    records = list(processed_index.iter_records(runtime_root / "processed_index.jsonl"))
+    # Both jobs processed-indexed (the skipped dup still records its processing) — 2 distinct computed ids.
+    assert len({record["computed_job_id"] for record in records}) == 2
+
+
+def test_log_site_issue_allows_different_title_same_site(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = use_recording_vault_store(monkeypatch)
+    project_root, vault_root, runtime_root, log_path = make_roots(tmp_path)
+    write_summit_wire_site(vault_root)
+    first_job = log_site_issue_job_payload("job-site-issue-first")
+    second_job = log_site_issue_job_payload("job-site-issue-different")
+    second_job["payload"]["title"] = "Supply closet lock is sticking"
+    second_job["payload"]["observed_at"] = "2026-05-09T18:27:03-04:00"
+    second_job["payload"]["related_capture_ids"] = ["cap-photo-summit-lock"]
+    write_job(runtime_root / "queue", "001-first-site-issue.json", first_job)
+    write_job(runtime_root / "queue", "002-different-site-issue.json", second_job)
+
+    _stdout, log_text = run_jobs(project_root, vault_root, runtime_root, log_path)
+
+    assert "reason=duplicate-site-issue-content" not in log_text
+    issue_docs = [doc for doc in store.docs if doc.get("type") == "site_issue"]
+    assert len(issue_docs) == 2
+    assert {doc["title"] for doc in issue_docs} == {
+        "Restroom drain backup and inoperable stall",
+        "Supply closet lock is sticking",
+    }
+
+
+def test_log_site_issue_same_issue_id_updates_existing_doc_despite_title_match(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = use_recording_vault_store(monkeypatch)
+    project_root, vault_root, runtime_root, log_path = make_roots(tmp_path)
+    write_summit_wire_site(vault_root)
+    seed_projection_docs_as_canonical(vault_root, store)
+    store.docs.append(
+        {
+            "_id": "site_issue_issue-stable",
+            "type": "site_issue",
+            "issue_id": "issue-stable",
+            "site_id": "7050",
+            "site_name": "Summit Wire",
+            "title": "Restroom drain backup and inoperable stall",
+            "status": "open",
+            "summary": "Original summary.",
+            "created_at": "2026-05-08T00:00:00+00:00",
+            "btq_job_ids": ["job-site-issue-original"],
+        }
+    )
+    replay_job = log_site_issue_job_payload("job-site-issue-replay")
+    replay_job["payload"]["issue_id"] = "issue-stable"
+    replay_job["payload"]["summary"] = "Updated summary."
+    write_job(runtime_root / "queue", "same-issue-id.json", replay_job)
+
+    _stdout, log_text = run_jobs(project_root, vault_root, runtime_root, log_path)
+
+    assert "reason=duplicate-site-issue-content" not in log_text
+    issue_docs = [doc for doc in store.docs if doc.get("type") == "site_issue"]
+    assert len(issue_docs) == 1
+    issue_doc = issue_docs[0]
+    assert issue_doc["summary"] == "Updated summary."
+    # Same issue_id (true replay) updates the existing doc and appends BOTH computed job ids.
+    assert len(issue_doc["btq_job_ids"]) == 2
+
+
+def test_log_site_issue_closed_same_title_does_not_block_new_open_issue(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = use_recording_vault_store(monkeypatch)
+    project_root, vault_root, runtime_root, log_path = make_roots(tmp_path)
+    write_summit_wire_site(vault_root)
+    seed_projection_docs_as_canonical(vault_root, store)
+    store.docs.append(
+        {
+            "_id": "site_issue_issue-resolved",
+            "type": "site_issue",
+            "issue_id": "issue-resolved",
+            "site_id": "7050",
+            "site_name": "Summit Wire",
+            "title": "Restroom drain backup and inoperable stall",
+            "status": "resolved",
+            "summary": "Resolved issue.",
+            "created_at": "2026-05-08T00:00:00+00:00",
+            "btq_job_ids": ["job-site-issue-resolved"],
+        }
+    )
+    new_job = log_site_issue_job_payload("job-site-issue-new")
+    new_job["payload"]["issue_id"] = "issue-new"
+    write_job(runtime_root / "queue", "new-open-after-resolved.json", new_job)
+
+    _stdout, log_text = run_jobs(project_root, vault_root, runtime_root, log_path)
+
+    assert "reason=duplicate-site-issue-content" not in log_text
+    issue_docs = [doc for doc in store.docs if doc.get("type") == "site_issue"]
+    assert len(issue_docs) == 2
+    assert recording_doc(store, "site_issue_issue-new")["status"] == "open"
 
 
 def test_process_durable_queue_invalid_job_moves_to_failed(tmp_path: Path, capsys) -> None:

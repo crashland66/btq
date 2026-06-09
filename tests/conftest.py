@@ -20,6 +20,9 @@ class RmwRecordingVaultStore(RecordingVaultStore):
         locations = [dict(doc) for doc in self.docs if doc.get("type") == "location"]
         return locations[:limit]
 
+    def find_open_site_issue_docs(self, site_id: str, *, limit: int = 500) -> list[dict[str, Any]]:
+        return super().find_open_site_issue_docs(site_id, limit=limit)
+
     def job_id_applied_doc_id(self, job_id: str) -> str | None:
         for doc in self.docs:
             job_ids = doc.get("btq_job_ids")
