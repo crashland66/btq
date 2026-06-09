@@ -45,7 +45,7 @@ from epistemic import (
 )
 from transcription_pipeline import main as pipeline
 
-from test_queue_processor import RmwRecordingVaultStore, make_roots, project_markdown_exports, run_jobs, write_job
+from test_queue_processor import RmwRecordingVaultStore, make_roots, run_jobs, use_recording_vault_store, write_job
 
 
 def write_contradiction_record(
@@ -450,11 +450,10 @@ def test_inspect_runtime_with_emit_events_writes_events_log(tmp_path: Path) -> N
     assert len(events_path.read_text(encoding="utf-8").splitlines()) >= 1
 
 
-def test_replay_plan_for_failed_job(tmp_path: Path) -> None:
+def test_replay_plan_for_failed_job(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    store = use_recording_vault_store(monkeypatch)
     project_root, vault_root, runtime_root, _log_path = make_roots(tmp_path)
     _ = project_root
-    target = vault_root / "Journal" / "2026-04-27.md"
-    target.write_text("Existing note.\n", encoding="utf-8")
     payload = {
         "job_id": "job-replay-plan",
         "job_type": "append_to_note",
@@ -467,16 +466,18 @@ def test_replay_plan_for_failed_job(tmp_path: Path) -> None:
     }
     write_job(runtime_root / "failed", "job-replay-plan.json", payload)
 
-    entries = replay.build_plan(runtime_root, vault_root, vault_root, failed_only=True)
+    entries = replay.build_plan(runtime_root, vault_root, vault_root, failed_only=True, store=store)
 
     assert len(entries) == 1
     assert entries[0].capture_id == "cap-replay"
     assert entries[0].mutation_type == "append_to_note"
     assert entries[0].replay_risk_classification == replay.RISK_SAFE
-    assert entries[0].target_path == str(target)
+    assert entries[0].target_path == "note_journal_2026-04-27"
+    assert "not applied in canonical store" in entries[0].current_target_state_summary
 
 
-def test_replay_plan_allows_create_when_target_missing(tmp_path: Path) -> None:
+def test_replay_plan_allows_create_when_target_missing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    store = use_recording_vault_store(monkeypatch)
     _project_root, vault_root, runtime_root, _log_path = make_roots(tmp_path)
     payload = {
         "job_id": "job-replay-create-person",
@@ -491,20 +492,19 @@ def test_replay_plan_allows_create_when_target_missing(tmp_path: Path) -> None:
     }
     write_job(runtime_root / "failed", "job-replay-create-person.json", payload)
 
-    entries = replay.build_plan(runtime_root, vault_root, vault_root, failed_only=True)
-    preview = replay.preview_entry(entries[0])
+    entries = replay.build_plan(runtime_root, vault_root, vault_root, failed_only=True, store=store)
+    preview = replay.preview_entry(entries[0], store=store)
 
     assert entries[0].mutation_type == "add_person"
-    assert entries[0].current_target_state_summary == "target missing; create replay allowed"
+    assert entries[0].current_target_state_summary == "not applied in canonical store; processor will re-run against employee:Avery Replay"
     assert entries[0].replay_risk_classification == replay.RISK_SAFE
+    assert preview.already_applied is False
     assert preview.conflicts_detected == []
 
 
-def test_replay_create_refuses_existing_target(tmp_path: Path) -> None:
+def test_replay_create_existing_canonical_job_reports_already_applied(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    store = use_recording_vault_store(monkeypatch)
     _project_root, vault_root, runtime_root, _log_path = make_roots(tmp_path)
-    target = vault_root / "People" / "Replay, Avery.md"
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text("---\nname: Avery Replay\n---\n", encoding="utf-8")
     payload = {
         "job_id": "job-replay-create-existing-person",
         "job_type": "add_person",
@@ -513,16 +513,21 @@ def test_replay_create_refuses_existing_target(tmp_path: Path) -> None:
             "role": "Cleaner",
         },
     }
+    computed = replay.compute_job_id(payload)
+    store.docs.append({"_id": "employee_replay_avery", "type": "employee", "name": "Avery Replay", "btq_job_ids": [computed]})
     write_job(runtime_root / "failed", "job-replay-create-existing-person.json", payload)
 
-    entry = replay.build_plan(runtime_root, vault_root, vault_root, failed_only=True)[0]
-    preview = replay.preview_entry(entry)
+    entry = replay.build_plan(runtime_root, vault_root, vault_root, failed_only=True, store=store)[0]
+    preview = replay.preview_entry(entry, store=store)
 
-    assert entry.replay_risk_classification == replay.RISK_MARKER_CONFLICT
-    assert "create target already exists" in preview.conflicts_detected
+    assert entry.replay_risk_classification == replay.RISK_SAFE
+    assert preview.already_applied is True
+    assert preview.applied_doc_id == "employee_replay_avery"
+    assert "already applied in canonical store" in entry.current_target_state_summary
 
 
-def test_replay_update_missing_target_still_fails(tmp_path: Path) -> None:
+def test_replay_update_missing_projection_is_canonical_safe(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    store = use_recording_vault_store(monkeypatch)
     _project_root, vault_root, runtime_root, _log_path = make_roots(tmp_path)
     payload = {
         "job_id": "job-replay-update-missing",
@@ -535,17 +540,17 @@ def test_replay_update_missing_target_still_fails(tmp_path: Path) -> None:
     }
     write_job(runtime_root / "failed", "job-replay-update-missing.json", payload)
 
-    entry = replay.build_plan(runtime_root, vault_root, vault_root, failed_only=True)[0]
-    preview = replay.preview_entry(entry)
+    entry = replay.build_plan(runtime_root, vault_root, vault_root, failed_only=True, store=store)[0]
+    preview = replay.preview_entry(entry, store=store)
 
-    assert entry.replay_risk_classification == replay.RISK_UNKNOWN_STATE
-    assert "target file missing or unknown" in preview.conflicts_detected
+    assert entry.replay_risk_classification == replay.RISK_SAFE
+    assert preview.conflicts_detected == []
+    assert entry.target_path == "note_journal_missing"
 
 
-def test_replay_execute_create_with_approval_uses_queue_writer(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, recording_vault_store: None) -> None:
-    monkeypatch.setenv("BTQ_VAULT_MARKDOWN_WRITE", "1")
+def test_replay_execute_create_with_approval_uses_queue_writer(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    store = use_recording_vault_store(monkeypatch)
     project_root, vault_root, runtime_root, _log_path = make_roots(tmp_path)
-    target = vault_root / "People" / "Replay, Avery.md"
     payload = {
         "job_id": "job-replay-create-execute",
         "job_type": "add_person",
@@ -559,8 +564,9 @@ def test_replay_execute_create_with_approval_uses_queue_writer(tmp_path: Path, m
             "additional_jobs": ["7071"],
         },
     }
+    computed = replay.compute_job_id(payload)
     failed_job = write_job(runtime_root / "failed", "job-replay-create-execute.json", payload)
-    preview = replay.preview_entry(replay.build_plan(runtime_root, vault_root, vault_root, failed_only=True)[0])
+    preview = replay.preview_entry(replay.build_plan(runtime_root, vault_root, vault_root, failed_only=True, store=store)[0], store=store)
 
     result = replay.apply_previews(
         runtime_root,
@@ -573,14 +579,13 @@ def test_replay_execute_create_with_approval_uses_queue_writer(tmp_path: Path, m
     )
 
     assert result == 0
-    project_markdown_exports(vault_root)
-    assert target.exists()
-    text = target.read_text(encoding="utf-8")
-    # person_id is now the readable lastname_firstname form (42e475e), not the opaque per_ id.
-    assert "person_id: replay_avery" in text
-    assert "first: Avery" in text
-    assert "last: Replay" in text
-    assert "additional_jobs:" in text
+    doc_id = store.job_id_applied_doc_id(computed)
+    assert doc_id == "employee_replay_avery"
+    doc = store.get_optional(doc_id)
+    assert doc is not None
+    assert doc["person_id"] == "replay_avery"
+    assert doc["name"] == "Avery Replay"
+    assert doc["additional_jobs"] == ["7071"]
     assert not failed_job.exists()
     assert (runtime_root / "processed" / failed_job.name).exists()
 
@@ -613,10 +618,9 @@ def test_run_context_rejects_runtime_log_path_outside_runtime_root(tmp_path: Pat
         )
 
 
-def test_replay_dry_run_generates_diff_without_mutation(tmp_path: Path) -> None:
+def test_replay_dry_run_reports_canonical_preview_without_mutation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    store = use_recording_vault_store(monkeypatch)
     _project_root, vault_root, runtime_root, _log_path = make_roots(tmp_path)
-    target = vault_root / "Journal" / "2026-04-27.md"
-    target.write_text("Existing note.\n", encoding="utf-8")
     payload = {
         "job_id": "job-replay-diff",
         "job_type": "append_to_note",
@@ -627,20 +631,22 @@ def test_replay_dry_run_generates_diff_without_mutation(tmp_path: Path) -> None:
         },
     }
     job_path = write_job(runtime_root / "failed", "job-replay-diff.json", payload)
-    entries = replay.build_plan(runtime_root, vault_root, vault_root, failed_only=True)
+    entries = replay.build_plan(runtime_root, vault_root, vault_root, failed_only=True, store=store)
 
-    preview = replay.preview_entry(entries[0])
+    preview = replay.preview_entry(entries[0], store=store)
+    formatted = replay.format_previews([preview], json_output=False)
 
-    assert "Replay diff note." in preview.after
-    assert "+Replay diff note." in preview.diff
-    assert target.read_text(encoding="utf-8") == "Existing note.\n"
+    assert preview.already_applied is False
+    assert "approved replay will re-run processor" in preview.summary
+    assert "already_applied=False" in formatted
+    assert store.docs == []
     assert entries[0].original_queue_file == str(job_path)
+    assert job_path.exists()
 
 
-def test_replay_execution_requires_approval(tmp_path: Path) -> None:
+def test_replay_execution_requires_approval(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    store = use_recording_vault_store(monkeypatch)
     _project_root, vault_root, runtime_root, _log_path = make_roots(tmp_path)
-    target = vault_root / "Journal" / "2026-04-27.md"
-    target.write_text("Existing note.\n", encoding="utf-8")
     payload = {
         "job_id": "job-replay-approval",
         "job_type": "append_to_note",
@@ -651,47 +657,43 @@ def test_replay_execution_requires_approval(tmp_path: Path) -> None:
         },
     }
     write_job(runtime_root / "failed", "job-replay-approval.json", payload)
-    previews = [replay.preview_entry(replay.build_plan(runtime_root, vault_root, vault_root, failed_only=True)[0])]
+    previews = [replay.preview_entry(replay.build_plan(runtime_root, vault_root, vault_root, failed_only=True, store=store)[0], store=store)]
 
     result = replay.apply_previews(runtime_root, previews, approve=False, force_dangerous=False)
 
     assert result == 1
-    assert "Approval gated note." not in target.read_text(encoding="utf-8")
+    assert store.docs == []
     replay_log = (runtime_root / "logs" / "replay_events.jsonl").read_text(encoding="utf-8")
     assert "replay_rejected" in replay_log
 
 
-def test_replay_dangerous_refusal_for_marker_conflict(tmp_path: Path) -> None:
+def test_replay_dangerous_refusal_for_missing_context(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    store = use_recording_vault_store(monkeypatch)
     project_root, vault_root, runtime_root, _log_path = make_roots(tmp_path)
     _ = project_root
     payload = {
-        "job_id": "job-replay-conflict",
+        "job_id": "job-replay-missing-context",
         "job_type": "append_to_note",
         "payload": {
-            "path": "Journal/2026-04-27.md",
-            "content": "Missing content with marker.",
+            "content": "Missing canonical target context.",
             "destination": "journal",
         },
     }
-    computed = replay.compute_job_id(payload)
-    target = vault_root / "Journal" / "2026-04-27.md"
-    target.write_text(f"---\nbtq_job_ids:\n  - {computed}\n---\nHuman removed the content.\n", encoding="utf-8")
-    write_job(runtime_root / "failed", "job-replay-conflict.json", payload)
-    entry = replay.build_plan(runtime_root, vault_root, vault_root, failed_only=True)[0]
+    write_job(runtime_root / "failed", "job-replay-missing-context.json", payload)
+    entry = replay.build_plan(runtime_root, vault_root, vault_root, failed_only=True, store=store)[0]
 
-    assert entry.replay_risk_classification == replay.RISK_MARKER_CONFLICT
-    preview = replay.preview_entry(entry)
+    assert entry.replay_risk_classification == replay.RISK_MISSING_CONTEXT
+    preview = replay.preview_entry(entry, store=store)
     result = replay.apply_previews(runtime_root, [preview], approve=True, force_dangerous=False)
 
     assert result == 1
-    assert "Missing content with marker." not in target.read_text(encoding="utf-8")
+    assert store.docs == []
     assert "replay_aborted" in (runtime_root / "logs" / "replay_events.jsonl").read_text(encoding="utf-8")
 
 
-def test_replay_manifest_gap_candidate(tmp_path: Path) -> None:
+def test_replay_manifest_gap_candidate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    store = use_recording_vault_store(monkeypatch)
     _project_root, vault_root, runtime_root, _log_path = make_roots(tmp_path)
-    target = vault_root / "Journal" / "2026-04-27.md"
-    target.write_text("Existing note.\n", encoding="utf-8")
     payload = {
         "job_id": "job-replay-manifest",
         "job_type": "append_to_note",
@@ -710,16 +712,15 @@ def test_replay_manifest_gap_candidate(tmp_path: Path) -> None:
         encoding="utf-8",
     )
 
-    entries = replay.build_plan(runtime_root, vault_root, vault_root, capture_id="cap-gap", manifest_gap=True)
+    entries = replay.build_plan(runtime_root, vault_root, vault_root, capture_id="cap-gap", manifest_gap=True, store=store)
 
     assert len(entries) == 1
     assert entries[0].replay_reason == "manifest does not contain a processed record for this job"
 
 
-def test_replay_execute_safe_candidate_with_approval(tmp_path: Path) -> None:
-    _project_root, vault_root, runtime_root, _log_path = make_roots(tmp_path)
-    target = vault_root / "Journal" / "2026-04-27.md"
-    target.write_text("Existing note.\n", encoding="utf-8")
+def test_replay_execute_safe_candidate_with_approval(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    store = use_recording_vault_store(monkeypatch)
+    project_root, vault_root, runtime_root, _log_path = make_roots(tmp_path)
     payload = {
         "job_id": "job-replay-execute",
         "job_type": "append_to_note",
@@ -729,16 +730,53 @@ def test_replay_execute_safe_candidate_with_approval(tmp_path: Path) -> None:
             "destination": "journal",
         },
     }
-    write_job(runtime_root / "failed", "job-replay-execute.json", payload)
-    preview = replay.preview_entry(replay.build_plan(runtime_root, vault_root, vault_root, failed_only=True)[0])
+    computed = replay.compute_job_id(payload)
+    failed_job = write_job(runtime_root / "failed", "job-replay-execute.json", payload)
+    preview = replay.preview_entry(replay.build_plan(runtime_root, vault_root, vault_root, failed_only=True, store=store)[0], store=store)
 
-    result = replay.apply_previews(runtime_root, [preview], approve=True, force_dangerous=False)
+    result = replay.apply_previews(
+        runtime_root,
+        [preview],
+        approve=True,
+        force_dangerous=False,
+        project_root=project_root,
+        vault_root=vault_root,
+        personal_vault_root=vault_root,
+    )
 
-    text = target.read_text(encoding="utf-8")
     assert result == 0
-    assert "Approved replay note." in text
-    assert "btq_job_ids:" in text
+    doc_id = store.job_id_applied_doc_id(computed)
+    assert doc_id == "note_journal_2026-04-27"
+    doc = store.get_optional(doc_id)
+    assert doc is not None
+    assert "Approved replay note." in doc["content"]
+    assert doc["btq_job_ids"] == [computed]
+    assert not failed_job.exists()
+    assert (runtime_root / "processed" / failed_job.name).exists()
     assert "replay_executed" in (runtime_root / "logs" / "replay_events.jsonl").read_text(encoding="utf-8")
+
+    second_failed_job = write_job(runtime_root / "failed", "job-replay-execute-again.json", payload)
+    second_preview = replay.preview_entry(
+        replay.build_plan(runtime_root, vault_root, vault_root, failed_only=True, store=store)[0],
+        store=store,
+    )
+
+    second_result = replay.apply_previews(
+        runtime_root,
+        [second_preview],
+        approve=True,
+        force_dangerous=False,
+        project_root=project_root,
+        vault_root=vault_root,
+        personal_vault_root=vault_root,
+    )
+
+    assert second_preview.already_applied is True
+    assert second_preview.applied_doc_id == "note_journal_2026-04-27"
+    assert second_result == 0
+    assert store.get_optional("note_journal_2026-04-27") == doc
+    assert not second_failed_job.exists()
+    assert (runtime_root / "processed" / second_failed_job.name).exists()
 
 
 def test_evidence_snapshot_generation_and_intent_preservation(tmp_path: Path) -> None:
@@ -773,7 +811,8 @@ def test_evidence_snapshot_generation_and_intent_preservation(tmp_path: Path) ->
     assert "Evidence snapshot note." in evidence["nearby_content_excerpt"]
 
 
-def test_fingerprint_drift_detection_and_replay_semantic_classification(tmp_path: Path) -> None:
+def test_fingerprint_drift_detection_and_replay_semantic_classification(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    store = use_recording_vault_store(monkeypatch)
     project_root, vault_root, runtime_root, log_path = make_roots(tmp_path)
     payload = {
         "job_id": "job-drift",
@@ -794,12 +833,12 @@ def test_fingerprint_drift_detection_and_replay_semantic_classification(tmp_path
 
     evidence = read_evidence(runtime_root, "cap-drift", job_id)
     drift = assess_drift(evidence, target.read_text(encoding="utf-8"))
-    entries = replay.build_plan(runtime_root, vault_root, vault_root, capture_id="cap-drift", failed_only=True)
+    entries = replay.build_plan(runtime_root, vault_root, vault_root, capture_id="cap-drift", failed_only=True, store=store)
 
     assert drift.confidence == CONFIDENCE_SEMANTICALLY_DRIFTED
     assert any("mutation region removed" in indicator for indicator in drift.indicators)
-    assert entries[0].replay_risk_classification == replay.RISK_MARKER_CONFLICT
-    assert entries[0].confidence_classification == CONFIDENCE_SEMANTICALLY_DRIFTED
+    assert entries[0].replay_risk_classification == replay.RISK_SAFE
+    assert entries[0].confidence_classification == replay.CONFIDENCE_STRUCTURALLY_SAFE
 
 
 def test_reconciliation_report_generation(tmp_path: Path) -> None:

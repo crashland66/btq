@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import difflib
 import json
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
@@ -9,29 +8,17 @@ from pathlib import Path
 from typing import Any
 
 from config import get_config
-from io_atomic import atomic_write_text
 from processing_core.time import utc_now
-from queue_processor.idempotency import compute_job_id, has_job_been_applied, upsert_job_id_frontmatter
-from queue_processor.main import canonical_person_path
-from queue_processor.evidence import (
-    CONFIDENCE_SEMANTICALLY_DRIFTED,
-    CONFIDENCE_SEMANTICALLY_UNKNOWN,
-    CONFIDENCE_STRUCTURALLY_SAFE,
-    assess_drift,
-    read_evidence,
-)
-from queue_processor.repair import load_json_file, scan_index, scan_manifests, scan_markers, scan_processed_files
+from queue_processor.handlers import _shared
+from queue_processor.idempotency import compute_job_id
+from queue_processor.evidence import CONFIDENCE_SEMANTICALLY_UNKNOWN, CONFIDENCE_STRUCTURALLY_SAFE
+from queue_processor.repair import load_json_file, scan_index, scan_manifests, scan_processed_files
 from queue_processor.structured_log import write_event as write_structured_event
 
 
 RISK_SAFE = "SAFE"
-RISK_LOW_CONFIDENCE = "LOW_CONFIDENCE"
-RISK_TARGET_DRIFTED = "TARGET_DRIFTED"
-RISK_MARKER_CONFLICT = "MARKER_CONFLICT"
 RISK_MISSING_CONTEXT = "MISSING_CONTEXT"
-RISK_UNKNOWN_STATE = "UNKNOWN_STATE"
-RISK_LOW_SEMANTIC_CONFIDENCE = "LOW_SEMANTIC_CONFIDENCE"
-DANGEROUS_RISKS = {RISK_TARGET_DRIFTED, RISK_MARKER_CONFLICT, RISK_MISSING_CONTEXT, RISK_UNKNOWN_STATE, RISK_LOW_SEMANTIC_CONFIDENCE}
+DANGEROUS_RISKS = {RISK_MISSING_CONTEXT}
 SUPPORTED_TEXT_JOBS = {
     "append_to_note",
     "personal_journal_entry",
@@ -62,12 +49,13 @@ class ReplayPlanEntry:
 @dataclass(frozen=True)
 class ReplayPreview:
     entry: ReplayPlanEntry
-    before: str
-    after: str
-    diff: str
+    already_applied: bool
+    applied_doc_id: str | None
+    target_descriptor: str
+    mutation_type: str
+    replay_reason: str
+    summary: str
     risk_notes: list[str]
-    markers_added: list[str]
-    markers_already_present: list[str]
     conflicts_detected: list[str]
     ambiguous_conditions: list[str]
 
@@ -107,17 +95,27 @@ def capture_id_for_job(job: dict[str, Any], index_record: dict[str, Any] | None 
     return None
 
 
+def canonical_descriptor_from_legacy_target(value: str) -> str:
+    path = Path(value)
+    if path.suffix == ".md":
+        if path.parent.name == "Journal":
+            return f"note_journal_{path.stem}"
+        if path.parent.name == "People":
+            return f"employee_projection:{path.stem}"
+    return value
+
+
 def resolve_target_path(vault_root: Path, personal_vault_root: Path, job: dict[str, Any], index_record: dict[str, Any] | None = None) -> str:
     if index_record is not None and isinstance(index_record.get("target_path"), str) and index_record["target_path"] != "unknown":
-        return index_record["target_path"]
+        return canonical_descriptor_from_legacy_target(index_record["target_path"])
     payload = job.get("payload") if isinstance(job.get("payload"), dict) else {}
     job_type = job.get("job_type")
     if job_type in {"append_to_note", "record_unknown_capture", "reclassify_unknown"} and isinstance(payload.get("path"), str):
-        return str(vault_root / payload["path"])
+        return f"note_journal_{Path(payload['path']).stem}"
     if job_type == "personal_journal_entry" and isinstance(payload.get("date"), str):
-        return str(personal_vault_root / "Journal" / f"{payload['date']}.md")
+        return f"personal_journal:{payload['date']}"
     if job_type == "add_person" and isinstance(payload.get("name"), str):
-        return str(canonical_person_path(vault_root, payload["name"]))
+        return f"employee:{payload['name']}"
     return "unknown"
 
 
@@ -169,41 +167,49 @@ def is_create_job(job_type: str) -> bool:
     return job_type in CREATE_JOBS
 
 
-def summarize_target(runtime_root: Path, path: str, job_id: str, capture_id: str | None, text: str | None, job_type: str) -> tuple[str, list[str], str, str]:
+def applied_doc_id_for_job(job_id: str, store: Any | None = None) -> str | None:
+    resolved_store = _shared._vault_store() if store is None else store
+    return resolved_store.job_id_applied_doc_id(job_id)
+
+
+def applied_status_for_job(job_id: str, store: Any | None = None) -> tuple[str | None, str | None]:
+    try:
+        return applied_doc_id_for_job(job_id, store), None
+    except Exception as exc:
+        return None, str(exc)
+
+
+def summarize_target(path: str, job_id: str, job_type: str, *, store: Any | None = None) -> tuple[str, list[str], str, str]:
+    if job_type not in SUPPORTED_TEXT_JOBS and not is_create_job(job_type):
+        return (
+            f"unsupported replay job type: {job_type}",
+            ["replay supports canonical create and text-mutation jobs only"],
+            RISK_MISSING_CONTEXT,
+            CONFIDENCE_SEMANTICALLY_UNKNOWN,
+        )
     if path == "unknown":
-        return "target unknown", ["target path could not be reconstructed"], RISK_MISSING_CONTEXT, CONFIDENCE_SEMANTICALLY_UNKNOWN
-    target = Path(path)
-    if not target.exists():
-        if is_create_job(job_type):
-            return "target missing; create replay allowed", [], RISK_SAFE, CONFIDENCE_STRUCTURALLY_SAFE
-        return "target missing", ["target file missing"], RISK_UNKNOWN_STATE, CONFIDENCE_SEMANTICALLY_UNKNOWN
-    current = target.read_text(encoding="utf-8")
-    if is_create_job(job_type):
-        return f"exists bytes={len(current.encode('utf-8'))}; create target already exists", ["create target already exists"], RISK_MARKER_CONFLICT, CONFIDENCE_SEMANTICALLY_UNKNOWN
-    marker_present = has_job_been_applied(current, job_id)
-    content_present = text is not None and text.strip() in current
-    summary = f"exists bytes={len(current.encode('utf-8'))} marker_present={marker_present} content_present={content_present}"
-    notes: list[str] = []
-    risk = RISK_SAFE
-    if marker_present and not content_present and text is not None:
-        notes.append("marker is present but expected content is not visible")
-        risk = RISK_MARKER_CONFLICT
-    elif content_present and not marker_present:
-        notes.append("content appears present but marker is absent")
-        risk = RISK_TARGET_DRIFTED
-    elif marker_present and content_present:
-        notes.append("marker and content already present; replay would likely be a no-op")
-        risk = RISK_LOW_CONFIDENCE
-    elif text is None:
-        notes.append("mutation preview is unsupported for this job type")
-        risk = RISK_MISSING_CONTEXT
-    drift = assess_drift(read_evidence(runtime_root, capture_id, job_id), current)
-    actionable_drift = drift.confidence == CONFIDENCE_SEMANTICALLY_DRIFTED
-    if actionable_drift:
-        notes.extend(f"semantic drift indicator: {indicator}" for indicator in drift.indicators)
-        if risk in {RISK_SAFE, RISK_LOW_CONFIDENCE}:
-            risk = RISK_LOW_SEMANTIC_CONFIDENCE
-    return summary, notes, risk, drift.confidence
+        return "canonical target unknown", ["canonical target could not be reconstructed"], RISK_MISSING_CONTEXT, CONFIDENCE_SEMANTICALLY_UNKNOWN
+    applied_doc_id, lookup_error = applied_status_for_job(job_id, store)
+    if lookup_error is not None:
+        return (
+            "canonical applied status unavailable",
+            [f"canonical applied-status lookup failed: {lookup_error}"],
+            RISK_MISSING_CONTEXT,
+            CONFIDENCE_SEMANTICALLY_UNKNOWN,
+        )
+    if applied_doc_id is not None:
+        return (
+            f"already applied in canonical store doc_id={applied_doc_id}; replay is idempotent",
+            ["canonical job id is already present; processor re-run should be a no-op"],
+            RISK_SAFE,
+            CONFIDENCE_STRUCTURALLY_SAFE,
+        )
+    return (
+        f"not applied in canonical store; processor will re-run against {path}",
+        [],
+        RISK_SAFE,
+        CONFIDENCE_STRUCTURALLY_SAFE,
+    )
 
 
 def reason_for_candidate(path: Path, job_id: str, failed_only: bool, missing_index: bool, manifest_gap: bool, index: dict[str, dict[str, Any]], manifests: dict[str, dict[str, Any]]) -> str | None:
@@ -233,6 +239,7 @@ def build_plan(
     missing_index: bool = False,
     manifest_gap: bool = False,
     from_queue: Path | None = None,
+    store: Any | None = None,
 ) -> list[ReplayPlanEntry]:
     index, _index_findings = scan_index(runtime_root)
     manifests = scan_manifests(runtime_root)
@@ -262,13 +269,11 @@ def build_plan(
         reason = reason_for_candidate(path, computed_job_id, failed_only, missing_index, manifest_gap, index, manifests)
         if reason is None:
             continue
-        text = mutation_text(job)
         target_path = resolve_target_path(vault_root, personal_vault_root, job, index_record)
         job_type = str(job.get("job_type"))
-        summary, notes, risk, confidence = summarize_target(runtime_root, target_path, computed_job_id, selected_capture_id, text, job_type)
+        summary, notes, risk, confidence = summarize_target(target_path, computed_job_id, job_type, store=store)
         if computed_job_id in processed and "/failed/" in str(path):
             notes.append("same computed job also exists in processed history")
-            risk = RISK_MARKER_CONFLICT
         entries.append(
             ReplayPlanEntry(
                 capture_id=selected_capture_id,
@@ -322,60 +327,40 @@ def load_plan_file(path: Path) -> list[ReplayPlanEntry]:
     return [ReplayPlanEntry(**item) for item in payload if isinstance(item, dict)]
 
 
-def preview_entry(entry: ReplayPlanEntry) -> ReplayPreview:
+def preview_entry(entry: ReplayPlanEntry, *, store: Any | None = None) -> ReplayPreview:
     job = load_job(Path(entry.original_queue_file))
-    before = "" if entry.target_path == "unknown" or not Path(entry.target_path).exists() else Path(entry.target_path).read_text(encoding="utf-8")
     risk_notes = list(entry.risk_notes)
-    markers_added: list[str] = []
-    markers_already_present: list[str] = []
     conflicts: list[str] = []
     ambiguous: list[str] = []
+    applied_doc_id, lookup_error = applied_status_for_job(entry.job_id, store)
+    if lookup_error is not None:
+        conflicts.append(f"canonical applied-status lookup failed: {lookup_error}")
     if job is None:
         conflicts.append("original queue file is missing or invalid")
-        after = before
-    elif is_create_job(entry.mutation_type):
-        if entry.target_path == "unknown":
-            conflicts.append("target path missing or unknown")
-        elif Path(entry.target_path).exists():
-            conflicts.append("create target already exists")
-        after = before
-    elif entry.target_path == "unknown" or not Path(entry.target_path).exists():
-        conflicts.append("target file missing or unknown")
-        after = before
     else:
-        text = mutation_text(job)
-        if text is None:
-            ambiguous.append("mutation preview unsupported for this job type")
-            after = before
-        elif has_job_been_applied(before, entry.job_id):
-            markers_already_present.append(entry.job_id)
-            after = before
-        else:
-            body = before
-            if text.strip() not in before:
-                body = f"{before}\n{text}" if before and not before.endswith("\n") else f"{before}{text}"
-            else:
-                ambiguous.append("content already present without marker")
-            after = upsert_job_id_frontmatter(body, entry.job_id)
-            markers_added.append(entry.job_id)
-    diff = "".join(
-        difflib.unified_diff(
-            before.splitlines(keepends=True),
-            after.splitlines(keepends=True),
-            fromfile=f"before:{entry.target_path}",
-            tofile=f"after:{entry.target_path}",
-        )
-    )
+        job_type = str(job.get("job_type"))
+        if job_type != entry.mutation_type:
+            ambiguous.append(f"plan mutation type {entry.mutation_type} differs from queue file type {job_type}")
+        if entry.target_path == "unknown":
+            ambiguous.append("canonical target descriptor is unknown")
     if entry.replay_risk_classification in DANGEROUS_RISKS:
         conflicts.append(f"dangerous replay risk: {entry.replay_risk_classification}")
+    already_applied = applied_doc_id is not None
+    if lookup_error is not None:
+        summary = f"canonical applied status unavailable; approved replay should not proceed without force for {entry.target_path}"
+    elif already_applied:
+        summary = f"already applied to canonical doc {applied_doc_id}; approved replay will re-run processor and should no-op"
+    else:
+        summary = f"not yet applied in canonical store; approved replay will re-run processor for {entry.target_path}"
     return ReplayPreview(
         entry=entry,
-        before=before,
-        after=after,
-        diff=diff,
+        already_applied=already_applied,
+        applied_doc_id=applied_doc_id,
+        target_descriptor=entry.target_path,
+        mutation_type=entry.mutation_type,
+        replay_reason=entry.replay_reason,
+        summary=summary,
         risk_notes=risk_notes,
-        markers_added=markers_added,
-        markers_already_present=markers_already_present,
         conflicts_detected=conflicts,
         ambiguous_conditions=ambiguous,
     )
@@ -389,19 +374,19 @@ def format_previews(previews: list[ReplayPreview], json_output: bool) -> str:
     lines: list[str] = []
     for preview in previews:
         lines.append(f"REPLAY PREVIEW job_id={preview.entry.job_id} risk={preview.entry.replay_risk_classification} confidence={preview.entry.confidence_classification}")
-        lines.append("BEFORE")
-        lines.append(preview.before)
-        lines.append("AFTER")
-        lines.append(preview.after)
-        lines.append("DIFF")
-        lines.append(preview.diff or "(no textual diff)")
+        lines.append(f"target={preview.target_descriptor}")
+        lines.append(f"mutation_type={preview.mutation_type}")
+        lines.append(f"reason={preview.replay_reason}")
+        lines.append(f"already_applied={preview.already_applied}")
+        lines.append(f"applied_doc_id={preview.applied_doc_id or 'none'}")
+        lines.append(f"summary={preview.summary}")
         lines.append("RISK NOTES")
         for item in preview.risk_notes + preview.conflicts_detected + preview.ambiguous_conditions:
             lines.append(f"- {item}")
     return "\n".join(lines)
 
 
-def execute_create_replay(
+def execute_replay(
     runtime_root: Path,
     preview: ReplayPreview,
     project_root: Path | None = None,
@@ -440,8 +425,9 @@ def execute_create_replay(
     )
     process_job(Path(preview.entry.original_queue_file), context, processed_dir, failed_dir)
     processed_path = processed_dir / Path(preview.entry.original_queue_file).name
-    if not processed_path.exists() and not Path(preview.entry.target_path).exists():
-        raise RuntimeError(f"create replay did not create target: {preview.entry.target_path}")
+    applied_doc_id, _lookup_error = applied_status_for_job(preview.entry.job_id)
+    if applied_doc_id is None and not processed_path.exists():
+        raise RuntimeError(f"replay did not complete through processor: {preview.entry.original_queue_file}")
 
 
 def apply_previews(
@@ -470,34 +456,15 @@ def apply_previews(
             log_replay_event(runtime_root, "replay_approved", capture_id=preview.entry.capture_id, job_id=preview.entry.job_id, risk=preview.entry.replay_risk_classification, operator_action="force-dangerous-replay")
         else:
             log_replay_event(runtime_root, "replay_approved", capture_id=preview.entry.capture_id, job_id=preview.entry.job_id, risk=preview.entry.replay_risk_classification, operator_action="approve")
-        if is_create_job(preview.entry.mutation_type):
-            if preview.entry.target_path == "unknown":
-                log_replay_event(runtime_root, "replay_aborted", capture_id=preview.entry.capture_id, job_id=preview.entry.job_id, risk=preview.entry.replay_risk_classification, operator_action="target-unknown")
-                print(f"Replay aborted for {preview.entry.job_id}: target unknown")
-                exit_code = 1
-                continue
-            if Path(preview.entry.target_path).exists():
-                log_replay_event(runtime_root, "replay_aborted", capture_id=preview.entry.capture_id, job_id=preview.entry.job_id, risk=preview.entry.replay_risk_classification, operator_action="create-target-exists")
-                print(f"Replay aborted for {preview.entry.job_id}: create target already exists")
-                exit_code = 1
-                continue
-            try:
-                execute_create_replay(runtime_root, preview, project_root, vault_root, personal_vault_root)
-            except Exception as exc:
-                log_replay_event(runtime_root, "replay_aborted", capture_id=preview.entry.capture_id, job_id=preview.entry.job_id, risk=preview.entry.replay_risk_classification, operator_action="create-execution-failed", error=str(exc))
-                print(f"Replay aborted for {preview.entry.job_id}: {exc}")
-                exit_code = 1
-                continue
-            log_replay_event(runtime_root, "replay_executed", capture_id=preview.entry.capture_id, job_id=preview.entry.job_id, risk=preview.entry.replay_risk_classification, target_path=preview.entry.target_path)
-            print(f"Replay executed for {preview.entry.job_id}: {preview.entry.target_path}")
-            continue
-        if preview.entry.target_path == "unknown" or not Path(preview.entry.target_path).exists():
-            log_replay_event(runtime_root, "replay_aborted", capture_id=preview.entry.capture_id, job_id=preview.entry.job_id, risk=preview.entry.replay_risk_classification, operator_action="target-missing")
-            print(f"Replay aborted for {preview.entry.job_id}: target missing")
+        try:
+            execute_replay(runtime_root, preview, project_root, vault_root, personal_vault_root)
+        except Exception as exc:
+            log_replay_event(runtime_root, "replay_aborted", capture_id=preview.entry.capture_id, job_id=preview.entry.job_id, risk=preview.entry.replay_risk_classification, operator_action="execution-failed", error=str(exc))
+            print(f"Replay aborted for {preview.entry.job_id}: {exc}")
             exit_code = 1
             continue
-        atomic_write_text(Path(preview.entry.target_path), preview.after)
-        log_replay_event(runtime_root, "replay_executed", capture_id=preview.entry.capture_id, job_id=preview.entry.job_id, risk=preview.entry.replay_risk_classification, target_path=preview.entry.target_path)
+        applied_doc_id, _lookup_error = applied_status_for_job(preview.entry.job_id)
+        log_replay_event(runtime_root, "replay_executed", capture_id=preview.entry.capture_id, job_id=preview.entry.job_id, risk=preview.entry.replay_risk_classification, target_path=preview.entry.target_path, applied_doc_id=applied_doc_id)
         print(f"Replay executed for {preview.entry.job_id}: {preview.entry.target_path}")
     return exit_code
 
@@ -574,8 +541,6 @@ def run(argv: list[str] | None = None) -> int:
         entries = entries_from_args(args)
         previews = [preview_entry(entry) for entry in entries]
         for preview in previews:
-            if preview.entry.replay_risk_classification == RISK_TARGET_DRIFTED:
-                log_replay_event(args.runtime_root.expanduser(), "replay_drift_detected", capture_id=preview.entry.capture_id, job_id=preview.entry.job_id, risk=preview.entry.replay_risk_classification)
             if preview.conflicts_detected:
                 log_replay_event(args.runtime_root.expanduser(), "replay_conflict", capture_id=preview.entry.capture_id, job_id=preview.entry.job_id, risk=preview.entry.replay_risk_classification, conflicts=preview.conflicts_detected)
         print(format_previews(previews, args.json))
