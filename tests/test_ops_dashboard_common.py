@@ -745,3 +745,16 @@ def test_render_kv_still_emits_kv_table_after_prompt_299() -> None:
     rendered = render_kv({"queue_count": 1})
     assert 'class="kv-table"' in rendered
     assert '<dl class="fields">' not in rendered
+
+
+def test_default_actor_falls_back_to_primary_operator(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv(common.DEFAULT_ACTOR_ENV, raising=False)
+    assert common.default_actor() == "Greg"
+
+
+def test_default_actor_honors_env_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv(common.DEFAULT_ACTOR_ENV, "Jordan")
+    assert common.default_actor() == "Jordan"
+    # blank/whitespace override falls back rather than pre-filling an empty name
+    monkeypatch.setenv(common.DEFAULT_ACTOR_ENV, "   ")
+    assert common.default_actor() == "Greg"

@@ -17,6 +17,7 @@ from ops_dashboard import audit
 from ops_dashboard.common import (
     apply_pending_candidate_counts,
     candidate_capture_sort_value,
+    default_actor,
     first_filter_value,
     first_query_value,
     is_advisory_warning,
@@ -294,7 +295,7 @@ def render_resolve_form(candidate_id: str) -> str:
     return f"""
         <form method="post" action="/field-capture/review/resolve" class="review-action-form">
           <input type="hidden" name="candidate_id" value="{escaped_candidate_id}">
-          <label>Resolved by <input name="resolved_by" value="Jordan" required></label>
+          <label>Resolved by <input name="resolved_by" value="{html.escape(default_actor())}" required></label>
           <label>Note <textarea name="resolved_note" placeholder="What was done?"></textarea></label>
           <p><button type="submit">Mark Resolved</button></p>
         </form>
@@ -320,7 +321,7 @@ def render_client_notify_form(candidate_id: str) -> str:
             <option value="other">other</option>
           </select>
           <label>By</label>
-          <input name="by" value="Jordan" required>
+          <input name="by" value="{html.escape(default_actor())}" required>
           <label>Note</label>
           <textarea name="note" placeholder="Emailed client with photo/context."></textarea>
           <p><button type="submit">Mark Client Informed</button></p>
@@ -505,7 +506,7 @@ def render_candidate_card(candidate: dict[str, object], thumb_urls: list[str] | 
             <input type="hidden" name="candidate_id" value="{candidate_id}">
             <input type="hidden" name="_rev" value="{html.escape(str(candidate.get('_rev') or ''), quote=True)}">
             <label>Reviewer</label>
-            <input name="reviewer" value="Jordan" required>
+            <input name="reviewer" value="{html.escape(default_actor())}" required>
             <label>Note</label>
             <textarea name="rationale" rows="2"></textarea>
             <p><button class="approve icon-button" type="submit" aria-label="{html.escape(approve_hint)}"{approve_disabled}>{render_action_icon("approve")} <span>Approve</span></button></p>
@@ -519,7 +520,7 @@ def render_candidate_card(candidate: dict[str, object], thumb_urls: list[str] | 
             <input type="hidden" name="candidate_id" value="{candidate_id}">
             <input type="hidden" name="_rev" value="{html.escape(str(candidate.get('_rev') or ''), quote=True)}">
             <label>Reviewer</label>
-            <input name="reviewer" value="Jordan" required>
+            <input name="reviewer" value="{html.escape(default_actor())}" required>
             <label>Note</label>
             <textarea name="rationale" rows="2"></textarea>
             <p><button class="reject icon-button" type="submit" aria-label="Deny this proposed job">{render_action_icon("deny")} <span>Deny</span></button></p>

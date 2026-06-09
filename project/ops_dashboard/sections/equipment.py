@@ -4,7 +4,7 @@ import html
 from pathlib import Path
 from urllib.parse import quote
 
-from ops_dashboard.common import first_query_value, handle_mark_transition_post, humanize_key, render_back_link, render_kv, render_short_filename, render_site_label, render_status_transition, render_table, slugify_status, write_mark_job
+from ops_dashboard.common import default_actor, first_query_value, handle_mark_transition_post, humanize_key, render_back_link, render_kv, render_short_filename, render_site_label, render_status_transition, render_table, slugify_status, write_mark_job
 from ops_dashboard.layout import html_page
 from site_equipment import discover_site_equipment, equipment_as_export
 
@@ -239,7 +239,7 @@ def render_equipment_mark_confirm(ctx: object, transition_name: str) -> str:
             <input type="hidden" name="equipment_id" value="{html.escape(equipment_id)}">
             <input type="hidden" name="confirm" value="1">
             <label>Actor (your name)</label>
-            <input name="actor" type="text" required value="Jordan">
+            <input name="actor" type="text" required value="{html.escape(default_actor())}">
             <label>Note (optional)</label>
             <textarea name="note"></textarea>
             <button type="submit">{html.escape(str(transition["label"]))}</button>

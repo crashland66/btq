@@ -104,6 +104,19 @@ class SectionContext:
         audit.append_audit(self.runtime_root, {"route": route, "actor": "localhost", "payload": payload, "result_summary": result})
 
 
+DEFAULT_ACTOR_ENV = "BTQ_OPS_DASHBOARD_DEFAULT_ACTOR"
+DEFAULT_ACTOR_FALLBACK = "Greg"
+
+
+def default_actor() -> str:
+    """Pre-filled operator name for review/transition forms.
+
+    Override per-operator with BTQ_OPS_DASHBOARD_DEFAULT_ACTOR; defaults to the
+    primary operator so the form doesn't pre-fill someone else's name.
+    """
+    return (os.environ.get(DEFAULT_ACTOR_ENV) or "").strip() or DEFAULT_ACTOR_FALLBACK
+
+
 def count_files(path: Path, pattern: str = "*", recursive: bool = False) -> int:
     if not path.exists():
         return 0
