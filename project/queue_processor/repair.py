@@ -123,6 +123,29 @@ def scan_markers(vault_root: Path) -> dict[str, list[dict[str, Any]]]:
     return markers
 
 
+def scan_canonical_job_ids(store: Any) -> dict[str, list[dict[str, Any]]]:
+    markers: dict[str, list[dict[str, Any]]] = {}
+    for doc in store.scan_job_id_docs():
+        if not isinstance(doc, dict):
+            continue
+        doc_id = doc.get("_id")
+        if not isinstance(doc_id, str) or not doc_id.strip():
+            continue
+        job_ids = doc.get("btq_job_ids")
+        if not isinstance(job_ids, list):
+            continue
+        record = {
+            "doc_id": doc_id,
+            "type": doc.get("type"),
+            "content": doc.get("content") if isinstance(doc.get("content"), str) else "",
+        }
+        for job_id in job_ids:
+            if not isinstance(job_id, str) or not job_id.strip():
+                continue
+            markers.setdefault(job_id, []).append(dict(record))
+    return markers
+
+
 def scan_logs(runtime_root: Path) -> dict[str, list[dict[str, Any]]]:
     by_id: dict[str, list[dict[str, Any]]] = {}
     log_path = runtime_root / "logs" / "queue_processor_events.jsonl"
@@ -268,7 +291,10 @@ def expected_content_visible(processed: dict[str, Any], marker: dict[str, Any]) 
     if not isinstance(payload, dict):
         return None
     job_type = processed.get("job_type")
-    body = str(marker.get("body", ""))
+    text = marker.get("content")
+    if text is None:
+        text = marker.get("body", "")
+    body = str(text)
     if job_type == "append_to_note":
         content = payload.get("content")
         return isinstance(content, str) and content.strip() in body
@@ -347,14 +373,16 @@ def analyze(
     since: datetime | None = None,
     capture_id: str | None = None,
     stale_hours: int = DEFAULT_STALE_HOURS,
+    store: Any | None = None,
 ) -> tuple[list[Finding], dict[str, Any]]:
     if mode == "canonical-content-drift":
         findings = scan_location_content_drift(vault_root)
         return findings, {"content_drift": findings}
 
+    store = _shared._vault_store() if store is None else store
     processed = scan_processed_files(runtime_root)
     index, index_findings = scan_index(runtime_root)
-    markers = scan_markers(vault_root)
+    markers = scan_canonical_job_ids(store)
     logs = scan_logs(runtime_root)
     manifests = scan_manifests(runtime_root)
     findings = list(index_findings)
@@ -376,9 +404,9 @@ def analyze(
             if job_id not in markers:
                 findings.append(
                     Finding(
-                        kind="processed_without_visible_marker",
+                        kind="processed_without_canonical_record",
                         severity="warning",
-                        message="processed job has no matching vault marker; success cannot be proven from vault state",
+                        message="processed job has no canonical CouchDB document carrying its job_id; success cannot be proven from canonical state",
                         evidence={"computed_job_id": job_id, "processed_file": record["path"]},
                     )
                 )
@@ -411,22 +439,13 @@ def analyze(
         for job_id, marker_records in markers.items():
             if not job_matches_capture(job_id, capture_id, processed, index, manifests):
                 continue
-            if len(marker_records) > 1:
-                findings.append(
-                    Finding(
-                        kind="multiple_marker_locations",
-                        severity="warning",
-                        message="same computed job marker appears in multiple vault files",
-                        evidence={"computed_job_id": job_id, "markers": [{"path": marker["path"]} for marker in marker_records]},
-                    )
-                )
             if job_id not in processed and job_id not in index:
                 findings.append(
                     Finding(
-                        kind="orphaned_marker",
+                        kind="orphaned_canonical_job_id",
                         severity="warning",
-                        message="marker exists but no processed or index evidence was found",
-                        evidence={"computed_job_id": job_id, "markers": [{"path": marker["path"]} for marker in marker_records]},
+                        message="job_id present in a canonical document but no processed/index evidence",
+                        evidence={"computed_job_id": job_id, "markers": [{"doc_id": marker["doc_id"], "type": marker.get("type")} for marker in marker_records]},
                     )
                 )
             if job_id in processed:
@@ -435,33 +454,12 @@ def analyze(
                     if visible is False:
                         findings.append(
                             Finding(
-                                kind="marker_content_missing",
+                                kind="canonical_content_missing",
                                 severity="warning",
-                                message="marker exists but expected content from processed job is not visible",
-                                evidence={"computed_job_id": job_id, "target_path": marker["path"], "processed_file": processed[job_id]["path"]},
+                                message="job_id present in canonical document but expected payload content is not in the document content",
+                                evidence={"computed_job_id": job_id, "doc_id": marker["doc_id"], "type": marker.get("type"), "processed_file": processed[job_id]["path"]},
                             )
                         )
-        for job_id, record in processed.items():
-            if not job_matches_capture(job_id, capture_id, processed, index, manifests):
-                continue
-            if job_id in markers:
-                continue
-            payload = record.get("payload")
-            if isinstance(payload, dict) and isinstance(payload.get("content"), str):
-                content = payload["content"].strip()
-                for path in vault_root.rglob("*.md"):
-                    try:
-                        if content and content in path.read_text(encoding="utf-8"):
-                            findings.append(
-                                Finding(
-                                    kind="content_without_marker",
-                                    severity="warning",
-                                    message="job content appears in vault but matching marker is absent",
-                                    evidence={"computed_job_id": job_id, "target_path": str(path), "processed_file": record["path"]},
-                                )
-                            )
-                    except Exception:
-                        continue
 
     if mode in {"full", "stale-artifacts"}:
         findings.extend(stale_artifact_findings(runtime_root, stale_hours))
@@ -476,7 +474,7 @@ def analyze(
                 severity=finding.severity,
                 evidence=finding.evidence,
             )
-        if finding.kind in {"marker_content_missing", "content_without_marker", "orphaned_marker", "multiple_marker_locations"}:
+        if finding.kind in {"canonical_content_missing", "orphaned_canonical_job_id"}:
             write_structured_event(
                 runtime_root / "logs" / "queue_processor_events.jsonl",
                 "marker_divergence_detected",

@@ -249,6 +249,24 @@ class RmwRecordingVaultStore(RecordingVaultStore):
                 return str(doc_id) if doc_id else None
         return None
 
+    def scan_job_id_docs(self, *, limit: int = 100000) -> list[dict[str, Any]]:
+        results: list[dict[str, Any]] = []
+        for doc in self.docs:
+            job_ids = doc.get("btq_job_ids")
+            if not isinstance(job_ids, list) or not job_ids:
+                continue
+            results.append(
+                {
+                    "_id": doc.get("_id"),
+                    "type": doc.get("type"),
+                    "btq_job_ids": list(job_ids),
+                    "content": doc.get("content", ""),
+                }
+            )
+            if len(results) >= limit:
+                break
+        return results
+
     def update_doc(
         self,
         doc_id: str,
@@ -305,6 +323,21 @@ def test_recording_vault_store_job_id_applied_doc_id_hit_and_miss() -> None:
     assert store.job_id_applied_doc_id("job-miss") is None
 
 
+def test_recording_vault_store_scan_job_id_docs_returns_non_empty_job_id_docs() -> None:
+    store = RmwRecordingVaultStore()
+    store.docs.extend(
+        [
+            {"_id": "note_without_jobs", "type": "note", "content": "ignored"},
+            {"_id": "note_empty_jobs", "type": "note", "btq_job_ids": [], "content": "ignored"},
+            {"_id": "note_with_jobs", "type": "note", "btq_job_ids": ["job-hit"], "content": "visible"},
+        ]
+    )
+
+    assert store.scan_job_id_docs() == [
+        {"_id": "note_with_jobs", "type": "note", "btq_job_ids": ["job-hit"], "content": "visible"}
+    ]
+
+
 def test_couchdb_entity_store_job_id_applied_doc_id_hit_and_miss(monkeypatch: pytest.MonkeyPatch) -> None:
     store = CouchDBEntityStore("http://couchdb.invalid", {}, "btq_vault")
     calls: list[tuple[str, str, dict[str, Any] | None]] = []
@@ -338,6 +371,37 @@ def test_couchdb_entity_store_job_id_applied_doc_id_hit_and_miss(monkeypatch: py
                 "limit": 1,
             },
         ),
+    ]
+
+
+def test_couchdb_entity_store_scan_job_id_docs(monkeypatch: pytest.MonkeyPatch) -> None:
+    store = CouchDBEntityStore("http://couchdb.invalid", {}, "btq_vault")
+    calls: list[tuple[str, str, dict[str, Any] | None]] = []
+
+    def fake_request_json(method: str, doc_id: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        calls.append((method, doc_id, payload))
+        return {
+            "docs": [
+                {"_id": "note_with_jobs", "type": "note", "btq_job_ids": ["job-hit"], "content": "visible"},
+                "ignored",
+            ]
+        }
+
+    monkeypatch.setattr(store, "_request_json", fake_request_json)
+
+    assert store.scan_job_id_docs() == [
+        {"_id": "note_with_jobs", "type": "note", "btq_job_ids": ["job-hit"], "content": "visible"}
+    ]
+    assert calls == [
+        (
+            "POST",
+            "_find",
+            {
+                "selector": {"btq_job_ids": {"$exists": True}},
+                "fields": ["_id", "type", "btq_job_ids", "content"],
+                "limit": 100000,
+            },
+        )
     ]
 
 

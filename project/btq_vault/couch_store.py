@@ -25,6 +25,7 @@ CANONICAL_EMPLOYEE_FIELDS: frozenset[str] = frozenset({
 EMPLOYEE_DUPLICATE_QUERY_LIMIT = 10000
 VISIT_DEDUP_QUERY_LIMIT = 10000
 UNKNOWN_CAPTURE_QUERY_LIMIT = 10000
+JOB_ID_SCAN_QUERY_LIMIT = 100000
 
 
 class CouchDBEntityStoreError(Exception):
@@ -200,6 +201,22 @@ class CouchDBEntityStore:
             if isinstance(doc, dict) and doc.get("_id"):
                 return str(doc["_id"])
         return None
+
+    def scan_job_id_docs(self, *, limit: int = JOB_ID_SCAN_QUERY_LIMIT) -> list[dict[str, Any]]:
+        """Return canonical docs carrying btq job ids for repair proof scans."""
+        response = self._request_json(
+            "POST",
+            "_find",
+            {
+                "selector": {"btq_job_ids": {"$exists": True}},
+                "fields": ["_id", "type", "btq_job_ids", "content"],
+                "limit": limit,
+            },
+        )
+        docs = response.get("docs")
+        if not isinstance(docs, list):
+            raise CouchDBEntityStoreError("CouchDB job_id docs scan returned no docs list")
+        return [doc for doc in docs if isinstance(doc, dict)]
 
     def find_visit_docs(self, site_id: str, date: str, *, limit: int = VISIT_DEDUP_QUERY_LIMIT) -> list[dict[str, Any]]:
         """Return canonical visit docs for a site/date needed for dedup checks."""

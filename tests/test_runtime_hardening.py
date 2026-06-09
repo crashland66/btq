@@ -45,7 +45,7 @@ from epistemic import (
 )
 from transcription_pipeline import main as pipeline
 
-from test_queue_processor import make_roots, project_markdown_exports, run_jobs, write_job
+from test_queue_processor import RmwRecordingVaultStore, make_roots, project_markdown_exports, run_jobs, write_job
 
 
 def write_contradiction_record(
@@ -262,18 +262,91 @@ def test_repair_detects_crash_after_write_before_index(tmp_path: Path) -> None:
     assert any(finding.kind == "missing_index_entry" and not finding.ambiguous for finding in findings)
 
 
-def test_repair_detects_orphaned_marker_and_reports_ambiguity(tmp_path: Path) -> None:
+def test_scan_canonical_job_ids_maps_job_ids_to_canonical_records() -> None:
+    store = RmwRecordingVaultStore()
+    store.docs.extend(
+        [
+            {"_id": "note_a", "type": "note", "btq_job_ids": ["job-one", "job-two"], "content": "A"},
+            {"_id": "note_b", "type": "note", "btq_job_ids": ["job-one"], "content": "B"},
+            {"_id": "note_without_jobs", "type": "note", "content": "ignored"},
+        ]
+    )
+
+    assert repair.scan_canonical_job_ids(store) == {
+        "job-one": [
+            {"doc_id": "note_a", "type": "note", "content": "A"},
+            {"doc_id": "note_b", "type": "note", "content": "B"},
+        ],
+        "job-two": [{"doc_id": "note_a", "type": "note", "content": "A"}],
+    }
+
+
+def test_repair_detects_processed_without_canonical_record(tmp_path: Path) -> None:
     _project_root, vault_root, runtime_root, _log_path = make_roots(tmp_path)
-    orphan_id = "abc123-orphaned-marker"
-    target = vault_root / "Journal" / "2026-04-27.md"
-    target.write_text(f"---\nbtq_job_ids:\n  - {orphan_id}\n---\nHuman text remains.\n", encoding="utf-8")
+    payload = {
+        "job_id": "job-processed-without-canonical",
+        "job_type": "append_to_note",
+        "payload": {
+            "path": "Journal/2026-04-27.md",
+            "content": "Processed content without canonical proof.",
+            "destination": "journal",
+        },
+    }
+    processed_dir = runtime_root / "processed"
+    processed_dir.mkdir(parents=True)
+    (processed_dir / "job-processed-without-canonical.json").write_text(json.dumps(payload) + "\n", encoding="utf-8")
+    store = RmwRecordingVaultStore()
 
-    findings, _evidence = repair.analyze(runtime_root, vault_root, mode="markers-only")
+    findings, _evidence = repair.analyze(runtime_root, vault_root, mode="processed-only", store=store)
 
-    orphan = [finding for finding in findings if finding.kind == "orphaned_marker"]
+    missing = [finding for finding in findings if finding.kind == "processed_without_canonical_record"]
+    assert missing
+    assert "success cannot be proven from canonical state" in missing[0].message
+
+
+def test_repair_detects_orphaned_canonical_job_id_and_reports_ambiguity(tmp_path: Path) -> None:
+    _project_root, vault_root, runtime_root, _log_path = make_roots(tmp_path)
+    orphan_id = "abc123-orphaned-canonical-record"
+    store = RmwRecordingVaultStore()
+    store.docs.append(
+        {"_id": "note_orphan", "type": "note", "btq_job_ids": [orphan_id], "content": "Human text remains."}
+    )
+
+    findings, _evidence = repair.analyze(runtime_root, vault_root, mode="markers-only", store=store)
+
+    orphan = [finding for finding in findings if finding.kind == "orphaned_canonical_job_id"]
     assert orphan
     assert orphan[0].ambiguous is True
-    assert "no processed or index evidence" in orphan[0].message
+    assert "no processed/index evidence" in orphan[0].message
+    assert orphan[0].evidence["markers"] == [{"doc_id": "note_orphan", "type": "note"}]
+
+
+def test_repair_detects_canonical_content_missing(tmp_path: Path) -> None:
+    _project_root, vault_root, runtime_root, _log_path = make_roots(tmp_path)
+    payload = {
+        "job_id": "job-canonical-content-missing",
+        "job_type": "append_to_note",
+        "payload": {
+            "path": "Journal/2026-04-27.md",
+            "content": "Expected canonical content.",
+            "destination": "journal",
+        },
+    }
+    computed_job_id = repair.compute_job_id(payload)
+    processed_dir = runtime_root / "processed"
+    processed_dir.mkdir(parents=True)
+    (processed_dir / "job-canonical-content-missing.json").write_text(json.dumps(payload) + "\n", encoding="utf-8")
+    store = RmwRecordingVaultStore()
+    store.docs.append(
+        {"_id": "note_missing_content", "type": "note", "btq_job_ids": [computed_job_id], "content": "Different canonical text."}
+    )
+
+    findings, _evidence = repair.analyze(runtime_root, vault_root, mode="markers-only", store=store)
+
+    missing = [finding for finding in findings if finding.kind == "canonical_content_missing"]
+    assert missing
+    assert "expected payload content is not in the document content" in missing[0].message
+    assert missing[0].evidence["doc_id"] == "note_missing_content"
 
 
 def test_repair_detects_corrupted_index_lines(tmp_path: Path) -> None:

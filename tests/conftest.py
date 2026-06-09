@@ -28,6 +28,24 @@ class RmwRecordingVaultStore(RecordingVaultStore):
                 return str(doc_id) if doc_id else None
         return None
 
+    def scan_job_id_docs(self, *, limit: int = 100000) -> list[dict[str, Any]]:
+        results: list[dict[str, Any]] = []
+        for doc in self.docs:
+            job_ids = doc.get("btq_job_ids")
+            if not isinstance(job_ids, list) or not job_ids:
+                continue
+            results.append(
+                {
+                    "_id": doc.get("_id"),
+                    "type": doc.get("type"),
+                    "btq_job_ids": list(job_ids),
+                    "content": doc.get("content", ""),
+                }
+            )
+            if len(results) >= limit:
+                break
+        return results
+
     def find_unknown_capture_docs(self, status: str | None = "unresolved", *, limit: int = 10000) -> list[dict[str, Any]]:
         results: list[dict[str, Any]] = []
         for doc in self.docs:
