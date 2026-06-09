@@ -584,7 +584,7 @@ def test_voice_memo_status_counts_pipeline_artifacts(tmp_path: Path) -> None:
     (runtime_root / "processed_index.jsonl").write_text(
         '{"job_type": "voice_memo_note", "capture_id": "vm-2026-05-20T18-28-04-b9ddc3", '
         '"timestamp": "2026-05-20T18:29:29Z", '
-        '"target_path": "/x/Accounts/Maplegrove/Locations/7094 - Hawthorne Center - Maple Grove/about.md"}\n'
+        '"target_path": "location_7094"}\n'
         '{"job_type": "log_site_issue", "capture_id": "cap-1", "timestamp": "2026-05-20T10:00:00Z"}\n',
         encoding="utf-8",
     )
@@ -597,7 +597,7 @@ def test_voice_memo_status_counts_pipeline_artifacts(tmp_path: Path) -> None:
     assert len(status["recent_notes"]) == 1
     note = status["recent_notes"][0]
     assert note["capture_id"] == "vm-2026-05-20T18-28-04-b9ddc3"
-    assert note["site"] == "7094 - Hawthorne Center - Maple Grove"
+    assert note["site"] == "7094"
     assert note["processed_at"] == "2026-05-20T18:29:29Z"
 
 

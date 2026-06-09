@@ -285,8 +285,6 @@ def ensure_within_root(path: Path, root: Path, label: str) -> Path:
     if common != resolved_root:
         raise QueueProcessorError(f"{label} is outside allowed root: {resolved_path}")
     return resolved_path
-def vault_root_joined_path(vault_root: Path, path: Path) -> Path:
-    return path if path.is_absolute() else vault_root / path
 def ensure_within_any_root(path: Path, roots: list[Path], label: str) -> Path:
     last_error: QueueProcessorError | None = None
     for root in roots:
@@ -396,16 +394,6 @@ def canonical_employee_doc_id_from_name(name: str) -> str:
             cleaned = f"{parts[-1]} {' '.join(parts[:-1])}".strip()
     slug = slugify_issue_component(cleaned).replace("-", "_")
     return f"employee_{slug}"
-def resolve_employee_file(vault_root: Path, employee_name: str) -> Path:
-    from queue_processor.canonical_rmw import resolve_employee_target, resolve_person_vault_path
-
-    store = _vault_store()
-    try:
-        target = resolve_employee_target(store, employee_name)
-        note_path = resolve_person_vault_path(store, target.doc_id.removeprefix("employee_"))
-    except Exception as exc:
-        raise QueueProcessorError(f"Could not resolve employee file for employee_name: {employee_name}") from exc
-    return ensure_within_root(vault_root_joined_path(vault_root, Path(note_path)), vault_root, "Employee target")
 def person_file_name(name: str) -> str:
     cleaned = " ".join(name.strip().split())
     if not cleaned:
@@ -587,44 +575,6 @@ def append_markdown_block(existing_text: str, append_text: str) -> str:
     if existing_text.endswith("\n"):
         return f"{existing_text}\n{normalized_append}"
     return f"{existing_text}\n\n{normalized_append}"
-def _site_about_path_from_folder_id(context: RunContext, site_id: str, label: str) -> Path:
-    normalized = site_id.strip()
-    if not normalized:
-        raise InvalidSiteIdError(f"Invalid site: {site_id}")
-    accounts_root = context.vault_root / "Accounts"
-    matches = [
-        path
-        for path in sorted(accounts_root.glob("*/Locations/*/about.md"))
-        if path.parent.name.split(" - ", 1)[0].strip() == normalized
-    ]
-    if len(matches) > 1:
-        raise InvalidSiteIdError(f"Ambiguous site: {site_id}")
-    if not matches:
-        raise InvalidSiteIdError(f"Invalid site: {site_id}")
-    return ensure_within_root(matches[0], context.vault_root, label)
-def resolve_site_about_path_by_id(context: RunContext, site_id: str, label: str = "Site target") -> Path:
-    from queue_processor.canonical_rmw import resolve_site_vault_path
-
-    normalized = site_id.strip()
-    if not normalized:
-        raise InvalidSiteIdError(f"Invalid site: {site_id}")
-    try:
-        site_path = resolve_site_vault_path(_vault_store(), normalized)
-    except NotFoundError:
-        return _site_about_path_from_folder_id(context, normalized, label)
-    return ensure_within_root(vault_root_joined_path(context.vault_root, Path(site_path)), context.vault_root, label)
-def resolve_site_about_path(context: RunContext, site_name: str) -> Path:
-    site_id = resolve_site_id(site_name)
-    if site_id is None:
-        try:
-            site_id = CouchDBSiteRegistry().resolve_site_id(site_name)
-        except CouchDBRegistryError as exc:
-            raise InvalidSiteIdError(f"Invalid site: {site_name}") from exc
-        if site_id is not None:
-            site_id = str(site_id).strip()
-    if site_id is None:
-        raise InvalidSiteIdError(f"Invalid site: {site_name}")
-    return resolve_site_about_path_by_id(context, site_id, "Site target")
 def _field_capture_config() -> couchdb_config.CouchDBConfig:
     return couchdb_config.from_env()
 def _field_capture_database() -> str:

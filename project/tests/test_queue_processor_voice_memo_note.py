@@ -199,7 +199,7 @@ class QueueProcessorVoiceMemoNoteTests(unittest.TestCase):
             doc["voice_memo_capture_ids"] = list(capture_ids)
         self.store.docs.append(doc)
 
-    def test_voice_memo_person_link_uses_canonical_vault_path(self) -> None:
+    def test_voice_memo_person_link_uses_canonical_employee_doc_id(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             context = context_for(root)
@@ -208,10 +208,10 @@ class QueueProcessorVoiceMemoNoteTests(unittest.TestCase):
 
             self.assertEqual(
                 misc.voice_memo_person_link(context, {"slug": "hutton-maria", "name": "Maria Hutton"}),
-                "[[People/Hutton, Maria]]",
+                "[[employee_hutton_maria|Maria Hutton]]",
             )
 
-    def test_voice_memo_person_link_missing_canonical_path_returns_bare_name(self) -> None:
+    def test_voice_memo_person_link_missing_canonical_employee_returns_bare_name(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             context = context_for(root)

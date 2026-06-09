@@ -23,7 +23,6 @@ from ._shared import (
     QueueJob,
     QueueProcessorError,
     RunContext,
-    slugify_issue_component,
 )
 
 def replace_or_insert_subsection(
@@ -107,12 +106,6 @@ def supply_need_id(payload: dict) -> str:
     digest = hashlib.sha256(json.dumps(seed, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()[:24]
     return f"sup_{digest}"
 
-def supply_need_path(context: RunContext, site_path: Path, payload: dict) -> Path:
-    supply_id = supply_need_id(payload)
-    filename = f"{supply_id}__{slugify_issue_component(str(payload.get('item_name') or 'supply need'))}.md"
-    supplies_dir = _shared.ensure_within_root(site_path.parent / "Supplies", context.vault_root, "Supplies directory")
-    return _shared.ensure_within_root(supplies_dir / filename, context.vault_root, "Supply need target")
-
 def equipment_request_id(payload: dict) -> str:
     explicit = str(payload.get("equipment_id") or "").strip()
     if explicit:
@@ -125,12 +118,6 @@ def equipment_request_id(payload: dict) -> str:
     }
     digest = hashlib.sha256(json.dumps(seed, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()[:24]
     return f"eqr_{digest}"
-
-def equipment_request_path(context: RunContext, site_path: Path, payload: dict) -> Path:
-    equipment_id = equipment_request_id(payload)
-    filename = f"{equipment_id}__{slugify_issue_component(str(payload.get('equipment_name') or 'equipment request'))}.md"
-    equipment_dir = _shared.ensure_within_root(site_path.parent / "Equipment", context.vault_root, "Equipment directory")
-    return _shared.ensure_within_root(equipment_dir / filename, context.vault_root, "Equipment request target")
 
 def supply_need_status(payload: dict) -> str:
     return str(payload.get("status") or "open").strip() or "open"
@@ -329,17 +316,39 @@ def process_log_equipment_request_job(job_path: Path, job: QueueJob, context: Ru
 def process_update_site_equipment_job(job_path: Path, job: QueueJob, context: RunContext, processed_dir: Path) -> None:
     payload = job.payload
     site_query = str(payload.get("site_id") or payload["site"])
-    site_path = _shared.resolve_site_about_path(context, site_query)
+    store = _shared._vault_store()
+    try:
+        site_ctx = resolve_site_context(store, site_query)
+    except QueueProcessorError as exc:
+        raise _shared.InvalidSiteIdError(f"Invalid site: {site_query}") from exc
+    target_doc_id = f"location_{site_ctx.site_id}"
     if payload.get("site") and payload.get("site_id"):
-        named_site_path = _shared.resolve_site_about_path(context, str(payload["site"]))
-        if named_site_path != site_path:
+        try:
+            named_site_ctx = resolve_site_context(store, str(payload["site"]))
+        except QueueProcessorError as exc:
+            raise _shared.InvalidSiteIdError(f"Invalid site: {payload['site']}") from exc
+        if named_site_ctx.site_id != site_ctx.site_id:
             raise _shared.InvalidSiteIdError(f"Site and site_id resolve to different sites: {payload['site']} / {payload['site_id']}")
     processed_destination = processed_dir / job_path.name
     if not context.dry_run and processed_destination.exists():
         raise _shared.QueueProcessorError(f"Destination already exists: {processed_destination}")
-    existing_text = site_path.read_text(encoding="utf-8") if site_path.exists() else ""
+    try:
+        existing_doc = store.get_optional(target_doc_id)
+    except Exception as exc:
+        raise _shared.QueueJobError(
+            "canonical couchdb write failed "
+            f"job_type={job.job_type} job_id={job.job_id} entity_id={target_doc_id}: {exc}"
+        ) from exc
+    if existing_doc is None:
+        raise _shared.QueueJobError(
+            "canonical couchdb write failed "
+            f"job_type={job.job_type} job_id={job.job_id} entity_id={target_doc_id}: "
+            f"CouchDB required document not found for canonical RMW: {target_doc_id}"
+        )
+    existing_text = str(existing_doc.get("content") or "")
     job_marker = f"<!-- btq_job_id: {job.job_id} -->"
-    if _shared.has_job_been_applied(existing_text, job.job_id) or job_marker in existing_text:
+    existing_job_ids = [str(item).strip() for item in existing_doc.get("btq_job_ids") or [] if str(item).strip()]
+    if job.job_id in existing_job_ids or _shared.has_job_been_applied(existing_text, job.job_id) or job_marker in existing_text:
         if context.dry_run:
             print(f"Job {job.job_id}: job_id marker already present — skipping")
             _shared.write_log_line(context.log_path, f"job_id={job.job_id} action=skip status=success reason=job-id-marker-present")
@@ -357,12 +366,12 @@ def process_update_site_equipment_job(job_path: Path, job: QueueJob, context: Ru
         new_body=new_body,
     )
     print(f"Job {job.job_id}: validated")
-    print(f"Job {job.job_id}: target {site_path}")
+    print(f"Job {job.job_id}: target {target_doc_id}")
     if context.dry_run:
         print(f"Job {job.job_id}: would update site equipment inventory")
         _shared.write_log_line(context.log_path, f"job_id={job.job_id} action=update-site-equipment status=success error=")
         return
-    canonical_doc = _shared.patch_canonical_location_content(site_path, final_text, job)
+    canonical_doc = _shared.patch_canonical_content(target_doc_id, final_text, job)
     _shared.write_mutation_evidence(context, job, canonical_doc, new_body)
     moved_path = _shared.move_job_file(job_path, processed_dir)
     print(f"Job {job.job_id}: updated {canonical_doc.get('_id', 'location')}")

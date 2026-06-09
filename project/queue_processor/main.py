@@ -101,7 +101,6 @@ process_personal_journal_entry_job = misc.process_personal_journal_entry_job
 process_parse_supply_email_job = misc.process_parse_supply_email_job
 # Re-exports for symbols still imported from queue_processor.main by other
 # modules/tests (replay, btq, voice-memo + journal tests) after the 181 move.
-canonical_person_path = people.canonical_person_path
 render_personal_journal_entry = misc.render_personal_journal_entry
 upsert_voice_memo_capture_id_frontmatter = misc.upsert_voice_memo_capture_id_frontmatter
 voice_memo_capture_id = misc.voice_memo_capture_id
@@ -360,51 +359,88 @@ def list_employees_by_site(context: RunContext, site_id: int) -> None:
         if site_id in sites:
             print(f"{employee_name} | {status}")
 
+def _canonical_location_hint(value: object) -> str:
+    raw = str(value).strip()
+    try:
+        site_id = _shared.resolve_site_id(raw)
+        if site_id is None and " - " in raw:
+            site_id = _shared.resolve_site_id(raw.split(" - ", 1)[0].strip())
+    except Exception:
+        site_id = None
+    return f"location_{site_id or raw}"
+
+
+def _canonical_employee_hint(value: object) -> str:
+    return _shared.canonical_employee_doc_id_from_name(str(value))
+
+
+def _append_to_note_target_hint(payload: dict, context: RunContext) -> str:
+    raw_path = str(payload["path"])
+    path = Path(raw_path)
+    if len(path.parts) == 2 and path.parts[0] == "Journal" and path.suffix == ".md":
+        return f"note_journal_{path.stem}"
+    site_value = payload.get("site_id") or payload.get("site")
+    if site_value:
+        return _canonical_location_hint(site_value)
+    if path.name == "about.md" and "Locations" in path.parts:
+        locations_index = path.parts.index("Locations")
+        if locations_index + 1 < len(path.parts):
+            site_folder = path.parts[locations_index + 1]
+            site_id = site_folder.split(" - ", 1)[0].strip()
+            if site_id:
+                return _canonical_location_hint(site_id)
+    try:
+        target_path = _shared.ensure_within_root(context.vault_root / raw_path, context.vault_root, "Target path")
+        if _shared.is_site_about_path(target_path):
+            existing_text = target_path.read_text(encoding="utf-8") if target_path.exists() else ""
+            return _shared.canonical_location_doc_id_for_projection(target_path, existing_text)
+    except Exception:
+        pass
+    return raw_path
+
+
 def target_path_hint(job: QueueJob, context: RunContext) -> str:
     payload = job.payload
     try:
-        if job.job_type in {JOB_APPEND_TO_NOTE, JOB_RECLASSIFY_UNKNOWN}:
-            return str(_shared.ensure_within_root(context.vault_root / str(payload["path"]), context.vault_root, "Target path"))
+        if job.job_type == JOB_APPEND_TO_NOTE:
+            return _append_to_note_target_hint(payload, context)
+        if job.job_type == JOB_RECLASSIFY_UNKNOWN:
+            return str(payload["path"])
         if job.job_type == JOB_PERSONAL_JOURNAL_ENTRY:
             date = _shared.validate_date_string(str(payload["date"]))
-            return str(context.personal_vault_root / "Journal" / f"{date}.md")
+            return f"journal_personal_{date}"
         if job.job_type == JOB_VISIT_CREATE:
-            site_path = _shared.resolve_site_about_path(context, str(payload["site"]))
-            visit_date = datetime.now(timezone.utc).date().isoformat()
-            return str(site_path.parent / "Visits" / f"{visit_date}.md")
+            return _canonical_location_hint(payload["site"])
         if job.job_type in {JOB_FLAG_ACCESS_CONSTRAINT, JOB_TRIGGER_RECRUITING, JOB_CLOSE_RECRUITING}:
-            return str(_shared.resolve_site_about_path(context, str(payload["site"])))
+            return _canonical_location_hint(payload["site"])
         if job.job_type in {JOB_REMOVE_FROM_SCHEDULE, JOB_FLAG_RETENTION_RISK}:
-            return str(_shared.resolve_employee_file(context.vault_root, str(payload["employee"])))
+            return _canonical_employee_hint(payload["employee"])
         if job.job_type == JOB_ADD_PERSON:
-            return str(people.canonical_person_path(context.vault_root, str(payload["name"])))
+            return _canonical_employee_hint(payload["name"])
         if job.job_type == JOB_PARSE_SUPPLY_EMAIL:
             return str(misc.resolve_supply_email_path(context, str(payload["html_path"])))
         if job.job_type == JOB_PHOTO_CAPTURE:
             date = visits.photo_capture_date(payload)
-            return str(context.vault_root / "Journal" / f"{date}.md")
+            return f"journal_operational_{date}"
         if job.job_type == JOB_PROMOTE_PROSPECT:
             return f"prospect_{payload.get('prospect_id', '')}->{payload.get('site_id', '')}"
         if job.job_type == JOB_RETARGET_CAPTURE:
             return f"capture_{payload.get('capture_id', '')}->{payload.get('new_target_type', '')}:{payload.get('new_target_id', '')}"
         if job.job_type == JOB_LOG_SITE_ISSUE:
-            site_path = _shared.resolve_site_about_path(context, str(payload["site_id"]))
-            return str(site_flags_notes.site_issue_path(context, site_path, payload))
+            return _canonical_location_hint(payload["site_id"])
         if job.job_type == JOB_LOG_SUPPLY_NEED:
-            site_path = _shared.resolve_site_about_path(context, str(payload["site_id"]))
-            return str(supplies_equipment.supply_need_path(context, site_path, payload))
+            return _canonical_location_hint(payload["site_id"])
         if job.job_type == JOB_LOG_EQUIPMENT_REQUEST:
-            site_path = _shared.resolve_site_about_path(context, str(payload["site_id"]))
-            return str(supplies_equipment.equipment_request_path(context, site_path, payload))
+            return _canonical_location_hint(payload["site_id"])
         if job.job_type == JOB_LOG_PERSONNEL_EVENT:
             return str(people.personnel_event_path(context, payload))
         if job.job_type == JOB_SET_ENTITY_STATUS:
             if payload.get("entity_type") == "site":
-                return str(_shared.resolve_site_about_path(context, str(payload["entity_id"])))
+                return _canonical_location_hint(payload["entity_id"])
             if payload.get("entity_type") == "employee":
-                return str(_shared.resolve_employee_file(context.vault_root, str(payload["entity_id"])))
+                return _canonical_employee_hint(payload["entity_id"])
         if job.job_type == JOB_UPDATE_SITE_EQUIPMENT:
-            return str(_shared.resolve_site_about_path(context, str(payload.get("site_id") or payload["site"])))
+            return _canonical_location_hint(payload.get("site_id") or payload["site"])
         if job.job_type in {JOB_MARK_SUPPLY_ORDERED, JOB_MARK_SUPPLY_DELIVERED, JOB_MARK_SUPPLY_STOCKED, JOB_MARK_SUPPLY_NO_ACTION_NEEDED}:
             target_path = supplies_equipment_transitions.locate_supply_file_by_id(context, str(payload["supply_id"]))
             return str(target_path) if target_path is not None else "unknown"

@@ -121,7 +121,6 @@ def test_stale_lock_recovery_works(tmp_path: Path) -> None:
 
 def test_processed_index_updates_and_dedupe_prefers_index(tmp_path: Path) -> None:
     project_root, vault_root, runtime_root, log_path = make_roots(tmp_path)
-    target_path = vault_root / "Journal" / "2026-04-27.md"
     payload = {
         "job_id": "job-index",
         "job_type": "append_to_note",
@@ -138,7 +137,7 @@ def test_processed_index_updates_and_dedupe_prefers_index(tmp_path: Path) -> Non
     records = iter_records(index_path_for(runtime_root))
     assert records[-1]["computed_job_id"]
     assert records[-1]["job_type"] == "append_to_note"
-    assert records[-1]["target_path"] == str(target_path)
+    assert records[-1]["target_path"] == "note_journal_2026-04-27"
     assert records[-1]["capture_id"] == "cap-test"
 
     (runtime_root / "processed" / "corrupt.json").write_text("{not-json", encoding="utf-8")

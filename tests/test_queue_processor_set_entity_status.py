@@ -157,7 +157,6 @@ def run_handler(
     queue_job: qp.QueueJob,
     monkeypatch: pytest.MonkeyPatch,
     *,
-    site_path: Path | None = None,
     store: FakeStore | None = None,
 ) -> tuple[qp.RunContext, FakeStore]:
     ctx = context(tmp_path)
@@ -172,8 +171,6 @@ def run_handler(
         else:
             store = FakeStore([canonical_employee_doc(vault_path=str(ctx.vault_root / "People" / "Hutton, Maria.md"))])
     monkeypatch.setattr(shared, "_vault_store", lambda: store)
-    if site_path is not None:
-        monkeypatch.setattr(shared, "resolve_site_about_path", lambda _context, _site_id: site_path)
     qp.process_set_entity_status_job(job_path, queue_job, ctx, processed)
     return ctx, store
 
@@ -182,7 +179,7 @@ def test_set_entity_status_site_inactive_keeps_record_and_patches_canonical(tmp_
     site_path = write_site(tmp_path / "vault", active=True, status="active")
     original_text = site_path.read_text(encoding="utf-8")
 
-    _ctx, store = run_handler(tmp_path, job("site", "7030", "inactive"), monkeypatch, site_path=site_path)
+    _ctx, store = run_handler(tmp_path, job("site", "7030", "inactive"), monkeypatch)
 
     assert site_path.read_text(encoding="utf-8") == original_text
     doc = store_doc(store, "location_7030")
@@ -196,7 +193,7 @@ def test_set_entity_status_site_active(tmp_path: Path, monkeypatch: pytest.Monke
     site_path = write_site(tmp_path / "vault", active=False, status="inactive")
     original_text = site_path.read_text(encoding="utf-8")
 
-    _ctx, store = run_handler(tmp_path, job("site", "7030", "active"), monkeypatch, site_path=site_path)
+    _ctx, store = run_handler(tmp_path, job("site", "7030", "active"), monkeypatch)
 
     assert site_path.read_text(encoding="utf-8") == original_text
     doc = store_doc(store, "location_7030")
@@ -235,7 +232,7 @@ def test_set_entity_status_idempotent_on_job_marker(tmp_path: Path, monkeypatch:
     site_path.write_text(site_path.read_text(encoding="utf-8").replace("active: false", "active: false\nbtq_job_ids:\n  - job-status"), encoding="utf-8")
     store = FakeStore([canonical_site_doc(active=False, job_ids=["job-status"])])
 
-    ctx, store = run_handler(tmp_path, job("site", "7030", "active"), monkeypatch, site_path=site_path, store=store)
+    ctx, store = run_handler(tmp_path, job("site", "7030", "active"), monkeypatch, store=store)
 
     assert "active: false" in site_path.read_text(encoding="utf-8")
     assert store.update_doc_calls == []
@@ -265,7 +262,6 @@ def test_set_entity_status_required_canonical_patch_failure_keeps_queue_and_mark
     job_path.write_text("{}", encoding="utf-8")
     store = FakeStore(missing_required_doc=True)
     monkeypatch.setattr(shared, "_vault_store", lambda: store)
-    monkeypatch.setattr(shared, "resolve_site_about_path", lambda _context, _site_id: site_path)
 
     with pytest.raises(qp.QueueJobError, match="CouchDB required document not found for canonical RMW: location_7030"):
         qp.process_set_entity_status_job(job_path, job("site", "7030", "inactive"), ctx, processed)

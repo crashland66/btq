@@ -16,7 +16,6 @@ from btq_vault.couch_store import CouchDBEntityStore, CouchDBEntityStoreError
 from btq_vault.entity_types import CANONICAL_ENTITY_TYPES
 from event_pipeline.sites import SITES, resolve_site_id
 from queue_processor.handlers._shared import QueueProcessorError
-from vault_errors import NotFoundError
 
 
 logger = logging.getLogger(__name__)
@@ -32,10 +31,8 @@ __all__ = [
     "canonical_job_already_applied",
     "resolve_employee_target",
     "resolve_employee_target_by_person_id",
-    "resolve_person_vault_path",
     "resolve_site_context",
     "resolve_site_target",
-    "resolve_site_vault_path",
 ]
 
 
@@ -179,22 +176,6 @@ def resolve_site_context(store: CouchDBEntityStore, value: str) -> SiteContext:
     return SiteContext(site_id=str(site_id), name=str(name), account=account)
 
 
-def resolve_site_vault_path(store: CouchDBEntityStore, site_id: str) -> Path:
-    doc_id = f"location_{site_id}"
-    doc = store.get_optional(doc_id)
-    return _required_vault_path(doc, doc_id)
-
-
-def resolve_person_vault_path(store: CouchDBEntityStore, person_id: str) -> Path:
-    doc_ids = _employee_doc_id_variants(person_id)
-    doc_id = doc_ids[0] if doc_ids else "employee_"
-    for candidate_doc_id in doc_ids:
-        doc = store.get_optional(candidate_doc_id)
-        if doc is not None:
-            return _required_vault_path(doc, candidate_doc_id)
-    return _required_vault_path(None, doc_id)
-
-
 def resolve_employee_target_by_person_id(person_id: str, *, allow_create: bool = False) -> CanonicalTarget:
     normalized = person_id.strip()
     if not normalized:
@@ -283,13 +264,6 @@ def _validate_target(target: CanonicalTarget) -> None:
         raise QueueProcessorError(f"Unsupported canonical entity type: {target.doc_type}")
     if not target.doc_id.strip():
         raise QueueProcessorError("Cannot apply canonical RMW without doc_id")
-
-
-def _required_vault_path(doc: dict[str, Any] | None, doc_id: str) -> Path:
-    vault_path = str((doc or {}).get("vault_path") or "").strip()
-    if not vault_path:
-        raise NotFoundError(f"Canonical document missing vault_path: {doc_id}")
-    return Path(vault_path)
 
 
 class _CanonicalSkip(Exception):

@@ -197,10 +197,10 @@ def test_voice_memo_read_helper_logs_then_falls_back(tmp_path: Path, monkeypatch
     _project_root, vault_root, runtime_root, log_path = make_roots(tmp_path)
     context = build_context(tmp_path / "project", vault_root, runtime_root, log_path, dry_run=True)
 
-    def fail_resolve_person_vault_path(_store: object, _person_id: str) -> None:
-        raise RuntimeError("person path unavailable")
+    def fail_resolve_employee_target(_store: object, _employee: str) -> None:
+        raise RuntimeError("employee target unavailable")
 
-    monkeypatch.setattr(misc, "resolve_person_vault_path", fail_resolve_person_vault_path)
+    monkeypatch.setattr(misc, "resolve_employee_target", fail_resolve_employee_target)
 
     assert misc.voice_memo_person_link(context, {"slug": "keller-bruce", "name": "Bruce Keller"}) == "Bruce Keller"
     assert "voice memo person link fallback slug=keller-bruce name=Bruce Keller" in caplog.text
@@ -705,212 +705,17 @@ def write_continental_site(vault_root: Path, body: Optional[str] = None) -> Path
     return site_path
 
 
-def test_resolve_employee_file_uses_canonical_vault_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    _project_root, vault_root, _runtime_root, _log_path = make_roots(tmp_path)
-    employee_path = vault_root / "People" / "Pearson, David.md"
-    write_frontmatter_file(
-        employee_path,
-        [
-            ("name", "David Pearson"),
-            ("first", "David"),
-            ("last", "Pearson"),
-            ("type", "employee"),
-        ],
-        body="# David Pearson\n",
-    )
-    store = use_recording_vault_store(monkeypatch)
-    store.docs.append(
-        {
-            "_id": "employee_pearson_david",
-            "type": "employee",
-            "name": "David Pearson",
-            "vault_path": str(employee_path),
-        }
-    )
-
-    assert shared.resolve_employee_file(vault_root, "Pearson, David") == employee_path.resolve()
-
-
-def test_resolve_employee_file_uses_tolerant_employee_resolver(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    _project_root, vault_root, _runtime_root, _log_path = make_roots(tmp_path)
-    employee_path = vault_root / "People" / "Mills, Carol.md"
-    write_frontmatter_file(
-        employee_path,
-        [
-            ("name", "Carol Mills"),
-            ("first", "Carol"),
-            ("last", "Mills"),
-            ("type", "employee"),
-        ],
-        body="# Carol Mills\n",
-    )
-    store = use_recording_vault_store(monkeypatch)
-    store.docs.append(
-        {
-            "_id": "employee_mills-carol",
-            "type": "employee",
-            "person_id": "mills-carol",
-            "name": "Carol Mills",
-            "first": "Carol",
-            "last": "Mills",
-            "vault_path": str(employee_path),
-        }
-    )
-
-    assert shared.resolve_employee_file(vault_root, "Deb Mills") == employee_path.resolve()
-
-
-def test_resolve_employee_file_joins_relative_canonical_vault_path(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    project_root, vault_root, _runtime_root, _log_path = make_roots(tmp_path)
-    monkeypatch.chdir(project_root)
-    employee_path = vault_root / "People" / "Pearson, David.md"
-    write_frontmatter_file(
-        employee_path,
-        [
-            ("name", "David Pearson"),
-            ("first", "David"),
-            ("last", "Pearson"),
-            ("type", "employee"),
-        ],
-        body="# David Pearson\n",
-    )
-    store = use_recording_vault_store(monkeypatch)
-    store.docs.append(
-        {
-            "_id": "employee_pearson_david",
-            "type": "employee",
-            "name": "David Pearson",
-            "vault_path": str(employee_path.relative_to(vault_root)),
-        }
-    )
-
-    assert shared.resolve_employee_file(vault_root, "Pearson, David") == employee_path.resolve()
-
-
-def test_resolve_employee_file_joins_relative_fallback_canonical_vault_path(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    project_root, vault_root, _runtime_root, _log_path = make_roots(tmp_path)
-    monkeypatch.chdir(project_root)
-    employee_path = vault_root / "People" / "Lovelace, Ada.md"
-    write_frontmatter_file(
-        employee_path,
-        [
-            ("name", "Ada Lovelace"),
-            ("first", "Ada"),
-            ("last", "Lovelace"),
-            ("type", "employee"),
-            ("employee_id", "E123"),
-        ],
-        body="# Ada Lovelace\n",
-    )
-    store = use_recording_vault_store(monkeypatch)
-    store.docs.append(
-        {
-            "_id": "employee_lovelace_ada",
-            "type": "employee",
-            "name": "Ada Lovelace",
-            "employee_id": "E123",
-            "vault_path": str(employee_path.relative_to(vault_root)),
-        }
-    )
-
-    assert shared.resolve_employee_file(vault_root, "E123") == employee_path.resolve()
-
-
-def test_resolve_employee_file_missing_canonical_doc_raises(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    _project_root, vault_root, _runtime_root, _log_path = make_roots(tmp_path)
-    use_recording_vault_store(monkeypatch)
-
-    with pytest.raises(shared.QueueProcessorError, match="Could not resolve employee file"):
-        shared.resolve_employee_file(vault_root, "Pearson, David")
-
-
-def test_resolve_site_about_path_by_id_uses_canonical_vault_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_target_path_hint_returns_canonical_identifiers(tmp_path: Path) -> None:
     project_root, vault_root, runtime_root, log_path = make_roots(tmp_path)
     context = build_context(project_root, vault_root, runtime_root, log_path, False)
-    site_path = write_summit_wire_site(vault_root)
-    store = use_recording_vault_store(monkeypatch)
-    store.docs.append({"_id": "location_7050", "type": "location", "site_id": "7050", "vault_path": str(site_path)})
 
-    assert shared.resolve_site_about_path_by_id(context, "7050") == site_path.resolve()
-
-
-def test_resolve_site_about_path_by_id_joins_relative_canonical_vault_path(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    project_root, vault_root, runtime_root, log_path = make_roots(tmp_path)
-    monkeypatch.chdir(project_root)
-    context = build_context(project_root, vault_root, runtime_root, log_path, False)
-    site_path = write_summit_wire_site(vault_root)
-    store = use_recording_vault_store(monkeypatch)
-    store.docs.append(
-        {
-            "_id": "location_7050",
-            "type": "location",
-            "site_id": "7050",
-            "vault_path": str(site_path.relative_to(vault_root)),
-        }
-    )
-
-    assert shared.resolve_site_about_path_by_id(context, "7050") == site_path.resolve()
-
-
-def test_resolve_site_about_path_by_id_falls_back_to_folder_glob_without_vault_path(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    project_root, vault_root, runtime_root, log_path = make_roots(tmp_path)
-    context = build_context(project_root, vault_root, runtime_root, log_path, False)
-    site_path = write_summit_wire_site(vault_root)
-    store = use_recording_vault_store(monkeypatch)
-    store.docs.append({"_id": "location_7050", "type": "location", "site_id": "7050"})
-
-    assert shared.resolve_site_about_path_by_id(context, "7050") == site_path.resolve()
-
-
-def test_resolve_site_about_path_uses_registry_when_static_resolve_misses(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    project_root, vault_root, runtime_root, log_path = make_roots(tmp_path)
-    context = build_context(project_root, vault_root, runtime_root, log_path, False)
-    site_path = write_summit_wire_site(vault_root)
-    store = use_recording_vault_store(monkeypatch)
-    store.docs.append({"_id": "location_7050", "type": "location", "site_id": "7050", "vault_path": str(site_path)})
-    monkeypatch.setattr(shared, "resolve_site_id", lambda _site_name: None)
-
-    class Registry:
-        def resolve_site_id(self, site_name: str) -> str | None:
-            return "7050" if site_name == "Registry Summit" else None
-
-    monkeypatch.setattr(shared, "CouchDBSiteRegistry", Registry)
-
-    assert shared.resolve_site_about_path(context, "Registry Summit") == site_path.resolve()
-
-
-def test_resolve_site_about_path_registry_miss_raises_invalid_site(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    project_root, vault_root, runtime_root, log_path = make_roots(tmp_path)
-    context = build_context(project_root, vault_root, runtime_root, log_path, False)
-    use_recording_vault_store(monkeypatch)
-    monkeypatch.setattr(shared, "resolve_site_id", lambda _site_name: None)
-
-    class Registry:
-        def resolve_site_id(self, _site_name: str) -> str | None:
-            return None
-
-    monkeypatch.setattr(shared, "CouchDBSiteRegistry", Registry)
-
-    with pytest.raises(shared.InvalidSiteIdError, match="Invalid site"):
-        shared.resolve_site_about_path(context, "No Such Site")
+    assert qp.target_path_hint(qp.QueueJob("j1", "append_to_note", {"path": "Journal/2026-04-19.md"}, {}, {}), context) == "note_journal_2026-04-19"
+    assert qp.target_path_hint(qp.QueueJob("j2", "append_to_note", {"path": "Accounts/Summitsteel/Locations/7050 - Summit Wire/about.md"}, {}, {}), context) == "location_7050"
+    assert qp.target_path_hint(qp.QueueJob("j3", "log_supply_need", {"site_id": "7050"}, {}, {}), context) == "location_7050"
+    assert qp.target_path_hint(qp.QueueJob("j4", "remove_from_schedule", {"employee": "Pearson, David"}, {}, {}), context) == "employee_pearson_david"
+    assert qp.target_path_hint(qp.QueueJob("j5", "personal_journal_entry", {"date": "2026-04-19"}, {}, {}), context) == "journal_personal_2026-04-19"
+    assert qp.target_path_hint(qp.QueueJob("j6", "photo_capture", {"captured_at": "2026-04-20T10:00:00Z"}, {}, {}), context) == "journal_operational_2026-04-20"
+    assert qp.target_path_hint(qp.QueueJob("j7", "reclassify_unknown", {"path": "Journal/2026-04-19-unknown.md"}, {}, {}), context) == "Journal/2026-04-19-unknown.md"
 
 
 def log_site_issue_job_payload(job_id: str = "job-log-site-issue") -> dict:
@@ -5961,4 +5766,3 @@ def test_no_visit_gap_when_visit_exists(tmp_path: Path, monkeypatch: pytest.Monk
     assert build_visit_gap_text(today) not in site_text
     assert recording_doc(store, "visit_7030_" + today)
     assert not [doc for doc in store.docs if doc.get("_id") == f"visit_gap_7030_{today}"]
-

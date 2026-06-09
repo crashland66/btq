@@ -1866,7 +1866,7 @@ def test_field_capture_review_status_reports_counts_and_job_states(tmp_path: Pat
     (failed_dir / "failed.json").write_text(json.dumps(failed_job), encoding="utf-8")
     (failed_dir / "replayed-then-processed.json").write_text(json.dumps(replayed_failed_job), encoding="utf-8")
     (runtime_root / "processed_index.jsonl").write_text(
-        json.dumps({"computed_job_id": "idx-test", "job_type": "append_to_note", "target_path": "Accounts/Example/about.md"}) + "\n",
+        json.dumps({"computed_job_id": "idx-test", "job_type": "append_to_note", "target_path": "location_example"}) + "\n",
         encoding="utf-8",
     )
 

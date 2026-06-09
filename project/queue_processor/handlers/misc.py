@@ -9,7 +9,7 @@ from typing import Any
 
 from btq_vault.entity_types import OPERATOR_ID_GREG
 from field_capture.prospects import TERMINAL_PROSPECT_STATUSES
-from queue_processor.canonical_rmw import CanonicalEntityState, CanonicalMutation, CanonicalTarget, apply_canonical_rmw, resolve_employee_target, resolve_person_vault_path, resolve_site_target
+from queue_processor.canonical_rmw import CanonicalEntityState, CanonicalMutation, CanonicalTarget, apply_canonical_rmw, resolve_employee_target, resolve_site_target
 from supply_orders import (
     data_root as supply_data_root,
     normalize_identifier,
@@ -72,14 +72,12 @@ def voice_memo_person_link(context: RunContext, employee: object) -> str:
     if not slug:
         return name
     try:
-        person_id = _shared.canonical_employee_doc_id_from_name(slug).removeprefix("employee_")
-        note_path = resolve_person_vault_path(_shared._vault_store(), person_id)
-        note_path = _shared.ensure_within_root(_shared.vault_root_joined_path(context.vault_root, Path(note_path)), context.vault_root, "Voice memo employee target")
+        target = resolve_employee_target(_shared._vault_store(), slug)
     except Exception as exc:
         logger.warning("voice memo person link fallback slug=%s name=%s: %s", slug, name, exc)
         return name or slug
-    relative = note_path.resolve().relative_to(context.vault_root.resolve()).with_suffix("")
-    return f"[[{relative}]]"
+    label = name or slug
+    return f"[[{target.doc_id}|{label}]]" if label else f"[[{target.doc_id}]]"
 def render_voice_memo_note_section(payload: dict, context: RunContext) -> str:
     timestamp = str(payload["timestamp"]).strip()
     lines = [

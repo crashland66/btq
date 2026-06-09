@@ -11,8 +11,6 @@ import queue_processor.main as qp
 from btq_vault.entity_types import OPERATOR_ID_GREG
 from queue_processor.handlers import _shared as shared
 from queue_processor.handlers.people import personnel_event_path
-from queue_processor.handlers.site_flags_notes import site_issue_path
-from queue_processor.handlers.supplies_equipment import equipment_request_path, supply_need_path
 from queue_processor.main import QueueJob, QueueJobError, RunContext
 from test_helpers.queue_processor_stores import RecordingVaultStore
 
@@ -938,7 +936,7 @@ def test_log_site_issue_stale_markdown_does_not_cause_skip(
     ])
     monkeypatch.setattr(shared, "_VAULT_STORE", store)
     queue_file = make_queue_file(context, "job-one")
-    target_path = site_issue_path(context, site_path, payload)
+    target_path = site_path.parent / "Issues" / "stale-site-issue.md"
     target_path.parent.mkdir(parents=True, exist_ok=True)
     target_path.write_text("---\nbtq_job_ids:\n  - job-one\n---\n# stale projection\n", encoding="utf-8")
 
@@ -1001,7 +999,7 @@ def test_log_site_issue_creates_canonical_doc_when_absent(
     assert doc["type"] == "site_issue"
     assert doc["btq_job_ids"] == ["job-one"]
     assert doc["created_at"]
-    assert not site_issue_path(context, site_path, payload).exists()
+    assert not (site_path.parent / "Issues").exists()
     assert (processed_dir / queue_file.name).exists()
 
 
@@ -1099,7 +1097,7 @@ def test_log_supply_need_stale_markdown_does_not_cause_skip(
     ])
     monkeypatch.setattr(shared, "_VAULT_STORE", store)
     queue_file = make_queue_file(context, "job-one")
-    target_path = supply_need_path(context, site_path, payload)
+    target_path = site_path.parent / "Supplies" / "stale-supply-need.md"
     target_path.parent.mkdir(parents=True, exist_ok=True)
     target_path.write_text("---\nbtq_job_ids:\n  - job-one\n---\n# stale projection\n", encoding="utf-8")
 
@@ -1162,7 +1160,7 @@ def test_log_supply_need_creates_canonical_doc_when_absent(
     assert doc["type"] == "supply_need"
     assert doc["btq_job_ids"] == ["job-one"]
     assert doc["created_at"]
-    assert not supply_need_path(context, site_path, payload).exists()
+    assert not (site_path.parent / "Supplies").exists()
     assert (processed_dir / queue_file.name).exists()
 
 
@@ -1218,7 +1216,7 @@ def test_log_equipment_request_stale_markdown_does_not_cause_skip(
     ])
     monkeypatch.setattr(shared, "_VAULT_STORE", store)
     queue_file = make_queue_file(context, "job-one")
-    target_path = equipment_request_path(context, site_path, payload)
+    target_path = site_path.parent / "Equipment" / "stale-equipment-request.md"
     target_path.parent.mkdir(parents=True, exist_ok=True)
     target_path.write_text("---\nbtq_job_ids:\n  - job-one\n---\n# stale projection\n", encoding="utf-8")
 
@@ -1281,7 +1279,7 @@ def test_log_equipment_request_creates_canonical_doc_when_absent(
     assert doc["type"] == "equipment_request"
     assert doc["btq_job_ids"] == ["job-one"]
     assert doc["created_at"]
-    assert not equipment_request_path(context, site_path, payload).exists()
+    assert not (site_path.parent / "Equipment").exists()
     assert (processed_dir / queue_file.name).exists()
 
 

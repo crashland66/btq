@@ -24,7 +24,6 @@ from ._shared import (
     QueueJob,
     QueueProcessorError,
     RunContext,
-    slugify_issue_component,
 )
 
 def site_issue_id(payload: dict) -> str:
@@ -40,12 +39,6 @@ def site_issue_id(payload: dict) -> str:
     }
     digest = hashlib.sha256(json.dumps(seed, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()[:24]
     return f"iss_{digest}"
-
-def site_issue_path(context: RunContext, site_path: Path, payload: dict) -> Path:
-    issue_id = site_issue_id(payload)
-    filename = f"{issue_id}__{slugify_issue_component(str(payload.get('title') or 'site issue'))}.md"
-    issues_dir = _shared.ensure_within_root(site_path.parent / "Issues", context.vault_root, "Issues directory")
-    return _shared.ensure_within_root(issues_dir / filename, context.vault_root, "Site issue target")
 
 def issue_status(payload: dict) -> str:
     return str(payload.get("status") or "open").strip() or "open"

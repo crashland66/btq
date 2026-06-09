@@ -1208,6 +1208,8 @@ VOICE_MEMO_RECENT_LIMIT = 5
 
 
 def _voice_memo_site_label(target_path: str) -> str:
+    if target_path.startswith("location_"):
+        return target_path.removeprefix("location_")
     parts = Path(target_path).parts
     if "Locations" in parts:
         index = parts.index("Locations")
