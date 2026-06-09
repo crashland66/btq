@@ -69,22 +69,10 @@ def test_home_section_renders_operational_sections(monkeypatch: pytest.MonkeyPat
     assert "Sites With Open Opportunities" in html
 
 
-def test_home_renders_captures_with_note_card(monkeypatch):
-    import types
-    from pathlib import Path
-    from ops_dashboard.sections import home
-
-    fake_cards = [
-        {"id": "captures_with_note", "title": "Captures with a note", "count": 1,
-         "top": [{"site": "S1", "area": "A1", "summary": "soap low", "candidate_id": "cand_1", "deep_link": "/c/1"}],
-         "see_all": "/candidates", "shape": "capture"},
-    ]
-    monkeypatch.setattr(home, "inbox_cards", lambda rt: fake_cards)
-    monkeypatch.setattr(home, "query_view", lambda *a, **kw: [])
-
-    ctx = section_ctx(Path("."))
-    html = home.render(ctx)
-    assert "Captures with a note" in html
+# NOTE (320/A): the home page is now the tabbed console. The old inline candidate/capture preview
+# cards (pending_candidates, captures_with_note) were superseded — quick approve/reject/unknown is the
+# Review tab (swipe), and full candidate management (Open Issue, Done, filters) lives at /candidates.
+# Their old per-card-render tests were removed; the console + candidates routes cover the new surface.
 
 
 def test_home_does_not_render_admin_cards(monkeypatch):
@@ -106,57 +94,9 @@ def test_home_does_not_render_admin_cards(monkeypatch):
     assert "Failed photo vision sidecars" not in html
 
 
-def test_home_card_contains_action_form_for_candidate(monkeypatch):
-    import types
-    from pathlib import Path
-    from ops_dashboard.sections import home
-
-    fake_cards = [
-        {"id": "pending_candidates", "title": "Pending candidates", "count": 1,
-         "top": [{"site": "S1", "area": "", "summary": "test", "candidate_id": "cand_abc", "deep_link": "/c/1"}],
-         "see_all": "/candidates", "shape": "capture"},
-    ]
-    monkeypatch.setattr(home, "inbox_cards", lambda rt: fake_cards)
-    monkeypatch.setattr(home, "query_view", lambda *a, **kw: [])
-
-    ctx = section_ctx(Path("."))
-    html = home.render(ctx)
-    assert 'value="cand_abc"' in html
-    assert "/field-capture/review/approve" in html or "/field-capture/review/reject" in html
-
-
-def test_home_card_candidate_actions_render_icon_buttons(monkeypatch):
-    import types
-    from pathlib import Path
-    from ops_dashboard.sections import home
-
-    fake_cards = [
-        {"id": "pending_candidates", "title": "Pending candidates", "count": 1,
-         "top": [{"site": "S1", "area": "", "summary": "test", "candidate_id": "cand_abc", "deep_link": "/c/1", "visit_proposed": True}],
-         "see_all": "/candidates", "shape": "capture"},
-    ]
-    monkeypatch.setattr(home, "inbox_cards", lambda rt: fake_cards)
-    monkeypatch.setattr(home, "query_view", lambda *a, **kw: [])
-
-    ctx = section_ctx(Path("."))
-    html = home.render(ctx)
-
-    assert ">⚑</button>" in html
-    assert ">✕</button>" in html
-    assert ">✓</button>" in html
-    assert 'aria-label="Open Issue"' in html
-    assert 'aria-label="Dismiss"' in html
-    assert 'aria-label="Done"' in html
-    assert 'title="Open Issue"' in html
-    assert 'title="Dismiss"' in html
-    assert 'title="Mark as completed and dismiss"' in html
-    assert ">Open Issue</button>" not in html
-    assert ">Dismiss</button>" not in html
-    assert ">✓ Done</button>" not in html
-    assert 'action="/field-capture/review/approve"' in html
-    assert 'action="/field-capture/review/reject"' in html
-    assert 'action="/field-capture/review/dismiss-completion"' in html
-    assert 'name="candidate_id" value="cand_abc"' in html
+# NOTE (320/A): the candidate action-form / icon-button rendering (approve/reject/Open-Issue/Dismiss/
+# Done) is no longer an inline home card — it lives on the /candidates route (candidates.py, its own
+# tests) and the Review tab (swipe approve/reject/unknown). These home-card-render tests were removed.
 
 
 def test_voice_memo_card_renders_site_options():

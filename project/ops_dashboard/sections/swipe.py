@@ -151,18 +151,19 @@ def queue_counts(runtime_root: Path) -> dict[str, int]:
     return {status: int(counts.get(status, 0)) for status in ("pending_review", "approved", "rejected", "failed")}
 
 
-def swipe_payload(runtime_root: Path) -> dict[str, object]:
+def swipe_payload(runtime_root: Path, *, counts: dict[str, int] | None = None) -> dict[str, object]:
     return {
         "generated_at": datetime.now(timezone.utc).isoformat(),
-        "counts": queue_counts(runtime_root),
+        "counts": counts if counts is not None else queue_counts(runtime_root),
         "cards": collect_cards(runtime_root),
     }
 
 
-def render(request_ctx: object) -> str:
+def render_body(request_ctx: object, *, payload: dict[str, object] | None = None) -> str:
     runtime_root = getattr(request_ctx, "runtime_root", Path("."))
     vault_root = getattr(getattr(request_ctx, "config", None), "vault_dir", None)
-    payload = swipe_payload(runtime_root)
+    if payload is None:
+        payload = swipe_payload(runtime_root)
     cards = payload["cards"] if isinstance(payload["cards"], list) else []
     counts = payload["counts"] if isinstance(payload["counts"], dict) else {}
 
@@ -180,7 +181,7 @@ def render(request_ctx: object) -> str:
     rejected = int(counts.get("rejected", 0))
     failed = int(counts.get("failed", 0))
 
-    body = f"""
+    return f"""
     <header class="swipe-header">
       <h1>Review</h1>
       <p class="muted">One proposed job at a time. Decide whether it is true enough to commit.</p>
@@ -214,6 +215,10 @@ def render(request_ctx: object) -> str:
     <script id="swipe-bootstrap" type="application/json">{html.escape(bootstrap)}</script>
     <script>window.__btqSwipeInit && window.__btqSwipeInit();</script>
     """
+
+
+def render(request_ctx: object) -> str:
+    body = render_body(request_ctx)
     return html_page("BTQ Review", body, active_section="swipe", refresh=False)
 
 
@@ -317,7 +322,7 @@ window.__btqSwipeInit = function () {
     body.set('candidate_id', card.candidate_id);
     body.set('_rev', card._rev || '');
     body.set('reviewer', reviewer);
-    body.set('rationale', '');
+    body.set('rationale', action === 'unknown' ? 'mark unknown' : '');
     var stage = mount.parentElement;
     stage.classList.add(action === 'approve' ? 'swiping-right' : 'swiping-left');
     fetch(route, {
@@ -351,6 +356,8 @@ window.__btqSwipeInit = function () {
       if (c.approvable) decide(c, 'approve', null);
     } else if (e.key === 'r' || e.key === 'R' || e.key === 'ArrowLeft') {
       decide(c, 'reject', null);
+    } else if (e.key === 'u' || e.key === 'U') {
+      decide(c, 'unknown', null);
     }
   });
 

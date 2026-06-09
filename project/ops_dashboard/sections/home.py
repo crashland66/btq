@@ -45,6 +45,7 @@ from btq_vault.projector import (
 )
 import ops_dashboard.sections.inbox as _inbox_mod
 import ops_dashboard.sections.field_photos as _field_photos_mod
+import ops_dashboard.sections.console as _console_mod
 
 from ops_dashboard.common import render_table
 from ops_dashboard.layout import html_page
@@ -734,9 +735,7 @@ def _handoff_home_voice_memo_to_transcription(runtime_root: Path, record: dict) 
 
 def render(ctx: object) -> str:
     runtime_root = ctx.runtime_root
-    cards = inbox_cards(ctx)
-    home_cards = [c for c in cards if c["id"] in HOME_CARD_IDS]
-    cards_html = _render_home_cards(home_cards)
+    console_html = _console_mod.render_console(ctx)
 
     try:
         cfg = couchdb_config.from_env()
@@ -793,7 +792,7 @@ def render(ctx: object) -> str:
         except Exception:
             employee_picker_rows = []
         voice_card_html = _render_voice_card(site_records, employee_picker_rows)
-        triage_html = _group("triage", cards_html)
+        console_group_html = _group("console", console_html)
         capture_html = _group("capture", voice_card_html)
         reference_html = _group(
             "reference",
@@ -840,7 +839,7 @@ def render(ctx: object) -> str:
 
         main_html = (
             '<div class="home-main">'
-            + triage_html
+            + console_group_html
             + directory_html
             + "</div>"
         )
@@ -860,7 +859,7 @@ def render(ctx: object) -> str:
     except ProjectorError:
         body = (
             '<div class="home-grid">'
-            + _group("triage", cards_html)
+            + _group("console", console_html)
             + '<div class="home-rail">'
             + _group("capture", _render_voice_card({}, []))
             + "</div>"

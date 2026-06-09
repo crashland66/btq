@@ -63,6 +63,25 @@ def install_full_home(monkeypatch: pytest.MonkeyPatch) -> dict[str, list[dict]]:
         return view_rows[view]
 
     monkeypatch.setattr(home, "inbox_cards", lambda _runtime_root: cards)
+    monkeypatch.setattr(
+        home._console_mod,
+        "render_console",
+        lambda _ctx: (
+            '<section class="ops-console">'
+            '<nav class="console-tabs" role="tablist" aria-label="Operational console">'
+            '<a class="console-tab is-active" href="/?tab=review" role="tab" aria-current="page" aria-selected="true">'
+            '<span>Review</span><span class="console-tab-badge">0</span></a>'
+            '<a class="console-tab" href="/?tab=issues" role="tab" aria-selected="false">'
+            '<span>Issues</span><span class="console-tab-badge">0</span></a>'
+            '<a class="console-tab" href="/?tab=supplies" role="tab" aria-selected="false">'
+            '<span>Supplies</span><span class="console-tab-badge">0</span></a>'
+            '<a class="console-tab" href="/?tab=equipment" role="tab" aria-selected="false">'
+            '<span>Equipment</span><span class="console-tab-badge">0</span></a>'
+            '</nav><div class="console-panel" role="tabpanel" data-console-tab="review">'
+            '<header class="swipe-header"><h1>Review</h1><p>One proposed job at a time.</p></header>'
+            '</div></section>'
+        ),
+    )
     monkeypatch.setattr(home, "query_view", fake_query_view)
     monkeypatch.setattr(
         home._field_photos_mod,
@@ -502,16 +521,17 @@ def test_handle_voice_memo_post_idempotent_replay_redirects_without_rewrite(monk
     assert exists_checks == [(cfg, "btq_voice_memos", "cap-tapedeck-1234567890-abc123xy")]
 
 
-def test_home_renders_triage_group_with_inbox_cards(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_home_renders_console_group_with_review_tab(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     install_full_home(monkeypatch)
 
     status, _content_type, body = request_text("GET", "/", tmp_path / "runtime")
-    triage = home_group(body, "home-group--triage")
+    console = home_group(body, "home-group--console")
 
     assert status == HTTPStatus.OK
-    assert '<div class="home-group home-group--triage">' in body
-    for title in ("Captures With Note", "Pending Candidates", "Open Site Issues"):
-        assert title in triage
+    assert '<div class="home-group home-group--console">' in body
+    assert 'class="console-tabs"' in console
+    assert 'data-console-tab="review"' in console
+    assert "One proposed job at a time" in console
 
 
 def test_home_cards_all_zero_render_one_empty_strip() -> None:
@@ -575,25 +595,14 @@ def test_empty_strip_pill_titles_escape_html() -> None:
     assert "<script>alert(1)</script>" not in html
 
 
-def test_home_renders_pipeline_health_card(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_home_console_replaces_old_stacked_triage(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     install_full_home(monkeypatch)
 
-    original_inbox_cards = home.inbox_cards
-
-    def cards_with_title(ctx: object) -> list[dict]:
-        cards = original_inbox_cards(ctx)
-        for card in cards:
-            if card["id"] == "pipeline_health":
-                card["title"] = "Pipeline health"
-        return cards
-
-    monkeypatch.setattr(home, "inbox_cards", cards_with_title)
-
     status, _content_type, body = request_text("GET", "/", tmp_path / "runtime")
-    triage = home_group(body, "home-group--triage")
 
     assert status == HTTPStatus.OK
-    assert "Pipeline health" in triage
+    assert "home-group--console" in body
+    assert "home-group--triage" not in body
 
 
 def test_home_renders_capture_group_around_voice_card(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -942,7 +951,7 @@ def test_home_grid_shell_wraps_all_groups(monkeypatch: pytest.MonkeyPatch, tmp_p
     assert status == HTTPStatus.OK
     assert body.count('<div class="home-grid">') == 1
     for group_class in (
-        "home-group--triage",
+        "home-group--console",
         "home-group--capture",
         "home-group--directory",
         "home-group--photos",
@@ -951,7 +960,7 @@ def test_home_grid_shell_wraps_all_groups(monkeypatch: pytest.MonkeyPatch, tmp_p
         assert group_class in grid
 
 
-def test_home_main_wrapper_contains_triage_and_directory(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_home_main_wrapper_contains_console_and_directory(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     install_full_home(monkeypatch)
 
     status, _content_type, body = request_text("GET", "/", tmp_path / "runtime")
@@ -963,11 +972,11 @@ def test_home_main_wrapper_contains_triage_and_directory(monkeypatch: pytest.Mon
     main_end = body.index(main_end_marker, main_start)
     rail_start = main_end + len("</div>")
     main = body[main_start:main_end]
-    triage_start = main.index("home-group--triage")
+    console_start = main.index("home-group--console")
     directory_start = main.index("home-group--directory")
 
     assert status == HTTPStatus.OK
-    assert triage_start < directory_start
+    assert console_start < directory_start
     assert main_start < rail_start
     assert directory_start < rail_start
     assert "home-rail" not in main

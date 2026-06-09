@@ -464,6 +464,41 @@ button.reject { background: var(--reject-bg); border-color: var(--reject-border)
 .stat-badge strong { display: block; font-size: 1.7rem; line-height: 1; }
 .stat-badge span { display: block; margin-top: 6px; color: var(--muted); font-weight: 600; }
 .inbox-primary { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+.ops-console { display: grid; gap: 14px; }
+.console-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 8px;
+}
+.console-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 8px 10px;
+  color: var(--text);
+  text-decoration: none;
+  background: var(--panel);
+  font-weight: 700;
+}
+.console-tab.is-active {
+  border-color: var(--accent);
+  background: var(--panel-soft);
+}
+.console-tab-badge {
+  min-width: 1.8em;
+  border-radius: 999px;
+  padding: 2px 7px;
+  text-align: center;
+  color: var(--text);
+  background: var(--pill-bg);
+  border: 1px solid var(--line-strong);
+  font-size: .85rem;
+}
+.console-panel > .inbox-card { margin: 0; }
 .inbox-card .data-table { table-layout: fixed; }
 .inbox-summary-strip { display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: center; }
 .inbox-summary-strip a { font-weight: 600; text-decoration: none; }

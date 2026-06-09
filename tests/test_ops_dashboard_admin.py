@@ -265,8 +265,10 @@ def test_layout_nav_items_render_glyphs(tmp_path: Path) -> None:
 
 
 def test_nav_items_include_field_photos() -> None:
-    assert len(NAV_ITEMS) == 6
-    assert [label for _section, label, _href, _glyph in NAV_ITEMS] == ["Home", "Review", "Vault", "Field Photos", "Admin", "Help"]
+    assert len(NAV_ITEMS) == 7
+    # "Candidates" (/candidates) added in 320/A: the console replaced the home preview card that was
+    # the only link to the full candidates route, so it gets its own nav entry.
+    assert [label for _section, label, _href, _glyph in NAV_ITEMS] == ["Home", "Review", "Candidates", "Vault", "Field Photos", "Admin", "Help"]
 
 
 def test_admin_nav_entry_active_on_health_page() -> None:

@@ -314,6 +314,72 @@ def open_equipment_requests_rows(vault_root: Path, limit: int = 5) -> tuple[int,
     return len(open_equipment), rows
 
 
+def console_review_queue_counts(ctx: object) -> dict[str, int]:
+    cached = getattr(ctx, "_btq_console_review_queue_counts", None)
+    if isinstance(cached, dict):
+        return cached
+    from . import swipe
+
+    runtime_root = getattr(ctx, "runtime_root", Path("."))
+    counts = swipe.queue_counts(runtime_root)
+    setattr(ctx, "_btq_console_review_queue_counts", counts)
+    return counts
+
+
+def console_cards(ctx: object) -> dict[str, dict[str, object]]:
+    cached = getattr(ctx, "_btq_console_cards", None)
+    if isinstance(cached, dict):
+        return cached
+    vault_root = ctx.config.vault_dir
+    issues_count, issues_rows = open_site_issues_rows(vault_root)
+    supplies_count, supplies_rows = open_supply_needs_rows(vault_root)
+    equipment_count, equipment_rows = open_equipment_requests_rows(vault_root)
+    cards = {
+        "issues": {
+            "id": "open_site_issues",
+            "title": "Open site issues",
+            "count": issues_count,
+            "top": issues_rows,
+            "see_all": "/field-capture/issues",
+            "shape": INBOX_SHAPE_STRUCTURED,
+        },
+        "supplies": {
+            "id": "open_supply_needs",
+            "title": "Open supply needs",
+            "count": supplies_count,
+            "top": supplies_rows,
+            "see_all": "/supplies?status=open",
+            "shape": INBOX_SHAPE_STRUCTURED,
+        },
+        "equipment": {
+            "id": "open_equipment_requests",
+            "title": "Open equipment requests",
+            "count": equipment_count,
+            "top": equipment_rows,
+            "see_all": "/equipment?status=open",
+            "shape": INBOX_SHAPE_STRUCTURED,
+        },
+    }
+    setattr(ctx, "_btq_console_cards", cards)
+    return cards
+
+
+def console_counts(ctx: object) -> dict[str, int]:
+    cached = getattr(ctx, "_btq_console_counts", None)
+    if isinstance(cached, dict):
+        return cached
+    review_counts = console_review_queue_counts(ctx)
+    cards = console_cards(ctx)
+    counts = {
+        "review": int(review_counts.get("pending_review", 0)),
+        "issues": int(cards["issues"].get("count") or 0),
+        "supplies": int(cards["supplies"].get("count") or 0),
+        "equipment": int(cards["equipment"].get("count") or 0),
+    }
+    setattr(ctx, "_btq_console_counts", counts)
+    return counts
+
+
 def inbox_cards(ctx: object) -> list[dict[str, object]]:
     runtime_resolved = ctx.runtime_root
     vault_root = ctx.config.vault_dir
@@ -338,9 +404,7 @@ def inbox_cards(ctx: object) -> list[dict[str, object]]:
     uploaded_count, uploaded_rows = uploads_without_candidate_rows(
         runtime_resolved, submitters=submitters, all_candidates=all_candidates
     )
-    issues_count, issues_rows = open_site_issues_rows(vault_root)
-    supplies_count, supplies_rows = open_supply_needs_rows(vault_root)
-    equipment_count, equipment_rows = open_equipment_requests_rows(vault_root)
+    console_state_cards = console_cards(ctx)
     pipeline = pipeline_status(runtime_resolved)
     pipeline_summary = pipeline.get("summary") if isinstance(pipeline.get("summary"), dict) else {}
     pipeline_failing = pipeline_summary.get("failing") if isinstance(pipeline_summary.get("failing"), list) else []
@@ -384,9 +448,9 @@ def inbox_cards(ctx: object) -> list[dict[str, object]]:
         {"id": "failed_photo_vision_sidecars", "title": "Failed photo vision sidecars", "count": failed_sidecar_count, "top": failed_sidecar_top, "see_all": "/failed", "shape": INBOX_SHAPE_CAPTURE},
         {"id": "unknown_captures", "title": "Unknown captures", "count": unknown_count, "top": unknown_rows, "see_all": "/captures", "shape": INBOX_SHAPE_CAPTURE},
         {"id": "uploaded_without_candidate", "title": "Recently uploaded with no candidate yet", "count": uploaded_count, "top": uploaded_rows, "see_all": "/captures", "shape": INBOX_SHAPE_CAPTURE},
-        {"id": "open_site_issues", "title": "Open site issues", "count": issues_count, "top": issues_rows, "see_all": "/field-capture/issues", "shape": INBOX_SHAPE_STRUCTURED},
-        {"id": "open_supply_needs", "title": "Open supply needs", "count": supplies_count, "top": supplies_rows, "see_all": "/supplies?status=open", "shape": INBOX_SHAPE_STRUCTURED},
-        {"id": "open_equipment_requests", "title": "Open equipment requests", "count": equipment_count, "top": equipment_rows, "see_all": "/equipment?status=open", "shape": INBOX_SHAPE_STRUCTURED},
+        console_state_cards["issues"],
+        console_state_cards["supplies"],
+        console_state_cards["equipment"],
         {"id": "pipeline_health", "title": "Pipeline health", "count": 0 if pipeline_summary.get("ok") else len(pipeline_failing), "top": fail_rows, "see_all": "/health/pipeline", "shape": INBOX_SHAPE_GAP},
     ]
     return cards
