@@ -87,7 +87,7 @@ def _equipment_from_couch_doc(doc: dict[str, Any]) -> EquipmentRequest | None:
         related_capture_ids=tuple(str(x) for x in (doc.get("related_capture_ids") or doc.get("btq_job_ids") or []) if x),
         related_candidate_ids=tuple(str(x) for x in (doc.get("related_candidate_ids") or []) if x),
         created_at=clean_string(doc.get("created_at")),
-        vault_path=clean_string(doc.get("_id")),
+        vault_path=clean_string(doc.get("vault_path") or doc.get("_id")),
         approved_at=clean_string(doc.get("approved_at")),
         approved_by=clean_string(doc.get("approved_by")),
         approval_note=clean_string(doc.get("approval_note")),

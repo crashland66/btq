@@ -84,7 +84,7 @@ def _supply_from_couch_doc(doc: dict[str, Any]) -> SupplyNeed | None:
         related_capture_ids=tuple(str(x) for x in (doc.get("related_capture_ids") or doc.get("btq_job_ids") or []) if x),
         related_candidate_ids=tuple(str(x) for x in (doc.get("related_candidate_ids") or []) if x),
         created_at=clean_string(doc.get("created_at")),
-        vault_path=clean_string(doc.get("_id")),
+        vault_path=clean_string(doc.get("vault_path") or doc.get("_id")),
         ordered_at=clean_string(doc.get("ordered_at")),
         ordered_by=clean_string(doc.get("ordered_by")),
         ordered_note=clean_string(doc.get("ordered_note")),
