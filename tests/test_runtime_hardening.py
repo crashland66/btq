@@ -469,7 +469,7 @@ def test_replay_update_missing_target_still_fails(tmp_path: Path) -> None:
     assert "target file missing or unknown" in preview.conflicts_detected
 
 
-def test_replay_execute_create_with_approval_uses_queue_writer(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_replay_execute_create_with_approval_uses_queue_writer(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, recording_vault_store: None) -> None:
     monkeypatch.setenv("BTQ_VAULT_MARKDOWN_WRITE", "1")
     project_root, vault_root, runtime_root, _log_path = make_roots(tmp_path)
     target = vault_root / "People" / "Replay, Avery.md"
@@ -503,7 +503,8 @@ def test_replay_execute_create_with_approval_uses_queue_writer(tmp_path: Path, m
     project_markdown_exports(vault_root)
     assert target.exists()
     text = target.read_text(encoding="utf-8")
-    assert "person_id: per_" in text
+    # person_id is now the readable lastname_firstname form (42e475e), not the opaque per_ id.
+    assert "person_id: replay_avery" in text
     assert "first: Avery" in text
     assert "last: Replay" in text
     assert "additional_jobs:" in text
