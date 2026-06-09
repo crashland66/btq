@@ -711,7 +711,7 @@ async function normalizeImage(fileOrBlob, suggestedName) {
   if (typeof source.close === "function") source.close();
   const blob = await new Promise((resolve, reject) => {
     canvas.toBlob(
-      (result) => (result ? resolve(result) : reject(new Error("toBlob_returned_null"))),
+      (result) => (result && result.size > 0 ? resolve(result) : reject(new Error("toBlob_returned_empty"))),
       "image/jpeg",
       0.86,
     );

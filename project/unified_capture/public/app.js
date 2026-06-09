@@ -844,7 +844,7 @@
     context.drawImage(source, 0, 0, width, height);
     if (typeof source.close === "function") source.close();
     const blob = await new Promise((resolve, reject) => {
-      canvas.toBlob((result) => (result ? resolve(result) : reject(new Error("toBlob_returned_null"))), "image/jpeg", 0.86);
+      canvas.toBlob((result) => (result && result.size > 0 ? resolve(result) : reject(new Error("toBlob_returned_empty"))), "image/jpeg", 0.86);
     });
     const timestamp = localIsoTimestamp().replace(/[:.]/g, "-");
     return {
