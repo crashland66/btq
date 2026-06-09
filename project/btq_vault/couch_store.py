@@ -167,6 +167,49 @@ class CouchDBEntityStore:
             raise CouchDBEntityStoreError("CouchDB visit dedup query returned no docs list")
         return [doc for doc in docs if isinstance(doc, dict)]
 
+    def find_supply_need_docs_by_supply_id(self, supply_id: str, *, limit: int = 10) -> list[dict[str, Any]]:
+        """Return canonical supply_need docs whose supply_id field matches exactly.
+
+        Canonical ``_id`` values are path-derived
+        (``supply_need_accounts_.._<supply_id>_<slug>``), so a transition job
+        carrying only the bare ``supply_id`` cannot reconstruct the ``_id`` by
+        prefixing. This lookup mirrors ``locate_supply_file_by_id`` on the
+        Markdown side.
+        """
+        response = self._request_json(
+            "POST",
+            "_find",
+            {
+                "selector": {"type": "supply_need", "supply_id": supply_id},
+                "fields": ["_id", "type", "supply_id", "status"],
+                "limit": limit,
+            },
+        )
+        docs = response.get("docs")
+        if not isinstance(docs, list):
+            raise CouchDBEntityStoreError("CouchDB supply_need supply_id query returned no docs list")
+        return [doc for doc in docs if isinstance(doc, dict)]
+
+    def find_equipment_request_docs_by_equipment_id(self, equipment_id: str, *, limit: int = 10) -> list[dict[str, Any]]:
+        """Return canonical equipment_request docs whose equipment_id field matches exactly.
+
+        Same path-derived ``_id`` problem as supply needs; see
+        ``find_supply_need_docs_by_supply_id``.
+        """
+        response = self._request_json(
+            "POST",
+            "_find",
+            {
+                "selector": {"type": "equipment_request", "equipment_id": equipment_id},
+                "fields": ["_id", "type", "equipment_id", "status"],
+                "limit": limit,
+            },
+        )
+        docs = response.get("docs")
+        if not isinstance(docs, list):
+            raise CouchDBEntityStoreError("CouchDB equipment_request equipment_id query returned no docs list")
+        return [doc for doc in docs if isinstance(doc, dict)]
+
     def find_unknown_capture_docs(self, status: str | None = "unresolved", *, limit: int = UNKNOWN_CAPTURE_QUERY_LIMIT) -> list[dict[str, Any]]:
         """Return canonical unknown_capture docs for unresolved scanning."""
         selector = {"type": "unknown_capture"}

@@ -3587,6 +3587,41 @@ def test_mark_supply_ordered_missing_canonical_doc_fails_job(
     assert (runtime_root / "failed" / "2026-05-08T18-00-00Z__mark-supply-ordered.json").exists()
 
 
+def test_mark_supply_ordered_resolves_path_derived_canonical_doc_id(
+    tmp_path: Path,
+    legacy_markdown_writes: None,
+) -> None:
+    # Regression: canonical supply_need docs are stored under path-derived ids
+    # (supply_need_accounts_.._<supply_id>_<slug>), not the flat
+    # supply_need_<supply_id>. The mark-supply-* handlers used to construct the
+    # flat id directly, so every transition failed the require-existing RMW
+    # lookup and the job landed in failed/. The handler must resolve the real
+    # _id by the supply_id field instead.
+    project_root, vault_root, runtime_root, log_path = make_roots(tmp_path)
+    write_summit_wire_site(vault_root)
+    supply_path = create_supply_need(project_root, vault_root, runtime_root, log_path)
+    store = shared._VAULT_STORE
+    assert isinstance(store, RecordingVaultStore)
+    # Rewrite the canonical doc to the production-shaped path-derived _id so the
+    # flat supply_need_sup_summit_brightwash id no longer exists.
+    path_derived_id = "supply_need_accounts_summitsteel_locations_7050_summit_wire_supplies_sup_summit_brightwash_brightwash"
+    for doc in store.docs:
+        if doc.get("type") == "supply_need" and doc.get("supply_id") == "sup_summit_brightwash":
+            doc["_id"] = path_derived_id
+    assert not any(doc.get("_id") == "supply_need_sup_summit_brightwash" for doc in store.docs)
+    payload = mark_supply_job_payload()
+    write_job(runtime_root / "queue", "2026-05-08T18-00-00Z__mark-supply-ordered.json", payload)
+
+    stdout, log_text = run_jobs(project_root, vault_root, runtime_root, log_path)
+
+    assert "action=mark-supply-ordered status=success" in log_text
+    assert frontmatter_value(supply_path, "status") == "ordered"
+    resolved = next(doc for doc in store.docs if doc.get("_id") == path_derived_id)
+    assert resolved["status"] == "ordered"
+    assert not (runtime_root / "failed" / "2026-05-08T18-00-00Z__mark-supply-ordered.json").exists()
+    assert (runtime_root / "processed" / "2026-05-08T18-00-00Z__mark-supply-ordered.json").exists()
+
+
 def test_mark_supply_ordered_records_note_when_present(tmp_path: Path, legacy_markdown_writes: None) -> None:
     project_root, vault_root, runtime_root, log_path = make_roots(tmp_path)
     write_summit_wire_site(vault_root)

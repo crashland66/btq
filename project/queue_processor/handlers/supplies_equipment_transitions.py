@@ -23,6 +23,40 @@ def locate_supply_file_by_id(context: RunContext, supply_id: str) -> Path | None
     matches = sorted(accounts_root.glob(f"*/Locations/*/Supplies/{supply_id}__*.md"))
     return _shared.ensure_within_root(matches[0], context.vault_root, "Supply target") if matches else None
 
+def _resolve_supply_doc_id(supply_id: str) -> str:
+    """Resolve the canonical supply_need ``_id`` for a bare ``supply_id``.
+
+    Canonical docs are stored under path-derived ids
+    (``supply_need_accounts_.._<supply_id>_<slug>``), so the legacy
+    ``supply_need_<supply_id>`` construction misses them and every
+    mark-supply-* transition fails the require-existing RMW lookup. Query the
+    canonical store by the ``supply_id`` field; fall back to the legacy flat id
+    when no doc matches (preserves behavior for older flat-id docs) or when the
+    store is unreachable (the RMW itself then surfaces the real error).
+    """
+    legacy = f"supply_need_{supply_id}"
+    try:
+        docs = _shared._vault_store().find_supply_need_docs_by_supply_id(supply_id)
+    except Exception:
+        return legacy
+    ids = sorted(str(doc.get("_id")) for doc in docs if doc.get("_id"))
+    return ids[0] if ids else legacy
+
+
+def _resolve_equipment_doc_id(equipment_id: str) -> str:
+    """Resolve the canonical equipment_request ``_id`` for a bare ``equipment_id``.
+
+    See ``_resolve_supply_doc_id`` — same path-derived id problem and fallback.
+    """
+    legacy = f"equipment_request_{equipment_id}"
+    try:
+        docs = _shared._vault_store().find_equipment_request_docs_by_equipment_id(equipment_id)
+    except Exception:
+        return legacy
+    ids = sorted(str(doc.get("_id")) for doc in docs if doc.get("_id"))
+    return ids[0] if ids else legacy
+
+
 def locate_equipment_file_by_id(context: RunContext, equipment_id: str) -> Path | None:
     equipment_id = equipment_id.strip()
     if not equipment_id:
@@ -183,7 +217,7 @@ def _process_mark_supply_job(
     if not context.dry_run and processed_destination.exists():
         raise _shared.QueueProcessorError(f"Destination already exists: {processed_destination}")
 
-    doc_id = f"supply_need_{supply_id}"
+    doc_id = _resolve_supply_doc_id(supply_id)
     target = CanonicalTarget(
         doc_id=doc_id,
         doc_type="supply_need",
@@ -305,7 +339,7 @@ def _process_mark_equipment_job(
     if not context.dry_run and processed_destination.exists():
         raise _shared.QueueProcessorError(f"Destination already exists: {processed_destination}")
 
-    doc_id = f"equipment_request_{equipment_id}"
+    doc_id = _resolve_equipment_doc_id(equipment_id)
     target = CanonicalTarget(
         doc_id=doc_id,
         doc_type="equipment_request",
