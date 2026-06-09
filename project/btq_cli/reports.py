@@ -70,7 +70,6 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
     repair_parser.add_argument("--vault-root")
     repair_parser.add_argument("--dry-run", action="store_true")
     repair_parser.add_argument("--force", action="store_true")
-    repair_parser.add_argument("--apply", action="store_true")
     repair_parser.add_argument("--since")
     repair_parser.add_argument("--capture-id")
     repair_parser.add_argument("--mode", choices=sorted(repair.MODES))
@@ -249,8 +248,6 @@ def handle_repair_index(args: argparse.Namespace) -> int:
             repair_args.extend([f"--{name.replace('_', '-')}", str(value)])
     if args.force:
         repair_args.append("--force")
-    if args.apply:
-        repair_args.append("--apply")
     elif args.dry_run:
         repair_args.append("--dry-run")
     if args.json:

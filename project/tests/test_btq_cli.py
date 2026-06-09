@@ -47,7 +47,6 @@ EXPECTED_SUBCOMMANDS = [
     "watch-couchdb-field-captures",
     "watch-couchdb-queue",
     "watch-couchdb-voice-memos",
-    "refresh-vault",
     "setup-couchdb",
     "migrate-vault",
     "audit-site-coverage",
@@ -127,12 +126,6 @@ def test_transcribe_field_audio_parses_args_and_dispatches(monkeypatch: pytest.M
     assert args.command == "transcribe-field-audio"
     assert args.limit == 2
     assert args.json is True
-
-
-def test_refresh_vault_parses_args_and_dispatches(monkeypatch: pytest.MonkeyPatch) -> None:
-    args = _route(monkeypatch, vault, "handle_refresh_vault", ["refresh-vault", "--sites-only"])
-    assert args.command == "refresh-vault"
-    assert args.sites_only is True
 
 
 def test_replay_plan_parses_args_and_dispatches(monkeypatch: pytest.MonkeyPatch) -> None:

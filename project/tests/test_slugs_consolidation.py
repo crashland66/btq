@@ -7,12 +7,11 @@ from event_pipeline import schema
 from event_pipeline.couchdb.migrate_vault import slug_value
 from field_capture.person_slugs import employee_slug_candidates, last_first_person_slug, person_slug
 from ops_dashboard.common import slugify_status
-from processing_core.slugs import lower_dash_slug
+from processing_core.slugs import ascii_lower_dash_slug, lower_dash_slug
 from queue_processor import governance
 from queue_processor.handlers._shared import slugify_issue_component
 from queue_processor.handlers.unknowns import derive_source_unknown_id, slugify_unknown_id
 from vault_markdown import slugify_identifier
-from vault_sync.parsing import person_id_for, site_id_for, slugify as vault_sync_slugify
 
 
 def test_core_lower_dash_slug_unchanged() -> None:
@@ -33,10 +32,10 @@ def test_event_schema_slugify_output_matches_pre_consolidation() -> None:
     assert schema.slugify("!!!") == "event"
 
 
-def test_vault_sync_slugify_output_matches_pre_consolidation() -> None:
-    assert vault_sync_slugify("José Reyes Castillo") == "jose-reyes-castillo"
-    assert vault_sync_slugify("  A__B  ") == "a-b"
-    assert vault_sync_slugify(None) == ""
+def test_ascii_lower_dash_slug_output_matches_pre_consolidation() -> None:
+    assert ascii_lower_dash_slug("José Reyes Castillo") == "jose-reyes-castillo"
+    assert ascii_lower_dash_slug("  A__B  ") == "a-b"
+    assert ascii_lower_dash_slug(None) == ""
 
 
 def test_slugify_status_output_matches_pre_consolidation() -> None:
@@ -100,8 +99,8 @@ def test_person_slug_both_orders_preserved() -> None:
 
 def test_canonical_id_and_lookup_slugs_stay_consistent() -> None:
     person_frontmatter = {"first": "Maria", "last": "Hutton", "job": "7060"}
-    person_id = person_id_for(person_frontmatter)
-    site_id = site_id_for(person_frontmatter)
+    person_id = last_first_person_slug(first=str(person_frontmatter["first"]), last=str(person_frontmatter["last"]))
+    site_id = str(person_frontmatter["job"])
     issue_slug = slugify_issue_component("Gate Badge Reader")
 
     assert person_id == "hutton-maria"

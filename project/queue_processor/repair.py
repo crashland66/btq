@@ -10,16 +10,15 @@ from typing import Any
 
 from config import get_config
 from queue_processor.handlers import _shared
-from queue_processor.idempotency import compute_job_id, parse_frontmatter_text
+from queue_processor.idempotency import compute_job_id
 from queue_processor.manifest import manifest_path_for
 from queue_processor.processed_index import HANDLER_VERSION, ProcessedIndexError, append_record, index_path_for, iter_records
 from queue_processor.processed_index import build_record as build_processed_record
 from queue_processor.structured_log import write_event as write_structured_event
 
 
-MODES = {"full", "markers-only", "processed-only", "stale-artifacts", "canonical-content-drift"}
+MODES = {"full", "markers-only", "processed-only", "stale-artifacts"}
 DEFAULT_STALE_HOURS = 24
-QUEUE_JOB_MARKER_RE = r"<!--\s*btq_job_id:\s*([^>\s]+)\s*-->"
 
 
 @dataclass(frozen=True)
@@ -99,30 +98,6 @@ def scan_index(runtime_root: Path) -> tuple[dict[str, dict[str, Any]], list[Find
     return by_id, []
 
 
-def scan_markers(vault_root: Path) -> dict[str, list[dict[str, Any]]]:
-    markers: dict[str, list[dict[str, Any]]] = {}
-    if not vault_root.exists():
-        return markers
-    for path in sorted(vault_root.rglob("*.md")):
-        try:
-            text = path.read_text(encoding="utf-8")
-        except Exception:
-            continue
-        frontmatter, body, has_frontmatter = parse_frontmatter_text(text)
-        if not has_frontmatter:
-            continue
-        job_ids = frontmatter.get("btq_job_ids")
-        if isinstance(job_ids, str):
-            job_ids = [job_ids]
-        if not isinstance(job_ids, list):
-            continue
-        for job_id in job_ids:
-            if not isinstance(job_id, str) or not job_id.strip():
-                continue
-            markers.setdefault(job_id, []).append({"path": str(path), "body": body})
-    return markers
-
-
 def scan_canonical_job_ids(store: Any) -> dict[str, list[dict[str, Any]]]:
     markers: dict[str, list[dict[str, Any]]] = {}
     for doc in store.scan_job_id_docs():
@@ -177,73 +152,6 @@ def scan_manifests(runtime_root: Path) -> dict[str, dict[str, Any]]:
         if isinstance(capture_id, str):
             manifests[capture_id] = payload
     return manifests
-
-
-def _store_doc(store: Any, doc_id: str) -> dict[str, Any] | None:
-    docs = getattr(store, "docs", None)
-    if isinstance(docs, list):
-        for doc in docs:
-            if isinstance(doc, dict) and doc.get("_id") == doc_id:
-                return doc
-        return None
-    getter = getattr(store, "_get_doc", None)
-    if callable(getter):
-        doc = getter(doc_id)
-        return doc if isinstance(doc, dict) else None
-    return None
-
-
-def _queue_job_markers(text: str) -> list[str]:
-    import re
-
-    return sorted(set(match.group(1).strip() for match in re.finditer(QUEUE_JOB_MARKER_RE, text) if match.group(1).strip()))
-
-
-def scan_location_content_drift(vault_root: Path, *, store: Any | None = None) -> list[Finding]:
-    store = _shared._vault_store() if store is None else store
-    findings: list[Finding] = []
-    accounts_root = vault_root / "Accounts"
-    if not accounts_root.exists():
-        return findings
-    for path in sorted(accounts_root.glob("*/Locations/*/about.md")):
-        try:
-            projection_text = path.read_text(encoding="utf-8")
-            doc_id = _shared.canonical_location_doc_id_for_projection(path, projection_text)
-        except Exception as exc:
-            findings.append(
-                Finding(
-                    kind="location_content_drift_resolution_failed",
-                    severity="warning",
-                    message="location projection could not be resolved to a canonical CouchDB document",
-                    evidence={"path": str(path), "error": str(exc)},
-                )
-            )
-            continue
-        projection_body = _shared.canonical_content_body(projection_text)
-        canonical_doc = _store_doc(store, doc_id)
-        canonical_content = "" if canonical_doc is None else str(canonical_doc.get("content") or "")
-        if canonical_doc is None or projection_body != canonical_content:
-            projection_markers = _queue_job_markers(projection_body)
-            absent_markers = [marker for marker in projection_markers if marker not in canonical_content]
-            findings.append(
-                Finding(
-                    kind="location_content_drift",
-                    severity="warning",
-                    message="location projection body differs from canonical CouchDB content",
-                    evidence={
-                        "path": str(path),
-                        "doc_id": doc_id,
-                        "site_id": doc_id.removeprefix("location_"),
-                        "canonical_missing": canonical_doc is None,
-                        "projection_queue_job_markers": projection_markers,
-                        "queue_job_markers_absent_from_couchdb": absent_markers,
-                        "has_queue_job_marker_absent_from_couchdb": bool(absent_markers),
-                        "projection_body": projection_body,
-                    },
-                    ambiguous=False,
-                )
-            )
-    return findings
 
 
 def job_matches_capture(job_id: str, capture_id: str | None, processed: dict[str, Any], index: dict[str, Any], manifests: dict[str, dict[str, Any]]) -> bool:
@@ -375,10 +283,6 @@ def analyze(
     stale_hours: int = DEFAULT_STALE_HOURS,
     store: Any | None = None,
 ) -> tuple[list[Finding], dict[str, Any]]:
-    if mode == "canonical-content-drift":
-        findings = scan_location_content_drift(vault_root)
-        return findings, {"content_drift": findings}
-
     store = _shared._vault_store() if store is None else store
     processed = scan_processed_files(runtime_root)
     index, index_findings = scan_index(runtime_root)
@@ -495,24 +399,11 @@ def analyze(
     return findings, evidence
 
 
-def apply_repairs(runtime_root: Path, findings: list[Finding], evidence: dict[str, Any], *, apply_canonical_content: bool = False) -> list[str]:
+def apply_repairs(runtime_root: Path, findings: list[Finding], evidence: dict[str, Any]) -> list[str]:
     actions: list[str] = []
     processed = evidence.get("processed", {})
     index = evidence.get("index", {})
     for finding in findings:
-        if apply_canonical_content and finding.kind == "location_content_drift":
-            doc_id = str(finding.evidence["doc_id"])
-            projection_body = str(finding.evidence["projection_body"])
-            _shared._vault_store().patch_fields(doc_id, {"content": projection_body}, require_existing=True)
-            action = f"patched canonical content for {doc_id}"
-            actions.append(action)
-            write_structured_event(
-                runtime_root / "logs" / "queue_processor_events.jsonl",
-                "repair_action_applied",
-                action=action,
-                doc_id=doc_id,
-            )
-            continue
         if finding.kind != "missing_index_entry":
             continue
         job_id = finding.evidence["computed_job_id"]
@@ -542,12 +433,6 @@ def apply_repairs(runtime_root: Path, findings: list[Finding], evidence: dict[st
 
 def _display_finding(finding: Finding) -> dict[str, Any]:
     payload = asdict(finding)
-    evidence = dict(payload.get("evidence") or {})
-    projection_body = evidence.pop("projection_body", None)
-    if projection_body is not None:
-        evidence["projection_body_chars"] = len(str(projection_body))
-        evidence["projection_body_redacted"] = True
-    payload["evidence"] = evidence
     return payload
 
 
@@ -571,7 +456,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--vault-root", type=Path, default=config.vault_dir)
     parser.add_argument("--dry-run", action="store_true", default=True)
     parser.add_argument("--force", action="store_true")
-    parser.add_argument("--apply", action="store_true", help="Apply canonical-content drift repairs to CouchDB only.")
     parser.add_argument("--since")
     parser.add_argument("--capture-id")
     parser.add_argument("--mode", choices=sorted(MODES), default="full")
@@ -581,14 +465,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def run(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
-    if args.apply and args.mode != "canonical-content-drift":
-        print("--apply requires --mode canonical-content-drift")
-        return 2
     write_structured_event(
         args.runtime_root / "logs" / "queue_processor_events.jsonl",
         "repair_scan_started",
         mode=args.mode,
-        dry_run=not (args.force or args.apply),
+        dry_run=not args.force,
         since=args.since,
         capture_id=args.capture_id,
     )
@@ -600,13 +481,8 @@ def run(argv: list[str] | None = None) -> int:
         capture_id=args.capture_id,
     )
     actions: list[str] = []
-    if args.force or args.apply:
-        actions = apply_repairs(
-            args.runtime_root.expanduser(),
-            findings,
-            evidence,
-            apply_canonical_content=bool(args.apply),
-        )
+    if args.force:
+        actions = apply_repairs(args.runtime_root.expanduser(), findings, evidence)
     print(format_findings(findings, args.json))
     if actions and not args.json:
         print("Repair actions applied:")

@@ -7,13 +7,12 @@ import pytest
 from epistemic import slugify as epistemic_slugify
 from event_pipeline.schema import slugify as event_slugify
 from ops_dashboard.common import slugify_status
-from processing_core.slugs import lower_dash_slug
+from processing_core.slugs import ascii_lower_dash_slug, lower_dash_slug
 from processing_core.time import utc_now
 from queue_processor.governance import slugify as review_slugify
 from queue_processor.handlers._shared import slugify_issue_component
 from queue_processor.handlers.unknowns import slugify_unknown_id
 from vault_markdown import read_typed_markdown_note, slugify_identifier
-from vault_sync.parsing import slugify as vault_sync_slugify
 
 
 @pytest.mark.parametrize(
@@ -40,9 +39,9 @@ def test_slugify_wrappers_preserve_distinct_fallbacks() -> None:
 
 
 def test_behaviorally_distinct_slugifiers_stay_distinct() -> None:
-    assert vault_sync_slugify("Café déjà vu") == "cafe-deja-vu"
+    assert ascii_lower_dash_slug("Café déjà vu") == "cafe-deja-vu"
     assert epistemic_slugify("Café déjà vu") == "caf-d-j-vu"
-    assert vault_sync_slugify("") == ""
+    assert ascii_lower_dash_slug("") == ""
     assert slugify_status("Needs_Review + Open") == "needs_reviewopen"
 
 

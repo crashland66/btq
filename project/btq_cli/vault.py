@@ -11,18 +11,6 @@ from vps import ssh as vps_ssh
 
 
 def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
-    refresh_vault_parser = subparsers.add_parser(
-        "refresh-vault",
-        help="Sync operational vault sites and people into CouchDB.",
-    )
-    refresh_vault_parser.add_argument("--vault-root", type=Path)
-    refresh_vault_parser.add_argument("--sites-only", action="store_true")
-    refresh_vault_parser.add_argument("--people-only", action="store_true")
-    refresh_vault_parser.add_argument("--no-prune", action="store_true")
-    refresh_vault_parser.add_argument("--dry-run", action="store_true")
-    refresh_vault_parser.add_argument("--json", action="store_true")
-    refresh_vault_parser.add_argument("--log-path", type=Path)
-    refresh_vault_parser.set_defaults(func=handle_refresh_vault)
     setup_couchdb_parser = subparsers.add_parser(
         "setup-couchdb",
         help="Provision CouchDB databases, design docs, site data, and optional replication.",
@@ -90,12 +78,6 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
     ops_dashboard_parser.add_argument("--port", type=int, default=8765, help="Port to listen on.")
     ops_dashboard_parser.add_argument("--runtime-root", help="BTQ runtime root to inspect.")
     ops_dashboard_parser.set_defaults(func=handle_ops_dashboard)
-
-
-def handle_refresh_vault(args: argparse.Namespace) -> int:
-    from vault_sync.refresh import run as refresh_run
-
-    return refresh_run(args)
 
 
 def handle_setup_couchdb(args: argparse.Namespace) -> int:
