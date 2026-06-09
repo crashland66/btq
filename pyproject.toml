@@ -37,6 +37,9 @@ pythonpath = ["project"]
 # unit tests). Both are pinned here so bare `pytest` always collects the full
 # suite — `pytest tests/` is an undercount. See ai-methodology WORKFLOW.md.
 testpaths = ["tests", "project/tests"]
+markers = [
+  "real_couchdb: test intentionally talks to a live CouchDB (opts out of the hermetic guard in conftest.py)",
+]
 
 [tool.ruff]
 target-version = "py39"

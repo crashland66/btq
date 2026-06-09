@@ -63,3 +63,50 @@ def _pin_synthetic_site_registry() -> None:
 # `couchdb_review` fixture that drives the new CouchDB `_rev` review contract.
 # --------------------------------------------------------------------------- #
 from test_helpers.couchdb_review_double import couchdb_review  # noqa: E402,F401
+
+# --------------------------------------------------------------------------- #
+# Hermetic CouchDB guard: no test may open a real CouchDB (:5984) connection.
+#
+# CouchDB clients build their target from BTQ_COUCHDB_URL (default
+# localhost:5984). On a dev box where that env var points at a reachable
+# CouchDB — or where code reads ~/.config/btq/config.json — tests that forget
+# the in-memory fixtures (recording_vault_store / couchdb_review) would silently
+# READ, and a few (review approve/reject/client-informed) would WRITE,
+# PRODUCTION data. An audit found 100+ tests making real :5984 calls that pass
+# only because the default target happens to be unreachable on dev boxes.
+#
+# This raises the same "connection refused" the clients already handle, so
+# degrade-when-down tests keep passing while a live CouchDB is unreachable by
+# construction. Integration tests that genuinely need one mark
+# @pytest.mark.real_couchdb.
+# --------------------------------------------------------------------------- #
+import urllib.error as _urlerr  # noqa: E402
+import urllib.request as _urlreq  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _block_real_couchdb(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
+    if request.node.get_closest_marker("real_couchdb"):
+        return
+    # Force the hermetic "no CouchDB configured" condition regardless of the dev's
+    # shell env or ~/.config/btq/config.json. Lots of code branches on whether
+    # BTQ_COUCHDB_URL is set (CouchDB path vs filesystem fallback); unsetting it
+    # here makes every test take the same fallback branch as CI. Tests that
+    # exercise the configured-CouchDB path set these themselves afterward.
+    for _var in ("BTQ_COUCHDB_URL", "BTQ_COUCHDB_USER", "BTQ_COUCHDB_PASSWORD"):
+        monkeypatch.delenv(_var, raising=False)
+    _real_urlopen = _urlreq.urlopen
+
+    def _guard(url, *args, **kwargs):
+        target = url.full_url if hasattr(url, "full_url") else str(url)
+        if ":5984" in target:
+            raise _urlerr.URLError(
+                ConnectionRefusedError(
+                    "Real CouchDB blocked in tests (hermetic guard in conftest.py). "
+                    "Use the recording_vault_store / couchdb_review fixtures, or mark "
+                    "@pytest.mark.real_couchdb for a live integration test."
+                )
+            )
+        return _real_urlopen(url, *args, **kwargs)
+
+    monkeypatch.setattr(_urlreq, "urlopen", _guard)
