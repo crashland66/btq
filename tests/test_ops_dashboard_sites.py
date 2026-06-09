@@ -3,17 +3,14 @@ from __future__ import annotations
 import json
 from http import HTTPStatus
 from pathlib import Path
-from types import SimpleNamespace
 from urllib import error
 from urllib.parse import parse_qs, urlsplit
 
 import pytest
 
-import ops_dashboard.app as ops_app
 from ops_dashboard.app import route_response, route_response_with_headers
 from ops_dashboard.sections import sites
 from tests.test_ops_dashboard import request_text
-from tests.test_site_visits import write_visit
 
 
 def site_doc(site_id: str = "7050", *, active: bool = True) -> dict[str, object]:
@@ -30,6 +27,66 @@ def site_doc(site_id: str = "7050", *, active: bool = True) -> dict[str, object]
         "capture_guidance": "Capture guidance",
         "display_categories": [{"label": "Restrooms", "canonical": "restrooms"}],
     }
+
+
+def visit_view_row(
+    site_id: str,
+    visit_date: str,
+    *,
+    visited_by: str | None = "Jordan Avery",
+    confidence: str = "high",
+    evidence: str = "All done.",
+) -> dict[str, object]:
+    doc = {
+        "type": "visit",
+        "_id": f"visit_{visit_date}",
+        "site_id": site_id,
+        "date": visit_date,
+        "visited_by": visited_by,
+        "confidence": confidence,
+        "evidence": evidence,
+        "source": "test",
+        "timestamp": "",
+        "visit_key": "",
+        "visit_type": "site",
+    }
+    return {
+        "id": doc["_id"],
+        "key": [site_id, visit_date],
+        "value": {"site_id": site_id, "date": visit_date},
+        "doc": doc,
+    }
+
+
+def install_visit_view(monkeypatch: pytest.MonkeyPatch, rows: list[dict[str, object]]) -> list[dict[str, object]]:
+    calls: list[dict[str, object]] = []
+
+    def fake_query_view(
+        base_url: str,
+        auth_headers: dict[str, str],
+        database: str,
+        ddoc: str,
+        view: str,
+        **kwargs: object,
+    ) -> list[dict[str, object]]:
+        calls.append(
+            {
+                "base_url": base_url,
+                "auth_headers": auth_headers,
+                "database": database,
+                "ddoc": ddoc,
+                "view": view,
+                "kwargs": kwargs,
+            }
+        )
+        return rows
+
+    monkeypatch.setattr(sites, "couchdb_base_url", lambda: "http://couchdb.test")
+    monkeypatch.setattr(sites, "auth_headers", lambda: {"Authorization": "test"})
+    monkeypatch.setattr(sites.couchdb_config, "vault_database", lambda: "btq_vault_test")
+    monkeypatch.setattr(sites.couchdb_config, "timeout", lambda: 2.5)
+    monkeypatch.setattr(sites, "query_view", fake_query_view)
+    return calls
 
 
 def test_sites_list_renders_all_sites_including_inactive(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -79,59 +136,76 @@ def test_site_detail_form_prepopulates_from_couchdb(monkeypatch: pytest.MonkeyPa
 
 
 def test_site_detail_form_shows_recent_visits_section(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    long_evidence = "A" * 125
     monkeypatch.setattr(sites, "load_site", lambda site_id: site_doc(site_id))
-    monkeypatch.setattr(
-        sites,
-        "discover_site_visits",
-        lambda _vault_dir, *, site_id, limit: {
-            "visits": [
-                {
-                    "date": "2026-05-14",
-                    "confidence": "provisional",
-                    "evidence": "All done.",
-                    "site_id": "7050",
-                    "timestamp": "",
-                    "source": "",
-                    "visit_key": "",
-                    "path": "",
-                }
-            ]
-        },
+    calls = install_visit_view(
+        monkeypatch,
+        [
+            visit_view_row("9999", "2026-05-15", visited_by="Wrong Site"),
+            visit_view_row(
+                "7050",
+                "2026-05-14",
+                visited_by="Jordan Avery",
+                confidence="provisional",
+                evidence=long_evidence,
+            ),
+        ],
     )
-
-    body = request_text("GET", "/sites?site_id=7050", tmp_path / "runtime")[2]
-
-    assert "Recent Visits" in body
-    assert "2026-05-14" in body
-
-
-def test_recent_visits_panel_shows_first_name_when_resolved(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    vault_root = tmp_path / "vault"
-    people_dir = vault_root / "People"
-    people_dir.mkdir(parents=True)
-    (people_dir / "jordan-avery.md").write_text(
-        """---
-person_id: per_test003
-name: "Avery, Jordan"
----
-""",
-        encoding="utf-8",
-    )
-    write_visit(vault_root, file_date="2026-05-14", site_id="7050", visited_by="per_test003")
-    write_visit(vault_root, file_date="2026-05-15", site_id="7050", visited_by="per_unknown")
-    monkeypatch.setattr(sites, "load_site", lambda site_id: site_doc(site_id))
-    monkeypatch.setattr(ops_app, "get_config", lambda: SimpleNamespace(vault_dir=vault_root))
 
     body = request_text("GET", "/sites?site_id=7050", tmp_path / "runtime")[2]
     recent_visits = body.split("<h2>Recent Visits</h2>", 1)[1]
 
-    assert ">Jordan<" in recent_visits
-    assert ">per_unknown<" in recent_visits
+    assert "Recent Visits" in body
+    assert "2026-05-14" in recent_visits
+    assert "Jordan Avery" in recent_visits
+    assert "provisional" in recent_visits
+    assert f'{"A" * 120}...' in recent_visits
+    assert calls == [
+        {
+            "base_url": "http://couchdb.test",
+            "auth_headers": {"Authorization": "test"},
+            "database": "btq_vault_test",
+            "ddoc": sites.DDOC,
+            "view": "visits_by_site_date",
+            "kwargs": {"include_docs": True, "timeout": 2.5},
+        }
+    ]
+
+
+def test_recent_visits_panel_shows_full_visited_by_from_canonical_doc(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(sites, "load_site", lambda site_id: site_doc(site_id))
+    install_visit_view(
+        monkeypatch,
+        [
+            visit_view_row("7050", "2026-05-14", visited_by="Jordan Avery"),
+            visit_view_row("7050", "2026-05-15", visited_by="Morgan Lee"),
+        ],
+    )
+
+    body = request_text("GET", "/sites?site_id=7050", tmp_path / "runtime")[2]
+    recent_visits = body.split("<h2>Recent Visits</h2>", 1)[1]
+
+    assert ">Morgan Lee<" in recent_visits
+    assert ">Jordan Avery<" in recent_visits
+
+
+def test_recent_visits_panel_allows_missing_visited_by(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(sites, "load_site", lambda site_id: site_doc(site_id))
+    install_visit_view(monkeypatch, [visit_view_row("7050", "2026-05-16", visited_by=None)])
+
+    body = request_text("GET", "/sites?site_id=7050", tmp_path / "runtime")[2]
+    recent_visits = body.split("<h2>Recent Visits</h2>", 1)[1]
+
+    assert "2026-05-16" in recent_visits
+    assert ">None<" not in recent_visits
 
 
 def test_site_detail_form_shows_empty_state_when_no_visits(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setattr(sites, "load_site", lambda site_id: site_doc(site_id))
-    monkeypatch.setattr(sites, "discover_site_visits", lambda _vault_dir, *, site_id, limit: {"visits": []})
+    install_visit_view(monkeypatch, [])
 
     body = request_text("GET", "/sites?site_id=7050", tmp_path / "runtime")[2]
 

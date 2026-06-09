@@ -4,14 +4,20 @@ import html
 import json
 import os
 import re
+from datetime import date
 from typing import Any
 from urllib import error, parse, request
 from urllib.parse import parse_qs, quote, urlencode
 
+from btq_vault.projector import (  # noqa: PLC2701 - mirror site_detail canonical view helpers.
+    DDOC,
+    _row_date,
+    _site_id,
+    query_view,
+)
 from event_pipeline import couchdb_config
 from ops_dashboard.common import first_query_value, humanize_key, parse_display_categories_rows, render_display_categories_editor, render_table
 from ops_dashboard.layout import html_page
-from site_visits import discover_site_visits
 
 
 SITE_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
@@ -182,18 +188,30 @@ def render_form(ctx: object, doc: dict[str, Any], *, is_new: bool, query: dict[s
 
 
 def visit_display_name(visit: dict[str, Any]) -> str:
-    first = str(visit.get("visited_by_first_name") or "").strip()
-    if first:
-        return first
     raw = str(visit.get("visited_by") or "").strip()
     return raw
 
 
 def render_visits_panel(ctx: object, site_id: str) -> str:
     try:
-        config = ctx.config
-        result = discover_site_visits(config.vault_dir, site_id=site_id, limit=5)
-        visits = result.get("visits") if isinstance(result.get("visits"), list) else []
+        rows = [
+            row
+            for row in query_view(
+                couchdb_base_url(),
+                auth_headers(),
+                couchdb_config.vault_database(),
+                DDOC,
+                "visits_by_site_date",
+                include_docs=True,
+                timeout=couchdb_config.timeout(),
+            )
+            if _site_id(row) == str(site_id)
+        ]
+        visits = [
+            row.get("doc")
+            for row in sorted(rows, key=lambda row: _row_date(row) or date.min, reverse=True)[:5]
+            if isinstance(row.get("doc"), dict)
+        ]
     except Exception:  # noqa: BLE001
         visits = []
 
