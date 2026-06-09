@@ -60,15 +60,28 @@ EQUIPMENT_CONFIRM_ROUTES = {str(config["confirm_route"]): name for name, config 
 
 def render_field_capture_equipment(ctx: object) -> str:
     query = getattr(ctx, "query", {})
-    config = ctx.config
-    site_id = str((query.get("site_id") or [""])[0]).strip() or None
-    status = str((query.get("status") or [""])[0]).strip() or None
-    report = discover_site_equipment(config.vault_dir, site_id=site_id, status=status)
-    exported = equipment_from_report(report)
+    site_id = query_value(query, "site_id") or None
+    status = query_value(query, "status") or None
     title = build_title(site_id, status)
     return html_page(
         title,
-        f"""
+        render_field_capture_equipment_body(ctx),
+        active_section="equipment",
+    )
+
+
+def render_field_capture_equipment_body(ctx: object, *, embedded: bool = False) -> str:
+    query = getattr(ctx, "query", {})
+    config = ctx.config
+    site_id = query_value(query, "site_id") or None
+    status = query_value(query, "status") or None
+    sort = query_value(query, "sort")
+    report = discover_site_equipment(config.vault_dir, site_id=site_id, status=status)
+    exported = sort_equipment(equipment_from_report(report), sort)
+    title = build_title(site_id, status)
+    action = "/" if embedded else "/equipment"
+    tab = "equipment" if embedded else None
+    return f"""
     <header>
       <h1>{html.escape(title)}</h1>
       <p class="muted">Read-only structured equipment request records from the vault.</p>
@@ -79,15 +92,13 @@ def render_field_capture_equipment(ctx: object) -> str:
     </section>
     <section>
       <h2>Filters</h2>
-      {render_filter_form(site_id, status, report.get("counts") if isinstance(report.get("counts"), dict) else {})}
+      {render_filter_form(site_id, status, report.get("counts") if isinstance(report.get("counts"), dict) else {}, action=action, tab=tab, sort=sort)}
     </section>
     <section>
       <h2>Equipment</h2>
       {render_equipment_list(exported)}
     </section>
-""",
-        active_section="equipment",
-    )
+"""
 
 
 def build_title(site_id: str | None, status: str | None) -> str:
@@ -99,7 +110,15 @@ def build_title(site_id: str | None, status: str | None) -> str:
     return " ".join(parts)
 
 
-def render_filter_form(site_id: str | None, status: str | None, counts: dict[str, object] | None = None) -> str:
+def render_filter_form(
+    site_id: str | None,
+    status: str | None,
+    counts: dict[str, object] | None = None,
+    *,
+    action: str = "/equipment",
+    tab: str | None = None,
+    sort: str = "",
+) -> str:
     options = []
     counts = counts if isinstance(counts, dict) else {}
     status_counts = counts.get("by_status") if isinstance(counts.get("by_status"), dict) else counts
@@ -112,11 +131,19 @@ def render_filter_form(site_id: str | None, status: str | None, counts: dict[str
             if isinstance(count, int):
                 count_text = f" ({count})"
         options.append(f'<option value="{html.escape(value)}"{selected}>{html.escape(label)}{count_text}</option>')
-    return f"""<form method="get" action="/equipment" data-submit-on-change>
+    tab_input = f'<input type="hidden" name="tab" value="{html.escape(tab)}">' if tab else ""
+    sort_options = []
+    for value, label in (("", "Default order"), ("priority", "Priority"), ("site", "Site"), ("recency", "Most recent")):
+        selected = ' selected' if (sort or "") == value else ""
+        sort_options.append(f'<option value="{html.escape(value)}"{selected}>{html.escape(label)}</option>')
+    return f"""<form method="get" action="{html.escape(action)}" data-submit-on-change>
+        {tab_input}
         <label for="site_id">Site ID</label>
         <input id="site_id" name="site_id" value="{html.escape(site_id or '')}">
         <label for="status">Status</label>
         <select id="status" name="status">{"".join(options)}</select>
+        <label for="sort">Sort</label>
+        <select id="sort" name="sort">{"".join(sort_options)}</select>
         <p><button type="submit">Apply filters</button></p>
       </form>"""
 
@@ -134,6 +161,7 @@ def render_equipment_list(equipment: list[object]) -> str:
             {"key": "site_id", "label": "Site", "format": lambda value, row: render_site_label(value, site_name=row.get("site_name")), "priority": 1, "nowrap": True},
             {"key": "requested_by", "label": "Requested By", "priority": 2, "nowrap": True},
             {"key": "reason", "label": "Reason", "format": lambda value, _row: html.escape(truncate(str(value or ""))), "priority": 2},
+            {"key": "equipment_id", "label": "Actions", "format": lambda _value, row: render_row_actions(row), "priority": 2, "nowrap": True},
             {"key": "_id", "label": "ID", "format": lambda value, _row: html.escape(str(value or "")), "priority": 3, "nowrap": True},
         ],
         empty_text="No equipment requests found.",
@@ -143,6 +171,25 @@ def render_equipment_list(equipment: list[object]) -> str:
 def equipment_from_report(report: dict[str, object]) -> list[dict[str, object]]:
     equipment = report.get("equipment") if isinstance(report.get("equipment"), list) else []
     return [equipment_as_export(request, include_path=True) for request in equipment]
+
+
+def query_value(query: dict[str, list[str]], key: str) -> str:
+    return str((query.get(key) or [""])[0]).strip()
+
+
+def sort_equipment(equipment: list[dict[str, object]], sort: str) -> list[dict[str, object]]:
+    if sort == "site":
+        return sorted(equipment, key=lambda request: (str(request.get("site_id") or ""), str(request.get("equipment_name") or ""), str(request.get("equipment_id") or "")))
+    if sort == "recency":
+        return sorted(
+            equipment,
+            key=lambda request: (
+                str(request.get("created_at") or request.get("observed_at") or ""),
+                str(request.get("equipment_id") or ""),
+            ),
+            reverse=True,
+        )
+    return equipment
 
 
 def find_equipment(vault_root: Path, equipment_id: str) -> dict[str, object] | None:
@@ -217,6 +264,15 @@ def render_action_panel(request: dict[str, object]) -> str:
         for _name, config in transitions
     )
     return f"<section><h2>Actions</h2>{current_pill}{links}</section>"
+
+
+def render_row_actions(request: dict[str, object]) -> str:
+    equipment_id = str(request.get("equipment_id") or "")
+    links = [
+        f'<a href="{html.escape(str(config["confirm_route"]))}?equipment_id={quote(equipment_id)}">{html.escape(str(config["label"]))}</a>'
+        for _name, config in valid_transitions(request.get("status"))
+    ]
+    return " ".join(links)
 
 
 def render_equipment_mark_confirm(ctx: object, transition_name: str) -> str:
