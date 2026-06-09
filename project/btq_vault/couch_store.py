@@ -182,6 +182,25 @@ class CouchDBEntityStore:
             raise CouchDBEntityStoreError("CouchDB location query returned no docs list")
         return [doc for doc in docs if isinstance(doc, dict)]
 
+    def job_id_applied_doc_id(self, job_id: str) -> str | None:
+        """Return a canonical doc id carrying the supplied btq job id."""
+        response = self._request_json(
+            "POST",
+            "_find",
+            {
+                "selector": {"btq_job_ids": {"$elemMatch": {"$eq": job_id}}},
+                "fields": ["_id"],
+                "limit": 1,
+            },
+        )
+        docs = response.get("docs")
+        if not isinstance(docs, list):
+            raise CouchDBEntityStoreError("CouchDB job_id applied query returned no docs list")
+        for doc in docs:
+            if isinstance(doc, dict) and doc.get("_id"):
+                return str(doc["_id"])
+        return None
+
     def find_visit_docs(self, site_id: str, date: str, *, limit: int = VISIT_DEDUP_QUERY_LIMIT) -> list[dict[str, Any]]:
         """Return canonical visit docs for a site/date needed for dedup checks."""
         response = self._request_json(

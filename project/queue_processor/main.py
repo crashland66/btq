@@ -174,26 +174,10 @@ def append_processed_index_record(job_path: Path, job: QueueJob, context: RunCon
 
 def _job_has_applied_marker(job: QueueJob, context: RunContext) -> tuple[bool, str | None]:
     try:
-        target_hint = target_path_hint(job, context)
+        doc_id = _shared._vault_store().job_id_applied_doc_id(job.job_id)
     except Exception:
         return False, None
-    for raw_target in target_hint.split(", "):
-        try:
-            target_path = Path(raw_target)
-        except Exception:
-            continue
-        if not target_path.is_absolute():
-            continue
-        if not (_shared.path_is_within(target_path, context.vault_root) or _shared.path_is_within(target_path, context.personal_vault_root)):
-            continue
-        if not target_path.exists() or not target_path.is_file():
-            continue
-        try:
-            if _shared.has_job_been_applied(target_path.read_text(encoding="utf-8"), job.job_id):
-                return True, str(target_path)
-        except Exception:
-            continue
-    return False, None
+    return doc_id is not None, doc_id
 
 
 def _archive_job_file(

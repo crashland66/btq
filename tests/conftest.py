@@ -20,6 +20,14 @@ class RmwRecordingVaultStore(RecordingVaultStore):
         locations = [dict(doc) for doc in self.docs if doc.get("type") == "location"]
         return locations[:limit]
 
+    def job_id_applied_doc_id(self, job_id: str) -> str | None:
+        for doc in self.docs:
+            job_ids = doc.get("btq_job_ids")
+            if isinstance(job_ids, list) and job_id in [str(item) for item in job_ids]:
+                doc_id = doc.get("_id")
+                return str(doc_id) if doc_id else None
+        return None
+
     def find_unknown_capture_docs(self, status: str | None = "unresolved", *, limit: int = 10000) -> list[dict[str, Any]]:
         results: list[dict[str, Any]] = []
         for doc in self.docs:

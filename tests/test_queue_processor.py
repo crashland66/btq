@@ -13,6 +13,7 @@ import pytest
 from event_to_queue.adapter import event_to_job
 from queue_spec import validate_job
 import btq
+from btq_vault.couch_store import CouchDBEntityStore
 from btq_vault.entity_types import OPERATOR_ID_GREG
 from btq_vault import markdown_export
 from event_pipeline import couchdb_config
@@ -240,6 +241,14 @@ class RmwRecordingVaultStore(RecordingVaultStore):
         locations = [dict(doc) for doc in self.docs if doc.get("type") == "location"]
         return locations[:limit]
 
+    def job_id_applied_doc_id(self, job_id: str) -> str | None:
+        for doc in self.docs:
+            job_ids = doc.get("btq_job_ids")
+            if isinstance(job_ids, list) and job_id in [str(item) for item in job_ids]:
+                doc_id = doc.get("_id")
+                return str(doc_id) if doc_id else None
+        return None
+
     def update_doc(
         self,
         doc_id: str,
@@ -270,7 +279,7 @@ class RmwRecordingVaultStore(RecordingVaultStore):
         return dict(stored)
 
 
-def use_recording_vault_store(monkeypatch: pytest.MonkeyPatch) -> RecordingVaultStore:
+def use_recording_vault_store(monkeypatch: pytest.MonkeyPatch) -> RmwRecordingVaultStore:
     store = RmwRecordingVaultStore()
     monkeypatch.setattr(shared, "_VAULT_STORE", store)
     return store
@@ -281,6 +290,55 @@ def use_recording_personal_journal_store(monkeypatch: pytest.MonkeyPatch) -> Rmw
     store.database = couchdb_config.DEFAULT_PERSONAL_JOURNAL_DB
     monkeypatch.setattr(shared, "_PERSONAL_JOURNAL_STORE", store)
     return store
+
+
+def test_recording_vault_store_job_id_applied_doc_id_hit_and_miss() -> None:
+    store = RmwRecordingVaultStore()
+    store.docs.extend(
+        [
+            {"_id": "note_without_jobs", "type": "note"},
+            {"_id": "note_with_jobs", "type": "note", "btq_job_ids": ["job-hit"]},
+        ]
+    )
+
+    assert store.job_id_applied_doc_id("job-hit") == "note_with_jobs"
+    assert store.job_id_applied_doc_id("job-miss") is None
+
+
+def test_couchdb_entity_store_job_id_applied_doc_id_hit_and_miss(monkeypatch: pytest.MonkeyPatch) -> None:
+    store = CouchDBEntityStore("http://couchdb.invalid", {}, "btq_vault")
+    calls: list[tuple[str, str, dict[str, Any] | None]] = []
+
+    def fake_request_json(method: str, doc_id: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        calls.append((method, doc_id, payload))
+        if payload and payload["selector"]["btq_job_ids"]["$elemMatch"]["$eq"] == "job-hit":
+            return {"docs": [{"_id": "note_with_jobs"}]}
+        return {"docs": []}
+
+    monkeypatch.setattr(store, "_request_json", fake_request_json)
+
+    assert store.job_id_applied_doc_id("job-hit") == "note_with_jobs"
+    assert store.job_id_applied_doc_id("job-miss") is None
+    assert calls == [
+        (
+            "POST",
+            "_find",
+            {
+                "selector": {"btq_job_ids": {"$elemMatch": {"$eq": "job-hit"}}},
+                "fields": ["_id"],
+                "limit": 1,
+            },
+        ),
+        (
+            "POST",
+            "_find",
+            {
+                "selector": {"btq_job_ids": {"$elemMatch": {"$eq": "job-miss"}}},
+                "fields": ["_id"],
+                "limit": 1,
+            },
+        ),
+    ]
 
 
 def seed_projection_docs_as_canonical(vault_root: Path, store: RecordingVaultStore | None = None) -> RecordingVaultStore:
@@ -1392,7 +1450,8 @@ def test_existing_processed_destination_with_indexed_job_exits_cleanly(tmp_path:
     assert "indexed-replay.json" in events_text
 
 
-def test_existing_processed_destination_with_applied_job_exits_cleanly(tmp_path: Path) -> None:
+def test_existing_processed_destination_with_applied_job_exits_cleanly(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    store = use_recording_vault_store(monkeypatch)
     project_root, vault_root, runtime_root, _log_path = make_roots(tmp_path)
     payload = {
         "job_id": "applied-replay",
@@ -1404,8 +1463,7 @@ def test_existing_processed_destination_with_applied_job_exits_cleanly(tmp_path:
         },
     }
     computed_job_id = qp.compute_job_id(payload)
-    target_path = vault_root / "Journal" / "2026-06-02.md"
-    target_path.write_text(f"---\nbtq_job_ids:\n  - {computed_job_id}\n---\nAlready applied replay note.\n", encoding="utf-8")
+    store.docs.append({"_id": "note_journal_2026-06-02", "type": "note", "btq_job_ids": [computed_job_id]})
     write_job(runtime_root / "queue", "applied-replay.json", payload)
     processed_path = runtime_root / "processed" / "applied-replay.json"
     processed_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1440,6 +1498,7 @@ def test_existing_processed_destination_with_applied_job_exits_cleanly(tmp_path:
     events_text = (runtime_root / "logs" / "queue_processor_events.jsonl").read_text(encoding="utf-8")
     assert "queue_archive_collision_already_handled" in events_text
     assert "applied-marker" in events_text
+    assert "job-id-marker-present" in events_text
 
 
 def test_ambiguous_failed_destination_collision_stays_retryable_and_logs(tmp_path: Path) -> None:
@@ -4775,7 +4834,7 @@ def test_observations_do_not_appear_in_people_file(tmp_path: Path) -> None:
 
 
 def test_crash_after_write_before_move_reruns_safely(tmp_path: Path, monkeypatch) -> None:
-    use_recording_vault_store(monkeypatch)
+    store = use_recording_vault_store(monkeypatch)
     project_root, vault_root, runtime_root, log_path = make_roots(tmp_path)
     target_path = vault_root / "Journal" / "2026-04-20.md"
     job_path = write_job(
@@ -4812,6 +4871,7 @@ def test_crash_after_write_before_move_reruns_safely(tmp_path: Path, monkeypatch
 
     assert job_path.exists()
     assert target_path.read_text(encoding="utf-8").count("Crash-safe queue note.") == 1
+    assert store.job_id_applied_doc_id(job.job_id) == "note_journal_2026-04-20"
 
     stdout, log_text = run_jobs(project_root, vault_root, runtime_root, log_path)
 
@@ -4826,6 +4886,7 @@ def test_visit_create_crash_after_write_before_move_reruns_safely(
     legacy_markdown_writes: None,
 ) -> None:
     project_root, vault_root, runtime_root, log_path = make_roots(tmp_path)
+    store = use_recording_vault_store(monkeypatch)
     site_path = vault_root / "Accounts" / "Wgtco" / "Locations" / "7030 - Western Gas Transmission" / "about.md"
     write_frontmatter_file(
         site_path,
@@ -4836,6 +4897,17 @@ def test_visit_create_crash_after_write_before_move_reruns_safely(
             ("type", "location"),
         ],
         body="# Western Gas Transmission\n",
+    )
+    store.docs.append(
+        {
+            "_id": "location_7030",
+            "type": "location",
+            "site_id": "7030",
+            "job": "7030",
+            "location": "Western Gas Transmission",
+            "account": "Wgtco",
+            "vault_path": str(site_path),
+        }
     )
     job_path = write_job(
         runtime_root / "queue",
@@ -4874,6 +4946,7 @@ def test_visit_create_crash_after_write_before_move_reruns_safely(
     project_markdown_exports(vault_root)
     assert job_path.exists()
     assert visit_path.read_text(encoding="utf-8").count("evidence: I was at Western Gas Transmission.") == 1
+    assert store.job_id_applied_doc_id(job.job_id) is not None
 
     stdout, log_text = run_jobs(project_root, vault_root, runtime_root, log_path)
 
