@@ -285,7 +285,7 @@ def process_log_supply_need_job(job_path: Path, job: QueueJob, context: RunConte
 
     target_path.parent.mkdir(parents=True, exist_ok=True)
     _shared.atomic_write_text(target_path, final_text)
-    _shared.write_mutation_evidence(context, job, target_path, existing_text, final_text, f"supply_need {supply_id}")
+    _shared.write_mutation_evidence(context, job, canonical_doc, f"supply_need {supply_id}")
     moved_path = _shared.move_job_file(job_path, processed_dir)
     print(f"Job {job.job_id}: updated {target_path}")
     print(f"Job {job.job_id}: moved queue file to {moved_path}")
@@ -371,7 +371,7 @@ def process_log_equipment_request_job(job_path: Path, job: QueueJob, context: Ru
 
     target_path.parent.mkdir(parents=True, exist_ok=True)
     _shared.atomic_write_text(target_path, final_text)
-    _shared.write_mutation_evidence(context, job, target_path, existing_text, final_text, f"equipment_request {equipment_id}")
+    _shared.write_mutation_evidence(context, job, canonical_doc, f"equipment_request {equipment_id}")
     moved_path = _shared.move_job_file(job_path, processed_dir)
     print(f"Job {job.job_id}: updated {target_path}")
     print(f"Job {job.job_id}: moved queue file to {moved_path}")
@@ -413,9 +413,9 @@ def process_update_site_equipment_job(job_path: Path, job: QueueJob, context: Ru
         print(f"Job {job.job_id}: would update site equipment inventory")
         _shared.write_log_line(context.log_path, f"job_id={job.job_id} action=update-site-equipment status=success error=")
         return
-    _shared.patch_canonical_location_content(site_path, final_text, job)
+    canonical_doc = _shared.patch_canonical_location_content(site_path, final_text, job)
     _shared.atomic_write_text(site_path, final_text)
-    _shared.write_mutation_evidence(context, job, site_path, existing_text, final_text, new_body)
+    _shared.write_mutation_evidence(context, job, canonical_doc, new_body)
     moved_path = _shared.move_job_file(job_path, processed_dir)
     print(f"Job {job.job_id}: updated {site_path}")
     print(f"Job {job.job_id}: moved queue file to {moved_path}")

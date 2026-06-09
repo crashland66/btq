@@ -133,9 +133,7 @@ def process_record_unknown_capture_job(job_path: Path, job: QueueJob, context: R
         _shared.write_mutation_evidence(
             context,
             job,
-            target_path,
-            existing_text,
-            final_text,
+            canonical_doc,
             str(payload["content"]).strip(),
         )
 

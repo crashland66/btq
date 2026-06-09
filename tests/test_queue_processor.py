@@ -3071,7 +3071,8 @@ def test_log_supply_need_records_mutation_evidence(tmp_path: Path) -> None:
     evidence_text = "\n".join(path.read_text(encoding="utf-8") for path in evidence_files)
     assert '"handler_type": "log_supply_need"' in evidence_text
     assert '"capture_id": "cap-supply-summit"' in evidence_text
-    assert "BrightWash cleaner" in evidence_text
+    # Evidence records the canonical mutation (doc id), not the rendered Markdown excerpt (C3-316d).
+    assert '"target_doc_id": "supply_need_' in evidence_text
 
 
 def test_log_equipment_request_writes_new_file_under_site_equipment(
@@ -3381,7 +3382,8 @@ def test_log_equipment_request_records_mutation_evidence(tmp_path: Path) -> None
     evidence_text = "\n".join(path.read_text(encoding="utf-8") for path in evidence_files)
     assert '"handler_type": "log_equipment_request"' in evidence_text
     assert '"capture_id": "cap-equipment-summit"' in evidence_text
-    assert "vacuum" in evidence_text
+    # Evidence records the canonical mutation (doc id), not the rendered Markdown excerpt (C3-316d).
+    assert '"target_doc_id": "equipment_request_' in evidence_text
 
 
 def test_process_update_site_equipment_creates_subsection_when_absent(tmp_path: Path) -> None:
@@ -4626,7 +4628,8 @@ def test_close_recruiting_writes_evidence(tmp_path: Path) -> None:
     assert evidence_files
     evidence_text = "\n".join(path.read_text(encoding="utf-8") for path in evidence_files)
     evidence_records = [json.loads(path.read_text(encoding="utf-8")) for path in evidence_files]
-    assert str(site_path) in evidence_text
+    # Evidence records the canonical location doc id, not the Markdown site path (C3-316d).
+    assert '"target_doc_id": "location_' in evidence_text
     assert '"handler_type": "close_recruiting"' in evidence_text
     assert any(
         record["epistemic_state"]["derived_from"] == "2026-04-19 — outcome=cancelled — Coverage plan changed."

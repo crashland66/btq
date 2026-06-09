@@ -139,7 +139,7 @@ def process_visit_create_job(job_path: Path, job: QueueJob, context: RunContext,
         )
         return
 
-    _shared._canonical_vault_upsert(
+    canonical_doc = _shared._canonical_vault_upsert(
         job,
         _build_visit_entity_doc(
             payload,
@@ -168,7 +168,7 @@ def process_visit_create_job(job_path: Path, job: QueueJob, context: RunContext,
             updated_text = f"{existing_text}\n{visit_block}" if existing_text and not existing_text.endswith("\n") else f"{existing_text}{visit_block}"
             final_text = _shared.upsert_job_id_frontmatter(updated_text, job.job_id)
             _shared.atomic_write_text(visit_path, final_text)
-            _shared.write_mutation_evidence(context, job, visit_path, existing_text, final_text, visit_block)
+            _shared.write_mutation_evidence(context, job, canonical_doc, visit_block)
         except Exception as exc:
             print(f"Job {job.job_id}: skipped visit Markdown projection: {exc}")
     moved_path = _shared.move_job_file(job_path, processed_dir)
@@ -356,7 +356,7 @@ def process_photo_capture_job(job_path: Path, job: QueueJob, context: RunContext
         for canonical_job_id in _string_list(canonical_doc.get("btq_job_ids")):
             final_text = _shared.upsert_job_id_frontmatter(final_text, canonical_job_id)
         _shared.atomic_write_text(target_path, final_text)
-        _shared.write_mutation_evidence(context, job, target_path, existing_text, final_text, capture_entry)
+        _shared.write_mutation_evidence(context, job, canonical_doc, capture_entry)
         print(f"Job {job.job_id}: updated {target_path}")
     except Exception as exc:
         print(f"Job {job.job_id}: skipped photo capture Markdown projection for {target.doc_id}: {exc}")

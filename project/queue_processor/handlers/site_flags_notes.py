@@ -158,7 +158,7 @@ def process_log_site_issue_job(job_path: Path, job: QueueJob, context: RunContex
 
     issue_path.parent.mkdir(parents=True, exist_ok=True)
     _shared.atomic_write_text(issue_path, final_text)
-    _shared.write_mutation_evidence(context, job, issue_path, existing_text, final_text, f"site_issue {issue_id}")
+    _shared.write_mutation_evidence(context, job, canonical_doc, f"site_issue {issue_id}")
     moved_path = _shared.move_job_file(job_path, processed_dir)
     print(f"Job {job.job_id}: updated {issue_path}")
     print(f"Job {job.job_id}: moved queue file to {moved_path}")
@@ -301,7 +301,7 @@ def process_append_to_note_job(job_path: Path, job: QueueJob, context: RunContex
         final_text = _shared.upsert_job_id_frontmatter(final_text, str(canonical_job_id))
     target_path.parent.mkdir(parents=True, exist_ok=True)
     _shared.atomic_write_text(target_path, final_text)
-    _shared.write_mutation_evidence(context, job, target_path, existing_text, final_text, normalized)
+    _shared.write_mutation_evidence(context, job, canonical_doc, normalized)
     moved_path = _shared.move_job_file(job_path, processed_dir)
     print(f"Job {job.job_id}: updated {target_path}")
     print(f"Job {job.job_id}: moved queue file to {moved_path}")
@@ -448,7 +448,7 @@ def process_location_content_append_job(
         for canonical_job_id in canonical_doc.get("btq_job_ids") or []:
             final_text = _shared.upsert_job_id_frontmatter(final_text, str(canonical_job_id))
         _shared.atomic_write_text(site_path, final_text)
-        _shared.write_mutation_evidence(context, job, site_path, existing_text, final_text, note_line)
+        _shared.write_mutation_evidence(context, job, canonical_doc, note_line)
     moved_path = _shared.move_job_file(job_path, processed_dir)
     print(f"Job {job.job_id}: updated {target.doc_id}")
     print(f"Job {job.job_id}: moved queue file to {moved_path}")
@@ -535,7 +535,7 @@ def process_employee_content_append_job(
         for canonical_job_id in canonical_doc.get("btq_job_ids") or []:
             final_text = _shared.upsert_job_id_frontmatter(final_text, str(canonical_job_id))
         _shared.atomic_write_text(employee_path, final_text)
-        _shared.write_mutation_evidence(context, job, employee_path, existing_text, final_text, note_line)
+        _shared.write_mutation_evidence(context, job, canonical_doc, note_line)
     moved_path = _shared.move_job_file(job_path, processed_dir)
     print(f"Job {job.job_id}: updated {target.doc_id}")
     print(f"Job {job.job_id}: moved queue file to {moved_path}")

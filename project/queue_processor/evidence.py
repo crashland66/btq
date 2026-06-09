@@ -67,6 +67,13 @@ def find_excerpt(text: str, mutation_text: str | None, radius: int = 2) -> tuple
     return "", {"location": "not-found"}
 
 
+def canonical_evidence_text(doc: dict[str, Any]) -> str:
+    if "content" in doc:
+        return str(doc.get("content"))
+    meaningful = {key: value for key, value in doc.items() if key not in {"_rev", "btq_job_ids"}}
+    return json.dumps(meaningful, sort_keys=True)
+
+
 def fingerprint_text(text: str, mutation_text: str | None = None) -> dict[str, Any]:
     excerpt, location = find_excerpt(text, mutation_text)
     return {
@@ -106,7 +113,14 @@ def mutation_intent_summary(job_type: str, payload: dict[str, Any], intent: dict
     return f"process {job_type}"
 
 
-def marker_state(text: str, job_id: str) -> dict[str, Any]:
+def marker_state(doc_or_text: dict[str, Any] | str | None, job_id: str) -> dict[str, Any]:
+    if isinstance(doc_or_text, dict):
+        job_ids = [str(value).strip() for value in doc_or_text.get("btq_job_ids") or [] if str(value).strip()]
+        return {
+            "marker_present": job_id in job_ids,
+            "btq_job_ids_mentions": job_ids.count(job_id),
+        }
+    text = doc_or_text or ""
     return {
         "marker_present": has_job_been_applied(text, job_id),
         "btq_job_ids_mentions": text.count(job_id),
@@ -121,7 +135,9 @@ def write_evidence_snapshot(
     job_type: str,
     payload: dict[str, Any],
     intent: dict[str, Any] | None,
-    target_path: Path,
+    target_doc_id: str,
+    pre_doc: dict[str, Any] | None,
+    post_doc: dict[str, Any],
     pre_text: str,
     post_text: str,
     mutation_text: str | None,
@@ -142,7 +158,8 @@ def write_evidence_snapshot(
         "capture_id": capture_id,
         "job_id": job_id,
         "mutation_timestamp": utc_now(),
-        "target_path": str(target_path),
+        "target_doc_id": target_doc_id,
+        "target_path": target_doc_id,
         "handler_type": job_type,
         "mutation_intent_summary": mutation_intent_summary(job_type, payload, intent),
         "intent": intent or {},
@@ -152,8 +169,8 @@ def write_evidence_snapshot(
         "nearby_content_excerpt": post_excerpt,
         "mutation_location_hints": location,
         "marker_state_at_mutation_time": {
-            "pre": marker_state(pre_text, job_id),
-            "post": marker_state(post_text, job_id),
+            "pre": marker_state(pre_doc, job_id),
+            "post": marker_state(post_doc, job_id),
         },
     }
     path = evidence_path_for(runtime_root, capture_id, job_id)

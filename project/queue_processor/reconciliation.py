@@ -8,7 +8,8 @@ from pathlib import Path
 from typing import Any
 
 from config import get_config
-from queue_processor.evidence import assess_drift
+from queue_processor.evidence import assess_drift, canonical_evidence_text
+from queue_processor.handlers import _shared
 from queue_processor.repair import analyze, parse_date, scan_manifests
 from queue_processor.replay import build_plan
 
@@ -55,13 +56,15 @@ def generate_report(
     semantic_drift: list[dict[str, Any]] = []
     orphaned_evidence: list[dict[str, Any]] = []
     confidence_summary: dict[str, int] = {}
+    store = _shared._vault_store()
     for record in iter_evidence(runtime_root, capture_id):
-        target = record.get("target_path")
+        target = record.get("target_doc_id") or record.get("target_path")
         current_text = None
-        if isinstance(target, str) and Path(target).exists():
-            current_text = Path(target).read_text(encoding="utf-8")
+        doc = store.get_optional(str(target)) if isinstance(target, str) and target else None
+        if doc is not None:
+            current_text = canonical_evidence_text(doc)
         else:
-            orphaned_evidence.append({"reason": "evidence target missing", "evidence": record.get("_evidence_path"), "target_path": target})
+            orphaned_evidence.append({"reason": "evidence target missing", "evidence": record.get("_evidence_path"), "target_path": target, "target_doc_id": target})
         drift = assess_drift(record, current_text)
         confidence_summary[drift.confidence] = confidence_summary.get(drift.confidence, 0) + 1
         if drift.indicators:
@@ -72,6 +75,7 @@ def generate_report(
                     "job_id": record.get("job_id"),
                     "capture_id": record.get("capture_id"),
                     "target_path": target,
+                    "target_doc_id": target,
                     "evidence": record.get("_evidence_path"),
                 }
             )

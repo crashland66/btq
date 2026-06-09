@@ -19,7 +19,7 @@ from field_capture.prospects import load_prospect, write_prospect
 from io_atomic import atomic_write_text, safe_move
 from processing_core.slugs import lower_dash_slug
 from queue_processor import idempotency_ledger
-from queue_processor.evidence import write_evidence_snapshot
+from queue_processor.evidence import canonical_evidence_text, write_evidence_snapshot
 from queue_processor.idempotency import (
     compute_job_id,
     has_job_been_applied,
@@ -133,11 +133,13 @@ class QueueJob:
     metadata: dict[str, Any]
     intent: dict[str, Any]
     idempotency_key: Optional[str] = None
-def _canonical_vault_upsert(job: QueueJob, doc: dict, *, site_id: object | None = None) -> None:
+def _canonical_vault_upsert(job: QueueJob, doc: dict, *, site_id: object | None = None) -> dict:
     entity_id = str(doc.get("_id") or "").strip() or "unknown"
     site_text = "" if site_id is None else f" site_id={site_id}"
     try:
-        _vault_store().upsert(doc)
+        store = _vault_store()
+        store.upsert(doc)
+        return dict(doc)
     except Exception as exc:
         logging.getLogger("queue_processor.main").error("btq_vault write failed: %s", exc)
         raise QueueJobError(
@@ -182,24 +184,38 @@ def canonical_employee_doc_id_for_projection(path: Path, markdown_text: str) -> 
         raise QueueProcessorError(f"Could not resolve canonical employee document for employee path: {path}")
     return f"employee_{slug}"
 
-def patch_canonical_content(doc_id: str, final_text: str, job: QueueJob) -> None:
+def patch_canonical_content(doc_id: str, final_text: str, job: QueueJob) -> dict:
     try:
-        _vault_store().patch_fields(
+        store = _vault_store()
+        content = canonical_content_body(final_text)
+        update_doc = getattr(store, "update_doc", None)
+        if callable(update_doc):
+            def transform(current: dict[str, Any] | None) -> dict[str, Any] | None:
+                if current is None:
+                    return None
+                outgoing = dict(current)
+                outgoing["content"] = content
+                job_ids = [str(value).strip() for value in outgoing.get("btq_job_ids") or [] if str(value).strip()]
+                if job.job_id not in job_ids:
+                    job_ids.append(job.job_id)
+                outgoing["btq_job_ids"] = job_ids
+                return outgoing
+            return dict(update_doc(doc_id, transform, require_existing=True))
+        store.patch_fields(
             doc_id,
-            {"content": canonical_content_body(final_text)},
+            {"content": content, "btq_job_ids": [job.job_id]},
             require_existing=True,
         )
-    except Exception as exc:
-        raise QueueJobError(
-            "canonical couchdb content patch failed "
-            f"job_type={job.job_type} job_id={job.job_id} entity_id={doc_id}: {exc}"
-        ) from exc
-
-def patch_canonical_location_content(path: Path, final_text: str, job: QueueJob) -> None:
-    doc_id = "unknown"
-    try:
-        doc_id = canonical_location_doc_id_for_projection(path, final_text)
-        patch_canonical_content(doc_id, final_text, job)
+        get_optional = getattr(store, "get_optional", None)
+        if callable(get_optional):
+            stored = get_optional(doc_id)
+            if stored is None:
+                raise QueueJobError(
+                    "canonical couchdb content patch failed "
+                    f"job_type={job.job_type} job_id={job.job_id} entity_id={doc_id}: patched document missing"
+                )
+            return dict(stored)
+        return {"_id": doc_id, "content": content, "btq_job_ids": [job.job_id]}
     except QueueJobError:
         raise
     except Exception as exc:
@@ -208,11 +224,24 @@ def patch_canonical_location_content(path: Path, final_text: str, job: QueueJob)
             f"job_type={job.job_type} job_id={job.job_id} entity_id={doc_id}: {exc}"
         ) from exc
 
-def patch_canonical_employee_content(path: Path, final_text: str, job: QueueJob) -> None:
+def patch_canonical_location_content(path: Path, final_text: str, job: QueueJob) -> dict:
+    doc_id = "unknown"
+    try:
+        doc_id = canonical_location_doc_id_for_projection(path, final_text)
+        return patch_canonical_content(doc_id, final_text, job)
+    except QueueJobError:
+        raise
+    except Exception as exc:
+        raise QueueJobError(
+            "canonical couchdb content patch failed "
+            f"job_type={job.job_type} job_id={job.job_id} entity_id={doc_id}: {exc}"
+        ) from exc
+
+def patch_canonical_employee_content(path: Path, final_text: str, job: QueueJob) -> dict:
     doc_id = "unknown"
     try:
         doc_id = canonical_employee_doc_id_for_projection(path, final_text)
-        patch_canonical_content(doc_id, final_text, job)
+        return patch_canonical_content(doc_id, final_text, job)
     except QueueJobError:
         raise
     except Exception as exc:
@@ -447,13 +476,16 @@ def capture_id_for_job(job: QueueJob) -> str | None:
 def write_mutation_evidence(
     context: RunContext,
     job: QueueJob,
-    target_path: Path,
-    pre_text: str,
-    post_text: str,
+    canonical_doc: dict,
     mutation_text: str | None,
+    *,
+    pre_doc: dict | None = None,
 ) -> None:
     if context.dry_run:
         return
+    target_doc_id = str(canonical_doc["_id"])
+    pre_text = canonical_evidence_text(pre_doc) if pre_doc is not None else ""
+    post_text = canonical_evidence_text(canonical_doc)
     path = write_evidence_snapshot(
         context.runtime_root,
         capture_id=capture_id_for_job(job),
@@ -461,7 +493,9 @@ def write_mutation_evidence(
         job_type=job.job_type,
         payload=job.payload,
         intent=job.intent,
-        target_path=target_path,
+        target_doc_id=target_doc_id,
+        pre_doc=pre_doc,
+        post_doc=canonical_doc,
         pre_text=pre_text,
         post_text=post_text,
         mutation_text=mutation_text,
@@ -473,7 +507,8 @@ def write_mutation_evidence(
         job_type=job.job_type,
         capture_id=capture_id_for_job(job),
         evidence_path=str(path),
-        target_path=str(target_path),
+        target_path=target_doc_id,
+        target_doc_id=target_doc_id,
     )
 def processed_job_id_exists(runtime_root: Path, processed_dir: Path, job_id: str) -> tuple[bool, str]:
     return indexed_processed_job_id_exists(runtime_root, processed_dir, job_id)

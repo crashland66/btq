@@ -17,6 +17,7 @@ from queue_processor.repair import parse_date, scan_manifests
 class NarrativeEntry:
     timestamp: str
     capture_id: str | None
+    target_path: str
     statement: str
     classification: str
     confidence: str
@@ -31,10 +32,12 @@ def entry_from_evidence(record: dict[str, Any], contradictions: list[dict[str, A
     intent = record.get("intent") if isinstance(record.get("intent"), dict) else {}
     statement = str(intent.get("reason") or record.get("mutation_intent_summary") or record.get("nearby_content_excerpt") or "")
     job_id = str(record.get("job_id", ""))
+    target = record.get("target_doc_id") or record.get("target_path") or ""
     related = [item for item in contradictions if item.get("earlier_id") == job_id or item.get("later_id") == job_id]
     return NarrativeEntry(
         timestamp=str(record.get("mutation_timestamp", "")),
         capture_id=record.get("capture_id") if isinstance(record.get("capture_id"), str) else None,
+        target_path=str(target),
         statement=statement,
         classification=str(epistemic.get("classification", intent.get("classification", UNCONFIRMED))),
         confidence=str(epistemic.get("confidence", intent.get("confidence", "unknown"))),

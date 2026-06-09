@@ -342,7 +342,7 @@ def process_log_personnel_event_job(job_path: Path, job: QueueJob, context: RunC
 
     target_path.parent.mkdir(parents=True, exist_ok=True)
     _shared.atomic_write_text(target_path, final_text)
-    _shared.write_mutation_evidence(context, job, target_path, existing_text, final_text, f"personnel_event {event_id}")
+    _shared.write_mutation_evidence(context, job, canonical_doc, f"personnel_event {event_id}")
     moved_path = _shared.move_job_file(job_path, processed_dir)
     print(f"Job {job.job_id}: updated {target_path}")
     print(f"Job {job.job_id}: moved queue file to {moved_path}")
@@ -406,9 +406,9 @@ def process_add_person_job(job_path: Path, job: QueueJob, context: RunContext, p
         return
 
     final_text = person_text
-    _shared._canonical_vault_upsert(job, _build_employee_entity_doc(payload, job, person_id, created_date))
+    canonical_doc = _shared._canonical_vault_upsert(job, _build_employee_entity_doc(payload, job, person_id, created_date))
     append_idempotency_record(job_path, job, context, target_path, person_id)
-    _shared.write_mutation_evidence(context, job, target_path, "", final_text, person_text)
+    _shared.write_mutation_evidence(context, job, canonical_doc, person_text)
     moved_path = _shared.move_job_file(job_path, processed_dir)
     print(f"Job {job.job_id}: created {target_path}")
     print(f"Job {job.job_id}: moved queue file to {moved_path}")
@@ -530,7 +530,7 @@ def process_close_recruiting_job(job_path: Path, job: QueueJob, context: RunCont
         for canonical_job_id in site_doc.get("btq_job_ids") or []:
             final_text = _shared.upsert_job_id_frontmatter(final_text, str(canonical_job_id))
         _shared.atomic_write_text(site_path, final_text)
-        _shared.write_mutation_evidence(context, job, site_path, existing_text, final_text, note_line)
+        _shared.write_mutation_evidence(context, job, site_doc, note_line)
     if emp_target is not None and person_note_line is not None:
         canonical_employee_doc = employee_doc if employee_doc is not None else store.get_optional(emp_target.doc_id)
         try:
@@ -543,7 +543,7 @@ def process_close_recruiting_job(job_path: Path, job: QueueJob, context: RunCont
             for canonical_job_id in canonical_employee_doc.get("btq_job_ids") or []:
                 person_final_text = _shared.upsert_job_id_frontmatter(person_final_text, str(canonical_job_id))
             _shared.atomic_write_text(person_path, person_final_text)
-            _shared.write_mutation_evidence(context, job, person_path, person_existing, person_final_text, f"placed at {site_name}")
+            _shared.write_mutation_evidence(context, job, canonical_employee_doc, f"placed at {site_name}")
 
     moved_path = _shared.move_job_file(job_path, processed_dir)
     print(f"Job {job.job_id}: updated {target_site.doc_id}")
@@ -666,7 +666,7 @@ def process_set_entity_status_job(job_path: Path, job: QueueJob, context: RunCon
         updated_text = _shared.frontmatter_to_text(updated_fields, body)
         final_text = _shared.upsert_job_id_frontmatter(updated_text, job.job_id)
         _shared.atomic_write_text(target_path, final_text)
-        _shared.write_mutation_evidence(context, job, target_path, existing_text, final_text, f"{entity_type} {entity_id} status={status}")
+        _shared.write_mutation_evidence(context, job, canonical_doc, f"{entity_type} {entity_id} status={status}")
     moved_path = _shared.move_job_file(job_path, processed_dir)
     print(f"Job {job.job_id}: updated {target_path if target_path is not None else target.doc_id}")
     print(f"Job {job.job_id}: moved queue file to {moved_path}")

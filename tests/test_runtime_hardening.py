@@ -17,7 +17,14 @@ from queue_processor import inspect_runtime, repair, replay, reconciliation
 from queue_processor import narrative
 from queue_processor import governance
 import epistemic
-from queue_processor.evidence import CONFIDENCE_SEMANTICALLY_DRIFTED, assess_drift, read_evidence
+from queue_processor.evidence import (
+    CONFIDENCE_STRUCTURALLY_SAFE,
+    CONFIDENCE_SEMANTICALLY_DRIFTED,
+    assess_drift,
+    canonical_evidence_text,
+    read_evidence,
+    sha256_text,
+)
 from queue_processor.governance import (
     ACK_MANAGER_ACKNOWLEDGED_UNRESOLVED_AMBIGUITY,
     DISPUTED_BY_CLIENT,
@@ -779,7 +786,8 @@ def test_replay_execute_safe_candidate_with_approval(tmp_path: Path, monkeypatch
     assert (runtime_root / "processed" / second_failed_job.name).exists()
 
 
-def test_evidence_snapshot_generation_and_intent_preservation(tmp_path: Path) -> None:
+def test_evidence_snapshot_generation_and_intent_preservation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    store = use_recording_vault_store(monkeypatch)
     project_root, vault_root, runtime_root, log_path = make_roots(tmp_path)
     payload = {
         "job_id": "job-evidence",
@@ -803,11 +811,16 @@ def test_evidence_snapshot_generation_and_intent_preservation(tmp_path: Path) ->
     run_jobs(project_root, vault_root, runtime_root, log_path)
 
     evidence = read_evidence(runtime_root, "cap-evidence", replay.compute_job_id(payload))
+    doc = store.get_optional("note_journal_2026-04-27")
     assert evidence is not None
+    assert doc is not None
+    assert evidence["target_doc_id"] == "note_journal_2026-04-27"
+    assert evidence["target_path"] == "note_journal_2026-04-27"
     assert evidence["intent"]["category"] == "safety issue"
     assert evidence["mutation_intent_summary"].startswith("safety issue")
-    assert evidence["pre_mutation_fingerprint"]["document_hash"]
-    assert evidence["post_mutation_fingerprint"]["document_hash"]
+    assert evidence["pre_mutation_fingerprint"]["document_hash"] == sha256_text("")
+    assert evidence["post_mutation_fingerprint"]["document_hash"] == sha256_text(canonical_evidence_text(doc))
+    assert evidence["marker_state_at_mutation_time"]["post"]["marker_present"] is True
     assert "Evidence snapshot note." in evidence["nearby_content_excerpt"]
 
 
@@ -827,12 +840,18 @@ def test_fingerprint_drift_detection_and_replay_semantic_classification(tmp_path
     write_job(runtime_root / "queue", "job-drift.json", payload)
     run_jobs(project_root, vault_root, runtime_root, log_path)
     job_id = replay.compute_job_id(payload)
-    target = vault_root / "Journal" / "2026-04-27.md"
-    target.write_text(target.read_text(encoding="utf-8").replace("Original drift-sensitive note.", "Human rewrote this section."), encoding="utf-8")
+    doc = store.get_optional("note_journal_2026-04-27")
+    assert doc is not None
+    evidence = read_evidence(runtime_root, "cap-drift", job_id)
+    matching_drift = assess_drift(evidence, canonical_evidence_text(doc))
+    assert matching_drift.confidence == CONFIDENCE_STRUCTURALLY_SAFE
+    doc["content"] = str(doc["content"]).replace("Original drift-sensitive note.", "Human rewrote this section.")
+    store.update_doc("note_journal_2026-04-27", lambda _current: doc, require_existing=True)
     write_job(runtime_root / "failed", "job-drift-rerun.json", payload)
 
-    evidence = read_evidence(runtime_root, "cap-drift", job_id)
-    drift = assess_drift(evidence, target.read_text(encoding="utf-8"))
+    current_doc = store.get_optional("note_journal_2026-04-27")
+    assert current_doc is not None
+    drift = assess_drift(evidence, canonical_evidence_text(current_doc))
     entries = replay.build_plan(runtime_root, vault_root, vault_root, capture_id="cap-drift", failed_only=True, store=store)
 
     assert drift.confidence == CONFIDENCE_SEMANTICALLY_DRIFTED
@@ -841,7 +860,8 @@ def test_fingerprint_drift_detection_and_replay_semantic_classification(tmp_path
     assert entries[0].confidence_classification == replay.CONFIDENCE_STRUCTURALLY_SAFE
 
 
-def test_reconciliation_report_generation(tmp_path: Path) -> None:
+def test_reconciliation_report_generation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    store = use_recording_vault_store(monkeypatch)
     project_root, vault_root, runtime_root, log_path = make_roots(tmp_path)
     payload = {
         "job_id": "job-report",
@@ -855,14 +875,20 @@ def test_reconciliation_report_generation(tmp_path: Path) -> None:
     }
     write_job(runtime_root / "queue", "job-report.json", payload)
     run_jobs(project_root, vault_root, runtime_root, log_path)
-    target = vault_root / "Journal" / "2026-04-27.md"
-    target.write_text(target.read_text(encoding="utf-8").replace("Report evidence note.", "Report note was edited by a human."), encoding="utf-8")
+    matching_report = reconciliation.generate_report(runtime_root, vault_root, vault_root, capture_id="cap-report")
+    assert matching_report.mutation_confidence_summary[CONFIDENCE_STRUCTURALLY_SAFE] == 1
+    assert not matching_report.semantic_drift_findings
+    doc = store.get_optional("note_journal_2026-04-27")
+    assert doc is not None
+    doc["content"] = str(doc["content"]).replace("Report evidence note.", "Report note was edited by a human.")
+    store.update_doc("note_journal_2026-04-27", lambda _current: doc, require_existing=True)
 
     report = reconciliation.generate_report(runtime_root, vault_root, vault_root, capture_id="cap-report")
 
     assert report.mutation_confidence_summary[CONFIDENCE_SEMANTICALLY_DRIFTED] == 1
     assert report.semantic_drift_findings
     assert report.semantic_drift_findings[0]["capture_id"] == "cap-report"
+    assert report.semantic_drift_findings[0]["target_doc_id"] == "note_journal_2026-04-27"
 
 
 def test_epistemic_observation_inference_separation() -> None:
@@ -899,7 +925,8 @@ def test_contradiction_linkage_and_temporal_transition(tmp_path: Path) -> None:
     assert state["temporal_transitions"][0]["to"] == CONTRADICTED
 
 
-def test_epistemic_classification_persists_to_evidence_and_narrative(tmp_path: Path) -> None:
+def test_epistemic_classification_persists_to_evidence_and_narrative(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    store = use_recording_vault_store(monkeypatch)
     project_root, vault_root, runtime_root, log_path = make_roots(tmp_path)
     payload = {
         "job_id": "job-epistemic",
@@ -941,11 +968,16 @@ def test_epistemic_classification_persists_to_evidence_and_narrative(tmp_path: P
     evidence = read_evidence(runtime_root, "cap-epistemic", job_id)
     entries = narrative.build_narrative(runtime_root, capture_id="cap-epistemic", include_contradictions=True)
     rendered = narrative.format_narrative(entries, json_output=False)
+    doc = store.get_optional("note_journal_2026-04-27")
 
     assert evidence is not None
+    assert doc is not None
+    assert evidence["target_doc_id"] == "note_journal_2026-04-27"
+    assert evidence["post_mutation_fingerprint"]["document_hash"] == sha256_text(canonical_evidence_text(doc))
     assert evidence["epistemic_state"]["classification"] == INFERRED
     assert evidence["epistemic_state"]["confidence_basis"] == ["no response for 72 hours"]
     assert entries[0].classification == INFERRED
+    assert entries[0].target_path == "note_journal_2026-04-27"
     assert entries[0].contradictions
     assert "Inferences" in rendered
 
@@ -1033,7 +1065,8 @@ def test_dispute_visibility_and_conflicting_reviewer_states(tmp_path: Path) -> N
     }
 
 
-def test_unresolved_report_surfaces_unreviewed_inference_and_acknowledgment_suppresses_it(tmp_path: Path) -> None:
+def test_unresolved_report_surfaces_unreviewed_inference_and_acknowledgment_suppresses_it(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    store = use_recording_vault_store(monkeypatch)
     project_root, vault_root, runtime_root, log_path = make_roots(tmp_path)
     payload = {
         "job_id": "job-unreviewed-inference",
@@ -1061,6 +1094,12 @@ def test_unresolved_report_surfaces_unreviewed_inference_and_acknowledgment_supp
     write_job(runtime_root / "queue", "job-unreviewed-inference.json", payload)
     run_jobs(project_root, vault_root, runtime_root, log_path)
     computed = replay.compute_job_id(payload)
+    evidence = read_evidence(runtime_root, "cap-governance", computed)
+    doc = store.get_optional("note_journal_2026-04-27")
+    assert evidence is not None
+    assert doc is not None
+    assert evidence["target_doc_id"] == "note_journal_2026-04-27"
+    assert evidence["post_mutation_fingerprint"]["document_hash"] == sha256_text(canonical_evidence_text(doc))
 
     report = build_unresolved_report(runtime_root, vault_root, vault_root)
 

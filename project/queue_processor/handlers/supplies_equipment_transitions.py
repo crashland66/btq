@@ -303,9 +303,7 @@ def _process_mark_supply_job(
         _shared.write_mutation_evidence(
             context,
             job,
-            target_path,
-            existing_text,
-            final_text,
+            canonical_doc,
             f"supply_need {supply_id} marked {target_status}",
         )
 
@@ -425,9 +423,7 @@ def _process_mark_equipment_job(
         _shared.write_mutation_evidence(
             context,
             job,
-            target_path,
-            existing_text,
-            final_text,
+            canonical_doc,
             f"equipment_request {equipment_id} marked {target_status}",
         )
 
