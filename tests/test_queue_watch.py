@@ -12,7 +12,9 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 import io_atomic  # noqa: E402
 import queue_processor.main as queue_main  # noqa: E402
+from queue_processor.handlers import _shared as shared  # noqa: E402
 from queue_processor import watch  # noqa: E402
+from test_queue_processor import recording_doc  # noqa: E402
 
 pytestmark = pytest.mark.usefixtures("recording_vault_store")
 
@@ -58,10 +60,12 @@ def test_queue_watcher_writes_personal_journal_entry(tmp_path: Path, monkeypatch
         logging.getLogger("test_queue_watch_personal"),
     )
 
-    personal_path = personal_vault_root / "Journal" / "2026-04-26.md"
-    text = personal_path.read_text(encoding="utf-8")
-    assert "This belongs in personal memory only." in text
-    assert "source_audio: personal.m4a" in text
+    store = shared._PERSONAL_JOURNAL_STORE
+    assert store is not None
+    doc = recording_doc(store, "journal_personal_2026-04-26")
+    assert "This belongs in personal memory only." in doc["content"]
+    assert "source_audio: personal.m4a" in doc["content"]
+    assert not (personal_vault_root / "Journal" / "2026-04-26.md").exists()
     assert not (vault_root / "Journal" / "2026-04-26.md").exists()
     assert not (runtime_root / "queue" / "job_personal.json").exists()
     assert (runtime_root / "processed" / "job_personal.json").exists()

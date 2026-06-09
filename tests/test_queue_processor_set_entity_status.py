@@ -180,13 +180,11 @@ def run_handler(
 
 def test_set_entity_status_site_inactive_keeps_record_and_patches_canonical(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     site_path = write_site(tmp_path / "vault", active=True, status="active")
+    original_text = site_path.read_text(encoding="utf-8")
 
     _ctx, store = run_handler(tmp_path, job("site", "7030", "inactive"), monkeypatch, site_path=site_path)
 
-    text = site_path.read_text(encoding="utf-8")
-    assert "active: false" in text
-    assert "status:" not in text
-    assert "btq_job_ids:" in text
+    assert site_path.read_text(encoding="utf-8") == original_text
     doc = store_doc(store, "location_7030")
     assert doc["active"] is False
     assert "status" not in doc
@@ -196,12 +194,11 @@ def test_set_entity_status_site_inactive_keeps_record_and_patches_canonical(tmp_
 
 def test_set_entity_status_site_active(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     site_path = write_site(tmp_path / "vault", active=False, status="inactive")
+    original_text = site_path.read_text(encoding="utf-8")
 
     _ctx, store = run_handler(tmp_path, job("site", "7030", "active"), monkeypatch, site_path=site_path)
 
-    text = site_path.read_text(encoding="utf-8")
-    assert "active: true" in text
-    assert "status:" not in text
+    assert site_path.read_text(encoding="utf-8") == original_text
     doc = store_doc(store, "location_7030")
     assert doc["active"] is True
     assert "status" not in doc
@@ -210,12 +207,11 @@ def test_set_entity_status_site_active(tmp_path: Path, monkeypatch: pytest.Monke
 
 def test_set_entity_status_employee_inactive_patches_employee_doc(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     employee_path = write_employee(tmp_path / "vault", status="active", person_id="per_01JTEST0000000000000000000")
+    original_text = employee_path.read_text(encoding="utf-8")
 
     _ctx, store = run_handler(tmp_path, job("employee", "Maria Hutton", "inactive"), monkeypatch)
 
-    text = employee_path.read_text(encoding="utf-8")
-    assert "status: inactive" in text
-    assert "btq_job_ids:" in text
+    assert employee_path.read_text(encoding="utf-8") == original_text
     doc = store_doc(store, "employee_per_01JTEST0000000000000000000")
     assert doc["status"] == "inactive"
     assert doc["btq_job_ids"] == ["job-status"]
@@ -224,10 +220,11 @@ def test_set_entity_status_employee_inactive_patches_employee_doc(tmp_path: Path
 
 def test_set_entity_status_employee_active(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     employee_path = write_employee(tmp_path / "vault", status="inactive", person_id="per_01JTEST0000000000000000000")
+    original_text = employee_path.read_text(encoding="utf-8")
 
     _ctx, store = run_handler(tmp_path, job("employee", "Hutton, Maria", "active"), monkeypatch)
 
-    assert "status: active" in employee_path.read_text(encoding="utf-8")
+    assert employee_path.read_text(encoding="utf-8") == original_text
     doc = store_doc(store, "employee_per_01JTEST0000000000000000000")
     assert doc["status"] == "active"
     assert store.update_doc_calls == ["employee_per_01JTEST0000000000000000000"]
@@ -248,10 +245,11 @@ def test_set_entity_status_idempotent_on_job_marker(tmp_path: Path, monkeypatch:
 def test_set_entity_status_employee_reference_resolves_from_canonical_without_markdown_person_id(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     employee_path = write_employee(tmp_path / "vault")
     employee_path.write_text(employee_path.read_text(encoding="utf-8").replace("person_id: per_01J00000000000000000000000\n", ""), encoding="utf-8")
+    original_text = employee_path.read_text(encoding="utf-8")
 
     _ctx, store = run_handler(tmp_path, job("employee", "Hutton, Maria", "inactive"), monkeypatch)
 
-    assert "status: inactive" in employee_path.read_text(encoding="utf-8")
+    assert employee_path.read_text(encoding="utf-8") == original_text
     doc = store_doc(store, "employee_per_01JTEST0000000000000000000")
     assert doc["status"] == "inactive"
     assert store.update_doc_calls == ["employee_per_01JTEST0000000000000000000"]

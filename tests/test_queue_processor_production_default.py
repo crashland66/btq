@@ -428,27 +428,7 @@ def test_job_type_production_default_writes_couchdb_not_markdown(
         assert store.update_doc_calls == [case.expected_patch_id]
         assert store.patch_status_calls == []
     after_markdown = markdown_snapshot(vault_root)
-    projection_writing_jobs = {
-        "log_site_issue",
-        "log_supply_need",
-        "log_equipment_request",
-        "log_personnel_event",
-        "mark_supply_ordered",
-        "mark_supply_delivered",
-        "mark_supply_stocked",
-        "mark_supply_no_action_needed",
-        "mark_equipment_approved",
-        "mark_equipment_denied",
-        "mark_equipment_ordered",
-        "mark_equipment_provided",
-        "mark_equipment_no_action_needed",
-    }
-    if case.job_type in projection_writing_jobs:
-        assert after_markdown != before_markdown
-        if case.job_type == "log_personnel_event":
-            assert any(path.parts[-2:] == ("Events", "pe_prod_default__no-call-no-show-for-opening-shift.md") for path in after_markdown)
-    else:
-        assert after_markdown == before_markdown
+    assert after_markdown == before_markdown
 
 
 def test_markdown_default_off_is_the_suite_default(monkeypatch: pytest.MonkeyPatch) -> None:

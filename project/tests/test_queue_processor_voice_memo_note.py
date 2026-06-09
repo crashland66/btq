@@ -221,23 +221,7 @@ class QueueProcessorVoiceMemoNoteTests(unittest.TestCase):
                 "Maria Hutton",
             )
 
-    def test_voice_memo_employee_projection_path_uses_canonical_vault_path(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            context = context_for(root)
-            person_path = write_person(context.vault_root, "Hutton, Maria.md", "hutton-maria", "Maria Hutton")
-            self.seed_employee_doc(person_path)
-
-            self.assertEqual(misc._voice_memo_employee_projection_path(context, "hutton-maria"), person_path.resolve())
-
-    def test_voice_memo_employee_projection_path_missing_canonical_path_returns_none(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            context = context_for(root)
-
-            self.assertIsNone(misc._voice_memo_employee_projection_path(context, "hutton-maria"))
-
-    def test_voice_memo_note_writes_to_site_about_when_site_id_present(self) -> None:
+    def test_voice_memo_note_writes_to_canonical_site_when_site_id_present(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             context = context_for(root)
@@ -249,10 +233,12 @@ class QueueProcessorVoiceMemoNoteTests(unittest.TestCase):
 
             process_voice_memo_note_job(queue_file, job, context, context.runtime_root / "processed")
 
-            text = target.read_text(encoding="utf-8")
-            self.assertIn("### 2026-05-10T17:20:23+00:00 — voice memo", text)
-            self.assertIn("source_audio: vm-test-1.webm", text)
-            self.assertIn("> The hallway looked good.", text)
+            canonical_doc = self.store.get_optional("location_7060")
+            self.assertIsNotNone(canonical_doc)
+            assert canonical_doc is not None
+            self.assertIn("### 2026-05-10T17:20:23+00:00 — voice memo", canonical_doc["content"])
+            self.assertIn("source_audio: vm-test-1.webm", canonical_doc["content"])
+            self.assertIn("> The hallway looked good.", canonical_doc["content"])
 
     def test_voice_memo_note_without_location_type_still_patches_canonical_site_content(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -269,9 +255,8 @@ class QueueProcessorVoiceMemoNoteTests(unittest.TestCase):
 
             canonical_doc = next(doc for doc in self.store.docs if doc["_id"] == "location_7060")
             self.assertIn("### 2026-05-10T17:20:23+00:00 — voice memo", canonical_doc["content"])
-            self.assertEqual(canonical_doc["content"], _shared.canonical_content_body(target.read_text(encoding="utf-8")))
 
-    def test_voice_memo_note_writes_to_each_employee_when_no_site(self) -> None:
+    def test_voice_memo_note_writes_to_each_canonical_employee_when_no_site(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             context = context_for(root)
@@ -293,10 +278,16 @@ class QueueProcessorVoiceMemoNoteTests(unittest.TestCase):
 
             process_voice_memo_note_job(queue_file, job, context, context.runtime_root / "processed")
 
-            self.assertIn("voice memo", first.read_text(encoding="utf-8"))
-            self.assertIn("voice memo", second.read_text(encoding="utf-8"))
+            first_doc = self.store.get_optional("employee_hutton_maria")
+            second_doc = self.store.get_optional("employee_smith_alex")
+            self.assertIsNotNone(first_doc)
+            self.assertIsNotNone(second_doc)
+            assert first_doc is not None
+            assert second_doc is not None
+            self.assertIn("voice memo", first_doc["content"])
+            self.assertIn("voice memo", second_doc["content"])
 
-    def test_voice_memo_note_writes_to_inbox_when_general(self) -> None:
+    def test_voice_memo_note_writes_to_canonical_inbox_when_general(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             context = context_for(root)
@@ -306,9 +297,10 @@ class QueueProcessorVoiceMemoNoteTests(unittest.TestCase):
 
             process_voice_memo_note_job(queue_file, job, context, context.runtime_root / "processed")
 
-            target = context.vault_root / "Inbox" / "voice-memo-general.md"
-            self.assertTrue(target.exists())
-            self.assertIn("The hallway looked good.", target.read_text(encoding="utf-8"))
+            canonical_doc = self.store.get_optional("note_voice_memo_general")
+            self.assertIsNotNone(canonical_doc)
+            assert canonical_doc is not None
+            self.assertIn("The hallway looked good.", canonical_doc["content"])
 
     def test_frontmatter_merges_voice_memo_capture_ids(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -322,10 +314,10 @@ class QueueProcessorVoiceMemoNoteTests(unittest.TestCase):
                 queue_file.write_text("{}\n", encoding="utf-8")
                 process_voice_memo_note_job(queue_file, job, context, context.runtime_root / "processed")
 
-            text = target.read_text(encoding="utf-8")
-            self.assertIn("voice_memo_capture_ids:", text)
-            self.assertIn("  - vm-test-1", text)
-            self.assertEqual(text.count("  - vm-test-2"), 1)
+            canonical_doc = self.store.get_optional("location_7060")
+            self.assertIsNotNone(canonical_doc)
+            assert canonical_doc is not None
+            self.assertEqual(canonical_doc["voice_memo_capture_ids"], ["vm-test-1", "vm-test-2"])
 
     def test_voice_memo_note_site_appends_to_canonical_location_content(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

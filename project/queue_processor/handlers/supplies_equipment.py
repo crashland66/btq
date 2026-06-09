@@ -6,9 +6,7 @@ import re
 from datetime import datetime, timezone
 from pathlib import Path
 
-from btq_vault.markdown_export import render_equipment_request_markdown, render_supply_need_markdown
 from btq_vault.entity_types import OPERATOR_ID_GREG
-from io_atomic import atomic_write_text
 from queue_processor.canonical_rmw import (
     CanonicalEntityState,
     CanonicalMutation,
@@ -17,7 +15,6 @@ from queue_processor.canonical_rmw import (
     apply_canonical_rmw,
     resolve_site_context,
 )
-from queue_processor.idempotency import has_job_been_applied, parse_frontmatter_text, upsert_job_id_frontmatter
 from site_equipment import EquipmentRequest, parse_site_equipment
 from site_supplies import SupplyNeed, parse_site_supply
 
@@ -207,17 +204,14 @@ def _build_equipment_request_entity_doc(payload: dict, job: QueueJob, site_ctx: 
 
 def process_log_supply_need_job(job_path: Path, job: QueueJob, context: RunContext, processed_dir: Path) -> None:
     payload = job.payload
-    site_path = _shared.resolve_site_about_path(context, str(payload["site_id"]))
     site_ctx = resolve_site_context(_shared._vault_store(), str(payload["site_id"]))
     supply_id = supply_need_id(payload)
-    target_path = supply_need_path(context, site_path, payload)
     processed_destination = processed_dir / job_path.name
     if not context.dry_run and processed_destination.exists():
         raise _shared.QueueProcessorError(f"Destination already exists: {processed_destination}")
-    existing_text = target_path.read_text(encoding="utf-8") if target_path.exists() else ""
     created_at = datetime.now(timezone.utc).isoformat()
     print(f"Job {job.job_id}: validated")
-    print(f"Job {job.job_id}: target {target_path}")
+    print(f"Job {job.job_id}: target supply_need_{supply_id}")
     if context.dry_run:
         print(f"Job {job.job_id}: would log supply need")
         _shared.write_log_line(context.log_path, f"job_id={job.job_id} action=log-supply-need status=success error=")
@@ -226,7 +220,6 @@ def process_log_supply_need_job(job_path: Path, job: QueueJob, context: RunConte
     target = CanonicalTarget(
         doc_id=f"supply_need_{supply_id}",
         doc_type="supply_need",
-        projection_path=target_path,
         allow_create=True,
         require_existing=False,
     )
@@ -265,45 +258,22 @@ def process_log_supply_need_job(job_path: Path, job: QueueJob, context: RunConte
         _shared.write_log_line(context.log_path, f"job_id={job.job_id} action=skip status=success reason=job-id-marker-present")
         return
 
-    projection_payload = {
-        key: value
-        for key, value in canonical_doc.items()
-        if key not in {"_id", "_rev", "type", "operator", "btq_job_ids", "created_at"}
-    }
-    final_text = render_supply_need_markdown(
-        payload=projection_payload,
-        site_id=str(canonical_doc.get("site_id") or site_ctx.site_id),
-        site_name=str(canonical_doc.get("site_name") or site_ctx.name),
-        account=site_ctx.account or site_path.parents[2].name,
-        supply_id=str(canonical_doc.get("supply_id") or supply_id),
-        job_id=job.job_id,
-        created_at=str(canonical_doc.get("created_at") or created_at),
-        existing_text=existing_text,
-    )
-    for canonical_job_id in canonical_doc.get("btq_job_ids") or []:
-        final_text = _shared.upsert_job_id_frontmatter(final_text, str(canonical_job_id))
-
-    target_path.parent.mkdir(parents=True, exist_ok=True)
-    _shared.atomic_write_text(target_path, final_text)
     _shared.write_mutation_evidence(context, job, canonical_doc, f"supply_need {supply_id}")
     moved_path = _shared.move_job_file(job_path, processed_dir)
-    print(f"Job {job.job_id}: updated {target_path}")
+    print(f"Job {job.job_id}: updated {target.doc_id}")
     print(f"Job {job.job_id}: moved queue file to {moved_path}")
     _shared.write_log_line(context.log_path, f"job_id={job.job_id} action=log-supply-need status=success error=")
 
 def process_log_equipment_request_job(job_path: Path, job: QueueJob, context: RunContext, processed_dir: Path) -> None:
     payload = job.payload
-    site_path = _shared.resolve_site_about_path(context, str(payload["site_id"]))
     site_ctx = resolve_site_context(_shared._vault_store(), str(payload["site_id"]))
     equipment_id = equipment_request_id(payload)
-    target_path = equipment_request_path(context, site_path, payload)
     processed_destination = processed_dir / job_path.name
     if not context.dry_run and processed_destination.exists():
         raise _shared.QueueProcessorError(f"Destination already exists: {processed_destination}")
-    existing_text = target_path.read_text(encoding="utf-8") if target_path.exists() else ""
     created_at = datetime.now(timezone.utc).isoformat()
     print(f"Job {job.job_id}: validated")
-    print(f"Job {job.job_id}: target {target_path}")
+    print(f"Job {job.job_id}: target equipment_request_{equipment_id}")
     if context.dry_run:
         print(f"Job {job.job_id}: would log equipment request")
         _shared.write_log_line(context.log_path, f"job_id={job.job_id} action=log-equipment-request status=success error=")
@@ -312,7 +282,6 @@ def process_log_equipment_request_job(job_path: Path, job: QueueJob, context: Ru
     target = CanonicalTarget(
         doc_id=f"equipment_request_{equipment_id}",
         doc_type="equipment_request",
-        projection_path=target_path,
         allow_create=True,
         require_existing=False,
     )
@@ -351,29 +320,9 @@ def process_log_equipment_request_job(job_path: Path, job: QueueJob, context: Ru
         _shared.write_log_line(context.log_path, f"job_id={job.job_id} action=skip status=success reason=job-id-marker-present")
         return
 
-    projection_payload = {
-        key: value
-        for key, value in canonical_doc.items()
-        if key not in {"_id", "_rev", "type", "operator", "btq_job_ids", "created_at"}
-    }
-    final_text = render_equipment_request_markdown(
-        payload=projection_payload,
-        site_id=str(canonical_doc.get("site_id") or site_ctx.site_id),
-        site_name=str(canonical_doc.get("site_name") or site_ctx.name),
-        account=site_ctx.account or site_path.parents[2].name,
-        equipment_id=str(canonical_doc.get("equipment_id") or equipment_id),
-        job_id=job.job_id,
-        created_at=str(canonical_doc.get("created_at") or created_at),
-        existing_text=existing_text,
-    )
-    for canonical_job_id in canonical_doc.get("btq_job_ids") or []:
-        final_text = _shared.upsert_job_id_frontmatter(final_text, str(canonical_job_id))
-
-    target_path.parent.mkdir(parents=True, exist_ok=True)
-    _shared.atomic_write_text(target_path, final_text)
     _shared.write_mutation_evidence(context, job, canonical_doc, f"equipment_request {equipment_id}")
     moved_path = _shared.move_job_file(job_path, processed_dir)
-    print(f"Job {job.job_id}: updated {target_path}")
+    print(f"Job {job.job_id}: updated {target.doc_id}")
     print(f"Job {job.job_id}: moved queue file to {moved_path}")
     _shared.write_log_line(context.log_path, f"job_id={job.job_id} action=log-equipment-request status=success error=")
 
@@ -414,9 +363,8 @@ def process_update_site_equipment_job(job_path: Path, job: QueueJob, context: Ru
         _shared.write_log_line(context.log_path, f"job_id={job.job_id} action=update-site-equipment status=success error=")
         return
     canonical_doc = _shared.patch_canonical_location_content(site_path, final_text, job)
-    _shared.atomic_write_text(site_path, final_text)
     _shared.write_mutation_evidence(context, job, canonical_doc, new_body)
     moved_path = _shared.move_job_file(job_path, processed_dir)
-    print(f"Job {job.job_id}: updated {site_path}")
+    print(f"Job {job.job_id}: updated {canonical_doc.get('_id', 'location')}")
     print(f"Job {job.job_id}: moved queue file to {moved_path}")
     _shared.write_log_line(context.log_path, f"job_id={job.job_id} action=update-site-equipment status=success error=")

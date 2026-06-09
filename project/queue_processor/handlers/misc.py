@@ -9,20 +9,16 @@ from typing import Any
 
 from btq_vault.entity_types import OPERATOR_ID_GREG
 from field_capture.prospects import TERMINAL_PROSPECT_STATUSES
-from io_atomic import atomic_write_text
 from queue_processor.canonical_rmw import CanonicalEntityState, CanonicalMutation, CanonicalTarget, apply_canonical_rmw, resolve_employee_target, resolve_person_vault_path, resolve_site_target
-from queue_processor.idempotency import has_job_been_applied, parse_frontmatter_text, serialize_frontmatter, upsert_job_id_frontmatter
 from supply_orders import (
     data_root as supply_data_root,
     normalize_identifier,
     parse_staples_email,
-    persist_supply_order,
     quarantine_record,
     record_output_path as supply_record_output_path,
     resolve_site as resolve_supply_site,
     site_metadata_by_id,
 )
-from supply_order_markdown import supply_order_markdown_path
 
 from . import _shared
 from ._shared import QueueJob, QueueProcessorError, RunContext
@@ -32,11 +28,10 @@ logger = logging.getLogger(__name__)
 @dataclass(frozen=True)
 class VoiceMemoNoteTarget:
     target: CanonicalTarget
-    projection_path: Path | None = None
 
     def __iter__(self):
         # Backward-compatible target summaries in queue_processor.main.
-        yield self.projection_path or self.target.doc_id
+        yield self.target.doc_id
         yield self.target.allow_create
 def render_personal_journal_entry(payload: dict) -> str:
     return (
@@ -133,28 +128,6 @@ def _voice_memo_canonical_error(job: _shared.QueueJob, entity_id: str, exc: Exce
         "canonical couchdb write failed "
         f"job_type={job.job_type} job_id={job.job_id} entity_id={entity_id}: {exc}"
     )
-def _voice_memo_site_projection_path(payload: dict, context: RunContext, site_id: str) -> Path | None:
-    try:
-        return _shared.resolve_site_about_path_by_id(context, site_id, "Voice memo site target")
-    except _shared.QueueProcessorError:
-        site_text = str(payload.get("site") or "").strip()
-        if not site_text:
-            return None
-        try:
-            return _shared.resolve_site_about_path(context, site_text)
-        except _shared.QueueProcessorError:
-            return None
-def _voice_memo_employee_projection_path(context: RunContext, slug: str) -> Path | None:
-    try:
-        person_id = _shared.canonical_employee_doc_id_from_name(slug).removeprefix("employee_")
-        note_path = resolve_person_vault_path(_shared._vault_store(), person_id)
-    except Exception as exc:
-        logger.warning("voice memo employee projection fallback slug=%s: %s", slug, exc)
-        return None
-    try:
-        return _shared.ensure_within_root(_shared.vault_root_joined_path(context.vault_root, Path(note_path)), context.vault_root, "Voice memo employee target")
-    except _shared.QueueProcessorError:
-        return None
 def _voice_memo_note_transform(content: str, capture_id: str, *, seed_inbox_scope: bool = False):
     def transform(state: CanonicalEntityState) -> CanonicalMutation:
         outgoing = dict(state.doc) if state.doc is not None else {}
@@ -165,88 +138,12 @@ def _voice_memo_note_transform(content: str, capture_id: str, *, seed_inbox_scop
             outgoing.setdefault("operator", OPERATOR_ID_GREG)
         return CanonicalMutation(doc=outgoing, evidence_text=content)
     return transform
-def _project_voice_memo_note_target(
-    *,
-    target: VoiceMemoNoteTarget,
-    canonical_doc: dict[str, Any],
-    content: str,
-    capture_id: str,
-) -> None:
-    projection_path = target.projection_path
-    if projection_path is None:
-        return
-    if not projection_path.exists() and not target.target.allow_create:
-        return
-    existing_text = projection_path.read_text(encoding="utf-8") if projection_path.exists() else ""
-    final_text = _shared.append_markdown_block(existing_text, content)
-    for canonical_job_id in _voice_memo_string_list(canonical_doc.get("btq_job_ids")):
-        final_text = _shared.upsert_job_id_frontmatter(final_text, canonical_job_id)
-    for canonical_capture_id in _voice_memo_string_list(canonical_doc.get("voice_memo_capture_ids")):
-        final_text = upsert_voice_memo_capture_id_frontmatter(final_text, canonical_capture_id)
-    if capture_id not in _voice_memo_string_list(canonical_doc.get("voice_memo_capture_ids")):
-        final_text = upsert_voice_memo_capture_id_frontmatter(final_text, capture_id)
-    projection_path.parent.mkdir(parents=True, exist_ok=True)
-    _shared.atomic_write_text(projection_path, final_text)
-def _patch_voice_memo_canonical_content(target_path: Path, final_text: str, job: _shared.QueueJob, *, allow_create: bool) -> None:
-    if allow_create:
-        return
-    fields, _body = _shared.parse_frontmatter(final_text)
-    entity_type = _shared.get_frontmatter_value(fields, "type")
-    if _shared.is_site_about_path(target_path) or (target_path.name == "about.md" and entity_type == "location"):
-        _shared.patch_canonical_location_content(target_path, final_text, job)
-        return
-    if target_path.suffix == ".md" and (target_path.parent.name == "People" or entity_type in {"employee", "person"}):
-        _shared.patch_canonical_employee_content(target_path, final_text, job)
-
-def _prepare_voice_memo_note_target(
-    *,
-    target_path: Path,
-    content: str,
-    job: _shared.QueueJob,
-    capture_id: str,
-    allow_create: bool,
-) -> tuple[Path, str, str] | None:
-    if not target_path.exists() and not allow_create:
-        raise _shared.QueueProcessorError(f"Voice memo target does not exist: {target_path}")
-    existing_text = target_path.read_text(encoding="utf-8") if target_path.exists() else ""
-    if _shared.has_job_been_applied(existing_text, job.job_id):
-        return None
-    updated_text = _shared.append_markdown_block(existing_text, content)
-    final_text = _shared.upsert_job_id_frontmatter(updated_text, job.job_id)
-    final_text = upsert_voice_memo_capture_id_frontmatter(final_text, capture_id)
-    return target_path, existing_text, final_text
-
-def append_voice_memo_note_to_target(
-    *,
-    target_path: Path,
-    content: str,
-    job: _shared.QueueJob,
-    context: _shared.RunContext,
-    capture_id: str,
-    allow_create: bool,
-) -> None:
-    prepared = _prepare_voice_memo_note_target(
-        target_path=target_path,
-        content=content,
-        job=job,
-        capture_id=capture_id,
-        allow_create=allow_create,
-    )
-    if prepared is None:
-        return
-    if context.dry_run:
-        return
-    prepared_path, _existing_text, final_text = prepared
-    _patch_voice_memo_canonical_content(prepared_path, final_text, job, allow_create=allow_create)
-    target_path.parent.mkdir(parents=True, exist_ok=True)
-    _shared.atomic_write_text(target_path, final_text)
 
 def voice_memo_note_targets(payload: dict, context: RunContext, job: QueueJob | None = None) -> list[VoiceMemoNoteTarget]:
     site_id = str(payload.get("site_id") or "").strip()
     if site_id:
         target = resolve_site_target(site_id)
-        projection_path = _voice_memo_site_projection_path(payload, context, site_id)
-        return [VoiceMemoNoteTarget(target=target, projection_path=projection_path)]
+        return [VoiceMemoNoteTarget(target=target)]
     employees = payload.get("employees")
     employee_targets: list[VoiceMemoNoteTarget] = []
     if isinstance(employees, list):
@@ -265,14 +162,12 @@ def voice_memo_note_targets(payload: dict, context: RunContext, job: QueueJob | 
                     "canonical couchdb write failed "
                     f"job_type=voice_memo_note job_id={job_id} entity_id=employee:{slug}: {exc}"
                 ) from exc
-            employee_targets.append(VoiceMemoNoteTarget(target=target, projection_path=_voice_memo_employee_projection_path(context, slug)))
+            employee_targets.append(VoiceMemoNoteTarget(target=target))
     if employee_targets:
         return employee_targets
-    inbox_path = _shared.ensure_within_root(context.vault_root / "Inbox" / "voice-memo-general.md", context.vault_root, "Voice memo inbox target")
     return [
         VoiceMemoNoteTarget(
             target=CanonicalTarget(doc_id="note_voice_memo_general", doc_type="note", allow_create=True, require_existing=False),
-            projection_path=inbox_path,
         )
     ]
 
@@ -319,10 +214,7 @@ def process_voice_memo_note_job(job_path: Path, job: QueueJob, context: RunConte
         _shared.write_log_line(context.log_path, f"job_id={job.job_id} action=skip status=success reason=job-id-marker-present")
         return
     for target, canonical_doc in written_targets:
-        try:
-            _project_voice_memo_note_target(target=target, canonical_doc=canonical_doc, content=content, capture_id=capture_id)
-        except Exception as exc:
-            print(f"Job {job.job_id}: skipped voice memo Markdown projection for {target.target.doc_id}: {exc}")
+        _shared.write_mutation_evidence(context, job, canonical_doc, content)
     moved_path = _shared.move_job_file(job_path, processed_dir)
     print(f"Job {job.job_id}: appended voice memo note")
     print(f"Job {job.job_id}: moved queue file to {moved_path}")
@@ -354,13 +246,6 @@ def process_personal_journal_entry_job(job_path: Path, job: QueueJob, context: R
         print(f"Job {job.job_id}: job_id marker already present — skipping"); moved_path = _shared.move_job_file(job_path, processed_dir)
         print(f"Job {job.job_id}: moved queue file to {moved_path}"); _shared.write_log_line(context.log_path, f"job_id={job.job_id} action=skip status=success reason=job-id-marker-present")
         return
-    try:
-        target_path = _shared.ensure_within_root(context.personal_vault_root / "Journal" / f"{date}.md", context.personal_vault_root, "Personal journal target")
-        final_text = _shared.upsert_job_id_frontmatter(_shared.append_markdown_block(target_path.read_text(encoding="utf-8") if target_path.exists() else "", content), job.job_id)
-        if capture_id: final_text = upsert_voice_memo_capture_id_frontmatter(final_text, capture_id)
-        target_path.parent.mkdir(parents=True, exist_ok=True); _shared.atomic_write_text(target_path, final_text)
-    except Exception as exc:
-        print(f"Job {job.job_id}: skipped personal journal Markdown projection for {target.doc_id}: {exc}")
     moved_path = _shared.move_job_file(job_path, processed_dir)
     print(f"Job {job.job_id}: updated {target.doc_id}"); print(f"Job {job.job_id}: moved queue file to {moved_path}")
     _shared.write_log_line(context.log_path, f"job_id={job.job_id} action=personal-journal-entry status=success error=")
@@ -657,16 +542,11 @@ def process_parse_supply_email_job(job_path: Path, job: QueueJob, context: RunCo
     except Exception as exc:
         raise _supply_order_canonical_error(job, target.doc_id, exc) from exc
 
-    record_path = supply_record_output_path(supply_data_root(context.project_root), resolved_order)
-    site = site_metadata_by_id(resolved_order.site_id, store) if resolved_order.site_id is not None else None
-    markdown_path = None if site is None or getattr(site, "about_path", None) is None else supply_order_markdown_path(resolved_order, site)
-    json_path = record_path
+    json_path = supply_record_output_path(supply_data_root(context.project_root), resolved_order)
     try:
-        json_path, markdown_path = persist_supply_order(resolved_order, context.project_root, context.vault_root, store)
-        if markdown_path is not None:
-            _shared.atomic_write_text(markdown_path, _shared.upsert_job_id_frontmatter(markdown_path.read_text(encoding="utf-8"), job.job_id))
+        _shared.atomic_write_text(json_path, json.dumps(resolved_order.to_record(), indent=2, sort_keys=True) + "\n")
     except Exception as exc:
-        print(f"Job {job.job_id}: skipped supply order projection for {target.doc_id}: {exc}")
+        print(f"Job {job.job_id}: skipped supply order record for {target.doc_id}: {exc}")
 
     if resolved_order.unresolved_reason is not None or confidence < 0.7:
         quarantine_path: Path | str = "skipped"
@@ -691,10 +571,9 @@ def process_parse_supply_email_job(job_path: Path, job: QueueJob, context: RunCo
     else:
         _shared.write_log_line(
             context.log_path,
-            f"job_id={job.job_id} action=parse-supply-email status=success order_number={resolved_order.order_number} json={json_path} markdown={markdown_path or 'skipped'}",
+            f"job_id={job.job_id} action=parse-supply-email status=success order_number={resolved_order.order_number} json={json_path}",
         )
 
     moved_path = _shared.move_job_file(job_path, processed_dir)
     print(f"Job {job.job_id}: updated {json_path}")
-    print(f"Job {job.job_id}: updated {markdown_path}")
     print(f"Job {job.job_id}: moved queue file to {moved_path}")

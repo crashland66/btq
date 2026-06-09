@@ -47,8 +47,6 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
     migrate_vault_parser.set_defaults(func=handle_migrate_vault)
     audit_site_coverage_parser = subparsers.add_parser("audit-site-coverage", help="Report active vault locations missing from the site registry.")
     audit_site_coverage_parser.set_defaults(func=handle_audit_site_coverage)
-    project_vault_parser = subparsers.add_parser("project-vault", help="Project btq_vault CouchDB data into static HTML.")
-    project_vault_parser.set_defaults(func=handle_project_vault)
     backup_vault_parser = subparsers.add_parser("backup-vault", help="Watch btq_vault changes and write iCloud backups.")
     backup_vault_parser.set_defaults(func=handle_backup_vault)
     export_today_parser = subparsers.add_parser("export-vault-today", help="Print today's btq_vault entity activity as markdown text.")
@@ -122,12 +120,6 @@ def handle_audit_site_coverage(args: argparse.Namespace) -> int:
     return audit_site_coverage.main()
 
 
-def handle_project_vault(args: argparse.Namespace) -> int:
-    from btq_vault import projection_watcher
-
-    return projection_watcher.main()
-
-
 def handle_backup_vault(args: argparse.Namespace) -> int:
     from btq_vault.backup_worker import main as backup_main
 
@@ -180,7 +172,6 @@ def handle_freeze_vault(args: argparse.Namespace) -> int:
         f"---\nfrozen_at: {frozen_at}\n---\n\n"
         "This vault is frozen. No new entity data is written here.\n"
         "CouchDB (`btq_vault`) is the entity source of truth from this date forward.\n"
-        "Run `btq project-vault` to view live data via the HTML projection.\n"
     )
     marker.write_text(content, encoding="utf-8")
     print(f"Wrote {marker}")

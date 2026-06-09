@@ -203,9 +203,7 @@ def test_voice_memo_read_helper_logs_then_falls_back(tmp_path: Path, monkeypatch
     monkeypatch.setattr(misc, "resolve_person_vault_path", fail_resolve_person_vault_path)
 
     assert misc.voice_memo_person_link(context, {"slug": "keller-bruce", "name": "Bruce Keller"}) == "Bruce Keller"
-    assert misc._voice_memo_employee_projection_path(context, "keller-bruce") is None
     assert "voice memo person link fallback slug=keller-bruce name=Bruce Keller" in caplog.text
-    assert "voice memo employee projection fallback slug=keller-bruce" in caplog.text
 
 
 @pytest.fixture
@@ -1072,9 +1070,8 @@ def mark_equipment_job_payload(
     }
 
 
-def test_append_to_note_writes_target_file(tmp_path: Path) -> None:
+def test_append_to_note_writes_canonical_note_doc(tmp_path: Path) -> None:
     project_root, vault_root, runtime_root, log_path = make_roots(tmp_path)
-    target_path = vault_root / "Journal" / "2026-04-19.md"
     write_job(
         runtime_root / "queue",
         "2026-04-19T23-00-00Z__job-append.json",
@@ -1093,19 +1090,11 @@ def test_append_to_note_writes_target_file(tmp_path: Path) -> None:
 
     assert "updated" in stdout
     assert "action=append-to-note status=success" in log_text
-    assert "First queue note." in target_path.read_text(encoding="utf-8")
-    assert_frontmatter_job_id(
-        target_path,
-        {
-            "job_id": "job-append",
-            "job_type": "append_to_note",
-            "payload": {
-                "path": "Journal/2026-04-19.md",
-                "content": "First queue note.",
-                "destination": "journal",
-            },
-        },
-    )
+    store = shared._VAULT_STORE
+    assert isinstance(store, RecordingVaultStore)
+    note_doc = recording_doc(store, "note_journal_2026-04-19")
+    assert "First queue note." in note_doc["content"]
+    assert note_doc["type"] == "note"
     assert (runtime_root / "processed" / "2026-04-19T23-00-00Z__job-append.json").exists()
 
 
@@ -1132,7 +1121,7 @@ def test_append_to_site_note_patches_canonical_content_before_projection_write(t
     assert isinstance(store, RecordingVaultStore)
     canonical_content = recording_doc(store, "location_7050")["content"]
     assert "Reviewed staff request note." in canonical_content
-    assert canonical_content == shared.canonical_content_body(site_path.read_text(encoding="utf-8"))
+    assert "Reviewed staff request note." not in site_path.read_text(encoding="utf-8")
 
 
 def test_append_to_legacy_site_note_without_type_still_patches_canonical_content(tmp_path: Path) -> None:
@@ -1168,7 +1157,7 @@ def test_append_to_legacy_site_note_without_type_still_patches_canonical_content
     assert isinstance(store, RecordingVaultStore)
     canonical_content = recording_doc(store, "location_7050")["content"]
     assert "Reviewed staff request note." in canonical_content
-    assert canonical_content == shared.canonical_content_body(site_path.read_text(encoding="utf-8"))
+    assert "Reviewed staff request note." not in site_path.read_text(encoding="utf-8")
 
 
 def test_append_to_note_site_writes_canonical_location_content(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1195,14 +1184,12 @@ def test_append_to_note_site_writes_canonical_location_content(tmp_path: Path, m
 
     location_doc = recording_doc(store, "location_7050")
     gap_doc = recording_doc(store, f"visit_gap_7050_{event_date}")
-    site_text = site_path.read_text(encoding="utf-8")
     assert "Canonical site append_to_note content." in location_doc["content"]
     assert location_doc["btq_job_ids"] == [expected_job_id]
     assert gap_doc["operator"] == OPERATOR_ID_GREG
     assert gap_doc["reason"] == "event_without_visit"
     assert gap_doc["btq_job_ids"] == [expected_job_id]
-    assert "Canonical site append_to_note content." in site_text
-    assert f"  - {expected_job_id}" in site_text
+    assert "Canonical site append_to_note content." not in site_path.read_text(encoding="utf-8")
 
     replay_job_path = write_job(runtime_root / "queue", "site-canonical-replay.json", payload)
     stdout_buffer = io.StringIO()
@@ -1212,7 +1199,7 @@ def test_append_to_note_site_writes_canonical_location_content(tmp_path: Path, m
     assert "job_id marker already present" in stdout_buffer.getvalue()
     assert recording_doc(store, "location_7050")["content"].count("Canonical site append_to_note content.") == 1
     assert recording_doc(store, f"visit_gap_7050_{event_date}")["btq_job_ids"] == [expected_job_id]
-    assert site_path.read_text(encoding="utf-8").count("Canonical site append_to_note content.") == 1
+    assert site_path.read_text(encoding="utf-8").count("Canonical site append_to_note content.") == 0
 
 
 def test_append_to_note_journal_writes_canonical_note_doc(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1247,14 +1234,12 @@ def test_append_to_note_journal_writes_canonical_note_doc(tmp_path: Path, monkey
     qp.process_append_to_note_job(second_job_path, qp.load_job(second_job_path), context, processed_dir)
 
     note_doc = recording_doc(store, "note_journal_2026-04-19")
-    journal_text = (vault_root / "Journal" / "2026-04-19.md").read_text(encoding="utf-8")
     assert note_doc["type"] == "note"
     assert note_doc["operator"] == OPERATOR_ID_GREG
     assert note_doc["date"] == "2026-04-19"
     assert note_doc["content"].index("First canonical journal note.") < note_doc["content"].index("Second canonical journal note.")
     assert note_doc["btq_job_ids"] == [first_job_id, second_job_id]
-    assert f"  - {first_job_id}" in journal_text
-    assert f"  - {second_job_id}" in journal_text
+    assert not (vault_root / "Journal" / "2026-04-19.md").exists()
 
     replay_job_path = write_job(runtime_root / "queue", "journal-canonical-replay.json", first_payload)
     stdout_buffer = io.StringIO()
@@ -1263,7 +1248,7 @@ def test_append_to_note_journal_writes_canonical_note_doc(tmp_path: Path, monkey
 
     assert "job_id marker already present" in stdout_buffer.getvalue()
     assert recording_doc(store, "note_journal_2026-04-19")["content"].count("First canonical journal note.") == 1
-    assert (vault_root / "Journal" / "2026-04-19.md").read_text(encoding="utf-8").count("First canonical journal note.") == 1
+    assert not (vault_root / "Journal" / "2026-04-19.md").exists()
 
 
 def test_canonical_location_resolution_failure_is_wrapped_with_job_diagnostics() -> None:
@@ -1349,10 +1334,13 @@ def test_append_to_note_strips_vault_name_prefix_at_load(tmp_path: Path) -> None
         },
     )
 
-    stdout, log_text = run_jobs(project_root, vault_root, runtime_root, log_path)
+    _stdout, log_text = run_jobs(project_root, vault_root, runtime_root, log_path)
 
     assert "action=append-to-note status=success" in log_text
-    assert "Vault-prefix path should be normalized." in target_path.read_text(encoding="utf-8")
+    store = shared._VAULT_STORE
+    assert isinstance(store, RecordingVaultStore)
+    assert "Vault-prefix path should be normalized." in recording_doc(store, "location_7060")["content"]
+    assert "Vault-prefix path should be normalized." not in target_path.read_text(encoding="utf-8")
     # Confirm no doubled-prefix directory was created next to the vault.
     assert not (vault_root / vault_name).exists()
 
@@ -1360,7 +1348,6 @@ def test_append_to_note_strips_vault_name_prefix_at_load(tmp_path: Path) -> None
 def test_process_all_skip_unknowns_processes_durable_queue_only(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     use_recording_vault_store(monkeypatch)
     project_root, vault_root, runtime_root, _log_path = make_roots(tmp_path)
-    target_path = vault_root / "Journal" / "2026-05-08.md"
     unknown_path = vault_root / "Journal" / "2026-05-08-unknown.md"
     write_unknown_capture(
         unknown_path,
@@ -1369,7 +1356,6 @@ def test_process_all_skip_unknowns_processes_durable_queue_only(tmp_path: Path, 
         "Unknown transcript.",
         notes="#site: Summit Wire",
     )
-    unknown_before = unknown_path.read_text(encoding="utf-8")
     write_job(
         runtime_root / "queue",
         "2026-05-08T16-00-00Z__append.json",
@@ -1400,8 +1386,13 @@ def test_process_all_skip_unknowns_processes_durable_queue_only(tmp_path: Path, 
     assert report["queue_after"] == 0
     assert report["unknown_reclassification_skipped"] is True
     assert report["unknown_reclassification_jobs_created"] == 0
-    assert "Process only the durable queue." in target_path.read_text(encoding="utf-8")
-    assert unknown_path.read_text(encoding="utf-8") == unknown_before
+    store = shared._VAULT_STORE
+    assert isinstance(store, RecordingVaultStore)
+    assert "Process only the durable queue." in recording_doc(store, "note_journal_2026-05-08")["content"]
+    assert not list((runtime_root / "queue").glob("*.json"))
+    assert (runtime_root / "processed" / "2026-05-08T16-00-00Z__append.json").exists()
+    assert not list((runtime_root / "failed").glob("*.json"))
+    assert [doc for doc in store.docs if doc.get("type") == "unknown_capture"] == []
     assert not (runtime_root / "unknown_reclassification").exists()
 
 
@@ -1666,7 +1657,10 @@ def test_process_durable_queue_command_does_not_stage_outbox_or_working_triggers
     assert (intake_outbox / "old-transport.json").exists()
     assert (working_dir / "nightly-digest-2026-05-08.trigger").exists()
     assert not (runtime_root / "completed").exists()
-    assert "Durable command processed this." in (vault_root / "Journal" / "2026-05-08.md").read_text(encoding="utf-8")
+    store = shared._VAULT_STORE
+    assert isinstance(store, RecordingVaultStore)
+    assert "Durable command processed this." in recording_doc(store, "note_journal_2026-05-08")["content"]
+    assert not (vault_root / "Journal" / "2026-05-08.md").exists()
 
 
 def test_process_durable_queue_command_processes_field_capture_job_mix(
@@ -1714,14 +1708,14 @@ def test_process_durable_queue_command_processes_field_capture_job_mix(
     assert output["failed"] == 0
     assert not list((runtime_root / "queue").glob("*.json"))
     assert len(list((runtime_root / "processed").glob("*.json"))) == 2
-    site_text = (vault_root / "Accounts" / "Summitsteel" / "Locations" / "7050 - Summit Wire" / "about.md").read_text(encoding="utf-8")
-    assert "Reviewed staff request note." in site_text
+    location_doc = recording_doc(store, "location_7050")
+    assert "Reviewed staff request note." in location_doc["content"]
     issue_docs = [doc for doc in store.docs if doc["type"] == "site_issue"]
     assert len(issue_docs) == 1
     assert issue_docs[0]["site_id"] == "7050"
     assert issue_docs[0]["title"] == "Restroom drain backup and inoperable stall"
     issue_files = list((vault_root / "Accounts" / "Summitsteel" / "Locations" / "7050 - Summit Wire" / "Issues").glob("*.md"))
-    assert len(issue_files) == 1
+    assert issue_files == []
 
 
 def test_process_durable_queue_accepts_field_capture_log_site_issue_draft_shape(
@@ -1803,8 +1797,9 @@ def test_process_durable_queue_accepts_field_capture_log_site_issue_draft_shape(
     assert issue_doc["client_notified"] is True
     assert issue_doc["reported_by"] == "walsh-tom"
     assert issue_doc["related_capture_ids"] == ["cap-photo-2026-05-06T18-27-03-04-00"]
-    issue_files = list((vault_root / "Accounts" / "Summitsteel" / "Locations" / "7050 - Summit Wire" / "Issues").glob("*.md"))
-    assert len(issue_files) == 1
+    assert issue_doc["site_id"] == "7050"
+    assert issue_doc["title"] == "Restroom drain backup and inoperable stall"
+    assert issue_doc["summary"] == "Drain backed up and the sink drain pushed water onto the restroom floor."
 
 
 def test_process_durable_queue_invalid_job_moves_to_failed(tmp_path: Path, capsys) -> None:
@@ -1930,7 +1925,7 @@ def test_process_durable_queue_respects_processor_lock(tmp_path: Path, capsys) -
     assert not (vault_root / "Journal" / "2026-05-08.md").exists()
 
 
-def test_photo_capture_writes_journal_entry_and_attachments(tmp_path: Path) -> None:
+def test_photo_capture_writes_canonical_journal_entry_and_attachments(tmp_path: Path) -> None:
     project_root, vault_root, runtime_root, log_path = make_roots(tmp_path)
     payload = {
         "job_type": "photo_capture",
@@ -1953,9 +1948,11 @@ def test_photo_capture_writes_journal_entry_and_attachments(tmp_path: Path) -> N
 
     stdout, log_text = run_jobs(project_root, vault_root, runtime_root, log_path)
 
-    journal_path = vault_root / "Journal" / "2026-04-30.md"
     attachment_path = vault_root / "Journal" / "Attachments" / "2026-04-30" / "admin-entrance.jpg"
-    journal_text = journal_path.read_text(encoding="utf-8")
+    store = shared._VAULT_STORE
+    assert isinstance(store, RecordingVaultStore)
+    journal_doc = recording_doc(store, "journal_operational_2026-04-30")
+    journal_text = journal_doc["content"]
     assert "Photo Capture - 2026-04-30T14:00:00-04:00" in journal_text
     assert "Area / QC Category: Restrooms" in journal_text
     assert "Exported At: 2026-04-30T14:02:00-04:00" in journal_text
@@ -1964,9 +1961,9 @@ def test_photo_capture_writes_journal_entry_and_attachments(tmp_path: Path) -> N
     assert "![[Attachments/2026-04-30/admin-entrance.jpg]]" in journal_text
     assert attachment_path.read_bytes() == b"\xff\xd8\xff\xe0\x00\x10JFIF"
     assert "action=photo-capture status=success" in log_text
-    assert "updated" in stdout
+    assert "updated" not in stdout
     assert (runtime_root / "processed" / "2026-04-30T18-00-00Z__photo-capture.json").exists()
-    assert_frontmatter_job_id(journal_path, payload)
+    assert not (vault_root / "Journal" / "2026-04-30.md").exists()
 
 
 def test_photo_capture_accepts_stored_upload_path(tmp_path: Path) -> None:
@@ -1998,7 +1995,7 @@ def test_photo_capture_accepts_stored_upload_path(tmp_path: Path) -> None:
 
     attachment_path = vault_root / "Journal" / "Attachments" / "2026-04-30" / "admin-entrance.jpg"
     assert attachment_path.read_bytes() == b"\xff\xd8stored"
-    assert_frontmatter_job_id(vault_root / "Journal" / "2026-04-30.md", payload)
+    assert not (vault_root / "Journal" / "2026-04-30.md").exists()
 
 
 def test_personal_journal_writes_canonical_doc_to_personal_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -2023,8 +2020,6 @@ def test_personal_journal_writes_canonical_doc_to_personal_db(tmp_path: Path, mo
 
     stdout, log_text = run_jobs(project_root, vault_root, runtime_root, log_path, personal_vault_root=personal_vault_root)
 
-    target_path = personal_vault_root / "Journal" / "2026-04-26.md"
-    text = target_path.read_text(encoding="utf-8")
     doc = recording_doc(store, "journal_personal_2026-04-26")
     assert getattr(store, "database") == "btq_personal_journal"
     assert "updated journal_personal_2026-04-26" in stdout
@@ -2037,10 +2032,9 @@ def test_personal_journal_writes_canonical_doc_to_personal_db(tmp_path: Path, mo
     assert doc["voice_memo_capture_ids"] == ["vm-personal"]
     assert "### 2026-04-26T14:00:00+00:00" in doc["content"]
     assert "Today I need to think privately." in doc["content"]
-    assert "Today I need to think privately." in text
-    assert "source_audio: personal.m4a" in text
-    assert "raw_transcript: /tmp/personal.m4a.whisper.txt" in text
-    assert_frontmatter_job_id(target_path, payload)
+    assert "source_audio: personal.m4a" in doc["content"]
+    assert "raw_transcript: /tmp/personal.m4a.whisper.txt" in doc["content"]
+    assert not (personal_vault_root / "Journal" / "2026-04-26.md").exists()
     assert not (vault_root / "Journal" / "2026-04-26.md").exists()
     assert (runtime_root / "processed" / "2026-04-26T14-00-00Z__job-personal.json").exists()
 
@@ -2100,7 +2094,7 @@ def test_voice_memo_site_note_patches_canonical_content(tmp_path: Path) -> None:
     assert isinstance(store, RecordingVaultStore)
     canonical_content = recording_doc(store, "location_7060")["content"]
     assert "### 2026-05-10T17:20:23+00:00 — voice memo" in canonical_content
-    assert canonical_content == shared.canonical_content_body(site_path.read_text(encoding="utf-8"))
+    assert "### 2026-05-10T17:20:23+00:00 — voice memo" not in site_path.read_text(encoding="utf-8")
 
 
 def test_personal_journal_appends_second_entry_same_day(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -2138,15 +2132,12 @@ def test_personal_journal_appends_second_entry_same_day(tmp_path: Path, monkeypa
     write_job(runtime_root / "queue", "second-personal.json", second_payload)
     run_jobs(project_root, vault_root, runtime_root, log_path, personal_vault_root=personal_vault_root)
 
-    target_path = personal_vault_root / "Journal" / "2026-04-26.md"
-    text = target_path.read_text(encoding="utf-8")
     doc = recording_doc(store, "journal_personal_2026-04-26")
     assert "First private entry." in doc["content"]
     assert "Second private entry." in doc["content"]
     assert doc["content"].index("First private entry.") < doc["content"].index("Second private entry.")
     assert doc["btq_job_ids"] == [first_job_id, second_job_id]
-    assert text.count("First private entry.") == 1
-    assert text.count("Second private entry.") == 1
+    assert not (personal_vault_root / "Journal" / "2026-04-26.md").exists()
 
 
 def test_personal_journal_replay_skips(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -2732,7 +2723,7 @@ def test_append_to_note_skips_duplicate_existing_content(tmp_path: Path, monkeyp
 
     stdout, log_text = run_jobs(project_root, vault_root, runtime_root, log_path)
 
-    updated_text = target_path.read_text(encoding="utf-8")
+    updated_text = recording_doc(store, "note_journal_2026-04-19")["content"]
     assert "duplicate append_to_note content skipped" in stdout
     assert "reason=duplicate-append-to-note-content" in log_text
     assert updated_text.count("Site surfaces are difficult to clean, show marks, and generate complaints") == 1
@@ -2741,7 +2732,6 @@ def test_append_to_note_skips_duplicate_existing_content(tmp_path: Path, monkeyp
 
 def test_append_to_note_with_observations_is_idempotent(tmp_path: Path) -> None:
     project_root, vault_root, runtime_root, log_path = make_roots(tmp_path)
-    target_path = vault_root / "Journal" / "2026-04-20.md"
     content = (
         "Summit Wire candidate interview call confirmed evening availability\n\n"
         "**Observations:**\n"
@@ -2781,7 +2771,9 @@ def test_append_to_note_with_observations_is_idempotent(tmp_path: Path) -> None:
     )
 
     stdout, log_text = run_jobs(project_root, vault_root, runtime_root, log_path)
-    updated_text = target_path.read_text(encoding="utf-8")
+    store = shared._VAULT_STORE
+    assert isinstance(store, RecordingVaultStore)
+    updated_text = recording_doc(store, "note_journal_2026-04-20")["content"]
 
     assert "job_id already processed" in stdout
     assert "reason=job-id-already-processed" in log_text
@@ -2791,7 +2783,6 @@ def test_append_to_note_with_observations_is_idempotent(tmp_path: Path) -> None:
 
 def test_reprocessing_same_job_twice_does_not_duplicate_vault_change(tmp_path: Path) -> None:
     project_root, vault_root, runtime_root, log_path = make_roots(tmp_path)
-    target_path = vault_root / "Journal" / "2026-04-20.md"
     payload = {
         "job_id": "job-append-idempotent",
         "job_type": "append_to_note",
@@ -2807,11 +2798,14 @@ def test_reprocessing_same_job_twice_does_not_duplicate_vault_change(tmp_path: P
     write_job(runtime_root / "queue", "2026-04-20T23-33-00Z__job-append-idempotent-rerun.json", payload)
     stdout, log_text = run_jobs(project_root, vault_root, runtime_root, log_path)
 
-    updated_text = target_path.read_text(encoding="utf-8")
+    store = shared._VAULT_STORE
+    assert isinstance(store, RecordingVaultStore)
+    updated_text = recording_doc(store, "note_journal_2026-04-20")["content"]
     assert "job_id already processed" in stdout
     assert "reason=job-id-already-processed" in log_text
     assert updated_text.count("First queue note.") == 1
-    assert "btq_job_ids:" in updated_text
+    # btq_job_ids stores the computed job_id (hash); reprocessing must not duplicate it.
+    assert len(recording_doc(store, "note_journal_2026-04-20")["btq_job_ids"]) == 1
 
 
 def test_log_site_issue_creates_structured_issue_file(tmp_path: Path, legacy_markdown_writes: None) -> None:
@@ -2940,7 +2934,10 @@ def test_append_to_note_still_works_after_log_site_issue_added(tmp_path: Path) -
 
     assert "updated" in stdout
     assert "action=append-to-note status=success" in log_text
-    assert "Existing append_to_note behavior remains available." in target_path.read_text(encoding="utf-8")
+    store = shared._VAULT_STORE
+    assert isinstance(store, RecordingVaultStore)
+    assert "Existing append_to_note behavior remains available." in recording_doc(store, "note_journal_2026-05-08")["content"]
+    assert not (vault_root / "Journal" / "2026-05-08.md").exists()
 
 
 def test_log_supply_need_writes_new_file_under_site_supplies(tmp_path: Path, legacy_markdown_writes: None) -> None:
@@ -3394,7 +3391,9 @@ def test_process_update_site_equipment_creates_subsection_when_absent(tmp_path: 
 
     stdout, log_text = run_jobs(project_root, vault_root, runtime_root, log_path)
 
-    site_text = site_path.read_text(encoding="utf-8")
+    store = shared._VAULT_STORE
+    assert isinstance(store, RecordingVaultStore)
+    site_text = recording_doc(store, "location_7060")["content"]
     assert "updated" in stdout
     assert "action=update-site-equipment status=success" in log_text
     assert "### Parking / Loading\n\nUse dock.\n\n### Supplies / Equipment\n| Description | Brand | Color | Status | Notes |" in site_text
@@ -3414,7 +3413,7 @@ def test_update_site_equipment_patches_canonical_content(tmp_path: Path) -> None
     assert isinstance(store, RecordingVaultStore)
     canonical_content = recording_doc(store, "location_7060")["content"]
     assert "| Large walk-behind scrubber | Viper | Red | operational | Used 1x/week |" in canonical_content
-    assert canonical_content == shared.canonical_content_body(site_path.read_text(encoding="utf-8"))
+    assert canonical_content != shared.canonical_content_body(site_path.read_text(encoding="utf-8"))
 
 
 def test_process_update_site_equipment_replaces_existing_subsection_body(tmp_path: Path) -> None:
@@ -3428,7 +3427,9 @@ def test_process_update_site_equipment_replaces_existing_subsection_body(tmp_pat
 
     run_jobs(project_root, vault_root, runtime_root, log_path)
 
-    site_text = site_path.read_text(encoding="utf-8")
+    store = shared._VAULT_STORE
+    assert isinstance(store, RecordingVaultStore)
+    site_text = recording_doc(store, "location_7060")["content"]
     assert "### Supplies / Equipment\n| Description | Brand | Color | Status | Notes |" in site_text
     assert "Old inventory" not in site_text
     assert "### Zones / Sequence\nZone A first." in site_text
@@ -3443,7 +3444,9 @@ def test_process_update_site_equipment_appends_section_notes_when_provided(tmp_p
 
     run_jobs(project_root, vault_root, runtime_root, log_path)
 
-    site_text = site_path.read_text(encoding="utf-8")
+    store = shared._VAULT_STORE
+    assert isinstance(store, RecordingVaultStore)
+    site_text = recording_doc(store, "location_7060")["content"]
     assert "| Large walk-behind scrubber | Viper | Red | operational | Used 1x/week |" in site_text
     assert f"Repair path for blue scrubber is the current open action.\n\n<!-- btq_job_id: {qp.compute_job_id(payload)} -->" in site_text
 
@@ -3456,7 +3459,9 @@ def test_process_update_site_equipment_omits_section_notes_when_absent(tmp_path:
 
     run_jobs(project_root, vault_root, runtime_root, log_path)
 
-    site_text = site_path.read_text(encoding="utf-8")
+    store = shared._VAULT_STORE
+    assert isinstance(store, RecordingVaultStore)
+    site_text = recording_doc(store, "location_7060")["content"]
     assert "| Large walk-behind scrubber | Viper | Red | operational | Used 1x/week |" in site_text
     assert f"Inspection: 2026-05-13 (Jordan)\n\n<!-- btq_job_id: {qp.compute_job_id(payload)} -->" in site_text
 
@@ -3469,7 +3474,9 @@ def test_process_update_site_equipment_renders_inspection_line(tmp_path: Path) -
 
     run_jobs(project_root, vault_root, runtime_root, log_path)
 
-    assert "Inspection: 2026-05-13 (Jordan)" in site_path.read_text(encoding="utf-8")
+    store = shared._VAULT_STORE
+    assert isinstance(store, RecordingVaultStore)
+    assert "Inspection: 2026-05-13 (Jordan)" in recording_doc(store, "location_7060")["content"]
 
 
 def test_process_update_site_equipment_escapes_pipe_in_values(tmp_path: Path) -> None:
@@ -3490,7 +3497,9 @@ def test_process_update_site_equipment_escapes_pipe_in_values(tmp_path: Path) ->
     run_jobs(project_root, vault_root, runtime_root, log_path)
 
     row = "| iMop | (unknown) | (unknown) | untested | Uses Type B\\|2 cleaner |"
-    assert row in site_path.read_text(encoding="utf-8")
+    store = shared._VAULT_STORE
+    assert isinstance(store, RecordingVaultStore)
+    assert row in recording_doc(store, "location_7060")["content"]
     assert sum(1 for index, char in enumerate(row) if char == "|" and (index == 0 or row[index - 1] != "\\")) == 6
 
 
@@ -3500,12 +3509,12 @@ def test_process_update_site_equipment_idempotent_on_replay(tmp_path: Path) -> N
     payload = update_site_equipment_job_payload()
     write_job(runtime_root / "queue", "2026-05-13T17-00-00Z__update-site-equipment.json", payload)
     run_jobs(project_root, vault_root, runtime_root, log_path)
-    first_text = site_path.read_text(encoding="utf-8")
+    first_text = recording_doc(shared._VAULT_STORE, "location_7060")["content"]
 
     write_job(runtime_root / "queue", "2026-05-13T17-01-00Z__update-site-equipment-rerun.json", payload)
     stdout, log_text = run_jobs(project_root, vault_root, runtime_root, log_path)
 
-    assert site_path.read_text(encoding="utf-8") == first_text
+    assert recording_doc(shared._VAULT_STORE, "location_7060")["content"] == first_text
     assert "job_id already processed" in stdout
     assert "reason=job-id-already-processed" in log_text
 
@@ -3529,7 +3538,9 @@ def test_process_update_site_equipment_new_job_id_replaces_table(tmp_path: Path)
     write_job(runtime_root / "queue", "2026-05-13T18-00-00Z__update-site-equipment-second.json", second_payload)
     run_jobs(project_root, vault_root, runtime_root, log_path)
 
-    site_text = site_path.read_text(encoding="utf-8")
+    store = shared._VAULT_STORE
+    assert isinstance(store, RecordingVaultStore)
+    site_text = recording_doc(store, "location_7060")["content"]
     assert "Large walk-behind scrubber" not in site_text
     assert "| iMop | (unknown) | (unknown) | untested |  |" in site_text
     assert f"<!-- btq_job_id: {qp.compute_job_id(second_payload)} -->" in site_text
@@ -3560,7 +3571,9 @@ def test_process_update_site_equipment_resolves_site_by_name(tmp_path: Path) -> 
 
     run_jobs(project_root, vault_root, runtime_root, log_path)
 
-    assert "| Large walk-behind scrubber | Viper | Red | operational | Used 1x/week |" in site_path.read_text(encoding="utf-8")
+    store = shared._VAULT_STORE
+    assert isinstance(store, RecordingVaultStore)
+    assert "| Large walk-behind scrubber | Viper | Red | operational | Used 1x/week |" in recording_doc(store, "location_7060")["content"]
 
 
 def test_process_update_site_equipment_rejects_unregistered_site_name(tmp_path: Path) -> None:
@@ -3581,6 +3594,10 @@ def test_process_update_site_equipment_rejects_unregistered_site_name(tmp_path: 
     )
     first_text = write_continental_site(vault_root).read_text(encoding="utf-8")
     site_path = write_continental_site(vault_root, first_text + "")
+    store = seed_projection_docs_as_canonical(vault_root)
+    assert isinstance(store, RecordingVaultStore)
+    site_doc = recording_doc(store, "location_7060")
+    site_doc["site_aliases"] = "shared-continental"
     site_text = site_path.read_text(encoding="utf-8")
     site_path.write_text(site_text.replace("account: Contworks\n", "account: Contworks\nsite_aliases: shared-continental\n"), encoding="utf-8")
     payload = update_site_equipment_job_payload()
@@ -4006,7 +4023,7 @@ def test_flag_access_constraint_updates_site_about_file(tmp_path: Path, monkeypa
     )
 
     stdout, log_text = run_jobs(project_root, vault_root, runtime_root, log_path)
-    site_text = site_path.read_text(encoding="utf-8")
+    site_text = recording_doc(store, "location_7030")["content"]
 
     assert "updated" in stdout
     assert "action=flag-access-constraint status=success" in log_text
@@ -4020,18 +4037,7 @@ def test_flag_access_constraint_updates_site_about_file(tmp_path: Path, monkeypa
     assert gap_doc["reason"] == "event_without_visit"
     assert "type: visit_gap" not in site_text
     assert store.patch_fields_calls == []
-    assert_frontmatter_job_id(
-        site_path,
-        {
-            "job_id": "job-access",
-            "job_type": "flag_access_constraint",
-            "payload": {
-                "site": "Western Gas Transmission",
-                "details": "Only one employee has the badge.",
-                "date": "2026-04-19",
-            },
-        },
-    )
+    assert "Only one employee has the badge." not in site_path.read_text(encoding="utf-8")
 
 
 def test_flag_access_constraint_canonical_patch_failure_keeps_queue_and_projection_unchanged(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -4128,7 +4134,9 @@ def test_flag_access_constraint_requires_canonical_site_target(tmp_path: Path) -
     )
 
     stdout, log_text = run_jobs(project_root, vault_root, runtime_root, log_path)
-    site_text = site_path.read_text(encoding="utf-8")
+    store = shared._VAULT_STORE
+    assert isinstance(store, RecordingVaultStore)
+    site_text = recording_doc(store, "location_4242")["content"]
 
     assert "failed" in stdout
     assert "Could not resolve canonical site target: Warehouse 42" in log_text
@@ -4264,7 +4272,7 @@ def test_event_links_to_existing_visit(tmp_path: Path, monkeypatch: pytest.Monke
     )
 
     stdout, _log = run_jobs(project_root, vault_root, runtime_root, log_path)
-    site_text = site_path.read_text(encoding="utf-8")
+    site_text = recording_doc(store, "location_7030")["content"]
 
     assert "updated" in stdout
     assert f'visit_key: "Western Gas Transmission:{today}"' in site_text
@@ -4299,7 +4307,9 @@ def test_event_without_visit(tmp_path: Path) -> None:
     )
 
     run_jobs(project_root, vault_root, runtime_root, log_path)
-    site_text = site_path.read_text(encoding="utf-8")
+    store = shared._VAULT_STORE
+    assert isinstance(store, RecordingVaultStore)
+    site_text = recording_doc(store, "location_7030")["content"]
 
     assert f'visit_key: "Western Gas Transmission:{today}"' not in site_text
     store = shared._VAULT_STORE
@@ -4343,7 +4353,7 @@ def test_idempotent_event_visit_link(tmp_path: Path, monkeypatch: pytest.MonkeyP
     write_job(runtime_root / "queue", "2026-04-19T23-01-05Z__job-access-2.json", {"job_id": "job-access-idempotent", **payload})
     run_jobs(project_root, vault_root, runtime_root, log_path)
 
-    site_text = site_path.read_text(encoding="utf-8")
+    site_text = recording_doc(store, "location_7030")["content"]
     assert site_text.count(f'visit_key: "Western Gas Transmission:{today}"') == 1
 
 
@@ -4376,12 +4386,15 @@ def test_trigger_recruiting_updates_site_about_file(tmp_path: Path) -> None:
     )
 
     stdout, log_text = run_jobs(project_root, vault_root, runtime_root, log_path)
-    site_text = site_path.read_text(encoding="utf-8")
+    store = shared._VAULT_STORE
+    assert isinstance(store, RecordingVaultStore)
+    site_text = recording_doc(store, "location_7030")["content"]
 
     assert "updated" in stdout
     assert "action=trigger-recruiting status=success" in log_text
     assert "### Recruiting Triggers" in site_text
     assert "2026-04-19 — priority=emergency — Two openings remain on site." in site_text
+    assert "Two openings remain on site." not in site_path.read_text(encoding="utf-8")
 
 
 def test_trigger_recruiting_patches_canonical_content(tmp_path: Path) -> None:
@@ -4418,7 +4431,7 @@ def test_trigger_recruiting_patches_canonical_content(tmp_path: Path) -> None:
     assert isinstance(store, RecordingVaultStore)
     canonical_content = recording_doc(store, "location_7030")["content"]
     assert "### Recruiting Triggers" in canonical_content
-    assert canonical_content == shared.canonical_content_body(site_path.read_text(encoding="utf-8"))
+    assert "### Recruiting Triggers" not in site_path.read_text(encoding="utf-8")
 
 
 def test_trigger_recruiting_is_idempotent(tmp_path: Path) -> None:
@@ -4448,7 +4461,9 @@ def test_trigger_recruiting_is_idempotent(tmp_path: Path) -> None:
     write_job(runtime_root / "queue", "2026-04-19T23-02-11Z__job-recruiting-2.json", {"job_id": "job-recruiting-2", **payload})
 
     stdout, log_text = run_jobs(project_root, vault_root, runtime_root, log_path)
-    site_text = site_path.read_text(encoding="utf-8")
+    store = shared._VAULT_STORE
+    assert isinstance(store, RecordingVaultStore)
+    site_text = recording_doc(store, "location_7030")["content"]
 
     assert "job_id already processed" in stdout
     assert "reason=job-id-already-processed" in log_text
@@ -4514,7 +4529,9 @@ def test_close_recruiting_appends_closure_entry_to_site_about(tmp_path: Path) ->
     )
 
     stdout, log_text = run_jobs(project_root, vault_root, runtime_root, log_path)
-    site_text = site_path.read_text(encoding="utf-8")
+    store = shared._VAULT_STORE
+    assert isinstance(store, RecordingVaultStore)
+    site_text = recording_doc(store, "location_7030")["content"]
 
     assert "updated" in stdout
     assert "action=close-recruiting status=success" in log_text
@@ -4531,7 +4548,9 @@ def test_close_recruiting_filled_appends_to_people_note(tmp_path: Path) -> None:
     )
 
     run_jobs(project_root, vault_root, runtime_root, log_path)
-    person_text = person_path.read_text(encoding="utf-8")
+    store = shared._VAULT_STORE
+    assert isinstance(store, RecordingVaultStore)
+    person_text = recording_doc(store, "employee_pearson_david")["content"]
 
     assert "## Schedule Changes" in person_text
     assert "2026-04-19 — placed at Western Gas Transmission — Coverage plan changed." in person_text
@@ -4553,8 +4572,8 @@ def test_close_recruiting_patches_site_and_employee_canonical_content(tmp_path: 
     employee_content = recording_doc(store, "employee_pearson_david")["content"]
     assert "### Recruiting Closed" in site_content
     assert "2026-04-19 — placed at Western Gas Transmission — Coverage plan changed." in employee_content
-    assert site_content == shared.canonical_content_body(site_path.read_text(encoding="utf-8"))
-    assert employee_content == shared.canonical_content_body(person_path.read_text(encoding="utf-8"))
+    assert "### Recruiting Closed" not in site_path.read_text(encoding="utf-8")
+    assert "placed at Western Gas Transmission" not in person_path.read_text(encoding="utf-8")
 
 
 def test_close_recruiting_cancelled_skips_people_note(tmp_path: Path) -> None:
@@ -4579,8 +4598,10 @@ def test_close_recruiting_is_idempotent(tmp_path: Path) -> None:
     write_job(runtime_root / "queue", "2026-04-19T23-02-24Z__job-close-2.json", payload)
 
     stdout, log_text = run_jobs(project_root, vault_root, runtime_root, log_path)
-    site_text = site_path.read_text(encoding="utf-8")
-    person_text = person_path.read_text(encoding="utf-8")
+    store = shared._VAULT_STORE
+    assert isinstance(store, RecordingVaultStore)
+    site_text = recording_doc(store, "location_7030")["content"]
+    person_text = recording_doc(store, "employee_pearson_david")["content"]
 
     assert "job_id already processed" in stdout
     assert "reason=job-id-already-processed" in log_text
@@ -4608,7 +4629,9 @@ def test_close_recruiting_site_identity_normalization_matches_trigger_recruiting
 
         run_jobs(project_root, vault_root, runtime_root, log_path)
 
-        assert "2026-04-19 — outcome=cancelled — Coverage plan changed." in site_path.read_text(encoding="utf-8")
+        store = shared._VAULT_STORE
+        assert isinstance(store, RecordingVaultStore)
+        assert "2026-04-19 — outcome=cancelled — Coverage plan changed." in recording_doc(store, "location_7030")["content"]
 
 
 def test_close_recruiting_writes_evidence(tmp_path: Path) -> None:
@@ -4666,7 +4689,9 @@ def test_remove_from_schedule_updates_employee_file(tmp_path: Path) -> None:
     )
 
     stdout, log_text = run_jobs(project_root, vault_root, runtime_root, log_path)
-    employee_text = (vault_root / "People" / "Nash, Peter.md").read_text(encoding="utf-8")
+    store = shared._VAULT_STORE
+    assert isinstance(store, RecordingVaultStore)
+    employee_text = recording_doc(store, "employee_nash_peter")["content"]
 
     assert "updated" in stdout
     assert "action=remove-from-schedule status=success" in log_text
@@ -4709,7 +4734,7 @@ def test_remove_from_schedule_patches_employee_canonical_content(tmp_path: Path)
     assert isinstance(store, RecordingVaultStore)
     canonical_content = recording_doc(store, "employee_nash_peter")["content"]
     assert "2026-04-19 — removed from schedule for Western Gas Transmission" in canonical_content
-    assert canonical_content == shared.canonical_content_body(employee_path.read_text(encoding="utf-8"))
+    assert "removed from schedule" not in employee_path.read_text(encoding="utf-8")
 
 
 def test_remove_from_schedule_is_idempotent(tmp_path: Path) -> None:
@@ -4739,7 +4764,9 @@ def test_remove_from_schedule_is_idempotent(tmp_path: Path) -> None:
     write_job(runtime_root / "queue", "2026-04-19T23-03-11Z__job-remove-2.json", {"job_id": "job-remove-2", **payload})
 
     stdout, log_text = run_jobs(project_root, vault_root, runtime_root, log_path)
-    employee_text = (vault_root / "People" / "Nash, Peter.md").read_text(encoding="utf-8")
+    store = shared._VAULT_STORE
+    assert isinstance(store, RecordingVaultStore)
+    employee_text = recording_doc(store, "employee_nash_peter")["content"]
 
     assert "job_id already processed" in stdout
     assert "reason=job-id-already-processed" in log_text
@@ -4776,7 +4803,9 @@ def test_flag_retention_risk_updates_employee_file(tmp_path: Path) -> None:
     )
 
     stdout, log_text = run_jobs(project_root, vault_root, runtime_root, log_path)
-    employee_text = (vault_root / "People" / "Nash, Peter.md").read_text(encoding="utf-8")
+    store = shared._VAULT_STORE
+    assert isinstance(store, RecordingVaultStore)
+    employee_text = recording_doc(store, "employee_nash_peter")["content"]
 
     assert "updated" in stdout
     assert "action=flag-retention-risk status=success" in log_text
@@ -4820,7 +4849,7 @@ def test_flag_retention_risk_patches_employee_canonical_content(tmp_path: Path) 
     assert isinstance(store, RecordingVaultStore)
     canonical_content = recording_doc(store, "employee_nash_peter")["content"]
     assert "## Retention Risks" in canonical_content
-    assert canonical_content == shared.canonical_content_body(employee_path.read_text(encoding="utf-8"))
+    assert "May leave if evening load stays unchanged." not in employee_path.read_text(encoding="utf-8")
 
 
 def test_flag_retention_risk_is_idempotent(tmp_path: Path) -> None:
@@ -4851,7 +4880,9 @@ def test_flag_retention_risk_is_idempotent(tmp_path: Path) -> None:
     write_job(runtime_root / "queue", "2026-04-19T23-04-11Z__job-retention-2.json", {"job_id": "job-retention-2", **payload})
 
     stdout, log_text = run_jobs(project_root, vault_root, runtime_root, log_path)
-    employee_text = (vault_root / "People" / "Nash, Peter.md").read_text(encoding="utf-8")
+    store = shared._VAULT_STORE
+    assert isinstance(store, RecordingVaultStore)
+    employee_text = recording_doc(store, "employee_nash_peter")["content"]
 
     assert "job_id already processed" in stdout
     assert "reason=job-id-already-processed" in log_text
@@ -4891,7 +4922,9 @@ def test_observations_do_not_appear_in_people_file(tmp_path: Path) -> None:
     write_job(runtime_root / "queue", "2026-04-20T23-04-30Z__job-retention-observed.json", event_to_job(event))
 
     stdout, log_text = run_jobs(project_root, vault_root, runtime_root, log_path)
-    employee_text = (vault_root / "People" / "Nash, Peter.md").read_text(encoding="utf-8")
+    store = shared._VAULT_STORE
+    assert isinstance(store, RecordingVaultStore)
+    employee_text = recording_doc(store, "employee_nash_peter")["content"]
 
     assert "updated" in stdout
     assert "action=flag-retention-risk status=success" in log_text
@@ -4903,7 +4936,6 @@ def test_observations_do_not_appear_in_people_file(tmp_path: Path) -> None:
 def test_crash_after_write_before_move_reruns_safely(tmp_path: Path, monkeypatch) -> None:
     store = use_recording_vault_store(monkeypatch)
     project_root, vault_root, runtime_root, log_path = make_roots(tmp_path)
-    target_path = vault_root / "Journal" / "2026-04-20.md"
     job_path = write_job(
         runtime_root / "queue",
         "2026-04-20T23-34-00Z__job-crash.json",
@@ -4937,14 +4969,14 @@ def test_crash_after_write_before_move_reruns_safely(tmp_path: Path, monkeypatch
         monkeypatch.setattr(shared, "move_job_file", original_move_job_file)
 
     assert job_path.exists()
-    assert target_path.read_text(encoding="utf-8").count("Crash-safe queue note.") == 1
+    assert recording_doc(store, "note_journal_2026-04-20")["content"].count("Crash-safe queue note.") == 1
     assert store.job_id_applied_doc_id(job.job_id) == "note_journal_2026-04-20"
 
     stdout, log_text = run_jobs(project_root, vault_root, runtime_root, log_path)
 
     assert "job_id marker already present" in stdout
     assert "reason=job-id-marker-present" in log_text
-    assert target_path.read_text(encoding="utf-8").count("Crash-safe queue note.") == 1
+    assert recording_doc(store, "note_journal_2026-04-20")["content"].count("Crash-safe queue note.") == 1
 
 
 def test_visit_create_crash_after_write_before_move_reruns_safely(
@@ -5051,11 +5083,20 @@ def test_visit_create_basic(tmp_path: Path, legacy_markdown_writes: None) -> Non
     )
 
     stdout, log_text = run_jobs(project_root, vault_root, runtime_root, log_path)
+    store = shared._VAULT_STORE
+    assert isinstance(store, RecordingVaultStore)
+    # Visit doc id suffix is the computed job_id[:8] (a hash), so locate by type+site_id.
+    visit_docs = [doc for doc in store.docs if doc.get("type") == "visit" and doc.get("site_id") == "7030"]
+    assert len(visit_docs) == 1
+    visit_doc = visit_docs[0]
     visit_path = site_path.parent / "Visits" / f"{datetime.utcnow().date().isoformat()}.md"
     visit_text = visit_path.read_text(encoding="utf-8")
 
-    assert "updated" in stdout
     assert "action=visit-create status=success" in log_text
+    assert visit_doc["type"] == "visit"
+    assert visit_doc["site"] == "Western Gas Transmission"
+    assert visit_doc["site_id"] == "7030"
+    assert visit_doc["evidence"] == "I was at Western Gas Transmission."
     assert "type: visit" in visit_text
     assert "site: Western Gas Transmission" in visit_text
     assert f"date: {datetime.utcnow().date().isoformat()}" in visit_text
@@ -5299,11 +5340,6 @@ def test_parse_supply_email_replay_skips_without_repersist(tmp_path: Path, monke
     queue_file = runtime_root / "queue" / "job-one.json"
     queue_file.parent.mkdir(parents=True, exist_ok=True)
     queue_file.write_text("{}\n", encoding="utf-8")
-
-    def fail_persist_supply_order(*_args: object, **_kwargs: object) -> tuple[Path, Path | None]:
-        raise AssertionError("projection persistence should not run on canonical replay")
-
-    monkeypatch.setattr(qp.misc, "persist_supply_order", fail_persist_supply_order)
 
     qp.process_parse_supply_email_job(
         queue_file,
@@ -5848,7 +5884,8 @@ def test_append_to_site_note_writes_canonical_visit_gap_without_markdown_block(t
     assert gap_doc["date"] == today
     assert gap_doc["operator"] == OPERATOR_ID_GREG
     assert build_visit_gap_text(today) not in site_text
-    assert "\n\n---\n\n## Field Capture Reviews" in site_text
+    location_doc = recording_doc(store, "location_7030")
+    assert "\n\n---\n\n## Field Capture Reviews" in location_doc["content"]
 
 
 def test_no_duplicate_visit_gap(tmp_path: Path) -> None:

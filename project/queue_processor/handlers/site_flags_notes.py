@@ -6,9 +6,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from btq_vault.markdown_export import render_site_issue_markdown
 from btq_vault.entity_types import OPERATOR_ID_GREG
-from io_atomic import atomic_write_text
 from queue_processor.canonical_rmw import (
     CanonicalEntityState,
     CanonicalMutation,
@@ -19,7 +17,6 @@ from queue_processor.canonical_rmw import (
     resolve_site_context,
     resolve_site_target,
 )
-from queue_processor.idempotency import has_job_been_applied, parse_frontmatter_text, upsert_job_id_frontmatter
 from vault_errors import NotFoundError
 
 from . import _shared
@@ -80,17 +77,14 @@ def _build_site_issue_entity_doc(payload: dict, job: QueueJob, site_ctx: SiteCon
 
 def process_log_site_issue_job(job_path: Path, job: QueueJob, context: RunContext, processed_dir: Path) -> None:
     payload = job.payload
-    site_path = _shared.resolve_site_about_path(context, str(payload["site_id"]))
     site_ctx = resolve_site_context(_shared._vault_store(), str(payload["site_id"]))
     issue_id = site_issue_id(payload)
-    issue_path = site_issue_path(context, site_path, payload)
     processed_destination = processed_dir / job_path.name
     if not context.dry_run and processed_destination.exists():
         raise _shared.QueueProcessorError(f"Destination already exists: {processed_destination}")
-    existing_text = issue_path.read_text(encoding="utf-8") if issue_path.exists() else ""
     created_at = datetime.now(timezone.utc).isoformat()
     print(f"Job {job.job_id}: validated")
-    print(f"Job {job.job_id}: target {issue_path}")
+    print(f"Job {job.job_id}: target site_issue_{issue_id}")
     if context.dry_run:
         print(f"Job {job.job_id}: would log site issue")
         _shared.write_log_line(context.log_path, f"job_id={job.job_id} action=log-site-issue status=success error=")
@@ -99,7 +93,6 @@ def process_log_site_issue_job(job_path: Path, job: QueueJob, context: RunContex
     target = CanonicalTarget(
         doc_id=f"site_issue_{issue_id}",
         doc_type="site_issue",
-        projection_path=issue_path,
         allow_create=True,
         require_existing=False,
     )
@@ -138,29 +131,9 @@ def process_log_site_issue_job(job_path: Path, job: QueueJob, context: RunContex
         _shared.write_log_line(context.log_path, f"job_id={job.job_id} action=skip status=success reason=job-id-marker-present")
         return
 
-    projection_payload = {
-        key: value
-        for key, value in canonical_doc.items()
-        if key not in {"_id", "_rev", "type", "operator", "btq_job_ids", "created_at"}
-    }
-    final_text = render_site_issue_markdown(
-        payload=projection_payload,
-        site_id=str(canonical_doc.get("site_id") or site_ctx.site_id),
-        site_name=str(canonical_doc.get("site_name") or site_ctx.name),
-        account=site_ctx.account or site_path.parents[2].name,
-        issue_id=str(canonical_doc.get("issue_id") or issue_id),
-        job_id=job.job_id,
-        created_at=str(canonical_doc.get("created_at") or created_at),
-        existing_text=existing_text,
-    )
-    for canonical_job_id in canonical_doc.get("btq_job_ids") or []:
-        final_text = _shared.upsert_job_id_frontmatter(final_text, str(canonical_job_id))
-
-    issue_path.parent.mkdir(parents=True, exist_ok=True)
-    _shared.atomic_write_text(issue_path, final_text)
     _shared.write_mutation_evidence(context, job, canonical_doc, f"site_issue {issue_id}")
     moved_path = _shared.move_job_file(job_path, processed_dir)
-    print(f"Job {job.job_id}: updated {issue_path}")
+    print(f"Job {job.job_id}: updated {target.doc_id}")
     print(f"Job {job.job_id}: moved queue file to {moved_path}")
     _shared.write_log_line(context.log_path, f"job_id={job.job_id} action=log-site-issue status=success error=")
 
@@ -296,14 +269,9 @@ def process_append_to_note_job(job_path: Path, job: QueueJob, context: RunContex
         _shared.write_log_line(context.log_path, f"job_id={job.job_id} action=skip status=success reason=job-id-marker-present")
         return
 
-    final_text = _shared.append_markdown_block(existing_text, normalized)
-    for canonical_job_id in canonical_doc.get("btq_job_ids") or []:
-        final_text = _shared.upsert_job_id_frontmatter(final_text, str(canonical_job_id))
-    target_path.parent.mkdir(parents=True, exist_ok=True)
-    _shared.atomic_write_text(target_path, final_text)
     _shared.write_mutation_evidence(context, job, canonical_doc, normalized)
     moved_path = _shared.move_job_file(job_path, processed_dir)
-    print(f"Job {job.job_id}: updated {target_path}")
+    print(f"Job {job.job_id}: updated {target.doc_id}")
     print(f"Job {job.job_id}: moved queue file to {moved_path}")
     _shared.write_log_line(context.log_path, f"job_id={job.job_id} action=append-to-note status=success error=")
 
@@ -435,20 +403,7 @@ def process_location_content_append_job(
         _shared.write_log_line(context.log_path, f"job_id={job.job_id} action=skip status=success reason=job-id-marker-present")
         return
 
-    # A repository scan still finds legacy embedded visit_gap parsing for
-    # unmigrated paths, so these migrated handlers must not emit those blocks.
-    # Canonical visit_gap documents are the write path for this signal here.
-    try:
-        site_path = _shared.resolve_site_about_path(context, site)
-    except _shared.QueueProcessorError:
-        site_path = None
-    if site_path is not None and site_path.exists():
-        existing_text = site_path.read_text(encoding="utf-8")
-        final_text = _shared.append_to_markdown_section(existing_text, "## Operational Notes", f"{subheading}\n\n{note_line}")
-        for canonical_job_id in canonical_doc.get("btq_job_ids") or []:
-            final_text = _shared.upsert_job_id_frontmatter(final_text, str(canonical_job_id))
-        _shared.atomic_write_text(site_path, final_text)
-        _shared.write_mutation_evidence(context, job, canonical_doc, note_line)
+    _shared.write_mutation_evidence(context, job, canonical_doc, note_line)
     moved_path = _shared.move_job_file(job_path, processed_dir)
     print(f"Job {job.job_id}: updated {target.doc_id}")
     print(f"Job {job.job_id}: moved queue file to {moved_path}")
@@ -471,7 +426,6 @@ def process_employee_content_append_job(
     target = CanonicalTarget(
         doc_id=resolved_target.doc_id,
         doc_type=resolved_target.doc_type,
-        projection_path=resolved_target.projection_path,
         allow_create=False,
         require_existing=True,
     )
@@ -525,17 +479,7 @@ def process_employee_content_append_job(
         _shared.write_log_line(context.log_path, f"job_id={job.job_id} action=skip status=success reason=job-id-marker-present")
         return
 
-    try:
-        employee_path = _shared.resolve_employee_file(context.vault_root, employee)
-    except _shared.QueueProcessorError:
-        employee_path = None
-    if employee_path is not None and employee_path.exists():
-        existing_text = employee_path.read_text(encoding="utf-8")
-        final_text = _shared.append_to_markdown_section(existing_text, section, note_line)
-        for canonical_job_id in canonical_doc.get("btq_job_ids") or []:
-            final_text = _shared.upsert_job_id_frontmatter(final_text, str(canonical_job_id))
-        _shared.atomic_write_text(employee_path, final_text)
-        _shared.write_mutation_evidence(context, job, canonical_doc, note_line)
+    _shared.write_mutation_evidence(context, job, canonical_doc, note_line)
     moved_path = _shared.move_job_file(job_path, processed_dir)
     print(f"Job {job.job_id}: updated {target.doc_id}")
     print(f"Job {job.job_id}: moved queue file to {moved_path}")

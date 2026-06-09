@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import base64
-import os
 import re
 from datetime import datetime, timezone
 from pathlib import Path
@@ -114,21 +113,6 @@ def process_visit_create_job(job_path: Path, job: QueueJob, context: RunContext,
         )
         return
 
-    visit_block = (
-        "---\n"
-        "type: visit\n"
-        f"timestamp: {visit_timestamp}\n"
-        f"site: {str(payload['site']).strip()}\n"
-        f"date: {visit_date}\n"
-        f'visit_key: "{visit_key}"\n'
-        f"source: {source}\n"
-        f"confidence: {confidence}\n"
-        + (f"visit_type: {visit_type}\n" if visit_type else "")
-        + (f"visited_by: {visited_by}\n" if visited_by else "")
-        + f"evidence: {evidence}\n"
-        "---\n"
-    )
-
     print(f"Job {job.job_id}: validated")
 
     if context.dry_run:
@@ -156,24 +140,8 @@ def process_visit_create_job(job_path: Path, job: QueueJob, context: RunContext,
         ),
         site_id=site_id,
     )
-    projection_path: Path | None = None
-    if os.environ.get("BTQ_VAULT_MARKDOWN_WRITE"):
-        try:
-            site_path = _shared.resolve_site_about_path(context, str(payload["site"]))
-            visits_dir = _shared.ensure_within_root(site_path.parent / "Visits", context.vault_root, "Visits directory")
-            visits_dir.mkdir(parents=True, exist_ok=True)
-            visit_path = _shared.ensure_within_root(visits_dir / f"{visit_date}.md", context.vault_root, "Visit target")
-            projection_path = visit_path
-            existing_text = visit_path.read_text(encoding="utf-8") if visit_path.exists() else ""
-            updated_text = f"{existing_text}\n{visit_block}" if existing_text and not existing_text.endswith("\n") else f"{existing_text}{visit_block}"
-            final_text = _shared.upsert_job_id_frontmatter(updated_text, job.job_id)
-            _shared.atomic_write_text(visit_path, final_text)
-            _shared.write_mutation_evidence(context, job, canonical_doc, visit_block)
-        except Exception as exc:
-            print(f"Job {job.job_id}: skipped visit Markdown projection: {exc}")
+    _shared.write_mutation_evidence(context, job, canonical_doc, f"visit {visit_key}")
     moved_path = _shared.move_job_file(job_path, processed_dir)
-    if projection_path is not None:
-        print(f"Job {job.job_id}: updated {projection_path}")
     print(f"Job {job.job_id}: moved queue file to {moved_path}")
     _shared.write_log_line(
         context.log_path,
@@ -265,7 +233,6 @@ def process_photo_capture_job(job_path: Path, job: QueueJob, context: RunContext
         allow_create=True,
         require_existing=False,
     )
-    target_path = _shared.ensure_within_root(context.vault_root / "Journal" / f"{date}.md", context.vault_root, "Photo capture journal target")
     attachment_dir = _shared.ensure_within_root(context.vault_root / "Journal" / "Attachments" / date, context.vault_root, "Photo capture attachment directory")
     processed_destination = processed_dir / job_path.name
     if not context.dry_run and processed_destination.exists():
@@ -308,7 +275,7 @@ def process_photo_capture_job(job_path: Path, job: QueueJob, context: RunContext
     capture_entry = render_photo_capture_entry(payload, attachment_links)
 
     print(f"Job {job.job_id}: validated")
-    print(f"Job {job.job_id}: target {target_path}")
+    print(f"Job {job.job_id}: target {target.doc_id}")
 
     if context.dry_run:
         print(f"Job {job.job_id}: would apply photo capture")
@@ -349,17 +316,7 @@ def process_photo_capture_job(job_path: Path, job: QueueJob, context: RunContext
         _shared.write_log_line(context.log_path, f"job_id={job.job_id} action=skip status=success reason=job-id-marker-present")
         return
 
-    try:
-        existing_text = target_path.read_text(encoding="utf-8") if target_path.exists() else ""
-        updated_text = _append_photo_capture_entry(existing_text, capture_entry)
-        final_text = updated_text
-        for canonical_job_id in _string_list(canonical_doc.get("btq_job_ids")):
-            final_text = _shared.upsert_job_id_frontmatter(final_text, canonical_job_id)
-        _shared.atomic_write_text(target_path, final_text)
-        _shared.write_mutation_evidence(context, job, canonical_doc, capture_entry)
-        print(f"Job {job.job_id}: updated {target_path}")
-    except Exception as exc:
-        print(f"Job {job.job_id}: skipped photo capture Markdown projection for {target.doc_id}: {exc}")
+    _shared.write_mutation_evidence(context, job, canonical_doc, capture_entry)
 
     moved_path = _shared.move_job_file(job_path, processed_dir)
     print(f"Job {job.job_id}: moved queue file to {moved_path}")

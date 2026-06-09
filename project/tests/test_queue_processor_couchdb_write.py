@@ -859,7 +859,7 @@ def test_photo_capture_writes_attachment_files(
     assert attachment_path.read_bytes() == b"\xff\xd8\xff\xe0\x00\x10JFIF"
 
 
-def test_projection_write_happens_after_canonical_write(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_log_site_issue_does_not_write_projection_after_canonical_write(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     context = context_for(tmp_path)
     write_site(context.vault_root)
     store = RecordingRmwVaultStore()
@@ -876,12 +876,11 @@ def test_projection_write_happens_after_canonical_write(tmp_path: Path, monkeypa
 
     monkeypatch.setattr(shared, "atomic_write_text", fail_markdown_write)
 
-    with pytest.raises(RuntimeError, match="markdown boom"):
-        qp.process_log_site_issue_job(queue_file, job("log_site_issue", site_issue_payload()), context, processed_dir)
+    qp.process_log_site_issue_job(queue_file, job("log_site_issue", site_issue_payload()), context, processed_dir)
 
     assert store.docs[0]["_id"] == "site_issue_issue-fixed"
-    assert not (processed_dir / queue_file.name).exists()
-    assert queue_file.exists()
+    assert (processed_dir / queue_file.name).exists()
+    assert not queue_file.exists()
     assert not list((context.vault_root / "Accounts" / "Contworks" / "Locations" / "7060 - Continental Metalworks" / "Issues").glob("*.md"))
 
 
@@ -1002,7 +1001,7 @@ def test_log_site_issue_creates_canonical_doc_when_absent(
     assert doc["type"] == "site_issue"
     assert doc["btq_job_ids"] == ["job-one"]
     assert doc["created_at"]
-    assert site_issue_path(context, site_path, payload).exists()
+    assert not site_issue_path(context, site_path, payload).exists()
     assert (processed_dir / queue_file.name).exists()
 
 
@@ -1163,7 +1162,7 @@ def test_log_supply_need_creates_canonical_doc_when_absent(
     assert doc["type"] == "supply_need"
     assert doc["btq_job_ids"] == ["job-one"]
     assert doc["created_at"]
-    assert supply_need_path(context, site_path, payload).exists()
+    assert not supply_need_path(context, site_path, payload).exists()
     assert (processed_dir / queue_file.name).exists()
 
 
@@ -1282,7 +1281,7 @@ def test_log_equipment_request_creates_canonical_doc_when_absent(
     assert doc["type"] == "equipment_request"
     assert doc["btq_job_ids"] == ["job-one"]
     assert doc["created_at"]
-    assert equipment_request_path(context, site_path, payload).exists()
+    assert not equipment_request_path(context, site_path, payload).exists()
     assert (processed_dir / queue_file.name).exists()
 
 
@@ -1613,6 +1612,7 @@ def test_set_entity_status_site_sets_active_and_removes_legacy_status(
 ) -> None:
     context = context_for(tmp_path)
     site_path = write_site(context.vault_root)
+    original_text = site_path.read_text(encoding="utf-8")
     store = RecordingRmwVaultStore([canonical_location_status_doc(active=False, status="inactive")])
     monkeypatch.setattr(shared, "_VAULT_STORE", store)
     payload = set_entity_status_payload("site", "7060", "active")
@@ -1627,7 +1627,7 @@ def test_set_entity_status_site_sets_active_and_removes_legacy_status(
     assert "status" not in doc
     assert doc["btq_job_ids"] == ["job-one"]
     assert store.update_doc_calls == ["location_7060"]
-    assert "active: true" in site_path.read_text(encoding="utf-8")
+    assert site_path.read_text(encoding="utf-8") == original_text
     assert (processed_dir / queue_file.name).exists()
 
 
@@ -2654,5 +2654,5 @@ def test_log_personnel_event_creates_canonical_doc_when_absent(
     assert doc["type"] == "personnel_event"
     assert doc["btq_job_ids"] == ["job-one"]
     assert doc["created_at"]
-    assert personnel_event_path(context, payload).exists()
+    assert not personnel_event_path(context, payload).exists()
     assert (processed_dir / queue_file.name).exists()

@@ -7,7 +7,7 @@ from typing import Any, Callable
 
 from queue_processor.handlers import _shared
 from queue_processor.handlers import unknowns
-from queue_processor.idempotency import has_job_been_applied, upsert_job_id_frontmatter
+from queue_processor.idempotency import upsert_job_id_frontmatter
 from queue_spec import JOB_RECLASSIFY_UNKNOWN
 
 
@@ -424,16 +424,17 @@ def test_process_unknowns_scans_canonical_unresolved_docs_and_reclassifies(
     assert updated["retry_count"] == 1
 
 
-def test_process_reclassify_unknown_job_happy_path_marks_file_and_moves_job(tmp_path: Path, monkeypatch: Any) -> None:
+def test_process_reclassify_unknown_job_happy_path_moves_job_without_marking_file(tmp_path: Path, monkeypatch: Any) -> None:
     context = context_for(tmp_path)
     install_successful_event_pipeline(monkeypatch, event_id="event-from-handler")
     doc = canonical_unknown_doc(context)
     store = install_store(monkeypatch, RecordingUnknownCaptureStore([doc]))
-    write_unknown_file(
+    path = write_unknown_file(
         context.vault_root / "Journal",
         "2026-01-01-unknown.md",
         unknown_block(timestamp="2026-01-01T10:00:00+00:00", audio_file="a.m4a"),
     )
+    original_text = path.read_text(encoding="utf-8")
     job = make_reclassify_job("reclassify-happy")
     job_path = write_job_file(context.runtime_root, job)
     processed_dir = context.runtime_root / "processed"
@@ -441,8 +442,7 @@ def test_process_reclassify_unknown_job_happy_path_marks_file_and_moves_job(tmp_
 
     unknowns.process_reclassify_unknown_job(job_path, job, context, processed_dir)
 
-    target_text = (context.vault_root / "Journal" / "2026-01-01-unknown.md").read_text(encoding="utf-8")
-    assert has_job_been_applied(target_text, job.job_id) is True
+    assert path.read_text(encoding="utf-8") == original_text
     assert store.find_unknown_capture_docs_calls == ["unresolved"]
     assert store.doc(doc["_id"])["status"] == "resolved"
     assert (processed_dir / job_path.name).exists()
@@ -450,10 +450,11 @@ def test_process_reclassify_unknown_job_happy_path_marks_file_and_moves_job(tmp_
     assert "action=reclassify-unknown status=success" in context.log_path.read_text(encoding="utf-8")
 
 
-def test_process_reclassify_unknown_job_skips_when_job_marker_present(tmp_path: Path, monkeypatch: Any) -> None:
+def test_process_reclassify_unknown_job_ignores_stale_markdown_job_marker(tmp_path: Path, monkeypatch: Any) -> None:
     context = context_for(tmp_path)
     doc = canonical_unknown_doc(context)
     store = install_store(monkeypatch, RecordingUnknownCaptureStore([doc]))
+    install_successful_event_pipeline(monkeypatch, event_id="event-from-stale-marker")
     job = make_reclassify_job("reclassify-already-applied")
     original_text = unknown_block(timestamp="2026-01-01T10:00:00+00:00", audio_file="a.m4a")
     path = write_unknown_file(
@@ -465,16 +466,14 @@ def test_process_reclassify_unknown_job_skips_when_job_marker_present(tmp_path: 
     processed_dir = context.runtime_root / "processed"
     processed_dir.mkdir(parents=True, exist_ok=True)
 
-    install_failing_event_pipeline(monkeypatch, "job marker idempotency should skip reprocessing")
-
     unknowns.process_reclassify_unknown_job(job_path, job, context, processed_dir)
 
     assert path.read_text(encoding="utf-8") == upsert_job_id_frontmatter(original_text, job.job_id)
-    assert store.find_unknown_capture_docs_calls == []
-    assert store.update_doc_calls == []
+    assert store.find_unknown_capture_docs_calls == ["unresolved"]
+    assert store.doc(doc["_id"])["status"] == "resolved"
     assert (processed_dir / job_path.name).exists()
     assert not job_path.exists()
-    assert "reason=job-id-marker-present" in context.log_path.read_text(encoding="utf-8")
+    assert "action=reclassify-unknown status=success" in context.log_path.read_text(encoding="utf-8")
 
 
 def test_process_reclassify_unknown_job_dry_run_logs_without_mutation_or_move(

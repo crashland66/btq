@@ -76,7 +76,6 @@ def build_unknown_capture_doc_fields(payload: dict[str, Any]) -> dict[str, Any]:
 
 def process_record_unknown_capture_job(job_path: Path, job: QueueJob, context: RunContext, processed_dir: Path) -> None:
     payload = job.payload
-    target_path = _shared.ensure_within_root(context.vault_root / str(payload["path"]), context.vault_root, "Unknown capture target")
     processed_destination = processed_dir / job_path.name
     if not context.dry_run and processed_destination.exists():
         raise _shared.QueueProcessorError(f"Destination already exists: {processed_destination}")
@@ -91,7 +90,7 @@ def process_record_unknown_capture_job(job_path: Path, job: QueueJob, context: R
     created_doc = False
 
     print(f"Job {job.job_id}: validated")
-    print(f"Job {job.job_id}: target {target_path}")
+    print(f"Job {job.job_id}: target {target.doc_id}")
     if context.dry_run:
         print(f"Job {job.job_id}: would record unknown capture")
         _shared.write_log_line(context.log_path, f"job_id={job.job_id} action=record-unknown-capture status=success error=")
@@ -124,12 +123,6 @@ def process_record_unknown_capture_job(job_path: Path, job: QueueJob, context: R
         return
 
     if created_doc:
-        existing_text = target_path.read_text(encoding="utf-8") if target_path.exists() else ""
-        final_text = _shared.append_markdown_block(existing_text, str(payload["content"]).strip())
-        for canonical_job_id in canonical_doc.get("btq_job_ids") or []:
-            final_text = _shared.upsert_job_id_frontmatter(final_text, str(canonical_job_id))
-        target_path.parent.mkdir(parents=True, exist_ok=True)
-        _shared.atomic_write_text(target_path, final_text)
         _shared.write_mutation_evidence(
             context,
             job,
@@ -139,7 +132,7 @@ def process_record_unknown_capture_job(job_path: Path, job: QueueJob, context: R
 
     moved_path = _shared.move_job_file(job_path, processed_dir)
     if created_doc:
-        print(f"Job {job.job_id}: updated {target_path}")
+        print(f"Job {job.job_id}: updated {target.doc_id}")
     else:
         print(f"Job {job.job_id}: existing unknown_capture doc left unchanged")
     print(f"Job {job.job_id}: moved queue file to {moved_path}")
@@ -391,32 +384,12 @@ def process_unknowns(context: RunContext) -> int:
     return created_jobs
 
 def process_reclassify_unknown_job(job_path: Path, job: QueueJob, context: RunContext, processed_dir: Path) -> None:
-    payload = job.payload
-    target_path = _shared.ensure_within_root(context.vault_root / str(payload["path"]), context.vault_root, "Unknown target")
     processed_destination = processed_dir / job_path.name
     if not context.dry_run and processed_destination.exists():
         raise _shared.QueueProcessorError(f"Destination already exists: {processed_destination}")
 
     print(f"Job {job.job_id}: validated")
-    print(f"Job {job.job_id}: target {target_path}")
-
-    existing_text = target_path.read_text(encoding="utf-8") if target_path.exists() else ""
-    if _shared.has_job_been_applied(existing_text, job.job_id):
-        if context.dry_run:
-            print(f"Job {job.job_id}: job_id marker already present — skipping")
-            _shared.write_log_line(
-                context.log_path,
-                f"job_id={job.job_id} action=skip status=success reason=job-id-marker-present",
-            )
-            return
-        print(f"Job {job.job_id}: job_id marker already present — skipping")
-        moved_path = _shared.move_job_file(job_path, processed_dir)
-        print(f"Job {job.job_id}: moved queue file to {moved_path}")
-        _shared.write_log_line(
-            context.log_path,
-            f"job_id={job.job_id} action=skip status=success reason=job-id-marker-present",
-        )
-        return
+    print(f"Job {job.job_id}: target unknown_capture scan")
 
     created_jobs = 0
     if context.dry_run:
@@ -440,10 +413,6 @@ def process_reclassify_unknown_job(job_path: Path, job: QueueJob, context: RunCo
             raise _shared.QueueJobError(f"canonical unknown_capture read failed doc_id={doc.get('_id')}: {exc}") from exc
         if should_retry(decision_doc) or canonical_unknown_contains_site_signal(decision_doc):
             created_jobs += reclassify_unknown(decision_doc, context)
-
-    if target_path.exists():
-        updated_text = _shared.upsert_job_id_frontmatter(target_path.read_text(encoding="utf-8"), job.job_id)
-        _shared.atomic_write_text(target_path, updated_text)
 
     moved_path = _shared.move_job_file(job_path, processed_dir)
     print(f"Job {job.job_id}: moved queue file to {moved_path}")

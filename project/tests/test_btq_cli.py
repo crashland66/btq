@@ -51,7 +51,6 @@ EXPECTED_SUBCOMMANDS = [
     "setup-couchdb",
     "migrate-vault",
     "audit-site-coverage",
-    "project-vault",
     "backup-vault",
     "export-vault-today",
     "open-positions",

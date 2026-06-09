@@ -10,7 +10,6 @@ from btq_vault.couch_store import CouchDBEntityStore
 from btq_vault.entity_types import OPERATOR_ID_GREG
 from queue_processor.handlers import _shared as shared
 from queue_processor.handlers import unknowns
-from queue_processor.idempotency import has_job_been_applied
 from queue_spec import validate_job
 from transcription_pipeline.main import emit_missed_capture_job
 
@@ -124,7 +123,7 @@ def write_queue_file(path: Path, *, job_type: str, payload: dict[str, Any]) -> N
     path.write_text(json.dumps({"job_type": job_type, "payload": payload}, indent=2), encoding="utf-8")
 
 
-def test_record_unknown_capture_handler_creates_canonical_doc_and_projection(tmp_path: Path, monkeypatch: Any) -> None:
+def test_record_unknown_capture_handler_creates_canonical_doc_without_projection(tmp_path: Path, monkeypatch: Any) -> None:
     context = context_for(tmp_path)
     store = RecordingRmwVaultStore()
     monkeypatch.setattr(shared, "_VAULT_STORE", store)
@@ -148,10 +147,7 @@ def test_record_unknown_capture_handler_creates_canonical_doc_and_projection(tmp
     assert doc["normalized_transcript"] == "clean words"
     assert doc["capture_id"] == "cap-123"
     assert doc["btq_job_ids"] == ["job-record-1"]
-    projection = context.vault_root / payload["path"]
-    projection_text = projection.read_text(encoding="utf-8")
-    assert "type: unknown_capture" in projection_text
-    assert has_job_been_applied(projection_text, "job-record-1")
+    assert not (context.vault_root / payload["path"]).exists()
     assert (context.runtime_root / "processed" / job_path.name).exists()
 
 

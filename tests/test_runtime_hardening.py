@@ -16,6 +16,7 @@ from queue_processor import main as queue_main
 from queue_processor import inspect_runtime, repair, replay, reconciliation
 from queue_processor import narrative
 from queue_processor import governance
+from queue_processor.handlers import _shared as shared
 import epistemic
 from queue_processor.evidence import (
     CONFIDENCE_STRUCTURALLY_SAFE,
@@ -52,7 +53,7 @@ from epistemic import (
 )
 from transcription_pipeline import main as pipeline
 
-from test_queue_processor import RmwRecordingVaultStore, make_roots, run_jobs, use_recording_vault_store, write_job
+from test_queue_processor import RmwRecordingVaultStore, make_roots, recording_doc, run_jobs, use_recording_vault_store, write_job
 
 
 def write_contradiction_record(
@@ -146,12 +147,13 @@ def test_processed_index_updates_and_dedupe_prefers_index(tmp_path: Path) -> Non
 
     assert "job_id already processed" in stdout
     assert "reason=job-id-already-processed" in log_text
-    assert target_path.read_text(encoding="utf-8").count("Indexed queue note.") == 1
+    store = shared._VAULT_STORE
+    assert store is not None
+    assert recording_doc(store, "note_journal_2026-04-27")["content"].count("Indexed queue note.") == 1
 
 
 def test_replay_behavior_preserved_when_index_missing(tmp_path: Path) -> None:
     project_root, vault_root, runtime_root, log_path = make_roots(tmp_path)
-    target_path = vault_root / "Journal" / "2026-04-27.md"
     payload = {
         "job_id": "job-index-missing",
         "job_type": "append_to_note",
@@ -169,7 +171,9 @@ def test_replay_behavior_preserved_when_index_missing(tmp_path: Path) -> None:
     stdout, _log = run_jobs(project_root, vault_root, runtime_root, log_path)
 
     assert "job_id already processed" in stdout
-    assert target_path.read_text(encoding="utf-8").count("Fallback scan note.") == 1
+    store = shared._VAULT_STORE
+    assert store is not None
+    assert recording_doc(store, "note_journal_2026-04-27")["content"].count("Fallback scan note.") == 1
 
 
 def test_lineage_propagates_from_audio_to_events_jobs_and_logs(tmp_path: Path) -> None:

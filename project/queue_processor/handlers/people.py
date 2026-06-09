@@ -10,7 +10,6 @@ from typing import Any, List, Optional
 
 from btq_vault.couch_store import CANONICAL_EMPLOYEE_FIELDS
 from btq_vault.entity_types import OPERATOR_ID_GREG
-from btq_vault.markdown_export import render_person_markdown, render_personnel_event_markdown
 from queue_processor.canonical_rmw import (
     CanonicalEntityState,
     CanonicalMutation,
@@ -268,14 +267,12 @@ def _build_personnel_event_entity_doc(payload: dict, job: QueueJob, event_id: st
 def process_log_personnel_event_job(job_path: Path, job: QueueJob, context: RunContext, processed_dir: Path) -> None:
     payload = job.payload
     event_id = personnel_event_id(payload)
-    target_path = personnel_event_path(context, payload)
     processed_destination = processed_dir / job_path.name
     if not context.dry_run and processed_destination.exists():
         raise _shared.QueueProcessorError(f"Destination already exists: {processed_destination}")
-    existing_text = target_path.read_text(encoding="utf-8") if target_path.exists() else ""
     created_at = datetime.now(timezone.utc).isoformat()
     print(f"Job {job.job_id}: validated")
-    print(f"Job {job.job_id}: target {target_path}")
+    print(f"Job {job.job_id}: target personnel_event_{event_id}")
     if context.dry_run:
         print(f"Job {job.job_id}: would log personnel event")
         _shared.write_log_line(context.log_path, f"job_id={job.job_id} action=log-personnel-event status=success error=")
@@ -284,7 +281,6 @@ def process_log_personnel_event_job(job_path: Path, job: QueueJob, context: RunC
     target = CanonicalTarget(
         doc_id=f"personnel_event_{event_id}",
         doc_type="personnel_event",
-        projection_path=target_path,
         allow_create=True,
         require_existing=False,
     )
@@ -325,26 +321,9 @@ def process_log_personnel_event_job(job_path: Path, job: QueueJob, context: RunC
         _shared.write_log_line(context.log_path, f"job_id={job.job_id} action=skip status=success reason=job-id-marker-present")
         return
 
-    projection_payload = {
-        key: value
-        for key, value in canonical_doc.items()
-        if key not in {"_id", "_rev", "type", "operator", "btq_job_ids", "created_at"}
-    }
-    final_text = render_personnel_event_markdown(
-        payload=projection_payload,
-        event_id=str(canonical_doc.get("event_id") or event_id),
-        job_id=job.job_id,
-        created_at=str(canonical_doc.get("created_at") or created_at),
-        existing_text=existing_text,
-    )
-    for canonical_job_id in canonical_doc.get("btq_job_ids") or []:
-        final_text = _shared.upsert_job_id_frontmatter(final_text, str(canonical_job_id))
-
-    target_path.parent.mkdir(parents=True, exist_ok=True)
-    _shared.atomic_write_text(target_path, final_text)
     _shared.write_mutation_evidence(context, job, canonical_doc, f"personnel_event {event_id}")
     moved_path = _shared.move_job_file(job_path, processed_dir)
-    print(f"Job {job.job_id}: updated {target_path}")
+    print(f"Job {job.job_id}: updated {target.doc_id}")
     print(f"Job {job.job_id}: moved queue file to {moved_path}")
     _shared.write_log_line(context.log_path, f"job_id={job.job_id} action=log-personnel-event status=success error=")
 
@@ -395,8 +374,6 @@ def process_add_person_job(job_path: Path, job: QueueJob, context: RunContext, p
             "canonical couchdb person_id uniqueness check failed "
             f"job_type={job.job_type} job_id={job.job_id}: {exc}"
         ) from exc
-    person_text = render_person_markdown(payload, created_date, person_id, job.job_id)
-
     print(f"Job {job.job_id}: validated")
     print(f"Job {job.job_id}: target {target_path}")
 
@@ -405,10 +382,9 @@ def process_add_person_job(job_path: Path, job: QueueJob, context: RunContext, p
         _shared.write_log_line(context.log_path, f"job_id={job.job_id} action=add-person status=success error=")
         return
 
-    final_text = person_text
     canonical_doc = _shared._canonical_vault_upsert(job, _build_employee_entity_doc(payload, job, person_id, created_date))
     append_idempotency_record(job_path, job, context, target_path, person_id)
-    _shared.write_mutation_evidence(context, job, canonical_doc, person_text)
+    _shared.write_mutation_evidence(context, job, canonical_doc, f"employee {person_id}")
     moved_path = _shared.move_job_file(job_path, processed_dir)
     print(f"Job {job.job_id}: created {target_path}")
     print(f"Job {job.job_id}: moved queue file to {moved_path}")
@@ -517,32 +493,10 @@ def process_close_recruiting_job(job_path: Path, job: QueueJob, context: RunCont
         print(f"Job {job.job_id}: job_id marker already present — skipping"); moved_path = _shared.move_job_file(job_path, processed_dir); print(f"Job {job.job_id}: moved queue file to {moved_path}")
         _shared.write_log_line(context.log_path, f"job_id={job.job_id} action=skip status=success reason=job-id-marker-present")
         return
-    try:
-        site_path = _shared.resolve_site_about_path(context, site_name)
-    except _shared.QueueProcessorError:
-        try:
-            site_path = _shared.resolve_site_about_path_by_id(context, site_id)
-        except _shared.QueueProcessorError:
-            site_path = None
-    if site_path is not None and site_path.exists():
-        existing_text = site_path.read_text(encoding="utf-8")
-        final_text = _shared.append_to_markdown_section(existing_text, "## Operational Notes", f"### Recruiting Closed\n\n{note_line}")
-        for canonical_job_id in site_doc.get("btq_job_ids") or []:
-            final_text = _shared.upsert_job_id_frontmatter(final_text, str(canonical_job_id))
-        _shared.atomic_write_text(site_path, final_text)
-        _shared.write_mutation_evidence(context, job, site_doc, note_line)
+    _shared.write_mutation_evidence(context, job, site_doc, note_line)
     if emp_target is not None and person_note_line is not None:
         canonical_employee_doc = employee_doc if employee_doc is not None else store.get_optional(emp_target.doc_id)
-        try:
-            person_path = _shared.resolve_employee_file(context.vault_root, filled_by)
-        except _shared.QueueProcessorError:
-            person_path = None
-        if person_path is not None and person_path.exists() and canonical_employee_doc is not None:
-            person_existing = person_path.read_text(encoding="utf-8")
-            person_final_text = _shared.append_to_markdown_section(person_existing, "## Schedule Changes", person_note_line)
-            for canonical_job_id in canonical_employee_doc.get("btq_job_ids") or []:
-                person_final_text = _shared.upsert_job_id_frontmatter(person_final_text, str(canonical_job_id))
-            _shared.atomic_write_text(person_path, person_final_text)
+        if canonical_employee_doc is not None:
             _shared.write_mutation_evidence(context, job, canonical_employee_doc, f"placed at {site_name}")
 
     moved_path = _shared.move_job_file(job_path, processed_dir)
@@ -576,16 +530,12 @@ def process_set_entity_status_job(job_path: Path, job: QueueJob, context: RunCon
 
     store = _shared._vault_store()
     if entity_type == "site":
-        target_path = _resolve_set_entity_status_projection_path(context, entity_type, entity_id)
         target = CanonicalTarget(
             doc_id=f"location_{entity_id}",
             doc_type="location",
-            projection_path=target_path,
             allow_create=False,
             require_existing=True,
         )
-        frontmatter_updates: dict[str, object] = {"active": status == "active"}
-        frontmatter_removals = ["status"]
     elif entity_type == "employee":
         try:
             target = resolve_employee_target(store, entity_id)
@@ -599,18 +549,14 @@ def process_set_entity_status_job(job_path: Path, job: QueueJob, context: RunCon
         target = CanonicalTarget(
             doc_id=target.doc_id,
             doc_type=target.doc_type,
-            projection_path=target.projection_path,
             allow_create=False,
             require_existing=True,
         )
-        target_path = _resolve_set_entity_status_projection_path(context, entity_type, entity_id)
-        frontmatter_updates = {"status": status}
-        frontmatter_removals = []
     else:
         raise _shared.QueueProcessorError(f"Unsupported entity_type for set_entity_status: {entity_type}")
 
     print(f"Job {job.job_id}: validated")
-    print(f"Job {job.job_id}: target {target_path if target_path is not None else target.doc_id}")
+    print(f"Job {job.job_id}: target {target.doc_id}")
     if context.dry_run:
         try:
             if store.get_optional(target.doc_id) is None:
@@ -654,21 +600,9 @@ def process_set_entity_status_job(job_path: Path, job: QueueJob, context: RunCon
         _shared.write_log_line(context.log_path, f"job_id={job.job_id} action=skip status=success reason=job-id-marker-present")
         return
 
-    target_path = _resolve_set_entity_status_projection_path(context, entity_type, entity_id)
-    if target_path is not None and target_path.exists():
-        existing_text = target_path.read_text(encoding="utf-8")
-        fields, body = _shared.parse_frontmatter(existing_text)
-        updated_fields = fields
-        for frontmatter_key, frontmatter_value in frontmatter_updates.items():
-            updated_fields = _shared.set_frontmatter_value(updated_fields, frontmatter_key, frontmatter_value)
-        for frontmatter_key in frontmatter_removals:
-            updated_fields = _shared.remove_frontmatter_value(updated_fields, frontmatter_key)
-        updated_text = _shared.frontmatter_to_text(updated_fields, body)
-        final_text = _shared.upsert_job_id_frontmatter(updated_text, job.job_id)
-        _shared.atomic_write_text(target_path, final_text)
-        _shared.write_mutation_evidence(context, job, canonical_doc, f"{entity_type} {entity_id} status={status}")
+    _shared.write_mutation_evidence(context, job, canonical_doc, f"{entity_type} {entity_id} status={status}")
     moved_path = _shared.move_job_file(job_path, processed_dir)
-    print(f"Job {job.job_id}: updated {target_path if target_path is not None else target.doc_id}")
+    print(f"Job {job.job_id}: updated {target.doc_id}")
     print(f"Job {job.job_id}: moved queue file to {moved_path}")
     _shared.write_log_line(context.log_path, f"job_id={job.job_id} action=set-entity-status status=success error=")
     _shared.structured_log(
@@ -679,17 +613,6 @@ def process_set_entity_status_job(job_path: Path, job: QueueJob, context: RunCon
         entity_type=entity_type,
         entity_id=entity_id,
         status=status,
-        target_path=str(target_path) if target_path is not None else "",
+        target_path="",
         capture_id=_shared.capture_id_for_job(job),
     )
-
-
-def _resolve_set_entity_status_projection_path(context: RunContext, entity_type: str, entity_id: str) -> Path | None:
-    try:
-        if entity_type == "site":
-            return _shared.resolve_site_about_path(context, entity_id)
-        if entity_type == "employee":
-            return _shared.resolve_employee_file(context.vault_root, entity_id)
-    except _shared.QueueProcessorError:
-        return None
-    return None
