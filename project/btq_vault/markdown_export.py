@@ -7,7 +7,6 @@ from typing import Any, Iterable
 
 from btq_vault.projector import DDOC, query_view
 from io_atomic import atomic_write_text
-from queue_processor.canonical_rmw import resolve_site_vault_path
 from queue_processor.handlers import _shared
 
 
@@ -99,7 +98,7 @@ def export_all(
             report.skipped += 1
             continue
         try:
-            result = _export_entity_result(doc, vault_root, dry_run=dry_run)
+            result = _export_entity_result(doc, vault_root, dry_run=dry_run, store=store)
         except Exception as exc:
             report.errors.append(ExportError(doc_id=str(doc.get("_id") or ""), message=str(exc)))
             continue
@@ -123,13 +122,26 @@ class _ExportEntityResult:
     changed: bool = False
 
 
-def _export_entity_result(doc: dict[str, Any], vault_root: Path, *, dry_run: bool) -> _ExportEntityResult:
+def _export_entity_result(
+    doc: dict[str, Any],
+    vault_root: Path,
+    *,
+    dry_run: bool,
+    store: Any | None = None,
+) -> _ExportEntityResult:
     vault_root = vault_root.expanduser().resolve()
-    projection_doc = _with_resolved_target(doc, vault_root)
+    projection_doc = _with_canonical_site_context(doc, store=store)
     rendered = render_entity_markdown(projection_doc)
     if rendered is None:
         return _ExportEntityResult(None)
     path, text = rendered
+    if str(projection_doc.get("type") or "") == "personnel_event":
+        # A personnel event's filename embeds a slug of its (mutable) summary; re-export after a
+        # summary change must update the EXISTING file in place, keyed by the stable event_id, not
+        # orphan it under a new slug. This is a filesystem lookup by event_id — NOT vault_path.
+        existing_event_path = _existing_personnel_event_path(projection_doc, vault_root)
+        if existing_event_path is not None:
+            path = existing_event_path
     target = path if path.is_absolute() else vault_root / path
     target = target.expanduser().resolve()
     _shared.ensure_within_root(target, vault_root, "Markdown export target")
@@ -137,7 +149,11 @@ def _export_entity_result(doc: dict[str, Any], vault_root: Path, *, dry_run: boo
     if existing is not None:
         projection_doc = dict(projection_doc)
         projection_doc["_existing_text"] = existing
-        path, text = render_entity_markdown(projection_doc) or (path, text)
+        # Only the rendered TEXT depends on existing content; the target PATH is doc identity
+        # (and may have been overridden to an existing personnel-event file above) — keep it fixed.
+        rerendered = render_entity_markdown(projection_doc)
+        if rerendered is not None:
+            _, text = rerendered
         target = path if path.is_absolute() else vault_root / path
         target = target.expanduser().resolve()
         _shared.ensure_within_root(target, vault_root, "Markdown export target")
@@ -179,69 +195,80 @@ def _iter_docs_by_type(store: Any, types: tuple[str, ...]) -> Iterable[dict[str,
                 yield doc
 
 
-def _with_resolved_target(doc: dict[str, Any], vault_root: Path) -> dict[str, Any]:
-    if doc.get("_target_path") or doc.get("vault_path"):
-        return doc
+def _with_canonical_site_context(doc: dict[str, Any], *, store: Any | None = None) -> dict[str, Any]:
     doc_type = str(doc.get("type") or "")
-    site_id = str(doc.get("site_id") or doc.get("related_site") or "").strip()
-    if doc_type not in {"visit", "site_issue", "supply_need", "equipment_request"} or not site_id:
-        if doc_type == "personnel_event":
-            return _with_resolved_personnel_event_target(doc, vault_root)
+    if doc_type not in {"visit", "site_issue", "supply_need", "equipment_request"}:
         return doc
+
+    site_id = _clean_site_id(doc.get("site_id") or doc.get("related_site") or "")
+    if not site_id:
+        return doc
+
+    location_doc = _canonical_location_doc(site_id, doc=doc, store=store)
+    if location_doc is None:
+        if doc.get("account") or doc.get("site_name") or doc.get("site"):
+            return doc
+        enriched = dict(doc)
+        enriched.setdefault("account", "Unknown Account")
+        enriched.setdefault("site_name", site_id or "site")
+        return enriched
+
     enriched = dict(doc)
+    account = str(location_doc.get("account") or "").strip()
+    location = str(location_doc.get("location") or "").strip()
+    if account:
+        enriched["account"] = account
+    elif not str(enriched.get("account") or "").strip():
+        enriched["account"] = "Unknown Account"
+    if location:
+        enriched["site_name"] = location
+    elif not str(enriched.get("site_name") or enriched.get("site") or "").strip():
+        enriched["site_name"] = site_id or "site"
+    return enriched
+
+
+def _canonical_location_doc(site_id: str, *, doc: dict[str, Any], store: Any | None = None) -> dict[str, Any] | None:
+    lookup_store = store
     try:
-        site_path = Path(resolve_site_vault_path(_shared._vault_store(), site_id))
+        if lookup_store is None or not callable(getattr(lookup_store, "get_optional", None)):
+            lookup_store = _shared._vault_store()
+        get_optional = getattr(lookup_store, "get_optional", None)
+        if not callable(get_optional):
+            return None
+        location_doc = get_optional(f"location_{site_id}")
     except Exception as exc:
         logger.warning(
-            "markdown export target resolution fallback doc_id=%s type=%s site_id=%s: %s",
+            "markdown export canonical site context fallback doc_id=%s type=%s site_id=%s: %s",
             doc.get("_id"),
-            doc_type,
+            doc.get("type"),
             site_id,
             exc,
         )
-        return enriched
-    if not enriched.get("account"):
-        try:
-            enriched["account"] = site_path.parents[2].name
-        except IndexError:
-            pass
-    if not enriched.get("site_name") and not enriched.get("site"):
-        enriched["site_name"] = site_path.parent.name.split(" - ", 1)[-1]
-    if doc_type == "visit":
-        enriched["_target_path"] = site_path.parent / "Visits" / f"{str(doc.get('date') or 'visit').strip()}.md"
-    elif doc_type == "site_issue":
-        issue_id = str(doc.get("issue_id") or _doc_entity_id(doc, "site_issue")).strip()
-        title = str(doc.get("title") or "site issue")
-        enriched["_target_path"] = site_path.parent / "Issues" / f"{issue_id}__{_shared.slugify_issue_component(title)}.md"
-    elif doc_type == "supply_need":
-        supply_id = str(doc.get("supply_id") or _doc_entity_id(doc, "supply_need")).strip()
-        item_name = str(doc.get("item_name") or "supply need")
-        enriched["_target_path"] = site_path.parent / "Supplies" / f"{supply_id}__{_shared.slugify_issue_component(item_name)}.md"
-    elif doc_type == "equipment_request":
-        equipment_id = str(doc.get("equipment_id") or _doc_entity_id(doc, "equipment_request")).strip()
-        equipment_name = str(doc.get("equipment_name") or "equipment request")
-        enriched["_target_path"] = site_path.parent / "Equipment" / f"{equipment_id}__{_shared.slugify_issue_component(equipment_name)}.md"
-    return enriched
+        return None
+    return location_doc if isinstance(location_doc, dict) else None
 
 
-def _with_resolved_personnel_event_target(doc: dict[str, Any], vault_root: Path) -> dict[str, Any]:
+def _clean_site_id(value: object) -> str:
+    return str(value or "").strip().strip("\"'").strip()
+
+
+def _existing_personnel_event_path(doc: dict[str, Any], vault_root: Path) -> Path | None:
+    """Locate an already-projected personnel-event file by its stable event_id (slug-agnostic).
+
+    The filename embeds a slug of the mutable summary, so an in-place update must reuse the
+    existing file rather than create a new one. Filesystem glob by event_id; no vault_path.
+    """
     event_id = str(doc.get("event_id") or _doc_entity_id(doc, "personnel_event")).strip()
+    if not event_id:
+        return None
     employee = str(doc.get("employee") or "Unknown Person")
-    event_dir = vault_root / "People" / _shared.person_file_name(employee).removesuffix(".md") / "Events"
-    matches = sorted(event_dir.glob(f"{event_id}__*.md")) if event_dir.exists() else []
-    if not matches:
-        return doc
-    enriched = dict(doc)
-    enriched["_target_path"] = matches[0]
-    return enriched
+    events_dir = vault_root / "People" / _shared.person_file_name(employee).removesuffix(".md") / "Events"
+    matches = sorted(events_dir.glob(f"{event_id}__*.md")) if events_dir.exists() else []
+    return matches[0] if matches else None
 
 
-def _projection_path(doc: dict[str, Any], fallback: Path) -> Path:
-    target_path = doc.get("_target_path")
-    if target_path:
-        return Path(target_path)
-    vault_path = str(doc.get("vault_path") or "").strip()
-    return Path(vault_path) if vault_path else fallback
+def _projection_path(fallback: Path) -> Path:
+    return fallback
 
 
 def _doc_entity_id(doc: dict[str, Any], prefix: str) -> str:
@@ -291,17 +318,17 @@ def _employee_projection(doc: dict[str, Any]) -> tuple[Path, str]:
     person_id = str(doc.get("person_id") or _doc_entity_id(doc, "employee"))
     created = str(doc.get("created_at") or doc.get("created") or "")
     text = render_person_markdown(payload, created[:10] or created, person_id, _first_job_id(doc))
-    return _projection_path(doc, Path("People") / _shared.person_file_name(str(payload.get("name") or person_id))), text
+    return _projection_path(Path("People") / _shared.person_file_name(str(payload.get("name") or person_id))), text
 
 
 def _visit_projection(doc: dict[str, Any]) -> tuple[Path, str]:
     text = render_visit_markdown(doc)
-    site = str(doc.get("site") or doc.get("site_name") or doc.get("site_id") or "site")
-    site_id = str(doc.get("site_id") or "").strip()
+    site_id = _clean_site_id(doc.get("site_id"))
+    site = str(doc.get("site_name") or doc.get("site") or site_id or "site")
     account = str(doc.get("account") or "Unknown Account").strip() or "Unknown Account"
     date = str(doc.get("date") or "visit").strip()
     fallback = Path("Accounts") / account / "Locations" / f"{site_id} - {site}" / "Visits" / f"{date}.md"
-    return _projection_path(doc, fallback), text
+    return _projection_path(fallback), text
 
 
 def _site_issue_projection(doc: dict[str, Any]) -> tuple[Path, str]:
@@ -319,7 +346,7 @@ def _site_issue_projection(doc: dict[str, Any]) -> tuple[Path, str]:
     )
     title = str(doc.get("title") or "site issue")
     fallback = _site_child_fallback(doc, "Issues", f"{issue_id}__{_shared.slugify_issue_component(title)}.md")
-    return _projection_path(doc, fallback), text
+    return _projection_path(fallback), text
 
 
 def _supply_need_projection(doc: dict[str, Any]) -> tuple[Path, str]:
@@ -337,7 +364,7 @@ def _supply_need_projection(doc: dict[str, Any]) -> tuple[Path, str]:
     )
     item_name = str(doc.get("item_name") or "supply need")
     fallback = _site_child_fallback(doc, "Supplies", f"{supply_id}__{_shared.slugify_issue_component(item_name)}.md")
-    return _projection_path(doc, fallback), text
+    return _projection_path(fallback), text
 
 
 def _equipment_request_projection(doc: dict[str, Any]) -> tuple[Path, str]:
@@ -355,7 +382,7 @@ def _equipment_request_projection(doc: dict[str, Any]) -> tuple[Path, str]:
     )
     equipment_name = str(doc.get("equipment_name") or "equipment request")
     fallback = _site_child_fallback(doc, "Equipment", f"{equipment_id}__{_shared.slugify_issue_component(equipment_name)}.md")
-    return _projection_path(doc, fallback), text
+    return _projection_path(fallback), text
 
 
 def _personnel_event_projection(doc: dict[str, Any]) -> tuple[Path, str]:
@@ -372,12 +399,12 @@ def _personnel_event_projection(doc: dict[str, Any]) -> tuple[Path, str]:
     summary = str(doc.get("summary") or doc.get("event_type") or "personnel event")
     filename = f"{event_id}__{_shared.slugify_issue_component(summary)[:80].rstrip('-') or 'personnel-event'}.md"
     fallback = Path("People") / _shared.person_file_name(employee).removesuffix(".md") / "Events" / filename
-    return _projection_path(doc, fallback), text
+    return _projection_path(fallback), text
 
 
 def _site_child_fallback(doc: dict[str, Any], folder: str, filename: str) -> Path:
     account = str(doc.get("account") or "Unknown Account").strip() or "Unknown Account"
-    site_id = str(doc.get("site_id") or "").strip()
+    site_id = _clean_site_id(doc.get("site_id"))
     site_name = str(doc.get("site_name") or doc.get("site") or site_id or "site").strip()
     return Path("Accounts") / account / "Locations" / f"{site_id} - {site_name}" / folder / filename
 

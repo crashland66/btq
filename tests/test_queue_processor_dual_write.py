@@ -26,6 +26,9 @@ def visit_doc() -> dict[str, Any]:
         "_id": "visit_7050_2026-05-31_job",
         "type": "visit",
         "site": "Summit Wire",
+        # Canonical visit docs carry no account; the export enriches it from the location doc.
+        # This byte-stable test passes the (enriched) doc straight to the pure renderer.
+        "account": "Summitsteel",
         "site_id": "7050",
         "date": "2026-05-31",
         "timestamp": "2026-05-31T12:00:00+00:00",
@@ -34,7 +37,6 @@ def visit_doc() -> dict[str, Any]:
         "confidence": "high",
         "evidence": "Visited Summit Wire.",
         "btq_job_ids": ["job-visit-create"],
-        "vault_path": "Accounts/Summitsteel/Locations/7050 - Summit Wire/Visits/2026-05-31.md",
     }
 
 

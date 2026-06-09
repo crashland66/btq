@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import inspect
 import json
 from pathlib import Path
 from typing import Any
 
 import btq
+import btq_vault.markdown_export as markdown_export
 from btq_vault.couch_store import CouchDBEntityStore
 from btq_vault.markdown_export import export_all, render_entity_markdown
 
@@ -21,6 +23,7 @@ from test_queue_processor_dual_write import (
 class RecordingVaultStore:
     def __init__(self, docs: list[dict[str, Any]]) -> None:
         self.docs = docs
+        self.get_optional_calls: list[str] = []
 
     def iter_by_type(self, type_name: str):
         for doc in self.docs:
@@ -28,6 +31,7 @@ class RecordingVaultStore:
                 yield doc
 
     def get_optional(self, doc_id: str) -> dict[str, Any] | None:
+        self.get_optional_calls.append(doc_id)
         for doc in self.docs:
             if doc.get("_id") == doc_id:
                 return dict(doc)
@@ -35,7 +39,9 @@ class RecordingVaultStore:
 
 
 def test_render_entity_markdown_returns_path_and_text_per_entity_type() -> None:
-    docs = [employee_doc(), visit_doc(), site_issue_doc(), supply_doc(), equipment_doc(), personnel_event_doc()]
+    visit = dict(visit_doc())
+    visit["account"] = "Summitsteel"
+    docs = [employee_doc(), visit, site_issue_doc(), supply_doc(), equipment_doc(), personnel_event_doc()]
 
     rendered = [render_entity_markdown(doc) for doc in docs]
 
@@ -76,53 +82,81 @@ def test_export_all_dry_run_writes_nothing(tmp_path: Path) -> None:
     assert not list(tmp_path.rglob("*.md"))
 
 
-def test_markdown_export_resolves_site_projection_path_from_canonical_vault_path(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    issue = dict(site_issue_doc())
-    issue.pop("vault_path")
-    issue.pop("account")
-    issue.pop("site_name")
+def test_markdown_export_enriches_visit_path_from_canonical_location_doc(tmp_path: Path) -> None:
+    visit = dict(visit_doc())
+    visit.pop("vault_path", None)
+    visit.pop("account", None)
+    visit["site"] = "Stale Site Name"
     store = RecordingVaultStore(
         [
             {
                 "_id": "location_7050",
                 "type": "location",
                 "site_id": "7050",
-                "vault_path": "Accounts/Summitsteel/Locations/7050 - Summit Wire/about.md",
+                "account": "Summitsteel",
+                "location": "Summit Wire",
             },
-            issue,
+            visit,
         ]
     )
-    monkeypatch.setattr("queue_processor.handlers._shared._VAULT_STORE", store)
 
     report = export_all(store, tmp_path)
 
     assert report.errors == []
     assert report.written == 1
-    target = tmp_path / "Accounts/Summitsteel/Locations/7050 - Summit Wire/Issues/iss_summit_drain__restroom-drain-backup.md"
+    assert store.get_optional_calls == ["location_7050"]
+    target = tmp_path / "Accounts/Summitsteel/Locations/7050 - Summit Wire/Visits/2026-05-31.md"
     assert target.exists()
 
 
-def test_markdown_export_read_helper_logs_then_falls_back(tmp_path: Path, monkeypatch, caplog) -> None:
+def test_markdown_export_normalizes_quoted_site_id_in_site_child_folder(tmp_path: Path) -> None:
     issue = dict(site_issue_doc())
     issue.pop("vault_path")
-    issue.pop("account")
-    issue.pop("site_name")
+    issue["site_id"] = ' "789" '
+    issue["account"] = "Summitsteel"
+    issue["site_name"] = "Summit Wire"
     store = RecordingVaultStore([issue])
 
-    def fail_resolve_site_vault_path(_store: object, _site_id: str) -> None:
-        raise RuntimeError("site path unavailable")
-
-    monkeypatch.setattr("btq_vault.markdown_export.resolve_site_vault_path", fail_resolve_site_vault_path)
-
-    report = export_all(store, tmp_path, dry_run=True)
+    report = export_all(store, tmp_path)
 
     assert report.errors == []
-    assert report.would_write == 1
-    assert "markdown export target resolution fallback doc_id=site_issue_iss_summit_drain" in caplog.text
-    assert "site path unavailable" in caplog.text
+    assert report.written == 1
+    assert store.get_optional_calls == ["location_789"]
+    target = tmp_path / "Accounts/Summitsteel/Locations/789 - Summit Wire/Issues/iss_summit_drain__restroom-drain-backup.md"
+    assert target.exists()
+
+
+def test_markdown_export_updates_existing_personnel_event_in_place_by_event_id(tmp_path: Path) -> None:
+    # The event filename embeds a slug of the (mutable) summary. A re-export after the summary
+    # changes must UPDATE the existing file in place — located by the stable event_id, not
+    # vault_path — rather than orphan it under a new slug. (Original pre-C3 behavior.)
+    event = dict(personnel_event_doc())
+    event.pop("vault_path", None)
+    old_target = tmp_path / "People/Dalton, Eric Daniel/Events/evt_training__older-existing-title.md"
+    old_target.parent.mkdir(parents=True)
+    old_target.write_text("---\ntype: personnel_event\n---\n", encoding="utf-8")
+    store = RecordingVaultStore([event])
+
+    report = export_all(store, tmp_path)
+
+    assert report.errors == []
+    assert report.written == 1
+    # The existing file is reused (updated), and NO new-slug file is created.
+    new_slug_target = tmp_path / "People/Dalton, Eric Daniel/Events/evt_training__completed-floor-care-training.md"
+    assert not new_slug_target.exists()
+    assert old_target.exists()
+    event_files = sorted((tmp_path / "People/Dalton, Eric Daniel/Events").glob("*.md"))
+    assert len(event_files) == 1
+
+
+def test_markdown_export_no_longer_imports_resolver_or_reads_vault_path() -> None:
+    source = inspect.getsource(markdown_export)
+
+    assert "resolve_site_vault_path" not in source
+    assert 'doc.get("vault_path")' not in source
+    # NOTE: a single filesystem glob remains by design — `_existing_personnel_event_path` finds an
+    # already-projected personnel-event file by its stable event_id (slug-agnostic) for in-place
+    # update. It does NOT read vault_path or resolve a site path, so it is not asserted against.
 
 
 def test_markdown_export_cli_dry_run_writes_nothing(
