@@ -48,7 +48,9 @@ def test_home_section_renders_account_grouped_site_table(monkeypatch: pytest.Mon
                 "doc": {
                     "type": "opportunity",
                     "_id": "opp_x",
-                    "vault_path": "Accounts/TestCo/Locations/42 - Test Site/Opportunities/x.md",
+                    "site_id": "42",
+                    "location": "Test Site",
+                    "account": "TestCo",
                 },
             }
         ],

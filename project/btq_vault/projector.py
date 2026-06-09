@@ -52,7 +52,6 @@ SUMMARY_FIELD_ORDER: list[str] = [
     "site_id",
     "visited_by",
     "visit_type",
-    "vault_path",
 ]
 
 # Human-readable section titles for known long-text / structured fields.
@@ -571,18 +570,6 @@ def _locations(base_url: str, auth_headers: dict, database: str, timeout: float)
     return sorted(locations, key=lambda loc: (loc.account.lower(), loc.name.lower(), loc.site_id))
 
 
-def _parse_vault_path_site(vault_path: str) -> tuple[str, str, str]:
-    parts = _string(vault_path).split("/")
-    if len(parts) < 4 or parts[0] != "Accounts" or parts[2] != "Locations":
-        return "", "", ""
-    account = parts[1]
-    loc_part = parts[3]
-    if " - " in loc_part:
-        raw_id, raw_name = loc_part.split(" - ", 1)
-        return account, raw_id.strip(), raw_name.strip()
-    return account, "", ""
-
-
 def _build_site_records(by_type_rows: list[dict]) -> dict[str, _SiteRecord]:
     records: dict[str, _SiteRecord] = {}
 
@@ -592,16 +579,14 @@ def _build_site_records(by_type_rows: list[dict]) -> dict[str, _SiteRecord]:
     )
     for row in ordered:
         doc = row["doc"]
-        vault_path = _string(doc.get("vault_path"))
-        vp_account, vp_site_id, vp_name = _parse_vault_path_site(vault_path)
 
-        site_id = _string(doc.get("job") or doc.get("site_id")) or vp_site_id
+        site_id = _string(doc.get("job") or doc.get("site_id"))
         if not site_id:
             continue
 
         existing = records.get(site_id)
-        name = _string(doc.get("location") or doc.get("name")) or vp_name
-        account = _string(doc.get("account")) or vp_account
+        name = _string(doc.get("location") or doc.get("name"))
+        account = _string(doc.get("account"))
 
         if doc.get("type") == "location":
             records[site_id] = _SiteRecord(

@@ -67,7 +67,7 @@ def test_backfill_creates_missing_employee_docs_from_active_tokens_and_people_fi
     assert store.docs["employee_keller-bruce"]["person_id"] == "keller-bruce"
     assert store.docs["employee_keller-bruce"]["name"] == "Bruce Keller"
     assert store.docs["employee_keller-bruce"]["site_ids"] == ["7050", "7060"]
-    assert store.docs["employee_keller-bruce"]["vault_path"] == "People/Keller, Bruce.md"
+    assert "vault_path" not in store.docs["employee_keller-bruce"]
     assert store.docs["employee_worker-tokenscoped"]["site_ids"] == ["7040"]
     assert "employee_revoked-person" not in store.docs
 
@@ -101,7 +101,7 @@ def test_backfill_matches_first_last_token_person_ids_to_people_files(tmp_path: 
         doc_id = f"employee_{person_id}"
         assert store.docs[doc_id]["person_id"] == person_id
         assert store.docs[doc_id]["name"] == f"{first} {last}"
-        assert store.docs[doc_id]["vault_path"] == f"People/{filename}"
+        assert "vault_path" not in store.docs[doc_id]
         assert store.docs[doc_id]["site_ids"] == [job, *additional_jobs]
 
 
@@ -208,7 +208,6 @@ def test_all_people_backfill_creates_non_token_employee_docs_add_only(tmp_path: 
                 "type": "employee",
                 "person_id": "keller-bruce",
                 "name": "Existing Bruce",
-                "vault_path": "People/Keller, Bruce.md",
             }
         }
     )
@@ -227,7 +226,7 @@ def test_all_people_backfill_creates_non_token_employee_docs_add_only(tmp_path: 
     assert deb["last"] == "Mills"
     assert deb["status"] == "active"
     assert deb["role"] == "lead"
-    assert deb["vault_path"] == "People/Mills, Carol.md"
+    assert "vault_path" not in deb
 
 
 def test_backfill_logs_and_counts_skips_on_bad_doc(tmp_path: Path, caplog) -> None:

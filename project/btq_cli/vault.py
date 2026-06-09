@@ -33,6 +33,15 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
     setup_couchdb_parser.set_defaults(func=handle_setup_couchdb)
     migrate_vault_parser = subparsers.add_parser("migrate-vault", help="Migrate typed vault markdown into btq_vault.")
     migrate_vault_parser.set_defaults(func=handle_migrate_vault)
+    strip_vault_path_parser = subparsers.add_parser(
+        "strip-vault-path",
+        help="Remove the legacy vault_path field from canonical CouchDB docs after gated backup.",
+    )
+    strip_mode = strip_vault_path_parser.add_mutually_exclusive_group()
+    strip_mode.add_argument("--dry-run", dest="apply", action="store_false", default=False, help="Count legacy fields without writing.")
+    strip_mode.add_argument("--apply", dest="apply", action="store_true", help="Back up each database, then remove vault_path.")
+    strip_vault_path_parser.add_argument("--json", action="store_true", help="Output JSON.")
+    strip_vault_path_parser.set_defaults(func=handle_strip_vault_path)
     audit_site_coverage_parser = subparsers.add_parser("audit-site-coverage", help="Report active vault locations missing from the site registry.")
     audit_site_coverage_parser.set_defaults(func=handle_audit_site_coverage)
     backup_vault_parser = subparsers.add_parser("backup-vault", help="Watch btq_vault changes and write iCloud backups.")
@@ -94,6 +103,31 @@ def handle_migrate_vault(args: argparse.Namespace) -> int:
     from event_pipeline.couchdb import migrate_vault
 
     return migrate_vault.main()
+
+
+def handle_strip_vault_path(args: argparse.Namespace) -> int:
+    import json as _json
+
+    from btq_vault.strip_vault_path import strip_vault_path
+
+    try:
+        result = strip_vault_path(apply=bool(args.apply))
+    except Exception as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    if args.json:
+        print(_json.dumps(result.as_dict(), indent=2, sort_keys=True))
+    else:
+        mode = "apply" if result.applied else "dry-run"
+        print(f"BTQ strip-vault-path ({mode})")
+        for item in result.databases:
+            print(
+                f"- {item.database}: matched={item.matched} changed={item.changed} "
+                f"conflicts={item.conflicts} backup={item.backup_database}"
+            )
+        if not result.applied:
+            print("No writes performed. Re-run with --apply to back up and remove vault_path.")
+    return 1 if result.errors else 0
 
 
 def handle_audit_site_coverage(args: argparse.Namespace) -> int:

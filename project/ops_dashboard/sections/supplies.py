@@ -1,10 +1,9 @@
 from __future__ import annotations
 
 import html
-from pathlib import Path
 from urllib.parse import quote
 
-from ops_dashboard.common import default_actor, first_query_value, handle_mark_transition_post, humanize_key, render_back_link, render_kv, render_short_filename, render_site_label, render_status_transition, render_table, slugify_status, write_mark_job
+from ops_dashboard.common import default_actor, first_query_value, handle_mark_transition_post, humanize_key, render_back_link, render_kv, render_site_label, render_status_transition, render_table, slugify_status, write_mark_job
 from ops_dashboard.layout import html_page
 from site_supplies import discover_site_supplies, supply_as_export
 
@@ -127,7 +126,7 @@ def render_supply_list(supplies: list[object]) -> str:
             {"key": "quantity_needed", "label": "Quantity", "priority": 2, "nowrap": True},
             {"key": "requested_by", "label": "Requested By", "priority": 2, "nowrap": True},
             {"key": "notes", "label": "Notes", "format": lambda value, _row: html.escape(truncate(str(value or ""))), "priority": 3},
-            {"key": "vault_supply_path", "label": "Source", "format": lambda value, _row: render_short_filename(Path(str(value or "")).name), "priority": 3, "nowrap": True},
+            {"key": "_id", "label": "ID", "format": lambda value, _row: html.escape(str(value or "")), "priority": 3, "nowrap": True},
         ],
         empty_text="No supply needs found.",
     )

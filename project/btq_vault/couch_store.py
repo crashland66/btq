@@ -124,7 +124,6 @@ class CouchDBEntityStore:
                     "job",
                     "additional_jobs",
                     "sites",
-                    "vault_path",
                     "location",
                     "canonical",
                     "aliases",
@@ -181,6 +180,25 @@ class CouchDBEntityStore:
         docs = response.get("docs")
         if not isinstance(docs, list):
             raise CouchDBEntityStoreError("CouchDB location query returned no docs list")
+        return [doc for doc in docs if isinstance(doc, dict)]
+
+    def find_docs_with_field(self, field_name: str, *, limit: int = 100000) -> list[dict[str, Any]]:
+        """Return docs where a top-level field exists, with enough data for CAS updates."""
+        field = str(field_name).strip()
+        if not field:
+            raise CouchDBEntityStoreError("Cannot scan CouchDB docs for an empty field name")
+        response = self._request_json(
+            "POST",
+            "_find",
+            {
+                "selector": {field: {"$exists": True}},
+                "fields": ["_id", "_rev", field],
+                "limit": limit,
+            },
+        )
+        docs = response.get("docs")
+        if not isinstance(docs, list):
+            raise CouchDBEntityStoreError(f"CouchDB field scan returned no docs list for {field}")
         return [doc for doc in docs if isinstance(doc, dict)]
 
     def job_id_applied_doc_id(self, job_id: str) -> str | None:

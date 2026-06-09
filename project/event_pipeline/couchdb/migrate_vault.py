@@ -58,10 +58,6 @@ def slug_value(value: str) -> str:
     return lower_underscore_slug(without_md, fallback="unknown")
 
 
-def _relative_vault_path(path: Path, vault_root: Path) -> str:
-    return path.relative_to(vault_root).as_posix()
-
-
 def _resolved_type(raw_type: object) -> str | None:
     if not isinstance(raw_type, str) or not raw_type.strip():
         return None
@@ -156,7 +152,7 @@ def _opportunity_display_title(relative_path: str) -> str:
 def parse_vault_file(path: Path, vault_root: Path) -> dict[str, Any] | None:
     resolved_root = vault_root.resolve(strict=False)
     resolved_path = path.resolve(strict=False)
-    relative_path = _relative_vault_path(resolved_path, resolved_root)
+    relative_path = resolved_path.relative_to(resolved_root).as_posix()
     frontmatter, body, has_frontmatter = read_markdown_note(resolved_path)
 
     if not has_frontmatter:
@@ -165,7 +161,6 @@ def parse_vault_file(path: Path, vault_root: Path) -> dict[str, Any] | None:
             "_id": _stable_id("note", {}, relative_path),
             "type": "note",
             "operator": OPERATOR_ID_GREG,
-            "vault_path": relative_path,
             "content": content,
         }
 
@@ -178,7 +173,6 @@ def parse_vault_file(path: Path, vault_root: Path) -> dict[str, Any] | None:
             "_id": _stable_id("note", frontmatter, relative_path),
             "type": "note",
             "operator": OPERATOR_ID_GREG,
-            "vault_path": relative_path,
             "content": content,
         }
     if entity_type not in CANONICAL_ENTITY_TYPES:
@@ -188,7 +182,6 @@ def parse_vault_file(path: Path, vault_root: Path) -> dict[str, Any] | None:
         "_id": _stable_id(entity_type, frontmatter, relative_path),
         "type": entity_type,
         "operator": OPERATOR_ID_GREG,
-        "vault_path": relative_path,
         "content": body.strip(),
     }
     for key, value in frontmatter.items():

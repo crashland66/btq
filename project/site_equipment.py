@@ -28,7 +28,7 @@ class EquipmentRequest:
     related_capture_ids: tuple[str, ...] = ()
     related_candidate_ids: tuple[str, ...] = ()
     created_at: str = ""
-    vault_path: str = ""
+    doc_id: str = ""
     approved_at: str = ""
     approved_by: str = ""
     approval_note: str = ""
@@ -87,7 +87,7 @@ def _equipment_from_couch_doc(doc: dict[str, Any]) -> EquipmentRequest | None:
         related_capture_ids=tuple(str(x) for x in (doc.get("related_capture_ids") or doc.get("btq_job_ids") or []) if x),
         related_candidate_ids=tuple(str(x) for x in (doc.get("related_candidate_ids") or []) if x),
         created_at=clean_string(doc.get("created_at")),
-        vault_path=clean_string(doc.get("vault_path") or doc.get("_id")),
+        doc_id=clean_string(doc.get("_id")),
         approved_at=clean_string(doc.get("approved_at")),
         approved_by=clean_string(doc.get("approved_by")),
         approval_note=clean_string(doc.get("approval_note")),
@@ -196,7 +196,7 @@ def parse_site_equipment(path: Path) -> tuple[EquipmentRequest | None, dict[str,
             related_capture_ids=tuple(frontmatter_list(frontmatter.get("related_capture_ids"))),
             related_candidate_ids=tuple(frontmatter_list(frontmatter.get("related_candidate_ids"))),
             created_at=clean_string(frontmatter.get("created_at")),
-            vault_path=relative_vault_path(path),
+            doc_id=equipment_id,
             approved_at=clean_string(frontmatter.get("approved_at")),
             approved_by=clean_string(frontmatter.get("approved_by")),
             approval_note=clean_string(frontmatter.get("approval_note")),
@@ -221,13 +221,6 @@ def clean_string(value: Any) -> str:
     if (text.startswith('"') and text.endswith('"')) or (text.startswith("'") and text.endswith("'")):
         text = text[1:-1].strip()
     return text
-
-
-def relative_vault_path(path: Path) -> str:
-    parts = path.expanduser().resolve(strict=False).parts
-    if "Accounts" in parts:
-        return str(Path(*parts[parts.index("Accounts") :]))
-    return path.name
 
 
 def equipment_counts(equipment: Iterable[EquipmentRequest]) -> dict[str, object]:
@@ -286,5 +279,5 @@ def equipment_as_export(equipment: EquipmentRequest, *, include_path: bool = Fal
         "provided_note": equipment.provided_note,
     }
     if include_path:
-        payload["vault_equipment_path"] = equipment.vault_path
+        payload["_id"] = equipment.doc_id
     return payload

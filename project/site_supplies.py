@@ -28,7 +28,7 @@ class SupplyNeed:
     related_capture_ids: tuple[str, ...] = ()
     related_candidate_ids: tuple[str, ...] = ()
     created_at: str = ""
-    vault_path: str = ""
+    doc_id: str = ""
     ordered_at: str = ""
     ordered_by: str = ""
     ordered_note: str = ""
@@ -84,7 +84,7 @@ def _supply_from_couch_doc(doc: dict[str, Any]) -> SupplyNeed | None:
         related_capture_ids=tuple(str(x) for x in (doc.get("related_capture_ids") or doc.get("btq_job_ids") or []) if x),
         related_candidate_ids=tuple(str(x) for x in (doc.get("related_candidate_ids") or []) if x),
         created_at=clean_string(doc.get("created_at")),
-        vault_path=clean_string(doc.get("vault_path") or doc.get("_id")),
+        doc_id=clean_string(doc.get("_id")),
         ordered_at=clean_string(doc.get("ordered_at")),
         ordered_by=clean_string(doc.get("ordered_by")),
         ordered_note=clean_string(doc.get("ordered_note")),
@@ -190,7 +190,7 @@ def parse_site_supply(path: Path) -> tuple[SupplyNeed | None, dict[str, str] | N
             related_capture_ids=tuple(frontmatter_list(frontmatter.get("related_capture_ids"))),
             related_candidate_ids=tuple(frontmatter_list(frontmatter.get("related_candidate_ids"))),
             created_at=clean_string(frontmatter.get("created_at")),
-            vault_path=relative_vault_path(path),
+            doc_id=supply_id,
             ordered_at=clean_string(frontmatter.get("ordered_at")),
             ordered_by=clean_string(frontmatter.get("ordered_by")),
             ordered_note=clean_string(frontmatter.get("ordered_note")),
@@ -212,13 +212,6 @@ def clean_string(value: Any) -> str:
     if (text.startswith('"') and text.endswith('"')) or (text.startswith("'") and text.endswith("'")):
         text = text[1:-1].strip()
     return text
-
-
-def relative_vault_path(path: Path) -> str:
-    parts = path.expanduser().resolve(strict=False).parts
-    if "Accounts" in parts:
-        return str(Path(*parts[parts.index("Accounts") :]))
-    return path.name
 
 
 def supply_counts(supplies: Iterable[SupplyNeed]) -> dict[str, object]:
@@ -274,5 +267,5 @@ def supply_as_export(supply: SupplyNeed, *, include_path: bool = False) -> dict[
         "stocked_note": supply.stocked_note,
     }
     if include_path:
-        payload["vault_supply_path"] = supply.vault_path
+        payload["_id"] = supply.doc_id
     return payload

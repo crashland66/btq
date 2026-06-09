@@ -10,7 +10,7 @@ from event_pipeline.couchdb.migrate_vault import is_excluded_markdown_path, pars
 from vault_markdown import markdown_with_frontmatter
 
 
-MIGRATION_ADDED_KEYS = {"_id", "_rev", "operator", "vault_path", "content"}
+MIGRATION_ADDED_KEYS = {"_id", "_rev", "operator", "content"}
 
 
 def first_differing_line(left: str, right: str) -> str:
@@ -41,8 +41,8 @@ def regenerate_markdown(doc: dict[str, Any]) -> str:
     return markdown_with_frontmatter(frontmatter, str(doc.get("content") or ""))
 
 
-def expected_migrated_paths(vault_root: Path) -> set[str]:
-    paths: set[str] = set()
+def expected_migrated_docs(vault_root: Path) -> dict[str, Path]:
+    docs: dict[str, Path] = {}
     for path in sorted(vault_root.rglob("*.md")):
         if not path.is_file() or is_excluded_markdown_path(path, vault_root):
             continue
@@ -50,44 +50,43 @@ def expected_migrated_paths(vault_root: Path) -> set[str]:
             doc = parse_vault_file(path, vault_root)
         except Exception:
             continue
-        if doc is not None:
-            paths.add(str(doc["vault_path"]))
-    return paths
+        doc_id = str(doc.get("_id") or "").strip() if doc is not None else ""
+        if doc_id:
+            docs[doc_id] = path
+    return docs
 
 
 def main() -> int:
     vault_root = get_config().vault_dir.expanduser().resolve(strict=False)
     database = couchdb_config.vault_database()
     docs = all_vault_docs(database)
-    docs_with_paths = [doc for doc in docs if isinstance(doc.get("vault_path"), str)]
-    seen_paths: set[str] = set()
+    docs_by_id = {str(doc.get("_id")): doc for doc in docs if str(doc.get("_id") or "").strip()}
+    expected_docs = expected_migrated_docs(vault_root)
     exact_matches = 0
     diffs: list[tuple[str, str]] = []
 
-    for doc in docs_with_paths:
-        vault_path = str(doc["vault_path"])
-        seen_paths.add(vault_path)
-        original_path = vault_root / vault_path
+    for doc_id, original_path in sorted(expected_docs.items()):
+        doc = docs_by_id.get(doc_id)
+        relative_path = original_path.relative_to(vault_root).as_posix()
+        if doc is None:
+            diffs.append((relative_path, f"CouchDB doc is missing: {doc_id}"))
+            continue
         if not original_path.exists():
-            diffs.append((vault_path, "original file is missing"))
+            diffs.append((relative_path, "original file is missing"))
             continue
         generated = regenerate_markdown(doc)
         original = original_path.read_text(encoding="utf-8")
         if generated == original:
             exact_matches += 1
         else:
-            diffs.append((vault_path, first_differing_line(generated, original)))
+            diffs.append((relative_path, first_differing_line(generated, original)))
 
-    missing_in_couchdb = sorted(expected_migrated_paths(vault_root) - seen_paths)
-    print(f"total docs: {len(docs_with_paths)}")
+    print(f"expected docs: {len(expected_docs)}")
     print(f"exact matches: {exact_matches}")
     print(f"diffs: {len(diffs)}")
-    for vault_path, detail in diffs:
-        print(f"diff: {vault_path}: {detail}")
-    print(f"files in vault not found in CouchDB: {len(missing_in_couchdb)}")
-    for vault_path in missing_in_couchdb:
-        print(f"missing: {vault_path}")
-    return 1 if diffs or missing_in_couchdb else 0
+    for path, detail in diffs:
+        print(f"diff: {path}: {detail}")
+    return 1 if diffs else 0
 
 
 if __name__ == "__main__":

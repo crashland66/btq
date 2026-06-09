@@ -84,21 +84,6 @@ def test_build_site_dashboard_lists_site_from_visit_when_no_location_doc(monkeyp
     assert "site_from_visit" in html
 
 
-def test_parse_vault_path_site_returns_account_name_and_site() -> None:
-    account, site_id, name = projector._parse_vault_path_site(
-        "Accounts/Summitsteel/Locations/7050 - Summit Wire/Opportunities/foo.md"
-    )
-
-    assert account == "Summitsteel"
-    assert site_id == "7050"
-    assert name == "Summit Wire"
-
-
-def test_parse_vault_path_site_handles_invalid_path() -> None:
-    assert projector._parse_vault_path_site("") == ("", "", "")
-    assert projector._parse_vault_path_site("People/Smith.md") == ("", "", "")
-
-
 def test_build_site_dashboard_groups_by_account(monkeypatch: pytest.MonkeyPatch) -> None:
     install_fake_views(
         monkeypatch,
@@ -109,7 +94,9 @@ def test_build_site_dashboard_groups_by_account(monkeypatch: pytest.MonkeyPatch)
                 "doc": {
                     "type": "opportunity",
                     "_id": "opp_a",
-                    "vault_path": "Accounts/AlphaAccount/Locations/100 - Alpha Site/Opportunities/x.md",
+                    "site_id": "100",
+                    "location": "Alpha Site",
+                    "account": "AlphaAccount",
                 },
             },
             {
@@ -118,7 +105,9 @@ def test_build_site_dashboard_groups_by_account(monkeypatch: pytest.MonkeyPatch)
                 "doc": {
                     "type": "opportunity",
                     "_id": "opp_b",
-                    "vault_path": "Accounts/BetaAccount/Locations/200 - Beta Site/Opportunities/x.md",
+                    "site_id": "200",
+                    "location": "Beta Site",
+                    "account": "BetaAccount",
                 },
             },
         ],

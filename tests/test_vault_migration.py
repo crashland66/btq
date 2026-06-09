@@ -32,7 +32,7 @@ def test_entity_doc_from_typed_markdown(tmp_path: Path) -> None:
     assert doc is not None
     assert doc["type"] == "visit"
     assert doc["operator"] == OPERATOR_ID_GREG
-    assert doc["vault_path"] == "Accounts/Summit/Visits/2026-01-15.md"
+    assert "vault_path" not in doc
     assert doc["content"] == "Visited the site."
     assert doc["site"] == "Summit Wire"
     assert doc["date"] == "2026-01-15"

@@ -96,7 +96,6 @@ def _employee_alias_slugs(doc: dict[str, Any]) -> set[str]:
     slugs = employee_slug_candidates(
         first=doc.get("first"),
         last=doc.get("last"),
-        vault_path=str(doc.get("vault_path") or ""),
     )
     aliases = doc.get("aliases")
     if isinstance(aliases, (list, tuple, set)):
@@ -153,14 +152,13 @@ def load_person_from_canonical(store: object, person_id: str) -> Person:
         raise NotFoundError(f"Canonical employee document is malformed: {normalized}")
     canonical_name = str(doc.get("name") or doc.get("location") or doc.get("canonical") or normalized).strip()
     resolved_person_id = str(doc.get("person_id") or normalized).strip() or normalized
-    vault_path = str(doc.get("vault_path") or "").strip()
     return Person(
         person_id=PersonId(resolved_person_id),
         canonical_name=canonical_name,
         aliases=(),
         status=str(doc.get("status")).strip() if doc.get("status") is not None else None,
         site_ids=_employee_site_ids(doc),
-        note_path=Path(vault_path) if vault_path else Path(f"employee_{normalized}"),
+        note_path=Path(f"employee_{normalized}"),
     )
 
 

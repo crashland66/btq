@@ -57,7 +57,6 @@ def employee_doc(
     doc_id: str,
     *,
     rev: str,
-    vault_path: str = "People/Keller, Bruce.md",
     first: str = "Bruce",
     last: str = "Keller",
     person_id: str | None = None,
@@ -72,7 +71,6 @@ def employee_doc(
         "name": f"{first} {last}",
         "first": first,
         "last": last,
-        "vault_path": vault_path,
         "content": content,
         "btq_job_ids": btq_job_ids or [],
     }
@@ -117,7 +115,7 @@ def test_dedupe_merges_underscore_doc_into_hyphen_token_survivor_identical_conte
     survivor = store.docs["employee_keller-bruce"]
     assert survivor["_id"] == "employee_keller-bruce"
     assert survivor["person_id"] == "keller-bruce"
-    assert survivor["vault_path"] == "People/Keller, Bruce.md"
+    assert "vault_path" not in survivor
     assert survivor["btq_job_ids"] == ["job-a", "job-b", "job-c"]
     assert survivor["content"] == "Bruce note."
     assert survivor["role"] == "lead"
@@ -224,7 +222,7 @@ def test_dedupe_refuses_groups_with_no_token_matched_doc(tmp_path: Path) -> None
     assert report.deleted_docs == 0
     assert report.skipped_groups == 1
     assert report.errors == [
-        {"group_key": "vault_path:People/Keller, Bruce.md", "message": "expected exactly one active-token survivor, found 0"}
+        {"group_key": "name:keller-bruce", "message": "expected exactly one active-token survivor, found 0"}
     ]
     assert store.puts == []
     assert set(store.docs) == {"employee_keller_bruce", "employee_bruce_keller"}
@@ -255,7 +253,7 @@ def test_dedupe_refuses_to_delete_token_matched_or_auth_resolving_docs(tmp_path:
     assert report.skipped_groups == 1
     assert report.errors == [
         {
-            "group_key": "vault_path:People/Keller, Bruce.md",
+            "group_key": "name:keller-bruce",
             "message": "refusing to delete protected active-token/auth-resolving docs: employee_keller_bruce",
         }
     ]
@@ -277,7 +275,7 @@ def test_dedupe_refuses_group_with_two_token_matched_docs(tmp_path: Path) -> Non
     assert report.deleted_docs == 0
     assert report.skipped_groups == 1
     assert report.errors == [
-        {"group_key": "vault_path:People/Keller, Bruce.md", "message": "expected exactly one active-token survivor, found 2"}
+        {"group_key": "name:keller-bruce", "message": "expected exactly one active-token survivor, found 2"}
     ]
     assert store.puts == []
 

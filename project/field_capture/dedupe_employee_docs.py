@@ -11,7 +11,7 @@ from token_store import TokenStore, parse_timestamp
 
 logger = logging.getLogger(__name__)
 
-PROTECTED_FIELDS = frozenset({"_id", "_rev", "type", "person_id", "vault_path", "content", "btq_job_ids"})
+PROTECTED_FIELDS = frozenset({"_id", "_rev", "type", "person_id", "content", "btq_job_ids"})
 
 
 @dataclass
@@ -127,9 +127,6 @@ def _normalized_name(doc: dict[str, Any]) -> str:
 
 
 def _group_key(doc: dict[str, Any]) -> str:
-    vault_path = str(doc.get("vault_path") or "").strip()
-    if vault_path:
-        return f"vault_path:{vault_path}"
     normalized_name = _normalized_name(doc)
     return f"name:{normalized_name}" if normalized_name else ""
 
@@ -240,7 +237,6 @@ def merge_employee_docs(
     if original_survivor.get("_rev"):
         merged["_rev"] = original_survivor["_rev"]
     merged["person_id"] = survivor_person_id
-    merged["vault_path"] = original_survivor.get("vault_path")
     merged["type"] = "employee"
 
     item = DedupeItemReport(

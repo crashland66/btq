@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from site_supplies import discover_site_supplies, status_sort, supply_as_export
+from site_supplies import _supply_from_couch_doc, discover_site_supplies, status_sort, supply_as_export
 
 
 def write_supply(
@@ -142,14 +142,31 @@ def test_discover_site_supplies_skips_non_supply_need_type(tmp_path: Path) -> No
     assert report["warnings"] == []
 
 
-def test_supply_as_export_includes_vault_path_when_requested(tmp_path: Path) -> None:
+def test_supply_as_export_includes_id_when_requested(tmp_path: Path) -> None:
     vault_root = tmp_path / "vault"
     write_supply(vault_root)
     [supply] = discover_site_supplies(vault_root)["supplies"]
 
     exported = supply_as_export(supply, include_path=True)
 
-    assert exported["vault_supply_path"] == "Accounts/Summitsteel/Locations/7050 - Summit Wire/Supplies/sup_cleaner__supply.md"
+    assert exported["_id"] == "sup_cleaner"
+
+
+def test_supply_from_couch_doc_uses_id_not_legacy_vault_path() -> None:
+    supply = _supply_from_couch_doc(
+        {
+            "_id": "supply_need_7050_cleaner",
+            "type": "supply_need",
+            "site_id": "7050",
+            "supply_id": "sup_cleaner",
+            "item_name": "BrightWash cleaner",
+            "status": "open",
+            "vault_path": "Accounts/Summitsteel/Locations/7050 - Summit Wire/Supplies/sup_cleaner__supply.md",
+        }
+    )
+
+    assert supply is not None
+    assert supply_as_export(supply, include_path=True)["_id"] == "supply_need_7050_cleaner"
 
 
 def test_status_sort_orders_open_first() -> None:

@@ -163,7 +163,6 @@ def employee_doc_for_token_person(person: ActiveTokenPerson, match: PeopleMatch)
         "_id": _stable_id("employee", frontmatter, match.relative_path),
         "type": "employee",
         "operator": OPERATOR_ID_GREG,
-        "vault_path": match.relative_path,
         "content": match.body.strip(),
     }
     for key, value in match.frontmatter.items():
@@ -236,7 +235,6 @@ def employee_doc_for_people_file(match: PeopleMatch) -> dict[str, Any] | None:
         "type": "employee",
         "operator": OPERATOR_ID_GREG,
         "person_id": person_id,
-        "vault_path": match.relative_path,
         "content": match.body.strip(),
         "site_ids": _employee_site_ids(frontmatter),
         "name": _employee_display_name(frontmatter) or match.path.stem,
@@ -257,11 +255,8 @@ def _employee_doc_exists(store: Any, doc: dict[str, Any], existing_docs: list[di
             return True
 
     person_id = str(doc.get("person_id") or "").strip()
-    vault_path = str(doc.get("vault_path") or "").strip()
     for existing in existing_docs:
         if person_id and str(existing.get("person_id") or "").strip() == person_id:
-            return True
-        if vault_path and str(existing.get("vault_path") or "").strip() == vault_path:
             return True
     return False
 
@@ -330,7 +325,6 @@ def backfill_all_people_employees(
             "person_id": doc["person_id"],
             "name": doc["name"],
             "site_ids": doc["site_ids"],
-            "vault_path": doc["vault_path"],
         }
         if dry_run:
             report.would_create += 1
@@ -411,7 +405,6 @@ def backfill_field_capture_employees(
             "person_id": doc["person_id"],
             "name": doc["name"],
             "site_ids": doc["site_ids"],
-            "vault_path": doc["vault_path"],
         }
         if dry_run:
             report.would_create += 1

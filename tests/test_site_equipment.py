@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from site_equipment import discover_site_equipment, equipment_as_export, priority_sort
+from site_equipment import _equipment_from_couch_doc, discover_site_equipment, equipment_as_export, priority_sort
 
 
 def write_equipment(
@@ -149,14 +149,31 @@ def test_discover_site_equipment_skips_non_equipment_request_type(tmp_path: Path
     assert report["warnings"] == []
 
 
-def test_equipment_as_export_includes_vault_path_when_requested(tmp_path: Path) -> None:
+def test_equipment_as_export_includes_id_when_requested(tmp_path: Path) -> None:
     vault_root = tmp_path / "vault"
     write_equipment(vault_root)
     [request] = discover_site_equipment(vault_root)["equipment"]
 
     exported = equipment_as_export(request, include_path=True)
 
-    assert exported["vault_equipment_path"] == "Accounts/Summitsteel/Locations/7050 - Summit Wire/Equipment/eqr_vacuum__equipment.md"
+    assert exported["_id"] == "eqr_vacuum"
+
+
+def test_equipment_from_couch_doc_uses_id_not_legacy_vault_path() -> None:
+    request = _equipment_from_couch_doc(
+        {
+            "_id": "equipment_request_7050_vacuum",
+            "type": "equipment_request",
+            "site_id": "7050",
+            "equipment_id": "eqr_vacuum",
+            "equipment_name": "vacuum",
+            "status": "open",
+            "vault_path": "Accounts/Summitsteel/Locations/7050 - Summit Wire/Equipment/eqr_vacuum__equipment.md",
+        }
+    )
+
+    assert request is not None
+    assert equipment_as_export(request, include_path=True)["_id"] == "equipment_request_7050_vacuum"
 
 
 def test_priority_sort_orders_urgent_first() -> None:

@@ -49,6 +49,7 @@ EXPECTED_SUBCOMMANDS = [
     "watch-couchdb-voice-memos",
     "setup-couchdb",
     "migrate-vault",
+    "strip-vault-path",
     "audit-site-coverage",
     "backup-vault",
     "export-vault-today",

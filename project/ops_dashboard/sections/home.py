@@ -42,7 +42,6 @@ from btq_vault.projector import (
     _row_date,
     _Location,
     _SiteRecord,
-    _parse_vault_path_site,
 )
 import ops_dashboard.sections.inbox as _inbox_mod
 import ops_dashboard.sections.field_photos as _field_photos_mod
@@ -170,8 +169,6 @@ def _inactive_location_site_ids(by_type_rows: list[dict]) -> set[str]:
         if doc.get("type") != "location" or doc.get("active") is not False:
             continue
         site_id = _string(doc.get("job") or doc.get("site_id"))
-        if not site_id:
-            _account, site_id, _name = _parse_vault_path_site(_string(doc.get("vault_path")))
         if site_id:
             site_ids.add(site_id)
     return site_ids

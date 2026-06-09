@@ -104,9 +104,9 @@ def handle_backfill_field_capture_employees(args: argparse.Namespace) -> int:
             )
         )
         for item in report.would_create_docs:
-            print(f"would_create: {item['_id']} {item['name']} sites={','.join(item['site_ids'])} path={item['vault_path']}")
+            print(f"would_create: {item['_id']} {item['name']} sites={','.join(item['site_ids'])}")
         for item in report.created_docs:
-            print(f"created: {item['_id']} {item['name']} sites={','.join(item['site_ids'])} path={item['vault_path']}")
+            print(f"created: {item['_id']} {item['name']} sites={','.join(item['site_ids'])}")
         for item in report.missing_people:
             print(f"missing_people: {item['person_id']} labels={','.join(item['labels'])} site_ids={','.join(item['site_ids'])}")
         for item in report.unkeyable_people:

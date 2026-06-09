@@ -382,9 +382,9 @@ def handle_save_section(ctx: object, site_id: str, body: bytes):
 
     updated["_rev"] = existing["_rev"]
 
-    vault_path = f"{couchdb_config.vault_database()}/location_{site_id}"
+    doc_path = f"{couchdb_config.vault_database()}/location_{site_id}"
     try:
-        sites.request_json("PUT", vault_path, updated)
+        sites.request_json("PUT", doc_path, updated)
         ctx.audit(
             f"/sites/{site_id}/save-section",
             {"section": section},

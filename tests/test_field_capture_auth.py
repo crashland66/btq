@@ -98,6 +98,7 @@ def test_authorize_token_valid_builds_session_from_canonical(tmp_path: Path, mon
 
     assert session is not None
     assert str(session.person.person_id) == "jordan-avery"
+    assert session.person.note_path == Path("employee_jordan-avery")
     assert [str(site.site_id) for site in session.sites] == ["7050"]
     assert store.get_token(created.record.token_id).last_used_at is not None
 

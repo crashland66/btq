@@ -40,7 +40,9 @@ def install_full_home(monkeypatch: pytest.MonkeyPatch) -> dict[str, list[dict]]:
                 "doc": {
                     "type": "opportunity",
                     "_id": "opp_x",
-                    "vault_path": "Accounts/TestCo/Locations/42 - Test Site/Opportunities/x.md",
+                    "site_id": "42",
+                    "location": "Test Site",
+                    "account": "TestCo",
                 },
             }
         ],
@@ -818,7 +820,7 @@ def test_home_omits_inactive_location_from_site_directory_and_open_opportunities
                 "type": "location",
                 "_id": "location_7030",
                 "active": False,
-                "vault_path": "Accounts/Wgtco/Locations/7030 - Western Gas Transmission/about.md",
+                "site_id": "7030",
                 "location": "Western Gas Transmission",
                 "account": "Wgtco",
             },
