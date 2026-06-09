@@ -635,13 +635,13 @@ def process_parse_supply_email_job(job_path: Path, job: QueueJob, context: RunCo
         _shared.write_log_line(context.log_path, f"job_id={job.job_id} action=skip status=success reason=job-id-marker-present")
         return
 
-    site_id, confidence = resolve_supply_site(order.site_name_raw, order._address_block, context.vault_root)
+    site_id, confidence = resolve_supply_site(order.site_name_raw, order._address_block, store)
     unresolved_reason = order.unresolved_reason
     account = None
     if site_id is None:
         unresolved_reason = ",".join(filter(None, [unresolved_reason, "unresolved_site"])) or "unresolved_site"
     else:
-        metadata = site_metadata_by_id(site_id, context.vault_root)
+        metadata = site_metadata_by_id(site_id, store)
         account = None if metadata is None else metadata.account
     resolved_order = order.with_resolution(site_id=site_id, account=account, unresolved_reason=unresolved_reason)
 
@@ -658,11 +658,11 @@ def process_parse_supply_email_job(job_path: Path, job: QueueJob, context: RunCo
         raise _supply_order_canonical_error(job, target.doc_id, exc) from exc
 
     record_path = supply_record_output_path(supply_data_root(context.project_root), resolved_order)
-    site = site_metadata_by_id(resolved_order.site_id, context.vault_root) if resolved_order.site_id is not None else None
-    markdown_path = None if site is None else supply_order_markdown_path(resolved_order, site)
+    site = site_metadata_by_id(resolved_order.site_id, store) if resolved_order.site_id is not None else None
+    markdown_path = None if site is None or getattr(site, "about_path", None) is None else supply_order_markdown_path(resolved_order, site)
     json_path = record_path
     try:
-        json_path, markdown_path = persist_supply_order(resolved_order, context.project_root, context.vault_root)
+        json_path, markdown_path = persist_supply_order(resolved_order, context.project_root, context.vault_root, store)
         if markdown_path is not None:
             _shared.atomic_write_text(markdown_path, _shared.upsert_job_id_frontmatter(markdown_path.read_text(encoding="utf-8"), job.job_id))
     except Exception as exc:

@@ -151,6 +151,37 @@ class CouchDBEntityStore:
             raise CouchDBEntityStoreError("CouchDB employee person_id query returned no docs list")
         return [doc for doc in docs if isinstance(doc, dict)]
 
+    def find_location_docs(self, *, limit: int = 10000) -> list[dict[str, Any]]:
+        """Return canonical location docs needed for site metadata lookup."""
+        response = self._request_json(
+            "POST",
+            "_find",
+            {
+                "selector": {"type": "location"},
+                "fields": [
+                    "_id",
+                    "type",
+                    "job",
+                    "location",
+                    "account",
+                    "address",
+                    "monthly_supply_budget",
+                    "supply_budget_monthly",
+                    "budget_basis",
+                    "supply_budget_type",
+                    "supply_budget_notes",
+                    "site_aliases",
+                    "aliases",
+                    "status",
+                ],
+                "limit": limit,
+            },
+        )
+        docs = response.get("docs")
+        if not isinstance(docs, list):
+            raise CouchDBEntityStoreError("CouchDB location query returned no docs list")
+        return [doc for doc in docs if isinstance(doc, dict)]
+
     def find_visit_docs(self, site_id: str, date: str, *, limit: int = VISIT_DEDUP_QUERY_LIMIT) -> list[dict[str, Any]]:
         """Return canonical visit docs for a site/date needed for dedup checks."""
         response = self._request_json(

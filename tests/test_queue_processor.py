@@ -236,6 +236,10 @@ class RmwRecordingVaultStore(RecordingVaultStore):
         ]
         return docs[:limit]
 
+    def find_location_docs(self, *, limit: int = 10000) -> list[dict[str, Any]]:
+        locations = [dict(doc) for doc in self.docs if doc.get("type") == "location"]
+        return locations[:limit]
+
     def update_doc(
         self,
         doc_id: str,
@@ -5076,6 +5080,19 @@ def test_parse_supply_email_creates_canonical_supply_order_with_operator(tmp_pat
     payload = parse_supply_email_payload()
     queue_file = write_job(runtime_root / "queue", "2026-04-20T23-10-00Z__job-supply-canonical.json", {"job_id": "job-supply-canonical", **payload})
 
+    # Site resolution now reads canonical location docs (C3-313), not the Markdown vault.
+    store.docs.append({
+        "_id": "location_7080",
+        "type": "location",
+        "job": "7080",
+        "account": "Apexco",
+        "location": "Apex Powdered Metals",
+        "address": "700 Martha St, Springfield, PA 00000",
+        "site_aliases": ["Apex Powdered Metals", "Apex"],
+        "monthly_supply_budget": "250.00",
+        "budget_basis": "monthly_actual",
+    })
+
     qp.process_job(queue_file, context, processed_dir, failed_dir)
 
     doc = recording_doc(store, "supply_order_99887766")
@@ -5193,20 +5210,12 @@ def test_parse_supply_email_job_is_idempotent(tmp_path: Path) -> None:
     stdout_one, log_text_one = run_jobs(project_root, vault_root, runtime_root, log_path)
 
     data_path = project_root.parent / "data" / "supply_orders" / "2026" / "04" / "99887766.json"
-    markdown_path = (
-        vault_root
-        / "Accounts"
-        / "Apexco"
-        / "Locations"
-        / "7080 - Apex Powdered Metals"
-        / "Supplies"
-        / "2026-04-20 - staples-order-99887766.md"
-    )
 
     assert "updated" in stdout_one
     assert "action=parse-supply-email status=success" in log_text_one
     assert data_path.exists()
-    assert markdown_path.exists()
+    # Supply-order Markdown projection retired in C3-313 (it derived its path from the removed
+    # SiteMetadata.about_path); the canonical supply_order doc + JSON record are the record now.
     stored = json.loads(data_path.read_text(encoding="utf-8"))
     assert stored["site_id"] == "7080"
     assert stored["account"] == "Apexco"
@@ -5218,11 +5227,6 @@ def test_parse_supply_email_job_is_idempotent(tmp_path: Path) -> None:
     assert "job_id already processed" in stdout_two
     assert "reason=job-id-already-processed" in log_text_two
     assert len(list((project_root.parent / "data" / "supply_orders" / "2026" / "04").glob("*.json"))) == 1
-    markdown_text = markdown_path.read_text(encoding="utf-8")
-    assert "**Order Number:** 99887766" in markdown_text
-    assert "- 2x Trash Liners 56 Gal — $36.98" in markdown_text
-    assert "**Monthly Budget:** $250.00" in markdown_text
-    assert_frontmatter_job_id(markdown_path, {"job_id": "job-supply-1", **payload})
 
 
 def test_mixed_job_order_produces_same_final_state(tmp_path: Path) -> None:

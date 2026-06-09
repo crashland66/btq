@@ -6,13 +6,15 @@ import re
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 from bs4 import BeautifulSoup
 
+from btq_vault.couch_store import CouchDBEntityStore
 from config import get_config
 from io_atomic import atomic_write_text
 from supply_order_markdown import write_supply_order_markdown
-from vault_index import build_vault_index
+from vault_markdown import frontmatter_float, frontmatter_list
 
 
 CURRENCY_PATTERN = re.compile(r"\$?\s*([0-9][0-9,]*\.\d{2})")
@@ -138,7 +140,6 @@ class SiteMetadata:
     address: str
     monthly_supply_budget: float | None
     budget_basis: str | None
-    about_path: Path
 
 
 def normalize_text(value: str) -> str:
@@ -400,24 +401,44 @@ def parse_staples_email(html: str, subject: str, date: datetime) -> SupplyOrder:
     )
 
 
-def load_site_metadata(vault_root: Path | None = None) -> list[SiteMetadata]:
-    config = get_config()
-    resolved_vault_root = config.vault_dir if vault_root is None else vault_root
-    index = build_vault_index(resolved_vault_root)
-    sites: list[SiteMetadata] = [
-        SiteMetadata(
-            site_id=str(site.site_id),
-            canonical_name=site.canonical_name,
-            account=site.account,
-            aliases=list(site.aliases),
-            address=site.address or "",
-            monthly_supply_budget=site.monthly_supply_budget,
-            budget_basis=site.budget_basis,
-            about_path=site.about_path,
-        )
-        for site in sorted(index.sites_by_id.values(), key=lambda item: item.about_path)
-    ]
-    return sites
+def _location_doc_site_id(doc: dict[str, Any]) -> str:
+    return str(doc.get("job") or str(doc["_id"]).removeprefix("location_"))
+
+
+def _location_doc_budget(doc: dict[str, Any]) -> float | None:
+    budget = frontmatter_float(doc, "monthly_supply_budget")
+    if budget is not None:
+        return budget
+    return frontmatter_float(doc, "supply_budget_monthly")
+
+
+def _site_metadata_from_location_doc(doc: dict[str, Any]) -> SiteMetadata:
+    site_id = _location_doc_site_id(doc)
+    canonical_name = str(doc.get("location") or "")
+    aliases = {
+        site_id,
+        canonical_name,
+        f"{site_id} - {canonical_name}",
+        *frontmatter_list(doc.get("site_aliases")),
+        *frontmatter_list(doc.get("aliases")),
+    }
+    return SiteMetadata(
+        site_id=site_id,
+        canonical_name=canonical_name,
+        account=doc.get("account"),
+        aliases=sorted(alias for alias in aliases if alias),
+        address=str(doc.get("address") or ""),
+        monthly_supply_budget=_location_doc_budget(doc),
+        budget_basis=doc.get("budget_basis"),
+    )
+
+
+def load_site_metadata(store: Any | None = None) -> list[SiteMetadata]:
+    resolved_store = CouchDBEntityStore.from_env() if store is None else store
+    return sorted(
+        (_site_metadata_from_location_doc(doc) for doc in resolved_store.find_location_docs()),
+        key=lambda site: site.site_id,
+    )
 
 
 def overlap_ratio(left: str, right: str) -> float:
@@ -429,13 +450,13 @@ def overlap_ratio(left: str, right: str) -> float:
     return intersection / max(len(left_words), len(right_words))
 
 
-def resolve_site(site_name_raw: str, address_block: str, vault_root: Path | None = None) -> tuple[str | None, float]:
+def resolve_site(site_name_raw: str, address_block: str, store: Any | None = None) -> tuple[str | None, float]:
     normalized_name = normalize_text(site_name_raw)
     normalized_address = normalize_text(address_block)
     best_site_id: str | None = None
     best_score = 0.0
 
-    for site in load_site_metadata(vault_root):
+    for site in load_site_metadata(store):
         site_score = 0.0
         for alias in site.aliases:
             normalized_alias = normalize_text(alias)
@@ -461,11 +482,12 @@ def resolve_site(site_name_raw: str, address_block: str, vault_root: Path | None
     return best_site_id, best_score
 
 
-def site_metadata_by_id(site_id: str, vault_root: Path | None = None) -> SiteMetadata | None:
-    for site in load_site_metadata(vault_root):
-        if site.site_id == site_id:
-            return site
-    return None
+def site_metadata_by_id(site_id: str, store: Any | None = None) -> SiteMetadata | None:
+    resolved_store = CouchDBEntityStore.from_env() if store is None else store
+    doc = resolved_store.get_optional(f"location_{site_id}")
+    if doc is None:
+        return None
+    return _site_metadata_from_location_doc(doc)
 
 
 def data_root(project_root: Path) -> Path:
@@ -482,12 +504,12 @@ def quarantine_output_path(base_dir: Path, order_identifier: str, order_date: st
     return base_dir / "supply_orders" / "quarantine" / year / month / f"{normalize_identifier(order_identifier)}.json"
 
 
-def persist_supply_order(order: SupplyOrder, project_root: Path, vault_root: Path) -> tuple[Path, Path | None]:
+def persist_supply_order(order: SupplyOrder, project_root: Path, vault_root: Path, store: Any | None = None) -> tuple[Path, Path | None]:
     base_dir = data_root(project_root)
     json_path = record_output_path(base_dir, order)
-    site = site_metadata_by_id(order.site_id, vault_root) if order.site_id is not None else None
+    site = site_metadata_by_id(order.site_id, store) if order.site_id is not None else None
     atomic_write_text(json_path, json.dumps(order.to_record(), indent=2, sort_keys=True) + "\n")
-    markdown_path = write_supply_order_markdown(order, site)
+    markdown_path = None if site is None or getattr(site, "about_path", None) is None else write_supply_order_markdown(order, site)
     return json_path, markdown_path
 
 
@@ -497,8 +519,8 @@ def quarantine_record(payload: dict[str, object], project_root: Path, identifier
     return path
 
 
-def calculate_budget_variance(site_id: str, month: str, vault_root: Path | None = None, base_dir: Path | None = None) -> dict[str, float | None]:
-    resolved_site = site_metadata_by_id(site_id, vault_root)
+def calculate_budget_variance(site_id: str, month: str, store: Any | None = None, base_dir: Path | None = None) -> dict[str, float | None]:
+    resolved_site = site_metadata_by_id(site_id, store)
     if resolved_site is None:
         raise ValueError(f"Unknown site_id: {site_id}")
     if not re.match(r"^\d{4}-\d{2}$", month):

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 from supply_order_markdown import (
     build_supply_order_markdown,
@@ -13,6 +15,7 @@ from supply_order_markdown import (
 from supply_orders import (
     SupplyOrder,
     calculate_budget_variance,
+    load_site_metadata,
     parse_staples_email,
     resolve_site,
     site_metadata_by_id,
@@ -85,21 +88,52 @@ STAPLES_HTML_NO_PO = """
 """
 
 
-def write_location(path: Path, *, account: str, location: str, job: str, address: str, aliases: str, budget: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        "---\n"
-        f"account: {account}\n"
-        f"location: {location}\n"
-        f"job: {job}\n"
-        f"address: {address}\n"
-        f"site_aliases: {aliases}\n"
-        f"monthly_supply_budget: {budget}\n"
-        "budget_basis: monthly_actual\n"
-        "type: location\n"
-        "---\n",
-        encoding="utf-8",
-    )
+class RecordingLocationStore:
+    def __init__(self, docs: list[dict[str, Any]]) -> None:
+        self.docs = docs
+        self.get_optional_calls: list[str] = []
+        self.find_location_docs_calls = 0
+
+    def find_location_docs(self) -> list[dict[str, Any]]:
+        self.find_location_docs_calls += 1
+        return [dict(doc) for doc in self.docs if doc.get("type") == "location"]
+
+    def get_optional(self, doc_id: str) -> dict[str, Any] | None:
+        self.get_optional_calls.append(doc_id)
+        for doc in self.docs:
+            if doc.get("_id") == doc_id:
+                return dict(doc)
+        return None
+
+
+@dataclass(frozen=True)
+class MarkdownSite:
+    about_path: Path
+    monthly_supply_budget: float | None
+
+
+def location_doc(
+    *,
+    account: str,
+    location: str,
+    job: str,
+    address: str,
+    site_aliases: object = (),
+    aliases: object = (),
+    budget: str | None = "250.00",
+) -> dict[str, Any]:
+    return {
+        "_id": f"location_{job}",
+        "type": "location",
+        "account": account,
+        "location": location,
+        "job": job,
+        "address": address,
+        "site_aliases": site_aliases,
+        "aliases": aliases,
+        "monthly_supply_budget": budget,
+        "budget_basis": "monthly_actual",
+    }
 
 
 def make_order() -> SupplyOrder:
@@ -190,62 +224,122 @@ def test_parse_staples_email_missing_po_number_lowers_confidence() -> None:
     assert order.extraction_confidence == 1.0
 
 
-def test_resolve_site_success(tmp_path: Path) -> None:
-    vault_root = tmp_path / "vault"
-    write_location(
-        vault_root / "Accounts" / "Apexco" / "Locations" / "7080 - Apex Powdered Metals" / "about.md",
-        account="Apexco",
-        location="Apex Powdered Metals",
-        job="7080",
-        address="700 Martha St, Springfield, PA 00000",
-        aliases="[Apex Powdered Metals, Apex]",
-        budget="250.0",
+def test_load_site_metadata_reads_canonical_location_docs() -> None:
+    store = RecordingLocationStore(
+        [
+            location_doc(
+                account="Apexco",
+                location="Apex Powdered Metals",
+                job="7080",
+                address="700 Martha St, Springfield, PA 00000",
+                site_aliases=["Apex"],
+                aliases="[Apex PM]",
+                budget="250.00",
+            ),
+            location_doc(
+                account="Summitsteel",
+                location="Summit Wire",
+                job="7050",
+                address="100 Summit Ave, Riverton, PA 00000",
+                budget="374.59",
+            ),
+        ]
+    )
+
+    sites = load_site_metadata(store)
+
+    assert [site.site_id for site in sites] == ["7050", "7080"]
+    apex = sites[1]
+    assert apex.canonical_name == "Apex Powdered Metals"
+    assert apex.account == "Apexco"
+    assert apex.address == "700 Martha St, Springfield, PA 00000"
+    assert apex.monthly_supply_budget == 250.0
+    assert apex.budget_basis == "monthly_actual"
+    assert apex.aliases == sorted(["7080", "Apex Powdered Metals", "7080 - Apex Powdered Metals", "Apex", "Apex PM"])
+
+
+def test_resolve_site_success() -> None:
+    store = RecordingLocationStore(
+        [
+            location_doc(
+                account="Apexco",
+                location="Apex Powdered Metals",
+                job="7080",
+                address="700 Martha St, Springfield, PA 00000",
+                site_aliases="[Apex Powdered Metals, Apex]",
+            )
+        ]
     )
 
     site_id, confidence = resolve_site(
-        "Apex Powdered Metals",
+        "Apex",
         "Apex Powdered Metals\n700 Martha St\nSpringfield, PA 00000",
-        vault_root,
+        store,
     )
 
     assert site_id == "7080"
     assert confidence >= 0.7
 
 
-def test_resolve_site_failure(tmp_path: Path) -> None:
-    vault_root = tmp_path / "vault"
-    write_location(
-        vault_root / "Accounts" / "Apexco" / "Locations" / "7080 - Apex Powdered Metals" / "about.md",
-        account="Apexco",
-        location="Apex Powdered Metals",
-        job="7080",
-        address="700 Martha St, Springfield, PA 00000",
-        aliases="[Apex Powdered Metals, Apex]",
-        budget="250.0",
+def test_resolve_site_failure() -> None:
+    store = RecordingLocationStore(
+        [
+            location_doc(
+                account="Apexco",
+                location="Apex Powdered Metals",
+                job="7080",
+                address="700 Martha St, Springfield, PA 00000",
+                site_aliases="[Apex Powdered Metals, Apex]",
+            )
+        ]
     )
 
     site_id, confidence = resolve_site(
         "Mystery Warehouse",
         "12 Unknown Street\nNowhere, PA 10000",
-        vault_root,
+        store,
     )
 
     assert site_id is None
     assert confidence < 0.7
 
 
-def test_calculate_budget_variance(tmp_path: Path) -> None:
-    vault_root = tmp_path / "vault"
-    data_root = tmp_path / "data"
-    write_location(
-        vault_root / "Accounts" / "Apexco" / "Locations" / "7080 - Apex Powdered Metals" / "about.md",
-        account="Apexco",
-        location="Apex Powdered Metals",
-        job="7080",
-        address="700 Martha St, Springfield, PA 00000",
-        aliases="[Apex Powdered Metals, Apex]",
-        budget="250.0",
+def test_site_metadata_by_id_reads_single_canonical_doc() -> None:
+    store = RecordingLocationStore(
+        [
+            location_doc(
+                account="Apexco",
+                location="Apex Powdered Metals",
+                job="7080",
+                address="700 Martha St, Springfield, PA 00000",
+                budget="250.00",
+            )
+        ]
     )
+
+    site = site_metadata_by_id("7080", store)
+
+    assert site is not None
+    assert site.site_id == "7080"
+    assert site.monthly_supply_budget == 250.0
+    assert store.get_optional_calls == ["location_7080"]
+    assert store.find_location_docs_calls == 0
+
+
+def test_calculate_budget_variance(tmp_path: Path) -> None:
+    store = RecordingLocationStore(
+        [
+            location_doc(
+                account="Apexco",
+                location="Apex Powdered Metals",
+                job="7080",
+                address="700 Martha St, Springfield, PA 00000",
+                site_aliases="[Apex Powdered Metals, Apex]",
+                budget="250.00",
+            )
+        ]
+    )
+    data_root = tmp_path / "data"
     month_dir = data_root / "supply_orders" / "2026" / "04"
     month_dir.mkdir(parents=True, exist_ok=True)
     (month_dir / "99887766.json").write_text(
@@ -273,7 +367,7 @@ def test_calculate_budget_variance(tmp_path: Path) -> None:
         encoding="utf-8",
     )
 
-    variance = calculate_budget_variance("7080", "2026-04", vault_root, data_root)
+    variance = calculate_budget_variance("7080", "2026-04", store, data_root)
 
     assert variance["total_actual_spend"] == 65.70
     assert variance["budgeted_amount"] == 250.0
@@ -283,17 +377,11 @@ def test_calculate_budget_variance(tmp_path: Path) -> None:
 
 def test_supply_order_markdown_file_creation_and_content(tmp_path: Path) -> None:
     vault_root = tmp_path / "vault"
-    write_location(
-        vault_root / "Accounts" / "Brookline" / "Locations" / "1152 - Brookline Health" / "about.md",
-        account="Brookline",
-        location="Brookline Health",
-        job="1152",
-        address="1 Main St, Brookline, PA 15650",
-        aliases="[Brookline Health]",
-        budget="250.0",
-    )
     order = make_order()
-    site = site_metadata_by_id("1152", vault_root)
+    site = MarkdownSite(
+        about_path=vault_root / "Accounts" / "Brookline" / "Locations" / "1152 - Brookline Health" / "about.md",
+        monthly_supply_budget=250.0,
+    )
 
     path = write_supply_order_markdown(order, site)
 
@@ -311,17 +399,11 @@ def test_supply_order_markdown_file_creation_and_content(tmp_path: Path) -> None
 
 def test_supply_order_markdown_uses_stable_filename(tmp_path: Path) -> None:
     vault_root = tmp_path / "vault"
-    write_location(
-        vault_root / "Accounts" / "Brookline" / "Locations" / "1152 - Brookline Health" / "about.md",
-        account="Brookline",
-        location="Brookline Health",
-        job="1152",
-        address="1 Main St, Brookline, PA 15650",
-        aliases="[Brookline Health]",
-        budget="",
-    )
     order = make_order()
-    site = site_metadata_by_id("1152", vault_root)
+    site = MarkdownSite(
+        about_path=vault_root / "Accounts" / "Brookline" / "Locations" / "1152 - Brookline Health" / "about.md",
+        monthly_supply_budget=None,
+    )
 
     assert supply_order_filename(order) == "2026-04-20 - staples-order-7678969426.md"
     assert supply_order_markdown_path(order, site) == (
@@ -337,17 +419,11 @@ def test_supply_order_markdown_uses_stable_filename(tmp_path: Path) -> None:
 
 def test_supply_order_markdown_overwrites_existing_file(tmp_path: Path) -> None:
     vault_root = tmp_path / "vault"
-    write_location(
-        vault_root / "Accounts" / "Brookline" / "Locations" / "1152 - Brookline Health" / "about.md",
-        account="Brookline",
-        location="Brookline Health",
-        job="1152",
-        address="1 Main St, Brookline, PA 15650",
-        aliases="[Brookline Health]",
-        budget="",
-    )
     order = make_order()
-    site = site_metadata_by_id("1152", vault_root)
+    site = MarkdownSite(
+        about_path=vault_root / "Accounts" / "Brookline" / "Locations" / "1152 - Brookline Health" / "about.md",
+        monthly_supply_budget=None,
+    )
     path = supply_order_markdown_path(order, site)
     assert path is not None
     path.parent.mkdir(parents=True, exist_ok=True)

@@ -7,7 +7,9 @@ import re
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
+from typing import Any
 
+from btq_vault.couch_store import CouchDBEntityStore
 from config import get_config
 from io_atomic import atomic_write_text
 from supply_orders import load_site_metadata
@@ -40,7 +42,6 @@ class SiteSupplyBudgetRecord:
     monthly_supply_budget: float | None
     supply_budget_notes: str | None
     notes: str
-    about_path: Path | None = None
 
     def to_record(self) -> dict[str, object]:
         return {
@@ -55,46 +56,6 @@ class SiteSupplyBudgetRecord:
 
 def normalize_whitespace(value: str) -> str:
     return re.sub(r"\s+", " ", value).strip()
-
-
-def parse_frontmatter_fields(path: Path) -> tuple[list[tuple[str, str]], str]:
-    text = path.read_text(encoding="utf-8")
-    if not text.startswith("---\n"):
-        return [], text
-    remainder = text[4:]
-    closing = remainder.find("\n---\n")
-    if closing == -1:
-        return [], text
-    frontmatter_text = remainder[:closing]
-    body = remainder[closing + len("\n---\n") :]
-    fields: list[tuple[str, str]] = []
-    for line in frontmatter_text.splitlines():
-        if ":" not in line:
-            continue
-        key, value = line.split(":", 1)
-        fields.append((key.strip(), value.strip()))
-    return fields, body
-
-
-def upsert_frontmatter_field(fields: list[tuple[str, str]], key: str, value: str) -> list[tuple[str, str]]:
-    updated: list[tuple[str, str]] = []
-    found = False
-    for existing_key, existing_value in fields:
-        if existing_key == key:
-            updated.append((key, value))
-            found = True
-        else:
-            updated.append((existing_key, existing_value))
-    if not found:
-        updated.append((key, value))
-    return updated
-
-
-def render_frontmatter(fields: list[tuple[str, str]], body: str) -> str:
-    lines = ["---", *[f"{key}: {value}" for key, value in fields], "---"]
-    if body:
-        return "\n".join(lines) + "\n" + body
-    return "\n".join(lines) + "\n"
 
 
 def parse_site_name_prefix(line: str, site_id: str) -> str:
@@ -142,16 +103,12 @@ def classify_budget(line: str) -> tuple[str, float | None, str | None, str]:
     return "unknown", None, None, normalize_whitespace(line)
 
 
-def site_metadata_index(vault_root: Path) -> dict[str, tuple[str, Path]]:
-    index: dict[str, tuple[str, Path]] = {}
-    for site in load_site_metadata(vault_root):
-        if site.about_path is not None:
-            index[site.site_id] = (site.canonical_name, site.about_path)
-    return index
+def site_metadata_index(store: Any) -> dict[str, str]:
+    return {site.site_id: site.canonical_name for site in load_site_metadata(store)}
 
 
-def parse_supply_budget_lines(lines: list[str], vault_root: Path) -> tuple[list[SiteSupplyBudgetRecord], list[SiteSupplyBudgetRecord]]:
-    known_sites = site_metadata_index(vault_root)
+def parse_supply_budget_lines(lines: list[str], store: Any | None = None) -> tuple[list[SiteSupplyBudgetRecord], list[SiteSupplyBudgetRecord]]:
+    known_sites = site_metadata_index(store)
     records: list[SiteSupplyBudgetRecord] = []
     manual_review: list[SiteSupplyBudgetRecord] = []
 
@@ -168,7 +125,6 @@ def parse_supply_budget_lines(lines: list[str], vault_root: Path) -> tuple[list[
                 monthly_supply_budget=None,
                 supply_budget_notes=None,
                 notes=f"Missing site_id: {line}",
-                about_path=None,
             )
             records.append(record)
             manual_review.append(record)
@@ -177,7 +133,7 @@ def parse_supply_budget_lines(lines: list[str], vault_root: Path) -> tuple[list[
         site_id = site_id_match.group("site_id")
         parsed_site_name = parse_site_name_prefix(line, site_id)
         supply_budget_type, monthly_supply_budget, supply_budget_notes, notes = classify_budget(line)
-        canonical_name, about_path = known_sites.get(site_id, (parsed_site_name, None))
+        canonical_name = known_sites.get(site_id, parsed_site_name)
         record = SiteSupplyBudgetRecord(
             site_id=site_id,
             site_name=canonical_name or parsed_site_name,
@@ -185,36 +141,37 @@ def parse_supply_budget_lines(lines: list[str], vault_root: Path) -> tuple[list[
             monthly_supply_budget=monthly_supply_budget,
             supply_budget_notes=supply_budget_notes,
             notes=notes,
-            about_path=about_path,
         )
         records.append(record)
-        if supply_budget_type == "unknown" or about_path is None:
+        if supply_budget_type == "unknown" or site_id not in known_sites:
             manual_review.append(record)
     return records, manual_review
 
 
-def update_site_about_frontmatter(record: SiteSupplyBudgetRecord, as_of_date: date) -> None:
-    if record.about_path is None:
+def update_site_budget_doc(record: SiteSupplyBudgetRecord, store: Any, as_of_date: date) -> None:
+    doc_id = f"location_{record.site_id}"
+    if not record.site_id or store.get_optional(doc_id) is None:
         return
-    fields, body = parse_frontmatter_fields(record.about_path)
-    fields = upsert_frontmatter_field(fields, "supply_budget_type", record.supply_budget_type)
-    if record.monthly_supply_budget is None:
-        fields = upsert_frontmatter_field(fields, "monthly_supply_budget", "null")
-    else:
-        fields = upsert_frontmatter_field(fields, "monthly_supply_budget", f"{record.monthly_supply_budget:.2f}")
-    if record.supply_budget_notes is None:
-        fields = upsert_frontmatter_field(fields, "supply_budget_notes", "null")
-    else:
-        fields = upsert_frontmatter_field(fields, "supply_budget_notes", record.supply_budget_notes)
-    fields = upsert_frontmatter_field(fields, "budget_last_verified", as_of_date.isoformat())
-    atomic_write_text(record.about_path, render_frontmatter(fields, body))
+
+    def transform(current: dict[str, Any] | None) -> dict[str, Any] | None:
+        if current is None:
+            return None
+        updated = dict(current)
+        updated["supply_budget_type"] = record.supply_budget_type
+        updated["monthly_supply_budget"] = None if record.monthly_supply_budget is None else f"{record.monthly_supply_budget:.2f}"
+        updated["supply_budget_notes"] = record.supply_budget_notes
+        updated["budget_last_verified"] = as_of_date.isoformat()
+        return updated
+
+    store.update_doc(doc_id, transform)
 
 
-def apply_supply_budget_updates(lines: list[str], vault_root: Path, as_of_date: date | None = None) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
+def apply_supply_budget_updates(lines: list[str], store: Any | None = None, as_of_date: date | None = None) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
     verified_on = date.today() if as_of_date is None else as_of_date
-    records, manual_review = parse_supply_budget_lines(lines, vault_root)
+    resolved_store = CouchDBEntityStore.from_env() if store is None else store
+    records, manual_review = parse_supply_budget_lines(lines, resolved_store)
     for record in records:
-        update_site_about_frontmatter(record, verified_on)
+        update_site_budget_doc(record, resolved_store, verified_on)
     return [record.to_record() for record in records], [record.to_record() for record in manual_review]
 
 
@@ -251,13 +208,13 @@ def importer_output_dir(project_root: Path, as_of_date: date) -> Path:
 
 def import_supply_budget_csv(
     csv_path: Path,
-    vault_root: Path,
     project_root: Path,
+    store: Any | None = None,
     as_of_date: date | None = None,
 ) -> tuple[Path, Path, list[dict[str, object]], list[dict[str, object]]]:
     verified_on = date.today() if as_of_date is None else as_of_date
     lines = load_lines_from_csv(csv_path)
-    records, manual_review = apply_supply_budget_updates(lines, vault_root, verified_on)
+    records, manual_review = apply_supply_budget_updates(lines, store, verified_on)
     output_dir = importer_output_dir(project_root, verified_on)
     parsed_path = output_dir / "parsed_supply_budgets.json"
     manual_review_path = output_dir / "manual_review_supply_budgets.json"
@@ -270,7 +227,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     config = get_config()
     parser = argparse.ArgumentParser(description="Import site supply budget contract notes from CSV.")
     parser.add_argument("csv_path", type=Path)
-    parser.add_argument("--vault-root", type=Path, default=config.vault_dir)
     parser.add_argument("--project-root", type=Path, default=config.project_dir)
     parser.add_argument("--date", type=date.fromisoformat, default=None)
     return parser.parse_args(argv)
@@ -280,7 +236,6 @@ def run(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     parsed_path, manual_review_path, records, manual_review = import_supply_budget_csv(
         csv_path=args.csv_path.expanduser(),
-        vault_root=args.vault_root.expanduser(),
         project_root=args.project_root.expanduser(),
         as_of_date=args.date,
     )
