@@ -125,6 +125,8 @@ def validate_uploaded_photos(photos: list[UploadedPhoto], limits: IngestLimits) 
     for photo in photos:
         if photo.content_type not in limits.photo_mime_extensions:
             raise SubmissionError(HTTPStatus.BAD_REQUEST, "unsupported_photo_type", f"Unsupported photo type: {photo.content_type}")
+        if not photo.content:
+            raise SubmissionError(HTTPStatus.BAD_REQUEST, "empty_photo", "A photo was empty (0 bytes) — please recapture and resubmit")
         if len(photo.content) > limits.max_upload_bytes:
             raise SubmissionError(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "photo_too_large", "A photo is too large")
 
@@ -138,6 +140,8 @@ def validate_uploaded_audio(audio_files: list[UploadedFile], limits: IngestLimit
         suffix = Path(audio.filename.replace("\\", "/")).suffix.lower()
         if suffix not in limits.audio_allowed_extensions[audio.content_type]:
             raise SubmissionError(HTTPStatus.BAD_REQUEST, "unsupported_audio_extension", f"Unsupported audio extension: {suffix or '(none)'}")
+        if not audio.content:
+            raise SubmissionError(HTTPStatus.BAD_REQUEST, "empty_audio", "The voice note was empty (0 bytes) — please re-record and resubmit")
         if len(audio.content) > limits.max_upload_bytes:
             raise SubmissionError(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "audio_too_large", "The voice note is too large")
 
