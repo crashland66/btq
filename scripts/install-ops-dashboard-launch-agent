@@ -52,11 +52,24 @@ VM_COUCHDB_USER="${VOICE_MEMO_COUCHDB_USER:-$(read_plist_env "${WHISPER_PLIST}" 
 VM_COUCHDB_PASSWORD="${VOICE_MEMO_COUCHDB_PASSWORD:-$(read_plist_env "${WHISPER_PLIST}" VOICE_MEMO_COUCHDB_PASSWORD)}"
 VM_COUCHDB_DB="${VOICE_MEMO_COUCHDB_DB:-$(read_plist_env "${WHISPER_PLIST}" VOICE_MEMO_COUCHDB_DB)}"
 
+# Batch Image Import env: the dashboard's Batch Image Import panel submits to
+# field-capture using BTQ_BATCH_IMAGE_IMPORT_TOKEN and BTQ_FIELD_CAPTURE_INTERNAL_URL.
+# Unlike the CouchDB vars these have no other plist to inherit from -- they were
+# set by hand on the ops-dashboard plist itself. Read them back from the current
+# ops-dashboard plist so a re-install preserves the manually-set values; a
+# re-install would otherwise drop them and break the import with invalid_token /
+# unconfigured-URL. Per-invocation env-var overrides win when set.
+BATCH_IMAGE_IMPORT_TOKEN="${BTQ_BATCH_IMAGE_IMPORT_TOKEN:-$(read_plist_env "${PLIST_PATH}" BTQ_BATCH_IMAGE_IMPORT_TOKEN)}"
+FIELD_CAPTURE_INTERNAL_URL="${BTQ_FIELD_CAPTURE_INTERNAL_URL:-$(read_plist_env "${PLIST_PATH}" BTQ_FIELD_CAPTURE_INTERNAL_URL)}"
+
 if [[ -z "${COUCHDB_URL}" ]]; then
   echo "warn: BTQ_COUCHDB_URL not found in env or ${WATCHER_PLIST}; the sites editor will report 'BTQ_COUCHDB_URL must be set' until this is fixed" >&2
 fi
 if [[ -z "${VM_COUCHDB_URL}" ]]; then
   echo "warn: VOICE_MEMO_COUCHDB_URL not found in env or ${WHISPER_PLIST}; the dashboard Voice Memo panel will show intake state as unavailable" >&2
+fi
+if [[ -z "${BATCH_IMAGE_IMPORT_TOKEN}" || -z "${FIELD_CAPTURE_INTERNAL_URL}" ]]; then
+  echo "warn: BTQ_BATCH_IMAGE_IMPORT_TOKEN / BTQ_FIELD_CAPTURE_INTERNAL_URL not found in env or ${PLIST_PATH}; Batch Image Import will fail (invalid_token / unconfigured URL) until these are set" >&2
 fi
 
 mkdir -p "${LAUNCH_AGENTS_DIR}"
@@ -100,6 +113,10 @@ cat > "${PLIST_PATH}" <<EOF
     <string>${VM_COUCHDB_PASSWORD}</string>
     <key>VOICE_MEMO_COUCHDB_DB</key>
     <string>${VM_COUCHDB_DB}</string>
+    <key>BTQ_BATCH_IMAGE_IMPORT_TOKEN</key>
+    <string>${BATCH_IMAGE_IMPORT_TOKEN}</string>
+    <key>BTQ_FIELD_CAPTURE_INTERNAL_URL</key>
+    <string>${FIELD_CAPTURE_INTERNAL_URL}</string>
   </dict>
   <key>RunAtLoad</key>
   <true/>
