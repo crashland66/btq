@@ -695,3 +695,53 @@ def test_pipeline_watcher_exits_on_bad_credentials(monkeypatch: pytest.MonkeyPat
 
     assert excinfo.value.code == 2
     assert cycle_started is False
+
+
+def test_text_semantics_processes_note_with_photo_no_audio(tmp_path: Path) -> None:
+    """A photo+note capture (no audio) must still have its typed note extracted —
+    the common 'take a photo, type what's needed' case. Regression for the gate
+    that skipped note processing whenever photos were present."""
+    from field_capture import pipeline_watcher, audio_transcription
+    from field_capture import action_candidates as fc
+
+    intake_dir = audio_transcription.default_intake_dir(tmp_path)
+    sem_dir = fc.default_text_semantic_dir(tmp_path)
+    intake_dir.mkdir(parents=True, exist_ok=True)
+    cap = "cap-photo-note-0001"
+    intake = {
+        "metadata": {"capture_id": cap, "site_id": "SANDBOX", "person_id": "sandbox-user"},
+        "payload": {
+            "capture_id": cap,
+            "site_id": "SANDBOX",
+            "captured_at": "2026-06-10T10:07:18Z",
+            "qc_category": "Supply Levels",
+            "note": "A new vacuum and heavy duty lint brushes are the required supplies.",
+            "photos": [{"upload_id": "2026-06-10/x/img.jpg"}],
+            "audio": [],
+        },
+    }
+    (intake_dir / f"{cap}.json").write_text(json.dumps(intake), encoding="utf-8")
+
+    counts = pipeline_watcher.process_note_only_text_semantics(intake_dir, sem_dir, runtime_root=tmp_path)
+    assert counts["discovered"] == 1, counts
+    assert counts["completed"] == 1, counts
+    assert (sem_dir / f"{cap}.json").exists()
+
+
+def test_text_semantics_skips_note_with_audio(tmp_path: Path) -> None:
+    """A capture WITH audio routes its semantics through the audio path, so the
+    text-note stage skips it (no double-processing)."""
+    from field_capture import pipeline_watcher, audio_transcription
+    from field_capture import action_candidates as fc
+
+    intake_dir = audio_transcription.default_intake_dir(tmp_path)
+    sem_dir = fc.default_text_semantic_dir(tmp_path)
+    intake_dir.mkdir(parents=True, exist_ok=True)
+    cap = "cap-note-and-audio-0001"
+    intake = {
+        "metadata": {"capture_id": cap, "site_id": "SANDBOX"},
+        "payload": {"capture_id": cap, "site_id": "SANDBOX", "note": "need vacuum", "photos": [], "audio": [{"upload_id": "a.webm"}]},
+    }
+    (intake_dir / f"{cap}.json").write_text(json.dumps(intake), encoding="utf-8")
+    counts = pipeline_watcher.process_note_only_text_semantics(intake_dir, sem_dir, runtime_root=tmp_path)
+    assert counts["discovered"] == 0, counts

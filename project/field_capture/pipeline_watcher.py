@@ -99,9 +99,12 @@ def process_note_only_text_semantics(
             continue
         metadata, body = parsed
         note = str(body.get("note") or "").strip()
-        photos = body.get("photos") if isinstance(body.get("photos"), list) else []
         audio = body.get("audio") if isinstance(body.get("audio"), list) else []
-        if not note or photos or audio:
+        # Process the typed note's semantics whenever there is a note and NO audio.
+        # Photos are handled separately by the vision stage, so a photo+note capture
+        # (the common case) must still have its note extracted; only audio captures
+        # route their semantics through the audio-transcript path instead.
+        if not note or audio:
             continue
         counts["discovered"] += 1
         capture_id = str(metadata.get("capture_id") or body.get("capture_id") or intake_path.stem).strip() or intake_path.stem
