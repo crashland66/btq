@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 from dataclasses import dataclass, replace
@@ -33,6 +34,8 @@ from queue_spec import (
     validate_job,
 )
 
+
+logger = logging.getLogger(__name__)
 
 SOURCE_KINDS = frozenset({"ops_dashboard_text", "voice_memo", "field_capture_audio"})
 ISSUE_TYPES = {
@@ -267,7 +270,18 @@ class LocalModelCaptureEngine:
                 legacy_result = _semantic_result_from_legacy_dict(raw, source)
                 return replace(legacy_result, extracted_actions=fallback_result.extracted_actions)
             extracted = extracted_actions_from_model_payload(raw, source)
-        except Exception:
+        except Exception as exc:
+            # A hung or slow inference node (e.g. a deadlocked Ollama generation
+            # on the Dell) surfaces here as a bounded per-capture failure once the
+            # client's socket timeout fires, rather than wedging the pipeline.
+            # Log it so the degraded-to-rule-fallback is visible for diagnosis.
+            logger.warning(
+                "capture semantics model engine failed; using rule fallback "
+                "engine=%s capture_id=%s error=%s",
+                self.engine_name,
+                source.capture_id,
+                exc,
+            )
             return fallback_result
         return replace(fallback_result, extracted_actions=extracted)
 
