@@ -1952,3 +1952,24 @@ def test_ops_dashboard_cli_defaults_and_startup_text(tmp_path: Path) -> None:
     assert "No direct vault writes and no queue processor invocation." in text
     assert "POST actions may stage queue jobs" in text
     assert "Press Ctrl-C to stop." in text
+
+
+def test_query_processed_asset_ids_paginates_beyond_page_limit(monkeypatch) -> None:
+    """btq_photo_vision past the page size must not truncate the processed set
+    (else processed photos wrongly show as pending)."""
+    pages = [
+        {"docs": [{"photo_asset_id": f"a{i}"} for i in range(5000)], "bookmark": "bm1"},
+        {"docs": [{"photo_asset_id": f"b{i}"} for i in range(12)], "bookmark": "bm2"},
+    ]
+    calls = {"n": 0}
+
+    def fake_query(_config, _mango):
+        i = calls["n"]
+        calls["n"] += 1
+        return pages[i]
+
+    monkeypatch.setattr("field_capture.photo_vision_couchdb.query_photo_vision", fake_query)
+    ids = field_photos._query_processed_asset_ids(object())
+    assert calls["n"] == 2  # paginated past the first full page
+    assert len(ids) == 5012
+    assert "a4999" in ids and "b11" in ids

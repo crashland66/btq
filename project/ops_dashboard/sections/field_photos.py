@@ -75,15 +75,38 @@ def _query_couchdb(config: object, mango: dict[str, object]) -> list[dict[str, o
 
 
 def _query_processed_asset_ids(config: object) -> set[str] | None:
-    mango = {
-        "selector": {"doc_type": "photo_vision_sidecar"},
-        "fields": ["photo_asset_id"],
-        "limit": 5000,
-    }
-    docs = _query_couchdb(config, mango)
-    if docs is None:
-        return None
-    return {str(doc.get("photo_asset_id") or "").strip() for doc in docs if str(doc.get("photo_asset_id") or "").strip()}
+    # Fetch the COMPLETE set of processed photo_asset_ids via bookmark pagination.
+    # A fixed `limit` silently truncates this set once btq_photo_vision grows past
+    # it, which makes already-processed photos show up as "pending".
+    from field_capture.photo_vision_couchdb import query_photo_vision
+
+    ids: set[str] = set()
+    bookmark: object = None
+    page_size = 5000
+    for _ in range(400):  # safety cap (400 * 5000 = 2M docs)
+        mango: dict[str, object] = {
+            "selector": {"doc_type": "photo_vision_sidecar"},
+            "fields": ["photo_asset_id"],
+            "limit": page_size,
+        }
+        if bookmark:
+            mango["bookmark"] = bookmark
+        try:
+            response = query_photo_vision(config, mango)
+        except Exception as exc:
+            logger.warning("field-photos processed-id query failed, falling back to disk: %s", exc)
+            return None
+        docs = response.get("docs")
+        if not isinstance(docs, list):
+            return None
+        for doc in docs:
+            aid = str(doc.get("photo_asset_id") or "").strip()
+            if aid:
+                ids.add(aid)
+        bookmark = response.get("bookmark")
+        if len(docs) < page_size or not bookmark:
+            break
+    return ids
 
 
 def _search_text(sidecar: dict[str, object]) -> str:
