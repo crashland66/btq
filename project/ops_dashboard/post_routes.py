@@ -47,6 +47,8 @@ def dispatch_post_route(
         return supplies.handle_supply_archive(ctx, body)
     if route_path == "/supplies/restore":
         return supplies.handle_supply_restore(ctx, body)
+    if route_path == "/supplies/edit":
+        return supplies.handle_supply_edit(ctx, body)
     if route_path == "/field-capture/issues/mark-monitoring":
         return issues.handle_mark_issue_monitoring(ctx, body)
     if route_path == "/field-capture/issues/mark-resolved":
@@ -57,6 +59,8 @@ def dispatch_post_route(
         return issues.handle_issue_archive(ctx, body)
     if route_path == "/field-capture/issues/restore":
         return issues.handle_issue_restore(ctx, body)
+    if route_path == "/field-capture/issues/edit":
+        return issues.handle_issue_edit(ctx, body)
     if route_path == "/equipment/mark-approved":
         return equipment.handle_mark_equipment_approved(ctx, body)
     if route_path == "/equipment/mark-denied":
@@ -71,6 +75,8 @@ def dispatch_post_route(
         return equipment.handle_equipment_archive(ctx, body)
     if route_path == "/equipment/restore":
         return equipment.handle_equipment_restore(ctx, body)
+    if route_path == "/equipment/edit":
+        return equipment.handle_equipment_edit(ctx, body)
     if route_path == "/failed/retry-sidecar":
         return failed.handle_retry_sidecar_post(ctx, body)
     if route_path == "/sites/save":

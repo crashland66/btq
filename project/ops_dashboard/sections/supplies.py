@@ -3,11 +3,13 @@ from __future__ import annotations
 import html
 from urllib.parse import quote
 
-from ops_dashboard.common import default_actor, first_query_value, handle_mark_transition_post, humanize_key, render_back_link, render_kv, render_site_label, render_status_transition, render_table, slugify_status, write_mark_job
+from ops_dashboard.common import default_actor, first_query_value, handle_edit_record_fields_post, handle_mark_transition_post, humanize_key, render_back_link, render_kv, render_record_edit_form, render_site_label, render_status_transition, render_table, slugify_status, write_mark_job
 from ops_dashboard.layout import html_page
 from site_supplies import discover_site_supplies, supply_as_export
 
 SUPPLY_STATUS_OPTIONS = ("", "open", "ordered", "delivered", "stocked", "no_action_needed")
+SUPPLY_EDIT_FIELDS = ("site_id", "item_name", "quantity_needed", "urgency", "notes")
+SUPPLY_EDIT_SELECT_OPTIONS = {"urgency": ("low", "normal", "high", "critical")}
 SUPPLY_TRANSITIONS = {
     "mark-ordered": {
         "label": "Mark ordered",
@@ -216,6 +218,7 @@ def render_supply_detail(ctx: object, supply_id: str) -> str:
           {render_lifecycle_history(supply, ("ordered", "delivered", "stocked"))}
         </section>
         {render_action_panel(supply)}
+        {render_edit_panel(supply)}
         {render_archive_panel(supply)}
         """
     return html_page("Supply Detail", f"<header><h1>Supply Detail</h1></header>{render_back_link('/supplies', 'Back to Supplies')}{flash}{content}", active_section="supplies")
@@ -255,6 +258,20 @@ def render_archive_panel(supply: dict[str, object]) -> str:
     if not str(supply.get("supply_id") or ""):
         return ""
     return f"<section><h2>Archive</h2>{render_archive_control(supply)}</section>"
+
+
+def render_edit_panel(supply: dict[str, object]) -> str:
+    if not str(supply.get("supply_id") or ""):
+        return ""
+    form = render_record_edit_form(
+        supply,
+        record_type="supply_need",
+        id_field="supply_id",
+        post_route="/supplies/edit",
+        fields=SUPPLY_EDIT_FIELDS,
+        select_options=SUPPLY_EDIT_SELECT_OPTIONS,
+    )
+    return f"<section><h2>Edit</h2>{form}</section>"
 
 
 def render_row_actions(supply: dict[str, object]) -> str:
@@ -424,4 +441,16 @@ def handle_supply_restore(ctx: object, body: bytes):
         redirect_path="/supplies",
         payload_id_key="record_id",
         extra_payload={"record_type": "supply_need"},
+    )
+
+
+def handle_supply_edit(ctx: object, body: bytes):
+    return handle_edit_record_fields_post(
+        ctx,
+        body,
+        route="/supplies/edit",
+        record_type="supply_need",
+        id_field="supply_id",
+        redirect_path="/supplies",
+        fields=SUPPLY_EDIT_FIELDS,
     )

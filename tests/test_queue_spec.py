@@ -11,6 +11,7 @@ from queue_spec import (
     JOB_MARK_ISSUE_RESOLVED,
     JOB_MARK_RECORD_ARCHIVED,
     JOB_MARK_RECORD_UNARCHIVED,
+    JOB_EDIT_RECORD_FIELDS,
     JOB_MARK_SUPPLY_DELIVERED,
     JOB_MARK_SUPPLY_NO_ACTION_NEEDED,
     JOB_MARK_SUPPLY_ORDERED,
@@ -1115,6 +1116,34 @@ def test_validate_mark_record_archive_payload_rejects_unknown_field() -> None:
     ) is False
 
 
+def test_validate_edit_record_fields_payload_passes_with_allowlisted_fields() -> None:
+    assert validate_job(
+        {
+            "job_type": JOB_EDIT_RECORD_FIELDS,
+            "payload": {
+                "record_type": "site_issue",
+                "record_id": "iss_summit_drain",
+                "fields": {"site_id": "7050", "summary": "Corrected summary."},
+                "actor": "Jordan",
+            },
+        }
+    ) is True
+
+
+def test_validate_edit_record_fields_payload_rejects_unknown_field() -> None:
+    assert validate_job(
+        {
+            "job_type": JOB_EDIT_RECORD_FIELDS,
+            "payload": {
+                "record_type": "supply_need",
+                "record_id": "sup_cleaner",
+                "fields": {"item_name": "Cleaner", "status": "stocked"},
+                "actor": "Jordan",
+            },
+        }
+    ) is False
+
+
 def test_job_schemas_register_all_mark_supply_jobs() -> None:
     assert JOB_SCHEMAS[JOB_MARK_SUPPLY_ORDERED] == ["supply_id", "actor"]
     assert JOB_SCHEMAS[JOB_MARK_SUPPLY_DELIVERED] == ["supply_id", "actor"]
@@ -1139,3 +1168,4 @@ def test_job_schemas_register_all_mark_issue_jobs() -> None:
 def test_job_schemas_register_mark_record_archive_jobs() -> None:
     assert JOB_SCHEMAS[JOB_MARK_RECORD_ARCHIVED] == ["record_type", "record_id", "actor"]
     assert JOB_SCHEMAS[JOB_MARK_RECORD_UNARCHIVED] == ["record_type", "record_id", "actor"]
+    assert JOB_SCHEMAS[JOB_EDIT_RECORD_FIELDS] == ["record_type", "record_id", "fields", "actor"]

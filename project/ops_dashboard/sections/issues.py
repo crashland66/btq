@@ -4,11 +4,16 @@ import html
 from pathlib import Path
 from urllib.parse import quote
 
-from ops_dashboard.common import default_actor, first_query_value, handle_mark_transition_post, humanize_key, render_back_link, render_issue_list, render_kv, render_status_transition, render_table, slugify_status
+from ops_dashboard.common import default_actor, first_query_value, handle_edit_record_fields_post, handle_mark_transition_post, humanize_key, render_back_link, render_issue_list, render_kv, render_record_edit_form, render_status_transition, render_table, slugify_status
 from ops_dashboard.layout import html_page
 from site_issues import discover_site_issues, issue_as_export
 
 ISSUE_SORT_OPTIONS = ("", "site", "recency")
+ISSUE_EDIT_FIELDS = ("site_id", "title", "summary", "priority", "category", "resolution_trigger")
+ISSUE_EDIT_SELECT_OPTIONS = {
+    "priority": ("low", "normal", "high", "urgent"),
+    "category": ("maintenance", "supply", "access", "staffing", "quality", "safety", "client_request", "other"),
+}
 ISSUE_TRANSITIONS = {
     "mark-monitoring": {
         "label": "Mark monitoring",
@@ -165,6 +170,7 @@ def render_issue_detail(ctx: object, issue_id: str) -> str:
           {render_lifecycle_history(issue)}
         </section>
         {render_action_panel(issue)}
+        {render_edit_panel(issue)}
         {render_archive_panel(issue)}
         """
     return html_page("Issue Detail", f"<header><h1>Issue Detail</h1></header>{render_back_link('/field-capture/issues', 'Back to Issues')}{flash}{content}", active_section="issues")
@@ -212,6 +218,20 @@ def render_archive_panel(issue: dict[str, object]) -> str:
     if not str(issue.get("issue_id") or ""):
         return ""
     return f"<section><h2>Archive</h2>{render_archive_control(issue)}</section>"
+
+
+def render_edit_panel(issue: dict[str, object]) -> str:
+    if not str(issue.get("issue_id") or ""):
+        return ""
+    form = render_record_edit_form(
+        issue,
+        record_type="site_issue",
+        id_field="issue_id",
+        post_route="/field-capture/issues/edit",
+        fields=ISSUE_EDIT_FIELDS,
+        select_options=ISSUE_EDIT_SELECT_OPTIONS,
+    )
+    return f"<section><h2>Edit</h2>{form}</section>"
 
 
 def is_archived(issue: dict[str, object]) -> bool:
@@ -375,4 +395,16 @@ def handle_issue_restore(ctx: object, body: bytes):
         redirect_path="/field-capture/issues",
         payload_id_key="record_id",
         extra_payload={"record_type": "site_issue"},
+    )
+
+
+def handle_issue_edit(ctx: object, body: bytes):
+    return handle_edit_record_fields_post(
+        ctx,
+        body,
+        route="/field-capture/issues/edit",
+        record_type="site_issue",
+        id_field="issue_id",
+        redirect_path="/field-capture/issues",
+        fields=ISSUE_EDIT_FIELDS,
     )

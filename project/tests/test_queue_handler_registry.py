@@ -45,6 +45,7 @@ EXPECTED_HANDLER_NAMES = {
     qp.JOB_MARK_ISSUE_OPEN: "process_mark_issue_open_job",
     qp.JOB_MARK_RECORD_ARCHIVED: "process_mark_record_archived_job",
     qp.JOB_MARK_RECORD_UNARCHIVED: "process_mark_record_unarchived_job",
+    qp.JOB_EDIT_RECORD_FIELDS: "process_edit_record_fields_job",
     qp.JOB_VOICE_MEMO_NOTE: "process_voice_memo_note_job",
 }
 
@@ -103,6 +104,7 @@ def test_handlers_importable_from_handlers_package() -> None:
             "process_mark_issue_open_job",
             "process_mark_record_archived_job",
             "process_mark_record_unarchived_job",
+            "process_edit_record_fields_job",
         ],
         "site_flags_notes": [
             "process_log_site_issue_job",

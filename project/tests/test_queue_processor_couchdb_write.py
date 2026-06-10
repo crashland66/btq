@@ -1473,6 +1473,10 @@ def archive_payload(record_type: str, record_id: str) -> dict:
     return {"record_type": record_type, "record_id": record_id, "actor": "Jordan", "note": "Duplicate."}
 
 
+def edit_payload(record_type: str, record_id: str, fields: dict[str, object]) -> dict:
+    return {"record_type": record_type, "record_id": record_id, "fields": fields, "actor": "Jordan"}
+
+
 @pytest.mark.parametrize(
     ("record_type", "record_id", "doc_factory", "handler", "job_type"),
     [
@@ -1504,6 +1508,104 @@ def test_mark_record_archived_sets_archive_fields(
     assert doc["archived_by"] == "Jordan"
     assert doc["archive_note"] == "Duplicate."
     assert doc["btq_job_ids"] == ["job-one"]
+
+
+@pytest.mark.parametrize(
+    ("record_type", "record_id", "doc_factory", "fields", "expected"),
+    [
+        (
+            "site_issue",
+            "issue-fixed",
+            canonical_issue_doc,
+            {"site_id": "7050", "title": "Corrected title", "summary": "Corrected summary.", "priority": "urgent", "category": "safety", "resolution_trigger": "Repair confirmed."},
+            {"site_id": "7050", "site_name": "Summit Wire", "title": "Corrected title", "summary": "Corrected summary.", "priority": "urgent", "category": "safety", "resolution_trigger": "Repair confirmed."},
+        ),
+        (
+            "supply_need",
+            "supply-fixed",
+            canonical_supply_doc,
+            {"site_id": "7050", "item_name": "Corrected gloves", "quantity_needed": "12", "urgency": "critical", "notes": "Corrected note."},
+            {"site_id": "7050", "site_name": "Summit Wire", "item_name": "Corrected gloves", "quantity_needed": "12", "urgency": "critical", "notes": "Corrected note."},
+        ),
+        (
+            "equipment_request",
+            "equipment-fixed",
+            canonical_equipment_doc,
+            {"site_id": "7050", "equipment_name": "Corrected scrubber", "reason": "Corrected reason.", "priority": "high", "notes": "Corrected note."},
+            {"site_id": "7050", "site_name": "Summit Wire", "equipment_name": "Corrected scrubber", "reason": "Corrected reason.", "priority": "high", "notes": "Corrected note."},
+        ),
+    ],
+)
+def test_edit_record_fields_applies_only_allowlisted_fields_and_site_name(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    record_type: str,
+    record_id: str,
+    doc_factory: Callable[[], dict[str, Any]],
+    fields: dict[str, object],
+    expected: dict[str, object],
+) -> None:
+    context = context_for(tmp_path)
+    existing_doc = doc_factory()
+    existing_doc.update({"archived": False, "created_at": "2026-05-01T00:00:00+00:00"})
+    store = RecordingRmwVaultStore([existing_doc])
+    monkeypatch.setattr(shared, "_VAULT_STORE", store)
+    queue_file = make_queue_file(context, "job-one")
+
+    qp.process_edit_record_fields_job(
+        queue_file,
+        job("edit_record_fields", edit_payload(record_type, record_id, fields), job_id="job-one"),
+        context,
+        context.runtime_root / "processed",
+    )
+
+    doc = store.get_optional(f"{record_type}_{record_id}")
+    assert doc is not None
+    for key, value in expected.items():
+        assert doc[key] == value
+    assert doc["status"] == "open"
+    assert doc["archived"] is False
+    assert doc["created_at"] == "2026-05-01T00:00:00+00:00"
+    assert doc["updated_at"]
+    assert doc["edited_by"] == "Jordan"
+    assert doc["btq_job_ids"] == ["job-one"]
+
+
+def test_edit_record_fields_rejects_non_allowlisted_fields(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    context = context_for(tmp_path)
+    existing_doc = canonical_issue_doc()
+    store = RecordingRmwVaultStore([existing_doc])
+    monkeypatch.setattr(shared, "_VAULT_STORE", store)
+    queue_file = make_queue_file(context, "job-one")
+
+    with pytest.raises(qp.QueueProcessorError):
+        qp.process_edit_record_fields_job(
+            queue_file,
+            job("edit_record_fields", edit_payload("site_issue", "issue-fixed", {"summary": "ok", "status": "resolved"}), job_id="job-one"),
+            context,
+            context.runtime_root / "processed",
+        )
+
+    assert store.update_doc_calls == []
+    assert store.get_optional("site_issue_issue-fixed") == existing_doc
+
+
+def test_edit_record_fields_skips_when_job_id_already_applied(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    context = context_for(tmp_path)
+    existing_doc = canonical_supply_doc(job_ids=["job-one"])
+    store = RecordingRmwVaultStore([existing_doc])
+    monkeypatch.setattr(shared, "_VAULT_STORE", store)
+    queue_file = make_queue_file(context, "job-one")
+
+    qp.process_edit_record_fields_job(
+        queue_file,
+        job("edit_record_fields", edit_payload("supply_need", "supply-fixed", {"item_name": "Corrected"}), job_id="job-one"),
+        context,
+        context.runtime_root / "processed",
+    )
+
+    assert store.update_doc_calls == []
+    assert store.docs == [existing_doc]
 
 
 def test_mark_record_unarchived_clears_archive_fields(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

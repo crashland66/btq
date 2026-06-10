@@ -558,6 +558,15 @@ def test_render_job_summary_mark_record_archived() -> None:
     assert "issue_abc" in rendered
 
 
+def test_render_job_summary_edit_record_fields() -> None:
+    rendered = render_job_summary("edit_record_fields", {"record_type": "site_issue", "record_id": "issue_abc", "fields": {"summary": "Updated"}})
+
+    assert "Edit record" in rendered
+    assert "site_issue" in rendered
+    assert "issue_abc" in rendered
+    assert "1 field" in rendered
+
+
 def test_render_job_summary_voice_memo_note() -> None:
     rendered = render_job_summary("voice_memo_note", {"transcript_text": "This is a short note from the field."})
 

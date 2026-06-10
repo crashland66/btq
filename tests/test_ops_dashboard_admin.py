@@ -1626,6 +1626,12 @@ def read_single_queue_job(runtime_root: Path) -> dict[str, object]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def edit_section(body: str) -> str:
+    start = body.index("<h2>Edit</h2>")
+    end = body.index("<h2>Archive</h2>", start)
+    return body[start:end]
+
+
 def test_supplies_detail_renders_action_panel_for_open_status(tmp_path: Path, monkeypatch) -> None:
     vault = tmp_path / "vault"
     write_vault_supply_need(vault, status="open")
@@ -1649,6 +1655,27 @@ def test_supply_detail_renders_back_link_to_list(tmp_path: Path, monkeypatch) ->
     assert status == HTTPStatus.OK
     assert 'class="back-link"' in body
     assert 'href="/supplies"' in body
+
+
+def test_supply_detail_renders_edit_form_with_site_dropdown(tmp_path: Path, monkeypatch) -> None:
+    vault = tmp_path / "vault"
+    write_vault_supply_need(vault)
+    monkeypatch.setattr("ops_dashboard.app.get_config", lambda: type("Config", (), {"vault_dir": vault})())
+
+    status, _content_type, body = request_text("GET", "/supplies?supply_id=sup_cleaner", tmp_path / "runtime")
+    section = edit_section(body)
+
+    assert status == HTTPStatus.OK
+    assert 'action="/supplies/edit"' in section
+    assert 'name="site_id"' in section
+    assert "Summit Wire (7050)" in section
+    assert 'name="item_name"' in section
+    assert 'name="quantity_needed" type="number"' in section
+    assert 'name="urgency"' in section
+    assert 'name="notes"' in section
+    assert 'name="status"' not in section
+    assert 'name="archived"' not in section
+    assert 'name="created_at"' not in section
 
 
 def test_supplies_detail_renders_action_panel_for_ordered_status(tmp_path: Path, monkeypatch) -> None:
@@ -1798,6 +1825,21 @@ def test_supplies_archive_post_writes_generic_archive_job(tmp_path: Path) -> Non
     assert job["payload"] == {"record_type": "supply_need", "record_id": "sup_cleaner", "actor": "Jordan"}
 
 
+def test_supplies_edit_post_writes_generic_edit_job(tmp_path: Path) -> None:
+    runtime_root = tmp_path / "runtime"
+
+    route_response("POST", "/supplies/edit", runtime_root, b"supply_id=sup_cleaner&actor=Jordan&site_id=7060&item_name=Gloves&quantity_needed=12&urgency=critical&notes=Corrected&status=stocked")
+    job = read_single_queue_job(runtime_root)
+
+    assert job["job_type"] == "edit_record_fields"
+    assert job["payload"] == {
+        "record_type": "supply_need",
+        "record_id": "sup_cleaner",
+        "actor": "Jordan",
+        "fields": {"site_id": "7060", "item_name": "Gloves", "quantity_needed": "12", "urgency": "critical", "notes": "Corrected"},
+    }
+
+
 def test_issues_mark_resolved_post_writes_queue_file(tmp_path: Path) -> None:
     runtime_root = tmp_path / "runtime"
 
@@ -1838,6 +1880,43 @@ def test_issue_archive_post_writes_generic_archive_job(tmp_path: Path) -> None:
 
     assert job["job_type"] == "mark_record_archived"
     assert job["payload"] == {"record_type": "site_issue", "record_id": "iss_drain", "actor": "Jordan", "note": "dupe"}
+
+
+def test_issue_detail_renders_edit_form_with_site_dropdown(tmp_path: Path, monkeypatch) -> None:
+    vault = tmp_path / "vault"
+    write_vault_site_issue(vault)
+    monkeypatch.setattr("ops_dashboard.app.get_config", lambda: type("Config", (), {"vault_dir": vault})())
+
+    status, _content_type, body = request_text("GET", "/field-capture/issues?issue_id=iss_drain", tmp_path / "runtime")
+    section = edit_section(body)
+
+    assert status == HTTPStatus.OK
+    assert 'action="/field-capture/issues/edit"' in section
+    assert 'name="site_id"' in section
+    assert "Summit Wire (7050)" in section
+    assert 'name="title"' in section
+    assert 'name="summary"' in section
+    assert 'name="priority"' in section
+    assert 'name="category"' in section
+    assert 'name="resolution_trigger"' in section
+    assert 'name="status"' not in section
+    assert 'name="archived"' not in section
+    assert 'name="created_at"' not in section
+
+
+def test_issue_edit_post_writes_generic_edit_job(tmp_path: Path) -> None:
+    runtime_root = tmp_path / "runtime"
+
+    route_response("POST", "/field-capture/issues/edit", runtime_root, b"issue_id=iss_drain&actor=Jordan&site_id=7060&title=Drain&summary=Corrected&priority=urgent&category=safety&resolution_trigger=Clear&archived=true")
+    job = read_single_queue_job(runtime_root)
+
+    assert job["job_type"] == "edit_record_fields"
+    assert job["payload"] == {
+        "record_type": "site_issue",
+        "record_id": "iss_drain",
+        "actor": "Jordan",
+        "fields": {"site_id": "7060", "title": "Drain", "summary": "Corrected", "priority": "urgent", "category": "safety", "resolution_trigger": "Clear"},
+    }
 
 
 def test_issue_restore_post_writes_generic_unarchive_job(tmp_path: Path) -> None:
@@ -1898,6 +1977,27 @@ def test_equipment_route_filters_by_status_query_param(tmp_path: Path, monkeypat
     assert status == HTTPStatus.OK
     assert "floor buffer" in body
     assert "vacuum" not in body
+
+
+def test_equipment_detail_renders_edit_form_with_site_dropdown(tmp_path: Path, monkeypatch) -> None:
+    vault = tmp_path / "vault"
+    write_vault_equipment_request(vault)
+    monkeypatch.setattr("ops_dashboard.app.get_config", lambda: type("Config", (), {"vault_dir": vault})())
+
+    status, _content_type, body = request_text("GET", "/equipment?equipment_id=eqr_vacuum", tmp_path / "runtime")
+    section = edit_section(body)
+
+    assert status == HTTPStatus.OK
+    assert 'action="/equipment/edit"' in section
+    assert 'name="site_id"' in section
+    assert "Summit Wire (7050)" in section
+    assert 'name="equipment_name"' in section
+    assert 'name="reason"' in section
+    assert 'name="priority"' in section
+    assert 'name="notes"' in section
+    assert 'name="status"' not in section
+    assert 'name="archived"' not in section
+    assert 'name="created_at"' not in section
 
 
 def test_equipment_nav_entry_present_and_active_on_equipment_page(tmp_path: Path, monkeypatch) -> None:
@@ -2072,6 +2172,21 @@ def test_equipment_archive_post_writes_generic_archive_job(tmp_path: Path) -> No
 
     assert job["job_type"] == "mark_record_archived"
     assert job["payload"] == {"record_type": "equipment_request", "record_id": "eqr_vacuum", "actor": "Jordan"}
+
+
+def test_equipment_edit_post_writes_generic_edit_job(tmp_path: Path) -> None:
+    runtime_root = tmp_path / "runtime"
+
+    route_response("POST", "/equipment/edit", runtime_root, b"equipment_id=eqr_vacuum&actor=Jordan&site_id=7060&equipment_name=Scrubber&reason=Corrected&priority=high&notes=Needed&status=provided")
+    job = read_single_queue_job(runtime_root)
+
+    assert job["job_type"] == "edit_record_fields"
+    assert job["payload"] == {
+        "record_type": "equipment_request",
+        "record_id": "eqr_vacuum",
+        "actor": "Jordan",
+        "fields": {"site_id": "7060", "equipment_name": "Scrubber", "reason": "Corrected", "priority": "high", "notes": "Needed"},
+    }
 
 
 def test_render_issue_list_lives_in_common_module() -> None:

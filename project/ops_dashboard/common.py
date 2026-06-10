@@ -17,6 +17,7 @@ from urllib import request as urllib_request
 
 from urllib.parse import parse_qs, quote
 
+from event_pipeline.sites import SITES
 from event_pipeline import couchdb_config
 from event_pipeline.couchdb_registry import CouchDBSiteRegistry
 from field_capture import photo_vision as field_photo_vision
@@ -66,6 +67,7 @@ KNOWN_JOB_SUMMARY_TYPES = {
     "mark_issue_open",
     "mark_record_archived",
     "mark_record_unarchived",
+    "edit_record_fields",
     "voice_memo_note",
 }
 
@@ -907,6 +909,13 @@ def render_job_summary(job_type: object, payload: object) -> str:
         record_type = html.escape(_clean_display_part(body.get("record_type")))
         record_id = html.escape(_clean_display_part(body.get("record_id")))
         return _summary_with_suffix(action, _join_summary_parts(record_type, record_id))
+    if job_type_text == "edit_record_fields":
+        record_type = html.escape(_clean_display_part(body.get("record_type")))
+        record_id = html.escape(_clean_display_part(body.get("record_id")))
+        fields = body.get("fields")
+        count = len(fields) if isinstance(fields, dict) else 0
+        field_text = f"{count} field" if count == 1 else f"{count} fields"
+        return _summary_with_suffix("Edit record", _join_summary_parts(record_type, record_id, field_text))
     if job_type_text == "voice_memo_note":
         note = _clean_display_part(body.get("note") or body.get("transcript_text"))[:60]
         suffix = f"({html.escape(note)})" if note else ""
@@ -1045,6 +1054,105 @@ def write_mark_job(
     temp_path.write_text(json.dumps(job, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     temp_path.replace(queue_path)
     return queue_path
+
+
+def write_edit_record_fields_job(
+    runtime_root: Path,
+    *,
+    record_type: str,
+    record_id: str,
+    fields: dict[str, object],
+    actor: str,
+) -> Path:
+    suffix = str(uuid.uuid4())
+    job = {
+        "job_id": f"edit-record-fields-{suffix}",
+        "job_type": "edit_record_fields",
+        "payload": {
+            "record_type": record_type,
+            "record_id": record_id,
+            "fields": fields,
+            "actor": actor,
+        },
+    }
+    queue_dir = runtime_root.expanduser().resolve(strict=False) / "queue"
+    queue_dir.mkdir(parents=True, exist_ok=True)
+    queue_path = queue_dir / f"edit-record-fields-{suffix}.json"
+    temp_path = queue_path.with_name(f".{queue_path.name}.tmp")
+    temp_path.write_text(json.dumps(job, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    temp_path.replace(queue_path)
+    return queue_path
+
+
+def render_site_id_options(current_site_id: str) -> str:
+    current = str(current_site_id or "").strip()
+    options = ['<option value="">Select site</option>']
+    rows = sorted(
+        (site for site in SITES if str(site.get("site_id") or "").strip()),
+        key=lambda site: (str(site.get("canonical") or site.get("name") or ""), str(site.get("site_id") or "")),
+    )
+    for site in rows:
+        site_id = str(site.get("site_id") or "").strip()
+        name = str(site.get("name") or site.get("canonical") or site_id)
+        selected = " selected" if site_id == current else ""
+        options.append(
+            f'<option value="{html.escape(site_id, quote=True)}"{selected}>{html.escape(name)} ({html.escape(site_id)})</option>'
+        )
+    return "\n".join(options)
+
+
+def render_record_edit_form(
+    record: dict[str, object],
+    *,
+    record_type: str,
+    id_field: str,
+    post_route: str,
+    fields: tuple[str, ...],
+    select_options: dict[str, tuple[str, ...]] | None = None,
+) -> str:
+    record_id = str(record.get(id_field) or "").strip()
+    if not record_id:
+        return ""
+    select_options = select_options or {}
+    controls = [
+        f"""
+        <label>Site
+          <select name="site_id" required>
+            {render_site_id_options(str(record.get("site_id") or ""))}
+          </select>
+        </label>
+        """
+    ]
+    for field in fields:
+        if field == "site_id":
+            continue
+        value = html.escape(str(record.get(field) or ""), quote=True)
+        label = html.escape(humanize_key(field))
+        if field in select_options:
+            options = []
+            current = str(record.get(field) or "").strip()
+            for option in select_options[field]:
+                selected = " selected" if option == current else ""
+                options.append(f'<option value="{html.escape(option, quote=True)}"{selected}>{html.escape(humanize_key(option))}</option>')
+            controls.append(f"<label>{label}<select name=\"{html.escape(field)}\">{''.join(options)}</select></label>")
+        elif field in {"summary", "notes", "reason", "resolution_trigger"}:
+            controls.append(f'<label>{label}<textarea name="{html.escape(field)}">{html.escape(str(record.get(field) or ""))}</textarea></label>')
+        elif field == "quantity_needed":
+            controls.append(f'<label>{label}<input name="{html.escape(field)}" type="number" value="{value}"></label>')
+        else:
+            controls.append(f'<label>{label}<input name="{html.escape(field)}" value="{value}"></label>')
+    return f"""
+      <form method="post" action="{html.escape(post_route)}">
+        <input type="hidden" name="{html.escape(id_field)}" value="{html.escape(record_id, quote=True)}">
+        <input type="hidden" name="record_id" value="{html.escape(record_id, quote=True)}">
+        <input type="hidden" name="_id" value="{html.escape(str(record.get('_id') or ''), quote=True)}">
+        <input type="hidden" name="_rev" value="{html.escape(str(record.get('_rev') or ''), quote=True)}">
+        <input type="hidden" name="record_type" value="{html.escape(record_type, quote=True)}">
+        <input type="hidden" name="actor" value="{html.escape(default_actor(), quote=True)}">
+        {''.join(controls)}
+        <button type="submit">Save edit</button>
+      </form>
+    """
 
 
 def _malformed_quality() -> dict[str, object]:
@@ -1476,3 +1584,67 @@ def handle_mark_transition_post(
 
     _audit_append(f"success: staged {id_field}={entity_id} queue_path={queue_path}")
     return _redirect(f"{redirect_path}?{id_field}={quote(entity_id)}&message=staged")
+
+
+def handle_edit_record_fields_post(
+    ctx: object,
+    body: bytes,
+    *,
+    route: str,
+    record_type: str,
+    id_field: str,
+    redirect_path: str,
+    fields: tuple[str, ...],
+) -> tuple:
+    """Shared POST handler for canonical record edit forms."""
+    from ops_dashboard import audit as _audit  # lazy to avoid circular import
+    from queue_spec import validate_job
+
+    form = parse_qs(body.decode("utf-8", errors="replace"), keep_blank_values=True)
+    root = Path(getattr(ctx, "runtime_root", Path("."))).expanduser().resolve(strict=False)
+    form_payload = {key: values[0] if values else "" for key, values in form.items()}
+
+    def _audit_append(result: str) -> None:
+        _audit.append_audit(root, {"route": route, "actor": "localhost", "payload": form_payload, "result_summary": result})
+
+    def _redirect(location: str) -> tuple:
+        return 303, "text/html; charset=utf-8", f'<a href="{html.escape(location)}">Return</a>'.encode(), {"Location": location}
+
+    record_id = first_query_value(form, id_field).strip() or first_query_value(form, "record_id").strip()
+    actor = first_query_value(form, "actor").strip() or default_actor()
+    edit_fields = {
+        field: first_query_value(form, field).strip()
+        for field in fields
+        if field in form
+    }
+    if not record_id or not actor or not edit_fields:
+        _audit_append(f"failed: missing {id_field}, actor, or edit fields")
+        return _redirect(f"{redirect_path}?{id_field}={quote(record_id)}&error=missing_field")
+
+    job = {
+        "job_type": "edit_record_fields",
+        "payload": {
+            "record_type": record_type,
+            "record_id": record_id,
+            "fields": edit_fields,
+            "actor": actor,
+        },
+    }
+    if not validate_job(job):
+        _audit_append(f"failed: invalid edit_record_fields payload {record_id}")
+        return _redirect(f"{redirect_path}?{id_field}={quote(record_id)}&error=invalid_payload")
+
+    try:
+        queue_path = write_edit_record_fields_job(
+            root,
+            record_type=record_type,
+            record_id=record_id,
+            fields=edit_fields,
+            actor=actor,
+        )
+    except Exception as exc:  # noqa: BLE001
+        _audit_append(f"failed: {exc}")
+        return _redirect(f"{redirect_path}?{id_field}={quote(record_id)}&error={quote(str(exc))}")
+
+    _audit_append(f"success: staged {id_field}={record_id} queue_path={queue_path}")
+    return _redirect(f"{redirect_path}?{id_field}={quote(record_id)}&message=staged")

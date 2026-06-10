@@ -6,6 +6,7 @@ from typing import Any
 from queue_processor.canonical_rmw import CanonicalEntityState, CanonicalMutation, CanonicalTarget, apply_canonical_rmw
 
 from . import _shared
+from .record_edit import process_edit_record_fields_job
 from ._shared import QueueJob, QueueProcessorError, RunContext
 from .supplies_equipment import (
     equipment_request_status,

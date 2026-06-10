@@ -1500,6 +1500,46 @@ Example:
 }
 ```
 
+#### `edit_record_fields`
+
+Edits allowlisted fields on a canonical issue / supply / equipment record.
+
+Required payload fields:
+
+- `record_type`: one of `site_issue`, `supply_need`, `equipment_request`
+- `record_id`: string; the canonical record id without the type prefix, or the
+  full canonical `_id`
+- `fields`: object of allowlisted field updates for the record type (any key not
+  allowlisted below is rejected)
+- `actor`: string
+
+Allowlisted editable fields by `record_type`:
+
+| `record_type` | Editable fields |
+| --- | --- |
+| `site_issue` | `site_id`, `title`, `summary`, `priority`, `category`, `resolution_trigger` |
+| `supply_need` | `site_id`, `item_name`, `quantity_needed`, `urgency`, `notes` |
+| `equipment_request` | `site_id`, `equipment_name`, `reason`, `priority`, `notes` |
+
+Applies the allowlisted fields to the canonical record, sets `updated_at` and
+`edited_by`, and re-derives `site_name` when `site_id` changes. Never modifies
+`status`, `archived`, or audit fields.
+
+Example:
+
+```json
+{
+  "job_id": "2026-06-10T14-30-00Z__edit-record-fields",
+  "job_type": "edit_record_fields",
+  "payload": {
+    "record_type": "site_issue",
+    "record_id": "iss_summit_drain",
+    "fields": { "site_id": "1200", "summary": "Updated summary." },
+    "actor": "Greg"
+  }
+}
+```
+
 ## Pipeline-internal job types
 
 These job types are **emitted by the automated pipeline** — Whisper audio

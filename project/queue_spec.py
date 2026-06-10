@@ -64,6 +64,7 @@ JOB_MARK_ISSUE_RESOLVED = "mark_issue_resolved"
 JOB_MARK_ISSUE_OPEN = "mark_issue_open"
 JOB_MARK_RECORD_ARCHIVED = "mark_record_archived"
 JOB_MARK_RECORD_UNARCHIVED = "mark_record_unarchived"
+JOB_EDIT_RECORD_FIELDS = "edit_record_fields"
 JOB_VOICE_MEMO_NOTE = "voice_memo_note"
 # Reserved for future deterministic person-note route. Not produced by any
 # current extraction or routing path. Add back to APPEND_DESTINATIONS only
@@ -100,6 +101,11 @@ ENTITY_STATUS_TYPES = {"site", "employee"}
 ENTITY_STATUSES = {"active", "inactive"}
 SITE_EQUIPMENT_ITEM_STATUSES = {"operational", "non_functional", "untested"}
 ARCHIVABLE_RECORD_TYPES = {"site_issue", "supply_need", "equipment_request"}
+EDIT_RECORD_FIELD_ALLOWLISTS = {
+    "site_issue": {"site_id", "title", "summary", "priority", "category", "resolution_trigger"},
+    "supply_need": {"site_id", "item_name", "quantity_needed", "urgency", "notes"},
+    "equipment_request": {"site_id", "equipment_name", "reason", "priority", "notes"},
+}
 ENTITY_STATUS_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 INSPECTION_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 RECRUITING_CLOSE_OUTCOMES = {"filled", "cancelled", "withdrawn", "superseded"}
@@ -139,6 +145,7 @@ ALLOWED_JOB_TYPES = {
     JOB_MARK_ISSUE_OPEN,
     JOB_MARK_RECORD_ARCHIVED,
     JOB_MARK_RECORD_UNARCHIVED,
+    JOB_EDIT_RECORD_FIELDS,
     JOB_VOICE_MEMO_NOTE,
 }
 
@@ -193,6 +200,7 @@ JOB_SCHEMAS = {
     JOB_MARK_ISSUE_OPEN: ["issue_id", "actor"],
     JOB_MARK_RECORD_ARCHIVED: ["record_type", "record_id", "actor"],
     JOB_MARK_RECORD_UNARCHIVED: ["record_type", "record_id", "actor"],
+    JOB_EDIT_RECORD_FIELDS: ["record_type", "record_id", "fields", "actor"],
     JOB_VOICE_MEMO_NOTE: ["capture_id", "timestamp", "audio_file", "raw_transcript_path", "transcript_text"],
 }
 
@@ -363,6 +371,12 @@ MARK_RECORD_ALLOWED_PAYLOAD_FIELDS = {
     "record_id",
     "actor",
     "note",
+}
+EDIT_RECORD_ALLOWED_PAYLOAD_FIELDS = {
+    "record_type",
+    "record_id",
+    "fields",
+    "actor",
 }
 PATH_FIELD_TOKENS = {"path", "file", "directory", "dir", "folder"}
 VAULT_PATH_PREFIXES = _vault_path_prefixes()
@@ -854,6 +868,27 @@ def _validate_mark_record_payload(payload: dict) -> bool:
     return True
 
 
+def _validate_edit_record_fields_payload(payload: dict) -> bool:
+    if set(payload) - EDIT_RECORD_ALLOWED_PAYLOAD_FIELDS:
+        return False
+    record_type = payload.get("record_type")
+    if record_type not in EDIT_RECORD_FIELD_ALLOWLISTS:
+        return False
+    if not _is_non_empty_string(payload.get("record_id")):
+        return False
+    if not _is_non_empty_string(payload.get("actor")):
+        return False
+    fields = payload.get("fields")
+    if not isinstance(fields, dict) or not fields:
+        return False
+    if set(fields) - EDIT_RECORD_FIELD_ALLOWLISTS[str(record_type)]:
+        return False
+    for value in fields.values():
+        if value is not None and not isinstance(value, (str, int, float, bool)):
+            return False
+    return True
+
+
 def validate_job(job: dict) -> bool:
     if not isinstance(job, dict):
         return False
@@ -1007,6 +1042,9 @@ def validate_job(job: dict) -> bool:
             return False
     if job_type in {JOB_MARK_RECORD_ARCHIVED, JOB_MARK_RECORD_UNARCHIVED}:
         if not _validate_mark_record_payload(payload):
+            return False
+    if job_type == JOB_EDIT_RECORD_FIELDS:
+        if not _validate_edit_record_fields_payload(payload):
             return False
     if job_type == JOB_VOICE_MEMO_NOTE:
         for field in ("capture_id", "timestamp", "audio_file", "raw_transcript_path", "transcript_text"):

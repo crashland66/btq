@@ -3,11 +3,13 @@ from __future__ import annotations
 import html
 from urllib.parse import quote
 
-from ops_dashboard.common import default_actor, first_query_value, handle_mark_transition_post, humanize_key, render_back_link, render_kv, render_site_label, render_status_transition, render_table, slugify_status, write_mark_job
+from ops_dashboard.common import default_actor, first_query_value, handle_edit_record_fields_post, handle_mark_transition_post, humanize_key, render_back_link, render_kv, render_record_edit_form, render_site_label, render_status_transition, render_table, slugify_status, write_mark_job
 from ops_dashboard.layout import html_page
 from site_equipment import discover_site_equipment, equipment_as_export
 
 EQUIPMENT_STATUS_OPTIONS = ("", "open", "approved", "ordered", "provided", "denied", "no_action_needed")
+EQUIPMENT_EDIT_FIELDS = ("site_id", "equipment_name", "reason", "priority", "notes")
+EQUIPMENT_EDIT_SELECT_OPTIONS = {"priority": ("low", "normal", "high", "urgent")}
 EQUIPMENT_TRANSITIONS = {
     "mark-approved": {
         "label": "Mark approved",
@@ -224,6 +226,7 @@ def render_equipment_detail(ctx: object, equipment_id: str) -> str:
           {render_lifecycle_history(request)}
         </section>
         {render_action_panel(request)}
+        {render_edit_panel(request)}
         {render_archive_panel(request)}
         """
     return html_page("Equipment Detail", f"<header><h1>Equipment Detail</h1></header>{render_back_link('/equipment', 'Back to Equipment')}{flash}{content}", active_section="equipment")
@@ -275,6 +278,20 @@ def render_archive_panel(request: dict[str, object]) -> str:
     if not str(request.get("equipment_id") or ""):
         return ""
     return f"<section><h2>Archive</h2>{render_archive_control(request)}</section>"
+
+
+def render_edit_panel(request: dict[str, object]) -> str:
+    if not str(request.get("equipment_id") or ""):
+        return ""
+    form = render_record_edit_form(
+        request,
+        record_type="equipment_request",
+        id_field="equipment_id",
+        post_route="/equipment/edit",
+        fields=EQUIPMENT_EDIT_FIELDS,
+        select_options=EQUIPMENT_EDIT_SELECT_OPTIONS,
+    )
+    return f"<section><h2>Edit</h2>{form}</section>"
 
 
 def render_row_actions(request: dict[str, object]) -> str:
@@ -448,4 +465,16 @@ def handle_equipment_restore(ctx: object, body: bytes):
         redirect_path="/equipment",
         payload_id_key="record_id",
         extra_payload={"record_type": "equipment_request"},
+    )
+
+
+def handle_equipment_edit(ctx: object, body: bytes):
+    return handle_edit_record_fields_post(
+        ctx,
+        body,
+        route="/equipment/edit",
+        record_type="equipment_request",
+        id_field="equipment_id",
+        redirect_path="/equipment",
+        fields=EQUIPMENT_EDIT_FIELDS,
     )
