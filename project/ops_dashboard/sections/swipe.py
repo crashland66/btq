@@ -186,9 +186,9 @@ def render_body(request_ctx: object, *, payload: dict[str, object] | None = None
       <h1>Review</h1>
       <p class="muted">One proposed job at a time. Decide whether it is true enough to commit.</p>
       <div class="swipe-queues" role="status">
-        <span class="swipe-queue" data-queue="approval"><strong>{needs_approval}</strong> needs approval</span>
-        <span class="swipe-queue" data-queue="clarify"><strong>{failed}</strong> needs clarification</span>
-        <span class="swipe-queue" data-queue="rejected"><strong>{rejected}</strong> rejected / teachable</span>
+        <a class="swipe-queue" data-queue="approval" href="/field-capture/review?status=pending_review" aria-label="{needs_approval} candidates need approval"><strong>{needs_approval}</strong> needs approval</a>
+        <a class="swipe-queue" data-queue="clarify" href="/field-capture/review?status=failed" aria-label="{failed} candidates need clarification"><strong>{failed}</strong> needs clarification</a>
+        <a class="swipe-queue" data-queue="rejected" href="/field-capture/review?status=rejected" aria-label="{rejected} rejected or teachable candidates"><strong>{rejected}</strong> rejected / teachable</a>
       </div>
     </header>
 

@@ -45,6 +45,7 @@ from processing_core.action_candidates import (
     RESOLUTION_RESOLVED,
     patch_candidate_resolution,
 )
+from queue_spec import validate_job
 
 
 UNKNOWN_SUBMITTER = "Unknown submitter"
@@ -82,6 +83,18 @@ def handle_resolve(request_ctx: object, body: bytes) -> tuple[HTTPStatus, str, b
 
 def handle_completion_dismiss_post(request_ctx: object, body: bytes) -> tuple[HTTPStatus, str, bytes, dict[str, str]]:
     return _handle_completion_dismiss(request_ctx, body)
+
+
+def handle_archive(request_ctx: object, body: bytes) -> tuple[HTTPStatus, str, bytes, dict[str, str]]:
+    return _handle_archive_post(request_ctx, body, archived=True)
+
+
+def handle_unarchive(request_ctx: object, body: bytes) -> tuple[HTTPStatus, str, bytes, dict[str, str]]:
+    return _handle_archive_post(request_ctx, body, archived=False)
+
+
+def handle_resubmit(request_ctx: object, body: bytes) -> tuple[HTTPStatus, str, bytes, dict[str, str]]:
+    return _handle_resubmit_post(request_ctx, body)
 
 
 def is_audio_file(path: Path) -> bool:
@@ -132,6 +145,9 @@ def candidate_detail(
         "vision_items": vision_items or [],
         "client_notification": notification or {},
         "resolution": resolution,
+        "archived": bool(payload.get("archived") is True),
+        "archived_at": str(payload.get("archived_at") or ""),
+        "archived_by": str(payload.get("archived_by") or ""),
         "proposed_job_type": str(proposed_job_type or ""),
         "proposed_payload": proposed_payload if isinstance(proposed_payload, dict) else {},
         "proposed_job_error": str(proposed_error or ""),
@@ -330,6 +346,8 @@ def render_client_notify_form(candidate_id: str) -> str:
 
 
 def render_resolution_progression(candidate: dict[str, object]) -> str:
+    if candidate.get("archived") is True:
+        return ""
     status = resolution_status(candidate)
     res = candidate_resolution(candidate)
     candidate_id = str(candidate["candidate_id"])
@@ -395,6 +413,26 @@ def render_action_icon(kind: str) -> str:
             '<svg aria-hidden="true" viewBox="0 0 24 24" width="16" height="16" fill="none" '
             'stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">'
             '<path d="M20 6 9 17l-5-5"></path></svg>'
+        )
+    if kind == "resubmit":
+        return (
+            '<svg aria-hidden="true" viewBox="0 0 24 24" width="16" height="16" fill="none" '
+            'stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">'
+            '<path d="M21 12a9 9 0 1 1-3-6.7"></path><path d="M21 3v6h-6"></path></svg>'
+        )
+    if kind == "restore":
+        return (
+            '<svg aria-hidden="true" viewBox="0 0 24 24" width="16" height="16" fill="none" '
+            'stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">'
+            '<path d="M3 12a9 9 0 0 1 15.6-6"></path><path d="M3 3v6h6"></path>'
+            '<path d="M21 12a9 9 0 0 1-15.6 6"></path></svg>'
+        )
+    if kind == "archive":
+        return (
+            '<svg aria-hidden="true" viewBox="0 0 24 24" width="16" height="16" fill="none" '
+            'stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">'
+            '<path d="M3 6h18"></path><path d="M8 6V4h8v2"></path>'
+            '<path d="M19 6l-1 14H6L5 6"></path></svg>'
         )
     return (
         '<svg aria-hidden="true" viewBox="0 0 24 24" width="16" height="16" fill="none" '
@@ -477,6 +515,71 @@ def render_evidence_summary(candidate: dict[str, object]) -> str:
     """
 
 
+def candidate_proposed_error(candidate: dict[str, object]) -> str:
+    proposed_jobs = candidate.get("proposed_jobs") if isinstance(candidate.get("proposed_jobs"), list) else []
+    proposed_error = str(candidate.get("proposed_job_error") or "")
+    if proposed_jobs:
+        proposed_error = next((str(job.get("error") or "") for job in proposed_jobs if isinstance(job, dict) and job.get("error")), "")
+    return proposed_error
+
+
+def render_resubmit_archive_actions(candidate: dict[str, object]) -> str:
+    raw_candidate_id = str(candidate["candidate_id"])
+    candidate_id = html.escape(raw_candidate_id)
+    rev = html.escape(str(candidate.get("_rev") or ""), quote=True)
+    proposed_error = candidate_proposed_error(candidate)
+    resubmit_disabled = " disabled" if proposed_error else ""
+    resubmit_hint = "Resubmit and stage this proposed job" if not proposed_error else "Cannot resubmit until the proposed job is valid"
+    error_hint = f'<p class="muted">{html.escape(resubmit_hint)}</p>' if proposed_error else ""
+    return f"""
+    <div class="actions decision-actions">
+      <form class="review-action-form approve-form" method="post" action="/field-capture/review/resubmit">
+        <p class="action-identity">
+          <strong>Resubmit</strong>
+          <code>{candidate_id}</code><br>
+          Re-queue the proposed job directly.
+        </p>
+        <input type="hidden" name="candidate_id" value="{candidate_id}">
+        <input type="hidden" name="_rev" value="{rev}">
+        <input type="hidden" name="reviewer" value="{html.escape(default_actor())}">
+        {error_hint}
+        <p><button class="approve icon-button" type="submit" aria-label="{html.escape(resubmit_hint)}"{resubmit_disabled}>{render_action_icon("resubmit")} <span>Resubmit</span></button></p>
+      </form>
+      <form class="review-action-form reject-form" method="post" action="/field-capture/review/archive">
+        <p class="action-identity">
+          <strong>Delete</strong>
+          <code>{candidate_id}</code><br>
+          Soft-archive this candidate.
+        </p>
+        <input type="hidden" name="candidate_id" value="{candidate_id}">
+        <input type="hidden" name="_rev" value="{rev}">
+        <input type="hidden" name="reviewer" value="{html.escape(default_actor())}">
+        <p><button class="reject icon-button" type="submit" aria-label="Soft-archive this candidate">{render_action_icon("archive")} <span>Delete</span></button></p>
+      </form>
+    </div>
+    """
+
+
+def render_restore_action(candidate: dict[str, object]) -> str:
+    candidate_id = html.escape(str(candidate["candidate_id"]))
+    rev = html.escape(str(candidate.get("_rev") or ""), quote=True)
+    return f"""
+    <div class="actions decision-actions">
+      <form class="review-action-form approve-form" method="post" action="/field-capture/review/unarchive">
+        <p class="action-identity">
+          <strong>Restore</strong>
+          <code>{candidate_id}</code><br>
+          Return this candidate to its review bucket.
+        </p>
+        <input type="hidden" name="candidate_id" value="{candidate_id}">
+        <input type="hidden" name="_rev" value="{rev}">
+        <input type="hidden" name="reviewer" value="{html.escape(default_actor())}">
+        <p><button class="approve icon-button" type="submit" aria-label="Restore this candidate">{render_action_icon("restore")} <span>Restore</span></button></p>
+      </form>
+    </div>
+    """
+
+
 def render_candidate_card(candidate: dict[str, object], thumb_urls: list[str] | None = None) -> str:
     review_history = candidate.get("review_history") if isinstance(candidate.get("review_history"), list) else []
     history_text = json.dumps(review_history, indent=2, sort_keys=True) if review_history else "No review history."
@@ -486,13 +589,12 @@ def render_candidate_card(candidate: dict[str, object], thumb_urls: list[str] | 
     rationale = html.escape(raw_rationale)
     thumb_strip = _render_thumb_strip(thumb_urls or [])
     actions = ""
-    if candidate["status"] == "pending_review":
+    if candidate.get("archived") is True:
+        actions = render_restore_action(candidate)
+    elif candidate["status"] == "pending_review":
         raw_candidate_id = str(candidate["candidate_id"])
         candidate_id = html.escape(raw_candidate_id)
-        proposed_jobs = candidate.get("proposed_jobs") if isinstance(candidate.get("proposed_jobs"), list) else []
-        proposed_error = str(candidate.get("proposed_job_error") or "")
-        if proposed_jobs:
-            proposed_error = next((str(job.get("error") or "") for job in proposed_jobs if isinstance(job, dict) and job.get("error")), "")
+        proposed_error = candidate_proposed_error(candidate)
         approve_disabled = " disabled" if proposed_error else ""
         approve_hint = "Approve and stage this job" if not proposed_error else "Cannot approve until the proposed job is valid"
         actions = f"""
@@ -527,6 +629,8 @@ def render_candidate_card(candidate: dict[str, object], thumb_urls: list[str] | 
           </form>
         </div>
         """
+    elif candidate["status"] in {"failed", "rejected"}:
+        actions = render_resubmit_archive_actions(candidate)
     operator_details = render_fields(
         {
             "status": candidate["status"],
@@ -540,6 +644,9 @@ def render_candidate_card(candidate: dict[str, object], thumb_urls: list[str] | 
             "reviewer": candidate["reviewer"],
             "reviewed_at": candidate["reviewed_at"],
             "review_rationale": candidate["review_rationale"],
+            "archived": candidate.get("archived"),
+            "archived_at": candidate.get("archived_at", ""),
+            "archived_by": candidate.get("archived_by", ""),
         }
     )
     internals = render_fields(
@@ -692,7 +799,7 @@ def render_multi_select(name: str, label: str, options: list[str], selected: set
 
 def render_candidate_filters(query: dict[str, list[str]], all_candidates: list[dict[str, object]]) -> str:
     selected_status = first_filter_value(query, "status") or "approved"
-    statuses = ["pending_review", "approved", "rejected", "failed", "all"]
+    statuses = ["pending_review", "approved", "failed", "rejected", "archived", "all"]
     status_controls = "".join(
         f'<label><input type="radio" name="status" value="{html.escape(status)}"{" checked" if status == selected_status else ""}> {html.escape(status.replace("_", " "))}</label>'
         for status in statuses
@@ -767,7 +874,7 @@ def render_field_capture_review(runtime_root: Path, query: dict[str, list[str]])
     selected_status = first_filter_value(query, "status") or "approved"
     if selected_status == "all":
         status_filter = None
-    elif selected_status in field_action_candidates.REVIEW_STATUSES:
+    elif selected_status in field_action_candidates.REVIEW_STATUSES or selected_status == "archived":
         status_filter = selected_status
     else:
         selected_status = "approved"
@@ -775,6 +882,8 @@ def render_field_capture_review(runtime_root: Path, query: dict[str, list[str]])
     candidate_dir = field_action_candidates.default_candidate_dir(runtime_resolved)
     counts = candidate_counts(candidate_dir, runtime_resolved)
     all_candidates = review_candidates(candidate_dir, None, runtime_resolved)
+    if selected_status == "archived":
+        all_candidates = [*all_candidates, *review_candidates(candidate_dir, "archived", runtime_resolved)]
     pending_counts = pending_candidate_counts_by_capture(all_candidates)
     approved_candidates = [candidate for candidate in all_candidates if candidate.get("status") == "approved"]
     candidates = review_candidates(candidate_dir, status_filter, runtime_resolved)
@@ -940,6 +1049,117 @@ def _handle_review_post(action: str, ctx: object, body: bytes) -> tuple[HTTPStat
     )
     message = "approved" if action == "approve" else "denied"
     return redirect_to_inbox(message=message)
+
+
+def valid_proposed_jobs(candidate: dict[str, object], runtime_root: Path) -> bool:
+    proposed_jobs = approved_job_drafts.proposed_queue_jobs(candidate, runtime_root=runtime_root)
+    if not proposed_jobs:
+        return False
+    for proposed_job_type, proposed_payload, proposed_error in proposed_jobs:
+        if proposed_error or not proposed_job_type or not isinstance(proposed_payload, dict) or not proposed_payload:
+            return False
+        if not validate_job({"job_type": proposed_job_type, "payload": proposed_payload}):
+            return False
+    return True
+
+
+def _handle_archive_post(ctx: object, body: bytes, *, archived: bool) -> tuple[HTTPStatus, str, bytes, dict[str, str]]:
+    form = parse_qs(body.decode("utf-8", errors="replace"), keep_blank_values=True)
+    candidate_id = first_query_value(form, "candidate_id").strip()
+    reviewer = first_query_value(form, "reviewer").strip() or default_actor()
+    expected_rev = first_query_value(form, "_rev").strip() or None
+    route = "/field-capture/review/archive" if archived else "/field-capture/review/unarchive"
+    runtime_resolved = ctx.runtime_root
+    redirect_status = "archived"
+    if not candidate_id:
+        audit.append_audit(runtime_resolved, {"route": route, "actor": "localhost", "payload": ctx.form_payload(form), "result_summary": "failed: candidate_id is required"})
+        return redirect_to_review(error="candidate_id is required", status=redirect_status)
+    try:
+        cdb_config = couchdb_config.from_env()
+        db = couchdb_config.field_captures_database()
+        doc = field_action_candidates.get_action_candidate(cdb_config, db, candidate_id)
+        if doc is None:
+            raise field_action_candidates.CandidateReviewError(f"candidate not found: {candidate_id}")
+        prior_status = str(doc.get("status") or "pending_review")
+        if archived:
+            redirect_status = prior_status if prior_status in field_action_candidates.REVIEW_STATUSES else "pending_review"
+        current_rev = str(doc.get("_rev") or "")
+        if expected_rev is not None and expected_rev != current_rev:
+            raise field_action_candidates.AlreadyDecided(f"candidate _rev changed: {candidate_id}")
+        field_action_candidates.set_action_candidate_archived(
+            cdb_config,
+            db,
+            candidate_id,
+            archived=archived,
+            by=reviewer,
+            expected_rev=expected_rev,
+        )
+    except field_action_candidates.AlreadyDecided:
+        audit.append_audit(runtime_resolved, {"route": route, "actor": "localhost", "payload": ctx.form_payload(form), "result_summary": f"conflict: {candidate_id}"})
+        return redirect_to_review(error="candidate changed before this action could be saved. Reload and try again.", status=redirect_status)
+    except (field_action_candidates.CandidateReviewError, field_action_candidates.CouchDBCandidateWriterError, couchdb_config.CouchDBConfigError) as exc:
+        audit.append_audit(runtime_resolved, {"route": route, "actor": "localhost", "payload": ctx.form_payload(form), "result_summary": f"failed: {exc}"})
+        return redirect_to_review(error=str(exc), status=redirect_status)
+    result = "archived" if archived else "restored"
+    audit.append_audit(runtime_resolved, {"route": route, "actor": "localhost", "payload": ctx.form_payload(form), "result_summary": f"success: {candidate_id} {result}"})
+    return redirect_to_review(message=result, status=redirect_status)
+
+
+def _handle_resubmit_post(ctx: object, body: bytes) -> tuple[HTTPStatus, str, bytes, dict[str, str]]:
+    form = parse_qs(body.decode("utf-8", errors="replace"), keep_blank_values=True)
+    candidate_id = first_query_value(form, "candidate_id").strip()
+    reviewer = first_query_value(form, "reviewer").strip() or default_actor()
+    expected_rev = first_query_value(form, "_rev").strip() or None
+    route = "/field-capture/review/resubmit"
+    runtime_resolved = ctx.runtime_root
+    redirect_status = "failed"
+    if not candidate_id:
+        audit.append_audit(runtime_resolved, {"route": route, "actor": "localhost", "payload": ctx.form_payload(form), "result_summary": "failed: candidate_id is required"})
+        return redirect_to_review(error="candidate_id is required", status=redirect_status)
+    try:
+        cdb_config = couchdb_config.from_env()
+        db = couchdb_config.field_captures_database()
+        doc = field_action_candidates.get_action_candidate(cdb_config, db, candidate_id)
+        if doc is None:
+            raise field_action_candidates.CandidateReviewError(f"candidate not found: {candidate_id}")
+        prior_status = str(doc.get("status") or "")
+        redirect_status = prior_status if prior_status in {"failed", "rejected"} else "failed"
+        if prior_status not in {"failed", "rejected"}:
+            raise field_action_candidates.CandidateReviewError(f"candidate status cannot be resubmitted: {prior_status}")
+        if doc.get("archived") is True:
+            raise field_action_candidates.CandidateReviewError("archived candidate must be restored before resubmitting")
+        current_rev = str(doc.get("_rev") or "")
+        if expected_rev is not None and expected_rev != current_rev:
+            raise field_action_candidates.AlreadyDecided(f"candidate _rev changed: {candidate_id}")
+        candidate = field_action_candidates.couchdb_action_candidate_to_review_payload(doc)
+        if not valid_proposed_jobs(candidate, runtime_resolved):
+            raise field_action_candidates.CandidateReviewError("Can't resubmit — the proposed job isn't valid yet. Editing/fixing the payload is coming soon.")
+        stage_summary = stage_candidate_job_after_approval(runtime_resolved, candidate_id)
+        field_action_candidates.set_action_candidate_status(
+            cdb_config,
+            db,
+            candidate_id,
+            status="approved",
+            reviewed_by=reviewer,
+            rationale="Resubmitted directly from review triage.",
+            expected_rev=expected_rev,
+            expected_prior_statuses={"failed", "rejected"},
+            reason="resubmit",
+        )
+    except field_action_candidates.AlreadyDecided:
+        audit.append_audit(runtime_resolved, {"route": route, "actor": "localhost", "payload": ctx.form_payload(form), "result_summary": f"conflict: {candidate_id}"})
+        return redirect_to_review(error="candidate changed before this action could be saved. Reload and try again.", status=redirect_status)
+    except field_action_candidates.CandidateReviewError as exc:
+        message = str(exc)
+        if message != "Can't resubmit — the proposed job isn't valid yet. Editing/fixing the payload is coming soon.":
+            message = f"Can't resubmit — {message}"
+        audit.append_audit(runtime_resolved, {"route": route, "actor": "localhost", "payload": ctx.form_payload(form), "result_summary": f"failed: {message}"})
+        return redirect_to_review(error=message, status=redirect_status)
+    except (field_action_candidates.CouchDBCandidateWriterError, couchdb_config.CouchDBConfigError) as exc:
+        audit.append_audit(runtime_resolved, {"route": route, "actor": "localhost", "payload": ctx.form_payload(form), "result_summary": f"failed: {exc}"})
+        return redirect_to_review(error=str(exc), status=redirect_status)
+    audit.append_audit(runtime_resolved, {"route": route, "actor": "localhost", "payload": ctx.form_payload(form), "result_summary": f"success: {candidate_id} resubmitted {stage_summary}"})
+    return redirect_to_review(message="resubmitted", status="approved")
 
 
 def _handle_client_informed_post(ctx: object, body: bytes) -> tuple[HTTPStatus, str, bytes, dict[str, str]]:

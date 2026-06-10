@@ -2,10 +2,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from event_pipeline import couchdb_config
 from field_capture import approved_job_drafts
 from field_capture import action_candidates as field_action_candidates
 from field_capture import draft_staging
-from processing_core.artifacts import read_json_object
+from processing_core.action_candidates import action_candidate_review_path
+from processing_core.artifacts import read_json_object, write_json_object
 
 
 def latest_draft_ids_for_candidate(runtime_root: Path, candidate_id: str) -> list[str]:
@@ -26,9 +28,30 @@ def latest_draft_ids_for_candidate(runtime_root: Path, candidate_id: str) -> lis
     return [draft_id for _mtime, draft_id in matches]
 
 
+def materialize_candidate_for_direct_staging(runtime_root: Path, candidate_id: str) -> Path | None:
+    config = field_action_candidates.couchdb_candidate_config_or_none()
+    if config is None:
+        return None
+    doc = field_action_candidates.get_action_candidate(
+        config,
+        couchdb_config.field_captures_database(),
+        candidate_id,
+    )
+    if doc is None:
+        return None
+    candidate_dir = field_action_candidates.default_candidate_dir(runtime_root)
+    candidate_path = action_candidate_review_path(candidate_dir, candidate_id)
+    payload = field_action_candidates.couchdb_action_candidate_to_review_payload(doc)
+    payload["status"] = "approved"
+    candidate_dir.mkdir(parents=True, exist_ok=True)
+    write_json_object(candidate_path, payload)
+    return candidate_path
+
+
 def stage_candidate_job_after_approval(runtime_root: Path, candidate_id: str) -> str:
     candidate_dir = field_action_candidates.default_candidate_dir(runtime_root)
     draft_dir = approved_job_drafts.default_draft_dir(runtime_root)
+    materialize_candidate_for_direct_staging(runtime_root, candidate_id)
     draft_counts = approved_job_drafts.create_approved_job_drafts(
         candidate_dir,
         draft_dir,

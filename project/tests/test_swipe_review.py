@@ -64,6 +64,22 @@ def test_swipe_payload_shape_and_approvable_flag(tmp_path, couchdb_review):
     assert ok["confidence"] == "high"
 
 
+def test_swipe_review_counts_are_filter_links(tmp_path):
+    from ops_dashboard.sections import swipe
+
+    body = swipe.render_body(
+        SimpleNamespace(runtime_root=tmp_path, config=SimpleNamespace(vault_dir=tmp_path / "vault")),
+        payload={"cards": [], "counts": {"pending_review": 3, "failed": 2, "rejected": 1}},
+    )
+
+    assert '<a class="swipe-queue" data-queue="approval" href="/field-capture/review?status=pending_review"' in body
+    assert '<strong>3</strong> needs approval</a>' in body
+    assert '<a class="swipe-queue" data-queue="clarify" href="/field-capture/review?status=failed"' in body
+    assert '<strong>2</strong> needs clarification</a>' in body
+    assert '<a class="swipe-queue" data-queue="rejected" href="/field-capture/review?status=rejected"' in body
+    assert '<strong>1</strong> rejected / teachable</a>' in body
+
+
 def test_swipe_card_carries_fallback_proposed_job(tmp_path, couchdb_review):
     # A field-capture candidate with only a summary still gets a proposed job:
     # proposed_queue_jobs falls back to a generated append_to_note. The card

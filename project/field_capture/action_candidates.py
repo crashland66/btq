@@ -19,6 +19,7 @@ from event_pipeline.couchdb_candidate_writer import (
     action_candidate_doc_id,
     get_action_candidate,
     list_action_candidates,
+    set_action_candidate_archived as couchdb_set_action_candidate_archived,
     set_action_candidate_status,
     upsert_action_candidate,
 )
@@ -334,6 +335,9 @@ def couchdb_action_candidate_to_review_payload(doc: dict[str, Any]) -> dict[str,
         "approval_metadata": dict(approval_metadata),
         "error": source.get("error", evidence.get("error")),
         "resolution": doc.get("resolution") if isinstance(doc.get("resolution"), dict) else {},
+        "archived": bool(doc.get("archived") is True),
+        "archived_at": str(doc.get("archived_at") or ""),
+        "archived_by": str(doc.get("archived_by") or ""),
         "_id": str(doc.get("_id") or ""),
         "_rev": str(doc.get("_rev") or ""),
         "site_id": str(doc.get("site_id") or ""),
@@ -918,6 +922,7 @@ def couchdb_candidate_payloads(
     *,
     status: str | None = None,
     person_id: str | None = None,
+    include_archived: bool = False,
 ) -> list[tuple[Path, dict[str, object]]]:
     config = couchdb_candidate_config_or_none()
     if config is None:
@@ -927,11 +932,33 @@ def couchdb_candidate_payloads(
         couchdb_config.field_captures_database(),
         status=status,
         person_id=person_id,
+        include_archived=include_archived,
     )
     return [
         (_couchdb_candidate_artifact_path(doc), couchdb_action_candidate_to_review_payload(doc))
         for doc in docs
     ]
+
+
+def set_action_candidate_archived(
+    config: couchdb_config.CouchDBConfig,
+    db: str,
+    candidate_id: str,
+    *,
+    archived: bool,
+    by: str = "",
+    at: str | None = None,
+    expected_rev: str | None = None,
+) -> dict[str, Any]:
+    return couchdb_set_action_candidate_archived(
+        config,
+        db,
+        candidate_id,
+        archived=archived,
+        by=by,
+        at=at,
+        expected_rev=expected_rev,
+    )
 
 
 def list_action_candidates_report(
@@ -951,14 +978,22 @@ def list_action_candidates_report(
         counts[candidate_status] = 0
 
     items: list[dict[str, object]] = []
-    for path, payload in couchdb_candidate_payloads(status=None):
+    payloads = couchdb_candidate_payloads(status="archived") if status == "archived" else couchdb_candidate_payloads(status=None)
+    for path, payload in payloads:
         payload_status = str(payload.get("status") or "")
-        counts["total"] += 1
-        if payload_status in counts:
-            counts[payload_status] += 1
+        payload_archived = bool(payload.get("archived") is True)
+        if payload_archived:
+            counts["archived"] = counts.get("archived", 0) + 1
         else:
-            counts[payload_status] = counts.get(payload_status, 0) + 1
-        if status is not None and payload_status != status:
+            counts["total"] += 1
+            if payload_status in counts:
+                counts[payload_status] += 1
+            else:
+                counts[payload_status] = counts.get(payload_status, 0) + 1
+        if status == "archived":
+            if not payload_archived:
+                continue
+        elif status is not None and payload_status != status:
             continue
         items.append(candidate_list_item(path, payload, include_source=include_source))
 

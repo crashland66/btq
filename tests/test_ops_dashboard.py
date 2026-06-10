@@ -7,9 +7,11 @@ from datetime import datetime, timedelta, timezone
 from http import HTTPStatus
 from pathlib import Path
 from types import SimpleNamespace
+from urllib.parse import urlencode
 
 import ops_dashboard.app as ops_app
 from btq import parse_args
+from field_capture import action_candidates as field_action_candidates
 from field_capture import photo_vision as field_photo_vision
 from ops_dashboard.app import build_status, route_response, startup_lines
 from ops_dashboard.common import SectionContext
@@ -941,6 +943,36 @@ def test_candidate_card_pending_review_shows_approval_controls(tmp_path: Path) -
     assert "Deny" in body
 
 
+def test_candidate_card_failed_rejected_and_archived_triage_actions(tmp_path: Path) -> None:
+    rejected = action_candidate_payload(candidate_type="field_capture_follow_up", summary="Review sink area.")
+    rejected["status"] = "rejected"
+    rejected_body = render_candidate_card(candidate_detail(tmp_path / "rejected.json", rejected))
+
+    assert 'action="/field-capture/review/resubmit"' in rejected_body
+    assert 'action="/field-capture/review/archive"' in rejected_body
+    assert "Resubmit" in rejected_body
+    assert "Delete" in rejected_body
+
+    failed = candidate_detail(tmp_path / "failed.json", {**rejected, "status": "failed"})
+    failed["proposed_job_error"] = "missing target"
+    failed["proposed_jobs"] = [{"job_type": "", "payload": {}, "error": "missing target"}]
+    failed_body = render_candidate_card(failed)
+
+    assert 'action="/field-capture/review/resubmit"' in failed_body
+    assert "Cannot resubmit until the proposed job is valid" in failed_body
+    assert "<span>Resubmit</span>" in failed_body
+    assert "disabled" in failed_body
+
+    archived = candidate_detail(tmp_path / "archived.json", rejected)
+    archived["archived"] = True
+    archived_body = render_candidate_card(archived)
+
+    assert 'action="/field-capture/review/unarchive"' in archived_body
+    assert "Restore" in archived_body
+    assert 'action="/field-capture/review/resubmit"' not in archived_body
+    assert 'action="/field-capture/review/archive"' not in archived_body
+
+
 def test_candidate_card_context_expanded_by_default(tmp_path: Path, monkeypatch) -> None:
     payload = action_candidate_payload(candidate_type="field_capture_follow_up", summary="Review sink area.")
     candidate = candidate_detail(tmp_path / "candidate.json", payload)
@@ -1293,6 +1325,119 @@ def test_field_capture_review_post_reject_updates_one_pending_candidate(tmp_path
     # Reject stages nothing, even after a watcher pass.
     couchdb_review.run_watcher(runtime_root, stub_stage=False)
     assert not (runtime_root / "reviews" / "approved_job_drafts").exists()
+    assert not (runtime_root / "queue").exists()
+
+
+def test_field_capture_review_archive_excludes_candidate_from_counts_and_restores(tmp_path: Path, couchdb_review) -> None:
+    runtime_root = tmp_path / "runtime"
+    candidate_dir = runtime_root / "reviews" / "action_candidates" / "field_capture"
+    candidate = action_candidate_payload(candidate_type="field_capture_follow_up", summary="Review sink area.")
+    candidate["status"] = "rejected"
+    write_action_candidate_review(candidate_dir, candidate)
+    couchdb_review.seed_from_fs(runtime_root)
+    candidate_id = str(candidate["candidate_id"])
+    doc = couchdb_review.docs[f"action_candidate_{candidate_id}"]
+
+    before = field_action_candidates.list_action_candidates_report(candidate_dir, runtime_root=runtime_root)
+    assert before["counts"]["rejected"] == 1
+
+    status_code, _content_type, _body = request_text(
+        "POST",
+        "/field-capture/review/archive",
+        runtime_root,
+        urlencode({"candidate_id": candidate_id, "_rev": doc["_rev"], "reviewer": "Jordan"}),
+    )
+
+    assert status_code == HTTPStatus.SEE_OTHER
+    assert couchdb_review.archived_of(candidate_id) is True
+    after = field_action_candidates.list_action_candidates_report(candidate_dir, runtime_root=runtime_root)
+    assert after["counts"]["rejected"] == 0
+    assert after["candidates"] == []
+    assert field_action_candidates.couchdb_candidate_payloads(status="rejected") == []
+    archived_payloads = field_action_candidates.couchdb_candidate_payloads(status="archived")
+    assert [payload["candidate_id"] for _path, payload in archived_payloads] == [candidate_id]
+
+    status_code, _content_type, body = request_text("GET", "/field-capture/review?status=archived", runtime_root)
+    assert status_code == HTTPStatus.OK
+    assert "Restore" in body
+    assert 'action="/field-capture/review/unarchive"' in body
+
+    restored_rev = couchdb_review.docs[f"action_candidate_{candidate_id}"]["_rev"]
+    status_code, _content_type, _body = request_text(
+        "POST",
+        "/field-capture/review/unarchive",
+        runtime_root,
+        urlencode({"candidate_id": candidate_id, "_rev": restored_rev, "reviewer": "Jordan"}),
+    )
+
+    assert status_code == HTTPStatus.SEE_OTHER
+    assert couchdb_review.archived_of(candidate_id) is False
+    restored = field_action_candidates.list_action_candidates_report(candidate_dir, runtime_root=runtime_root)
+    assert restored["counts"]["rejected"] == 1
+
+
+def test_field_capture_review_resubmit_stages_valid_rejected_candidate(tmp_path: Path, couchdb_review) -> None:
+    runtime_root = tmp_path / "runtime"
+    candidate_dir = runtime_root / "reviews" / "action_candidates" / "field_capture"
+    candidate = action_candidate_payload(
+        candidate_type="field_capture_follow_up",
+        summary="Staffing risk at site 7050",
+    )
+    candidate["approval_metadata"] = {
+        "proposed_queue_job": {
+            "job_type": "append_to_note",
+            "payload": {
+                "path": "Accounts/7050.md",
+                "content": "Staffing risk: Bruce no-showed.",
+                "destination": "site_note",
+            },
+        }
+    }
+    candidate["status"] = "rejected"
+    write_action_candidate_review(candidate_dir, candidate)
+    couchdb_review.seed_from_fs(runtime_root)
+    candidate_id = str(candidate["candidate_id"])
+    rev = couchdb_review.docs[f"action_candidate_{candidate_id}"]["_rev"]
+
+    status_code, _content_type, _body = request_text(
+        "POST",
+        "/field-capture/review/resubmit",
+        runtime_root,
+        urlencode({"candidate_id": candidate_id, "_rev": rev, "reviewer": "Jordan"}),
+    )
+
+    assert status_code == HTTPStatus.SEE_OTHER
+    assert couchdb_review.status_of(candidate_id) == "approved"
+    assert len(list((runtime_root / "queue").glob("*.json"))) == 1
+    history = couchdb_review.docs[f"action_candidate_{candidate_id}"]["review_history"]
+    assert history[-1]["reason"] == "resubmit"
+    assert history[-1]["prior_status"] == "rejected"
+
+
+def test_field_capture_review_resubmit_invalid_failed_candidate_flashes_without_staging(tmp_path: Path, couchdb_review) -> None:
+    runtime_root = tmp_path / "runtime"
+    candidate_dir = runtime_root / "reviews" / "action_candidates" / "field_capture"
+    candidate = action_candidate_payload(
+        candidate_type="field_capture_follow_up",
+        summary="Broken payload",
+    )
+    candidate["approval_metadata"] = {"proposed_queue_job": {"job_type": "append_to_note", "payload": {}}}
+    candidate["status"] = "failed"
+    write_action_candidate_review(candidate_dir, candidate)
+    couchdb_review.seed_from_fs(runtime_root)
+    candidate_id = str(candidate["candidate_id"])
+    rev = couchdb_review.docs[f"action_candidate_{candidate_id}"]["_rev"]
+
+    status_code, _content_type, _body, headers = ops_app.route_response_with_headers(
+        "POST",
+        "/field-capture/review/resubmit",
+        runtime_root,
+        urlencode({"candidate_id": candidate_id, "_rev": rev, "reviewer": "Jordan"}).encode("utf-8"),
+    )
+
+    assert status_code == HTTPStatus.SEE_OTHER
+    assert "the+proposed+job+isn%27t+valid+yet" in headers["Location"]
+    assert couchdb_review.status_of(candidate_id) == "failed"
     assert not (runtime_root / "queue").exists()
 
 

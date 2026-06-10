@@ -140,6 +140,12 @@ def route_response_with_headers(method: str, path: str, runtime_root: Path, body
     if method == "POST" and route_path in {"/field-capture/review/approve", "/field-capture/review/reject"}:
         ctx.action = "approve" if route_path.endswith("/approve") else "reject"
         return candidates.handle_review_post(ctx, body)
+    if method == "POST" and route_path == "/field-capture/review/archive":
+        return candidates.handle_archive(ctx, body)
+    if method == "POST" and route_path == "/field-capture/review/unarchive":
+        return candidates.handle_unarchive(ctx, body)
+    if method == "POST" and route_path == "/field-capture/review/resubmit":
+        return candidates.handle_resubmit(ctx, body)
     if method == "POST" and route_path == "/field-capture/review/client-informed":
         return candidates.handle_client_informed(ctx, body)
     if method == "POST" and route_path == "/field-capture/review/resolve":

@@ -53,6 +53,7 @@ def list_action_candidates(
     *,
     status: str | None = None,
     person_id: str | None = None,
+    include_archived: bool = False,
 ) -> list[dict[str, Any]]:
     """List action_candidate documents from CouchDB.
 
@@ -61,8 +62,16 @@ def list_action_candidates(
     idx-type-status Mango index provisioned by the CouchDB setup command.
     """
     selector: dict[str, Any] = {"type": ACTION_CANDIDATE_TYPE}
-    if status is not None:
+    if status == "archived":
+        selector["archived"] = True
+    elif status is not None:
         selector["status"] = str(status)
+    if status != "archived" and not include_archived:
+        selector["$or"] = [
+            {"archived": {"$exists": False}},
+            {"archived": False},
+            {"archived": None},
+        ]
     if person_id is not None:
         selector["person_id"] = str(person_id)
 
@@ -103,6 +112,8 @@ def set_action_candidate_status(
     reviewed_by: str,
     rationale: str,
     expected_rev: str | None = None,
+    expected_prior_statuses: set[str] | frozenset[str] | tuple[str, ...] = ("pending_review",),
+    reason: str | None = None,
 ) -> dict[str, Any]:
     if status not in {"approved", "rejected"}:
         raise CouchDBCandidateWriterError(f"unsupported action candidate review status: {status}")
@@ -114,22 +125,24 @@ def set_action_candidate_status(
         raise CouchDBCandidateWriterError(f"candidate has no _rev: {candidate_id}")
     if expected_rev is not None and str(expected_rev) != current_rev:
         raise AlreadyDecided(f"candidate _rev changed: {candidate_id}")
-    if str(doc.get("status") or "") != "pending_review":
+    allowed_prior_statuses = {str(item) for item in expected_prior_statuses}
+    if allowed_prior_statuses and str(doc.get("status") or "") not in allowed_prior_statuses:
         raise AlreadyDecided(f"candidate already decided: {candidate_id}")
 
     timestamp = datetime.now(timezone.utc).isoformat()
     prior_status = str(doc.get("status") or "")
     history = doc.get("review_history")
     review_history = list(history) if isinstance(history, list) else []
-    review_history.append(
-        {
-            "reviewer": reviewed_by,
-            "reviewed_at": timestamp,
-            "review_rationale": rationale,
-            "prior_status": prior_status,
-            "status": status,
-        }
-    )
+    history_entry = {
+        "reviewer": reviewed_by,
+        "reviewed_at": timestamp,
+        "review_rationale": rationale,
+        "prior_status": prior_status,
+        "status": status,
+    }
+    if reason:
+        history_entry["reason"] = str(reason)
+    review_history.append(history_entry)
     updated = dict(doc)
     updated.update(
         {
@@ -142,6 +155,38 @@ def set_action_candidate_status(
             "review_history": review_history,
         }
     )
+    return _put_document(config, db, str(updated["_id"]), updated, conflict_as_already_decided=True)
+
+
+def set_action_candidate_archived(
+    config: couchdb_config.CouchDBConfig,
+    db: str,
+    candidate_id: str,
+    *,
+    archived: bool,
+    by: str = "",
+    at: str | None = None,
+    expected_rev: str | None = None,
+) -> dict[str, Any]:
+    doc = get_action_candidate(config, db, candidate_id)
+    if doc is None:
+        raise CouchDBCandidateWriterError(f"candidate not found: {candidate_id}")
+    current_rev = str(doc.get("_rev") or "")
+    if not current_rev:
+        raise CouchDBCandidateWriterError(f"candidate has no _rev: {candidate_id}")
+    if expected_rev is not None and str(expected_rev) != current_rev:
+        raise AlreadyDecided(f"candidate _rev changed: {candidate_id}")
+
+    updated = dict(doc)
+    if archived:
+        timestamp = at or datetime.now(timezone.utc).isoformat()
+        updated["archived"] = True
+        updated["archived_at"] = str(timestamp)
+        updated["archived_by"] = str(by or "")
+    else:
+        updated["archived"] = False
+        updated.pop("archived_at", None)
+        updated.pop("archived_by", None)
     return _put_document(config, db, str(updated["_id"]), updated, conflict_as_already_decided=True)
 
 
@@ -272,6 +317,9 @@ def build_action_candidate_document(candidate: dict[str, Any]) -> dict[str, Any]
         "reviewed_at": str(candidate.get("reviewed_at") or ""),
         "reviewed_by": str(candidate.get("reviewed_by") or candidate.get("reviewer") or ""),
         "review_rationale": str(candidate.get("review_rationale") or ""),
+        "archived": bool(candidate.get("archived") is True),
+        "archived_at": str(candidate.get("archived_at") or ""),
+        "archived_by": str(candidate.get("archived_by") or ""),
         "source": "field_capture_pipeline",
         "source_detail": {
             "artifact_type": str(candidate.get("type") or ""),

@@ -210,6 +210,9 @@ class FakeCouchReview:
     def staged_at_of(self, candidate_id: str):
         return self.docs[f"action_candidate_{candidate_id}"].get("staged_at")
 
+    def archived_of(self, candidate_id: str) -> bool:
+        return bool(self.docs[f"action_candidate_{candidate_id}"].get("archived") is True)
+
     def run_watcher(self, runtime_root: Path, *, stub_stage: bool = True):
         """Run one watcher pass. By default the actual filesystem staging is
         replaced by a counting spy (recorded in ``stage_calls``) and the
