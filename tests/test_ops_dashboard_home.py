@@ -723,6 +723,7 @@ def test_home_directory_group_includes_employee_directory(
                 "phone": "8145550100",
                 "email": "alice@example.com",
                 "job": "site-17",
+                "status": "active",
             },
         },
         {
@@ -734,6 +735,18 @@ def test_home_directory_group_includes_employee_directory(
                 "phone": "814-555-0101",
                 "email": "ben@example.com",
                 "job": "site-22",
+            },
+        },
+        {
+            "key": ["site-33", "employee-ivy"],
+            "doc": {
+                "_id": "employee-ivy",
+                "first": "Ivy",
+                "last": "Xavier",
+                "phone": "814-555-0102",
+                "email": "ivy@example.com",
+                "job": "site-33",
+                "status": "inactive",
             },
         },
     ]
@@ -751,6 +764,11 @@ def test_home_directory_group_includes_employee_directory(
     assert "(814) 555-0101" in directory
     assert "ben@example.com" in directory
     assert '<a href="/sites/site-22">site-22</a>' in directory
+    assert "Xavier, Ivy" not in directory
+    assert "(814) 555-0102" not in directory
+    assert "ivy@example.com" not in directory
+    # NOTE: site-33 still appears in the SITE directory (unrelated to the employee
+    # active-filter); only the inactive employee Ivy is excluded, asserted above.
 
 
 def test_employee_directory_is_collapsible(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

@@ -257,6 +257,8 @@ def _render_employee_directory(employee_rows: list[dict]) -> str:
         doc = row.get("doc")
         if not isinstance(doc, dict):
             continue
+        if _string(doc.get("status")).lower() not in ("", "active"):
+            continue
         employee_id = _string(doc.get("_id"))
         if employee_id in seen_ids:
             continue
