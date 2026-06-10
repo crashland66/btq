@@ -61,6 +61,9 @@ KNOWN_JOB_SUMMARY_TYPES = {
     "mark_equipment_ordered",
     "mark_equipment_provided",
     "mark_equipment_no_action_needed",
+    "mark_issue_monitoring",
+    "mark_issue_resolved",
+    "mark_issue_open",
     "voice_memo_note",
 }
 
@@ -895,6 +898,8 @@ def render_job_summary(job_type: object, payload: object) -> str:
         return _mark_job_summary(job_type_text, body, kind="supply", id_key="supply_id")
     if job_type_text.startswith("mark_equipment_"):
         return _mark_job_summary(job_type_text, body, kind="equipment", id_key="equipment_id")
+    if job_type_text.startswith("mark_issue_"):
+        return _mark_job_summary(job_type_text, body, kind="issue", id_key="issue_id")
     if job_type_text == "voice_memo_note":
         note = _clean_display_part(body.get("note") or body.get("transcript_text"))[:60]
         suffix = f"({html.escape(note)})" if note else ""
@@ -986,11 +991,15 @@ def render_issue_list(issues: list[object], empty_text: str) -> str:
             )
             if value
         )
+        issue_id = str(issue.get("issue_id") or "")
+        detail_href = f"/field-capture/issues?issue_id={quote(issue_id)}" if issue_id else "/field-capture/issues"
+        title_link = f'<a href="{html.escape(detail_href)}">{html.escape(str(issue.get("title") or "Site issue"))}</a>'
+        id_link = f'<a href="{html.escape(detail_href)}">{render_short_id(issue_id)}</a>' if issue_id else ""
         items.append(
             f"""<article class="card">
-        <h3>{html.escape(str(issue.get("title") or "Site issue"))}</h3>
+        <h3>{title_link}</h3>
         <p>{badges}</p>
-        <p>{render_site_label(issue.get("site_id"), site_name=issue.get("site_name") or issue.get("site"), account=issue.get("account"))} | {render_short_id(issue.get("issue_id"))}</p>
+        <p>{render_site_label(issue.get("site_id"), site_name=issue.get("site_name") or issue.get("site"), account=issue.get("account"))} | {id_link}</p>
         <p>{html.escape(str(issue.get("summary") or ""))}</p>
         <p><strong>Resolution trigger:</strong> {html.escape(str(issue.get("resolution_trigger") or ""))}</p>
         <p class="muted">{html.escape(str(issue.get("vault_issue_path") or ""))}</p>

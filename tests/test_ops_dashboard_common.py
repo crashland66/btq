@@ -542,6 +542,14 @@ def test_render_job_summary_mark_equipment_provided() -> None:
     assert "Jordan" in rendered
 
 
+def test_render_job_summary_mark_issue_resolved() -> None:
+    rendered = render_job_summary("mark_issue_resolved", {"issue_id": "issue_abcdefghijklmnopqrstuvwxyz", "actor": "Jordan"})
+
+    assert "issue_a" in rendered
+    assert "resolved" in rendered
+    assert "Jordan" in rendered
+
+
 def test_render_job_summary_voice_memo_note() -> None:
     rendered = render_job_summary("voice_memo_note", {"transcript_text": "This is a short note from the field."})
 

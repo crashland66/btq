@@ -1504,6 +1504,48 @@ def test_issues_route_renders_200_and_contains_section_header(tmp_path: Path, mo
     assert "<h1>Site Issues</h1>" in body
 
 
+def test_issues_list_links_to_detail_page(tmp_path: Path, monkeypatch) -> None:
+    vault = tmp_path / "vault"
+    write_vault_site_issue(vault)
+    monkeypatch.setattr("ops_dashboard.app.get_config", lambda: type("Config", (), {"vault_dir": vault})())
+
+    status, _content_type, body = request_text("GET", "/field-capture/issues", tmp_path / "runtime")
+
+    assert status == HTTPStatus.OK
+    assert 'href="/field-capture/issues?issue_id=iss_drain"' in body
+
+
+def test_issue_detail_renders_summary_source_and_valid_transitions(tmp_path: Path, monkeypatch) -> None:
+    vault = tmp_path / "vault"
+    write_vault_site_issue(vault)
+    monkeypatch.setattr("ops_dashboard.app.get_config", lambda: type("Config", (), {"vault_dir": vault})())
+
+    status, _content_type, body = request_text("GET", "/field-capture/issues?issue_id=iss_drain", tmp_path / "runtime")
+
+    assert status == HTTPStatus.OK
+    assert "<h1>Issue Detail</h1>" in body
+    assert "Drain backed up and water reached the floor." in body
+    assert "<h2>Source</h2>" in body
+    assert "cap-photo-drain" in body
+    assert "ac_drain" in body
+    assert "Mark monitoring" in body
+    assert "Mark resolved" in body
+    assert "Reopen" not in body
+
+
+def test_issue_confirm_renders_source_target_status_pills(tmp_path: Path, monkeypatch) -> None:
+    vault = tmp_path / "vault"
+    write_vault_site_issue(vault)
+    monkeypatch.setattr("ops_dashboard.app.get_config", lambda: type("Config", (), {"vault_dir": vault})())
+
+    status, _content_type, body = request_text("GET", "/field-capture/issues/mark-resolved-confirm?issue_id=iss_drain", tmp_path / "runtime")
+
+    assert status == HTTPStatus.OK
+    assert 'class="status-transition"' in body
+    assert 'class="pill status-open"' in body
+    assert 'class="pill status-resolved"' in body
+
+
 def test_supplies_route_renders_200_and_contains_section_header(tmp_path: Path, monkeypatch) -> None:
     vault = tmp_path / "vault"
     write_vault_supply_need(vault)
@@ -1744,6 +1786,38 @@ def test_supplies_mark_no_action_needed_post_writes_queue_file(tmp_path: Path) -
 
     assert job["job_type"] == "mark_supply_no_action_needed"
     assert job["payload"] == {"actor": "Jordan", "supply_id": "sup_cleaner"}
+
+
+def test_issues_mark_resolved_post_writes_queue_file(tmp_path: Path) -> None:
+    runtime_root = tmp_path / "runtime"
+
+    status, _content_type, _body = route_response("POST", "/field-capture/issues/mark-resolved", runtime_root, b"issue_id=iss_drain&actor=Jordan&note=fixed&confirm=1")
+    job = read_single_queue_job(runtime_root)
+
+    assert status == HTTPStatus.SEE_OTHER
+    assert job["job_type"] == "mark_issue_resolved"
+    assert job["job_id"].startswith("mark-mark_issue_resolved-")
+    assert job["payload"] == {"actor": "Jordan", "issue_id": "iss_drain", "note": "fixed"}
+
+
+def test_issues_mark_monitoring_post_writes_queue_file(tmp_path: Path) -> None:
+    runtime_root = tmp_path / "runtime"
+
+    route_response("POST", "/field-capture/issues/mark-monitoring", runtime_root, b"issue_id=iss_drain&actor=Jordan&confirm=1")
+    job = read_single_queue_job(runtime_root)
+
+    assert job["job_type"] == "mark_issue_monitoring"
+    assert job["payload"] == {"actor": "Jordan", "issue_id": "iss_drain"}
+
+
+def test_issues_reopen_post_writes_queue_file(tmp_path: Path) -> None:
+    runtime_root = tmp_path / "runtime"
+
+    route_response("POST", "/field-capture/issues/reopen", runtime_root, b"issue_id=iss_drain&actor=Jordan&confirm=1")
+    job = read_single_queue_job(runtime_root)
+
+    assert job["job_type"] == "mark_issue_open"
+    assert job["payload"] == {"actor": "Jordan", "issue_id": "iss_drain"}
 
 
 def test_equipment_route_renders_200_and_contains_section_header(tmp_path: Path, monkeypatch) -> None:

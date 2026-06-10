@@ -54,6 +54,8 @@ def build_status(runtime_root: Path, *, log_lines: int = 40) -> dict[str, object
 SECTION_ROUTES = {
     "/": home, "/inbox": inbox, "/swipe": swipe, "/admin": admin, "/health": health, "/health/pipeline": health_pipeline,
     "/candidates": candidates, "/field-capture/review": candidates, "/field-capture/issues": issues,
+    "/field-capture/issues/mark-monitoring-confirm": issues, "/field-capture/issues/mark-resolved-confirm": issues,
+    "/field-capture/issues/reopen-confirm": issues,
     "/supplies": supplies, "/supplies/mark-ordered-confirm": supplies, "/supplies/mark-delivered-confirm": supplies,
     "/supplies/mark-stocked-confirm": supplies, "/supplies/mark-no-action-needed-confirm": supplies,
     "/equipment": equipment, "/equipment/mark-approved-confirm": equipment, "/equipment/mark-denied-confirm": equipment,
@@ -167,6 +169,13 @@ def route_response_with_headers(method: str, path: str, runtime_root: Path, body
         return supplies.handle_mark_supply_stocked(ctx, body)
     if method == "POST" and route_path == "/supplies/mark-no-action-needed":
         return supplies.handle_mark_supply_no_action_needed(ctx, body)
+    # Issue status transition staging.
+    if method == "POST" and route_path == "/field-capture/issues/mark-monitoring":
+        return issues.handle_mark_issue_monitoring(ctx, body)
+    if method == "POST" and route_path == "/field-capture/issues/mark-resolved":
+        return issues.handle_mark_issue_resolved(ctx, body)
+    if method == "POST" and route_path == "/field-capture/issues/reopen":
+        return issues.handle_mark_issue_open(ctx, body)
     # Equipment status transition staging.
     if method == "POST" and route_path == "/equipment/mark-approved":
         return equipment.handle_mark_equipment_approved(ctx, body)

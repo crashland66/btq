@@ -43,7 +43,7 @@ BANNER = (
 
 # A job type is documented either by its own ``##``/``###`` heading or, for the
 # status-transition family, by a row in the "Status-transition jobs" tables.
-_STATUS_TRANSITION_PREFIX = ("mark_supply_", "mark_equipment_")
+_STATUS_TRANSITION_PREFIX = ("mark_supply_", "mark_equipment_", "mark_issue_")
 
 
 def _guide_text() -> str:

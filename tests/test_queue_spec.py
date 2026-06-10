@@ -6,6 +6,9 @@ from queue_spec import (
     JOB_MARK_EQUIPMENT_NO_ACTION_NEEDED,
     JOB_MARK_EQUIPMENT_ORDERED,
     JOB_MARK_EQUIPMENT_PROVIDED,
+    JOB_MARK_ISSUE_MONITORING,
+    JOB_MARK_ISSUE_OPEN,
+    JOB_MARK_ISSUE_RESOLVED,
     JOB_MARK_SUPPLY_DELIVERED,
     JOB_MARK_SUPPLY_NO_ACTION_NEEDED,
     JOB_MARK_SUPPLY_ORDERED,
@@ -1022,6 +1025,52 @@ def test_validate_mark_equipment_payload_rejects_missing_actor() -> None:
     assert validate_job({"job_type": JOB_MARK_EQUIPMENT_APPROVED, "payload": {"equipment_id": "eqr_summit_vacuum"}}) is False
 
 
+def test_validate_mark_issue_payload_passes_with_required_fields() -> None:
+    assert validate_job(
+        {
+            "job_type": JOB_MARK_ISSUE_MONITORING,
+            "payload": {"issue_id": "iss_summit_drain", "actor": "Jordan"},
+        }
+    ) is True
+    assert validate_job(
+        {
+            "job_type": JOB_MARK_ISSUE_RESOLVED,
+            "payload": {
+                "issue_id": "iss_summit_drain",
+                "actor": "Tom",
+                "note": "Maintenance cleared it.",
+                "occurred_at": "2026-05-08T18:00:00+00:00",
+            },
+        }
+    ) is True
+
+
+def test_validate_mark_issue_payload_rejects_missing_issue_id() -> None:
+    assert validate_job({"job_type": JOB_MARK_ISSUE_RESOLVED, "payload": {"actor": "Jordan"}}) is False
+
+
+def test_validate_mark_issue_payload_rejects_missing_actor() -> None:
+    assert validate_job({"job_type": JOB_MARK_ISSUE_RESOLVED, "payload": {"issue_id": "iss_summit_drain"}}) is False
+
+
+def test_validate_mark_issue_payload_rejects_non_string_note() -> None:
+    assert validate_job(
+        {
+            "job_type": JOB_MARK_ISSUE_RESOLVED,
+            "payload": {"issue_id": "iss_summit_drain", "actor": "Jordan", "note": ["resolved"]},
+        }
+    ) is False
+
+
+def test_validate_mark_issue_payload_rejects_unknown_field() -> None:
+    assert validate_job(
+        {
+            "job_type": JOB_MARK_ISSUE_RESOLVED,
+            "payload": {"issue_id": "iss_summit_drain", "actor": "Jordan", "status": "resolved"},
+        }
+    ) is False
+
+
 def test_job_schemas_register_all_mark_supply_jobs() -> None:
     assert JOB_SCHEMAS[JOB_MARK_SUPPLY_ORDERED] == ["supply_id", "actor"]
     assert JOB_SCHEMAS[JOB_MARK_SUPPLY_DELIVERED] == ["supply_id", "actor"]
@@ -1035,3 +1084,9 @@ def test_job_schemas_register_all_mark_equipment_jobs() -> None:
     assert JOB_SCHEMAS[JOB_MARK_EQUIPMENT_ORDERED] == ["equipment_id", "actor"]
     assert JOB_SCHEMAS[JOB_MARK_EQUIPMENT_PROVIDED] == ["equipment_id", "actor"]
     assert JOB_SCHEMAS[JOB_MARK_EQUIPMENT_NO_ACTION_NEEDED] == ["equipment_id", "actor"]
+
+
+def test_job_schemas_register_all_mark_issue_jobs() -> None:
+    assert JOB_SCHEMAS[JOB_MARK_ISSUE_MONITORING] == ["issue_id", "actor"]
+    assert JOB_SCHEMAS[JOB_MARK_ISSUE_RESOLVED] == ["issue_id", "actor"]
+    assert JOB_SCHEMAS[JOB_MARK_ISSUE_OPEN] == ["issue_id", "actor"]

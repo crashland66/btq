@@ -1343,10 +1343,11 @@ Do not use when:
 
 ## Status-transition jobs
 
-These jobs advance an existing supply-need or equipment-request file through
-its status lifecycle. They require the file already exists in the vault and the
-current status matches the valid source set. Status transitions are
-idempotent: re-applying the same `job_id` is a no-op.
+These jobs advance an existing supply-need, equipment-request, or site-issue
+canonical document through its status lifecycle. They require the canonical
+document already exists in the vault and the current status matches the valid
+source set. Status transitions are idempotent: re-applying the same `job_id` is
+a no-op.
 
 All status-transition jobs reject unknown payload fields. They move to the
 failed queue if the target file cannot be found, cannot be parsed, or has a
@@ -1422,6 +1423,42 @@ Example:
     "equipment_id": "eqr_summit_vacuum",
     "actor": "Jordan",
     "note": "Approved replacement vacuum.",
+    "occurred_at": "2026-05-08T18:00:00+00:00"
+  }
+}
+```
+
+### Issue transition payload
+
+Required payload fields for all `mark_issue_*` jobs:
+
+- `issue_id`: string
+- `actor`: string
+
+Optional payload fields:
+
+- `note`: string
+- `occurred_at`: ISO datetime string; defaults to the processor runtime when
+  absent
+
+Issue transitions:
+
+| Job type | Valid source statuses | Target status | Lifecycle fields set |
+| --- | --- | --- | --- |
+| `mark_issue_monitoring` | `open` | `monitoring` | `monitoring_at`, `monitoring_by`, optional `monitoring_note` |
+| `mark_issue_resolved` | `open`, `monitoring` | `resolved` | `resolved_at`, `resolved_by`, optional `resolved_note` |
+| `mark_issue_open` | `monitoring`, `resolved` | `open` | `open_at`, `open_by`, optional `open_note` |
+
+Example:
+
+```json
+{
+  "job_id": "2026-05-08T18-00-00Z__mark-issue-resolved",
+  "job_type": "mark_issue_resolved",
+  "payload": {
+    "issue_id": "iss_summit_drain",
+    "actor": "Jordan",
+    "note": "Maintenance confirmed the drain is clear.",
     "occurred_at": "2026-05-08T18:00:00+00:00"
   }
 }

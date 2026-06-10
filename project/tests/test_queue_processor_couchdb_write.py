@@ -242,6 +242,15 @@ def equipment_transition_payload() -> dict:
     }
 
 
+def issue_transition_payload() -> dict:
+    return {
+        "issue_id": "issue-fixed",
+        "actor": "Jordan",
+        "occurred_at": "2026-05-30T12:00:00+00:00",
+        "note": "Maintenance cleared it.",
+    }
+
+
 def canonical_supply_doc(*, status: str = "open", job_ids: list[str] | None = None) -> dict[str, Any]:
     return {
         "_id": "supply_need_supply-fixed",
@@ -254,6 +263,24 @@ def canonical_supply_doc(*, status: str = "open", job_ids: list[str] | None = No
         "requested_by": "Jordan",
         "status": status,
         "created_at": "2026-05-01T00:00:00+00:00",
+        "btq_job_ids": list(job_ids or []),
+    }
+
+
+def canonical_issue_doc(*, status: str = "open", job_ids: list[str] | None = None) -> dict[str, Any]:
+    return {
+        "_id": "site_issue_issue-fixed",
+        "type": "site_issue",
+        "issue_id": "issue-fixed",
+        "site_id": "7060",
+        "site_name": "Continental Metalworks",
+        "account": "Contworks",
+        "title": "Broken railing",
+        "summary": "Railing is loose near the dock.",
+        "status": status,
+        "created_at": "2026-05-01T00:00:00+00:00",
+        "related_capture_ids": ["cap-issue"],
+        "related_candidate_ids": ["ac-issue"],
         "btq_job_ids": list(job_ids or []),
     }
 
@@ -1300,6 +1327,146 @@ def test_log_equipment_request_creates_canonical_doc_when_absent(
     assert doc["created_at"]
     assert not (site_path.parent / "Equipment").exists()
     assert (processed_dir / queue_file.name).exists()
+
+
+def test_mark_issue_resolved_valid_transition_uses_canonical_status(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    context = context_for(tmp_path)
+    write_site(context.vault_root)
+    store = RecordingRmwVaultStore([canonical_issue_doc(status="open")])
+    monkeypatch.setattr(shared, "_VAULT_STORE", store)
+    payload = issue_transition_payload()
+    queue_file = make_queue_file(context, "job-one")
+    processed_dir = context.runtime_root / "processed"
+
+    qp.process_mark_issue_resolved_job(queue_file, job("mark_issue_resolved", payload, job_id="job-one"), context, processed_dir)
+
+    doc = store.get_optional("site_issue_issue-fixed")
+    assert doc is not None
+    assert doc["status"] == "resolved"
+    assert doc["resolved_at"] == "2026-05-30T12:00:00+00:00"
+    assert doc["resolved_by"] == "Jordan"
+    assert doc["resolved_note"] == "Maintenance cleared it."
+    assert doc["btq_job_ids"] == ["job-one"]
+    assert doc["related_capture_ids"] == ["cap-issue"]
+    assert doc["related_candidate_ids"] == ["ac-issue"]
+    assert store.update_doc_calls == ["site_issue_issue-fixed"]
+    assert (processed_dir / queue_file.name).exists()
+
+
+def test_mark_issue_monitoring_advances_status_from_open(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    context = context_for(tmp_path)
+    write_site(context.vault_root)
+    store = RecordingRmwVaultStore([canonical_issue_doc(status="open")])
+    monkeypatch.setattr(shared, "_VAULT_STORE", store)
+    payload = issue_transition_payload()
+    queue_file = make_queue_file(context, "job-one")
+
+    qp.process_mark_issue_monitoring_job(queue_file, job("mark_issue_monitoring", payload, job_id="job-one"), context, context.runtime_root / "processed")
+
+    doc = store.get_optional("site_issue_issue-fixed")
+    assert doc is not None
+    assert doc["status"] == "monitoring"
+    assert doc["monitoring_at"] == "2026-05-30T12:00:00+00:00"
+    assert doc["monitoring_by"] == "Jordan"
+    assert doc["monitoring_note"] == "Maintenance cleared it."
+
+
+def test_mark_issue_open_reopens_monitoring_or_resolved(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    context = context_for(tmp_path)
+    write_site(context.vault_root)
+    for index, status in enumerate(("monitoring", "resolved"), start=1):
+        issue_id = f"issue-fixed-{index}"
+        doc = canonical_issue_doc(status=status)
+        doc["_id"] = f"site_issue_{issue_id}"
+        doc["issue_id"] = issue_id
+        store = RecordingRmwVaultStore([doc])
+        monkeypatch.setattr(shared, "_VAULT_STORE", store)
+        payload = issue_transition_payload()
+        payload["issue_id"] = issue_id
+        queue_file = make_queue_file(context, f"job-{index}")
+
+        qp.process_mark_issue_open_job(queue_file, job("mark_issue_open", payload, job_id=f"job-{index}"), context, context.runtime_root / "processed")
+
+        updated = store.get_optional(f"site_issue_{issue_id}")
+        assert updated is not None
+        assert updated["status"] == "open"
+        assert updated["open_at"] == "2026-05-30T12:00:00+00:00"
+        assert updated["open_by"] == "Jordan"
+
+
+def test_mark_issue_invalid_transition_fails_even_with_stale_markdown(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    context = context_for(tmp_path)
+    write_site(context.vault_root)
+    stale_path = (
+        context.vault_root
+        / "Accounts"
+        / "Contworks"
+        / "Locations"
+        / "7060 - Continental Metalworks"
+        / "Issues"
+        / "issue-fixed__railing.md"
+    )
+    stale_path.parent.mkdir(parents=True, exist_ok=True)
+    stale_text = (
+        "---\n"
+        "type: site_issue\n"
+        "issue_id: issue-fixed\n"
+        "site_id: 7060\n"
+        "site_name: Continental Metalworks\n"
+        "account: Contworks\n"
+        "title: Broken railing\n"
+        "status: open\n"
+        "created_at: 2026-05-01T00:00:00+00:00\n"
+        "---\n"
+        "# stale issue\n"
+    )
+    stale_path.write_text(stale_text, encoding="utf-8")
+    store = RecordingRmwVaultStore([canonical_issue_doc(status="resolved")])
+    monkeypatch.setattr(shared, "_VAULT_STORE", store)
+    payload = issue_transition_payload()
+    queue_file = make_process_job_file(context, "mark_issue_monitoring", payload, "job-one")
+    processed_dir = context.runtime_root / "processed"
+    failed_dir = context.runtime_root / "failed"
+
+    qp.process_job(queue_file, context, processed_dir, failed_dir)
+
+    doc = store.get_optional("site_issue_issue-fixed")
+    assert doc is not None
+    assert doc["status"] == "resolved"
+    assert stale_path.read_text(encoding="utf-8") == stale_text
+    assert (failed_dir / queue_file.name).exists()
+    assert not (processed_dir / queue_file.name).exists()
+    assert "Cannot transition issue issue-fixed to monitoring from current status resolved" in context.log_path.read_text(encoding="utf-8")
+
+
+def test_mark_issue_skips_when_job_id_in_canonical_doc(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    context = context_for(tmp_path)
+    write_site(context.vault_root)
+    existing_doc = canonical_issue_doc(status="open", job_ids=["job-one"])
+    store = RecordingRmwVaultStore([existing_doc])
+    monkeypatch.setattr(shared, "_VAULT_STORE", store)
+    payload = issue_transition_payload()
+    queue_file = make_queue_file(context, "job-one")
+
+    qp.process_mark_issue_resolved_job(queue_file, job("mark_issue_resolved", payload, job_id="job-one"), context, context.runtime_root / "processed")
+
+    assert store.update_doc_calls == []
+    assert store.docs == [existing_doc]
 
 
 def test_mark_supply_valid_transition_uses_canonical_status(

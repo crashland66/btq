@@ -277,6 +277,22 @@ class CouchDBEntityStore:
             raise CouchDBEntityStoreError("CouchDB open site_issue dedup query returned no docs list")
         return [doc for doc in docs if isinstance(doc, dict)]
 
+    def find_site_issue_docs_by_issue_id(self, issue_id: str, *, limit: int = 10) -> list[dict[str, Any]]:
+        """Return canonical site_issue docs whose issue_id field matches exactly."""
+        response = self._request_json(
+            "POST",
+            "_find",
+            {
+                "selector": {"type": "site_issue", "issue_id": issue_id},
+                "fields": ["_id", "type", "issue_id", "status"],
+                "limit": limit,
+            },
+        )
+        docs = response.get("docs")
+        if not isinstance(docs, list):
+            raise CouchDBEntityStoreError("CouchDB site_issue issue_id query returned no docs list")
+        return [doc for doc in docs if isinstance(doc, dict)]
+
     def find_supply_need_docs_by_supply_id(self, supply_id: str, *, limit: int = 10) -> list[dict[str, Any]]:
         """Return canonical supply_need docs whose supply_id field matches exactly.
 

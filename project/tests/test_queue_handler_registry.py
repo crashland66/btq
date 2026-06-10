@@ -40,6 +40,9 @@ EXPECTED_HANDLER_NAMES = {
     qp.JOB_MARK_EQUIPMENT_ORDERED: "process_mark_equipment_ordered_job",
     qp.JOB_MARK_EQUIPMENT_PROVIDED: "process_mark_equipment_provided_job",
     qp.JOB_MARK_EQUIPMENT_NO_ACTION_NEEDED: "process_mark_equipment_no_action_needed_job",
+    qp.JOB_MARK_ISSUE_MONITORING: "process_mark_issue_monitoring_job",
+    qp.JOB_MARK_ISSUE_RESOLVED: "process_mark_issue_resolved_job",
+    qp.JOB_MARK_ISSUE_OPEN: "process_mark_issue_open_job",
     qp.JOB_VOICE_MEMO_NOTE: "process_voice_memo_note_job",
 }
 
@@ -93,6 +96,9 @@ def test_handlers_importable_from_handlers_package() -> None:
             "process_mark_equipment_ordered_job",
             "process_mark_equipment_provided_job",
             "process_mark_equipment_no_action_needed_job",
+            "process_mark_issue_monitoring_job",
+            "process_mark_issue_resolved_job",
+            "process_mark_issue_open_job",
         ],
         "site_flags_notes": [
             "process_log_site_issue_job",

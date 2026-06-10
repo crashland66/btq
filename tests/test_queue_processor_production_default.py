@@ -124,6 +124,25 @@ def write_equipment_request(vault_root: Path, *, equipment_id: str, status: str)
     )
 
 
+def write_site_issue(vault_root: Path, *, issue_id: str, status: str) -> None:
+    write_frontmatter_file(
+        vault_root / "Accounts" / "Summitsteel" / "Locations" / "7050 - Summit Wire" / "Issues" / f"{issue_id}__drain.md",
+        [
+            ("type", "site_issue"),
+            ("issue_id", issue_id),
+            ("site_id", "7050"),
+            ("site_name", "Summit Wire"),
+            ("account", "Summitsteel"),
+            ("title", "Restroom drain backup"),
+            ("status", status),
+            ("priority", "normal"),
+            ("category", "maintenance"),
+            ("created_at", "2026-05-08T17:00:00+00:00"),
+        ],
+        "Existing issue record.\n",
+    )
+
+
 def write_queue_job(runtime_root: Path, case: CanonicalJobCase) -> Path:
     queue_dir = runtime_root / "queue"
     queue_dir.mkdir(parents=True, exist_ok=True)
@@ -198,6 +217,18 @@ def setup_equipment_ordered(vault_root: Path) -> None:
     write_equipment_request(vault_root, equipment_id="eqr_prod_default", status="ordered")
 
 
+def setup_issue_open(vault_root: Path) -> None:
+    write_site_issue(vault_root, issue_id="issue_prod_default", status="open")
+
+
+def setup_issue_monitoring(vault_root: Path) -> None:
+    write_site_issue(vault_root, issue_id="issue_prod_default", status="monitoring")
+
+
+def setup_issue_resolved(vault_root: Path) -> None:
+    write_site_issue(vault_root, issue_id="issue_prod_default", status="resolved")
+
+
 def canonical_source_status_for_transition(job_type: str) -> str:
     return {
         "mark_supply_ordered": "open",
@@ -209,6 +240,9 @@ def canonical_source_status_for_transition(job_type: str) -> str:
         "mark_equipment_ordered": "approved",
         "mark_equipment_provided": "ordered",
         "mark_equipment_no_action_needed": "open",
+        "mark_issue_monitoring": "open",
+        "mark_issue_resolved": "monitoring",
+        "mark_issue_open": "resolved",
     }[job_type]
 
 
@@ -228,6 +262,22 @@ def canonical_transition_doc(case: CanonicalJobCase) -> dict[str, Any]:
             "status": status,
             "urgency": "normal",
             "requested_by": "Jordan",
+            "created_at": "2026-05-08T17:00:00+00:00",
+        }
+    if case.expected_patch_id.startswith("site_issue_"):
+        issue_id = str(case.payload["issue_id"])
+        return {
+            "_id": case.expected_patch_id,
+            "type": "site_issue",
+            "issue_id": issue_id,
+            "site_id": "7050",
+            "site_name": "Summit Wire",
+            "account": "Summitsteel",
+            "title": "Restroom drain backup",
+            "summary": "Drain backed up onto the restroom floor.",
+            "status": status,
+            "priority": "normal",
+            "category": "maintenance",
             "created_at": "2026-05-08T17:00:00+00:00",
         }
     equipment_id = str(case.payload["equipment_id"])
@@ -388,6 +438,27 @@ CANONICAL_JOB_CASES = [
         expected_patch_status="no_action_needed",
         setup=setup_equipment_open,
     ),
+    CanonicalJobCase(
+        job_type="mark_issue_monitoring",
+        payload={"issue_id": "issue_prod_default", "actor": "Jordan", "occurred_at": "2026-05-30T12:00:00+00:00"},
+        expected_patch_id="site_issue_issue_prod_default",
+        expected_patch_status="monitoring",
+        setup=setup_issue_open,
+    ),
+    CanonicalJobCase(
+        job_type="mark_issue_resolved",
+        payload={"issue_id": "issue_prod_default", "actor": "Jordan", "occurred_at": "2026-05-30T12:00:00+00:00"},
+        expected_patch_id="site_issue_issue_prod_default",
+        expected_patch_status="resolved",
+        setup=setup_issue_monitoring,
+    ),
+    CanonicalJobCase(
+        job_type="mark_issue_open",
+        payload={"issue_id": "issue_prod_default", "actor": "Jordan", "occurred_at": "2026-05-30T12:00:00+00:00"},
+        expected_patch_id="site_issue_issue_prod_default",
+        expected_patch_status="open",
+        setup=setup_issue_resolved,
+    ),
 ]
 
 
@@ -423,7 +494,12 @@ def test_job_type_production_default_writes_couchdb_not_markdown(
     else:
         assert len(store.docs) == 1
         assert store.docs[0]["_id"] == case.expected_patch_id
-        assert store.docs[0]["type"] == ("supply_need" if case.expected_patch_id.startswith("supply_need_") else "equipment_request")
+        expected_type = "supply_need"
+        if case.expected_patch_id.startswith("equipment_request_"):
+            expected_type = "equipment_request"
+        if case.expected_patch_id.startswith("site_issue_"):
+            expected_type = "site_issue"
+        assert store.docs[0]["type"] == expected_type
         assert store.docs[0]["status"] == case.expected_patch_status
         assert store.update_doc_calls == [case.expected_patch_id]
         assert store.patch_status_calls == []

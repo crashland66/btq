@@ -31,6 +31,12 @@ class SiteIssue:
     updated_at: str
     summary: str
     resolution_trigger: str
+    monitoring_at: str
+    monitoring_by: str
+    monitoring_note: str
+    resolved_at: str
+    resolved_by: str
+    resolved_note: str
     related_capture_ids: tuple[str, ...]
     related_candidate_ids: tuple[str, ...]
     path: Path
@@ -85,7 +91,13 @@ def _site_issue_from_couch_doc(doc: dict[str, Any]) -> SiteIssue | None:
         updated_at=clean_string(doc.get("updated_at")),
         summary=clean_string(doc.get("summary")),
         resolution_trigger=clean_string(doc.get("resolution_trigger")),
-        related_capture_ids=tuple(str(x) for x in (doc.get("btq_job_ids") or []) if x),
+        monitoring_at=clean_string(doc.get("monitoring_at")),
+        monitoring_by=clean_string(doc.get("monitoring_by")),
+        monitoring_note=clean_string(doc.get("monitoring_note")),
+        resolved_at=clean_string(doc.get("resolved_at")),
+        resolved_by=clean_string(doc.get("resolved_by")),
+        resolved_note=clean_string(doc.get("resolved_note")),
+        related_capture_ids=tuple(str(x) for x in (doc.get("related_capture_ids") or []) if x),
         related_candidate_ids=tuple(str(x) for x in (doc.get("related_candidate_ids") or []) if x),
         path=Path(str(doc.get("_id") or issue_id)),
     )
@@ -182,6 +194,12 @@ def parse_site_issue(path: Path) -> tuple[SiteIssue | None, dict[str, str] | Non
             updated_at=clean_string(frontmatter.get("updated_at")),
             summary=summary_from_body(body),
             resolution_trigger=clean_string(frontmatter.get("resolution_trigger")),
+            monitoring_at=clean_string(frontmatter.get("monitoring_at")),
+            monitoring_by=clean_string(frontmatter.get("monitoring_by")),
+            monitoring_note=clean_string(frontmatter.get("monitoring_note")),
+            resolved_at=clean_string(frontmatter.get("resolved_at")),
+            resolved_by=clean_string(frontmatter.get("resolved_by")),
+            resolved_note=clean_string(frontmatter.get("resolved_note")),
             related_capture_ids=tuple(frontmatter_list(frontmatter.get("related_capture_ids"))),
             related_candidate_ids=tuple(frontmatter_list(frontmatter.get("related_candidate_ids"))),
             path=path.expanduser().resolve(strict=False),
@@ -274,6 +292,12 @@ def issue_as_export(issue: SiteIssue, *, include_path: bool = False) -> dict[str
         "updated_at": issue.updated_at,
         "summary": issue.summary,
         "resolution_trigger": issue.resolution_trigger,
+        "monitoring_at": issue.monitoring_at,
+        "monitoring_by": issue.monitoring_by,
+        "monitoring_note": issue.monitoring_note,
+        "resolved_at": issue.resolved_at,
+        "resolved_by": issue.resolved_by,
+        "resolved_note": issue.resolved_note,
         "related_capture_ids": list(issue.related_capture_ids),
         "related_candidate_ids": list(issue.related_candidate_ids),
     }

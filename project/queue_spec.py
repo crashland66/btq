@@ -59,6 +59,9 @@ JOB_MARK_EQUIPMENT_DENIED = "mark_equipment_denied"
 JOB_MARK_EQUIPMENT_ORDERED = "mark_equipment_ordered"
 JOB_MARK_EQUIPMENT_PROVIDED = "mark_equipment_provided"
 JOB_MARK_EQUIPMENT_NO_ACTION_NEEDED = "mark_equipment_no_action_needed"
+JOB_MARK_ISSUE_MONITORING = "mark_issue_monitoring"
+JOB_MARK_ISSUE_RESOLVED = "mark_issue_resolved"
+JOB_MARK_ISSUE_OPEN = "mark_issue_open"
 JOB_VOICE_MEMO_NOTE = "voice_memo_note"
 # Reserved for future deterministic person-note route. Not produced by any
 # current extraction or routing path. Add back to APPEND_DESTINATIONS only
@@ -128,6 +131,9 @@ ALLOWED_JOB_TYPES = {
     JOB_MARK_EQUIPMENT_ORDERED,
     JOB_MARK_EQUIPMENT_PROVIDED,
     JOB_MARK_EQUIPMENT_NO_ACTION_NEEDED,
+    JOB_MARK_ISSUE_MONITORING,
+    JOB_MARK_ISSUE_RESOLVED,
+    JOB_MARK_ISSUE_OPEN,
     JOB_VOICE_MEMO_NOTE,
 }
 
@@ -177,6 +183,9 @@ JOB_SCHEMAS = {
     JOB_MARK_EQUIPMENT_ORDERED: ["equipment_id", "actor"],
     JOB_MARK_EQUIPMENT_PROVIDED: ["equipment_id", "actor"],
     JOB_MARK_EQUIPMENT_NO_ACTION_NEEDED: ["equipment_id", "actor"],
+    JOB_MARK_ISSUE_MONITORING: ["issue_id", "actor"],
+    JOB_MARK_ISSUE_RESOLVED: ["issue_id", "actor"],
+    JOB_MARK_ISSUE_OPEN: ["issue_id", "actor"],
     JOB_VOICE_MEMO_NOTE: ["capture_id", "timestamp", "audio_file", "raw_transcript_path", "transcript_text"],
 }
 
@@ -332,6 +341,12 @@ MARK_SUPPLY_ALLOWED_PAYLOAD_FIELDS = {
 }
 MARK_EQUIPMENT_ALLOWED_PAYLOAD_FIELDS = {
     "equipment_id",
+    "actor",
+    "note",
+    "occurred_at",
+}
+MARK_ISSUE_ALLOWED_PAYLOAD_FIELDS = {
+    "issue_id",
     "actor",
     "note",
     "occurred_at",
@@ -795,6 +810,22 @@ def _validate_mark_equipment_payload(payload: dict) -> bool:
     return True
 
 
+def _validate_mark_issue_payload(payload: dict) -> bool:
+    if set(payload) - MARK_ISSUE_ALLOWED_PAYLOAD_FIELDS:
+        return False
+    if not _is_non_empty_string(payload.get("issue_id")):
+        return False
+    if not _is_non_empty_string(payload.get("actor")):
+        return False
+    note = payload.get("note")
+    if note is not None and not isinstance(note, str):
+        return False
+    occurred_at = payload.get("occurred_at")
+    if occurred_at is not None and not isinstance(occurred_at, str):
+        return False
+    return True
+
+
 def validate_job(job: dict) -> bool:
     if not isinstance(job, dict):
         return False
@@ -938,6 +969,13 @@ def validate_job(job: dict) -> bool:
         JOB_MARK_EQUIPMENT_NO_ACTION_NEEDED,
     }:
         if not _validate_mark_equipment_payload(payload):
+            return False
+    if job_type in {
+        JOB_MARK_ISSUE_MONITORING,
+        JOB_MARK_ISSUE_RESOLVED,
+        JOB_MARK_ISSUE_OPEN,
+    }:
+        if not _validate_mark_issue_payload(payload):
             return False
     if job_type == JOB_VOICE_MEMO_NOTE:
         for field in ("capture_id", "timestamp", "audio_file", "raw_transcript_path", "transcript_text"):

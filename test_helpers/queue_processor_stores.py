@@ -61,6 +61,14 @@ class RecordingVaultStore:
         ]
         return matches[:limit]
 
+    def find_site_issue_docs_by_issue_id(self, issue_id: str, *, limit: int = 10) -> list[dict[str, Any]]:
+        matches = [
+            dict(doc)
+            for doc in self.docs
+            if doc.get("type") == "site_issue" and str(doc.get("issue_id")) == str(issue_id)
+        ]
+        return matches[:limit]
+
     def find_supply_need_docs_by_supply_id(self, supply_id: str, *, limit: int = 10) -> list[dict[str, Any]]:
         matches = [
             dict(doc)

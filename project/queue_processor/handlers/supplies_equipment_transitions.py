@@ -56,6 +56,17 @@ def _resolve_equipment_doc_id(equipment_id: str) -> str:
     return ids[0] if ids else legacy
 
 
+def _resolve_issue_doc_id(issue_id: str) -> str:
+    """Resolve the canonical site_issue ``_id`` for a bare ``issue_id``."""
+    legacy = f"site_issue_{issue_id}"
+    try:
+        docs = _shared._vault_store().find_site_issue_docs_by_issue_id(issue_id)
+    except Exception:
+        return legacy
+    ids = sorted(str(doc.get("_id")) for doc in docs if doc.get("_id"))
+    return ids[0] if ids else legacy
+
+
 def locate_equipment_file_by_id(context: RunContext, equipment_id: str) -> Path | None:
     equipment_id = equipment_id.strip()
     if not equipment_id:
@@ -63,6 +74,14 @@ def locate_equipment_file_by_id(context: RunContext, equipment_id: str) -> Path 
     accounts_root = _shared.ensure_within_root(context.vault_root / "Accounts", context.vault_root, "Accounts root")
     matches = sorted(accounts_root.glob(f"*/Locations/*/Equipment/{equipment_id}__*.md"))
     return _shared.ensure_within_root(matches[0], context.vault_root, "Equipment target") if matches else None
+
+def locate_issue_file_by_id(context: RunContext, issue_id: str) -> Path | None:
+    issue_id = issue_id.strip()
+    if not issue_id:
+        return None
+    accounts_root = _shared.ensure_within_root(context.vault_root / "Accounts", context.vault_root, "Accounts root")
+    matches = sorted(accounts_root.glob(f"*/Locations/*/Issues/{issue_id}__*.md"))
+    return _shared.ensure_within_root(matches[0], context.vault_root, "Issue target") if matches else None
 
 def supply_as_payload(supply: SupplyNeed) -> dict:
     payload: dict[str, object] = {
@@ -183,6 +202,22 @@ def _validate_equipment_transition(
     if current_status not in valid_source_statuses:
         raise _shared.QueueProcessorError(
             f"Cannot transition equipment {equipment_id} to {target_status} from current status {current_status}; "
+            f"expected one of {valid_source_statuses}"
+        )
+    return current_status
+
+def _validate_issue_transition(
+    state_doc: dict[str, Any] | None,
+    issue_id: str,
+    target_status: str,
+    valid_source_statuses: tuple[str, ...],
+) -> str:
+    if state_doc is None:
+        raise _shared.QueueProcessorError(f"No canonical site issue with id {issue_id} found")
+    current_status = str(state_doc.get("status") or "open").strip()
+    if current_status not in valid_source_statuses:
+        raise _shared.QueueProcessorError(
+            f"Cannot transition issue {issue_id} to {target_status} from current status {current_status}; "
             f"expected one of {valid_source_statuses}"
         )
     return current_status
@@ -385,6 +420,103 @@ def _process_mark_equipment_job(
     print(f"Job {job.job_id}: moved queue file to {moved_path}")
     _shared.write_log_line(context.log_path, f"job_id={job.job_id} action=mark-equipment-{target_status} status=success error=")
 
+def _process_mark_issue_job(
+    job_path: Path,
+    job: _shared.QueueJob,
+    context: _shared.RunContext,
+    processed_dir: Path,
+    *,
+    target_status: str,
+    valid_source_statuses: tuple[str, ...],
+    timestamp_field: str | None,
+    actor_field: str | None,
+    note_field: str | None,
+) -> None:
+    payload = job.payload
+    issue_id = str(payload["issue_id"])
+    actor = str(payload["actor"])
+    note = str(payload.get("note") or "")
+    occurred_at = str(payload.get("occurred_at") or datetime.now(timezone.utc).isoformat())
+    processed_destination = processed_dir / job_path.name
+    if not context.dry_run and processed_destination.exists():
+        raise _shared.QueueProcessorError(f"Destination already exists: {processed_destination}")
+
+    doc_id = _resolve_issue_doc_id(issue_id)
+    target = CanonicalTarget(
+        doc_id=doc_id,
+        doc_type="site_issue",
+        allow_create=False,
+        require_existing=True,
+    )
+
+    def transform(state: CanonicalEntityState) -> CanonicalMutation:
+        _validate_issue_transition(state.doc, issue_id, target_status, valid_source_statuses)
+        outgoing = dict(state.doc or {})
+        outgoing["status"] = target_status
+        if timestamp_field:
+            outgoing[timestamp_field] = occurred_at
+        if actor_field:
+            outgoing[actor_field] = actor
+        if note_field and note:
+            outgoing[note_field] = note
+        return CanonicalMutation(doc=outgoing, evidence_text=f"site_issue {issue_id} marked {target_status}")
+
+    if context.dry_run:
+        try:
+            current_doc = _shared._vault_store().get_optional(doc_id)
+        except Exception as exc:
+            raise _shared.QueueJobError(
+                "canonical couchdb write failed "
+                f"job_type={job.job_type} job_id={job.job_id} entity_id={doc_id}: {exc}"
+            ) from exc
+        if current_doc is None:
+            raise _shared.QueueJobError(
+                "canonical couchdb write failed "
+                f"job_type={job.job_type} job_id={job.job_id} entity_id={doc_id}: "
+                f"CouchDB required document not found for canonical RMW: {doc_id}"
+            )
+        if job.job_id in [str(value).strip() for value in current_doc.get("btq_job_ids") or []]:
+            print(f"Job {job.job_id}: job_id marker already present — skipping")
+            _shared.write_log_line(context.log_path, f"job_id={job.job_id} action=skip status=success reason=job-id-marker-present")
+            return
+        _validate_issue_transition(current_doc, issue_id, target_status, valid_source_statuses)
+        print(f"Job {job.job_id}: validated")
+        print(f"Job {job.job_id}: target {doc_id}")
+        print(f"Job {job.job_id}: would mark issue {target_status}")
+        _shared.write_log_line(context.log_path, f"job_id={job.job_id} action=mark-issue-{target_status} status=success error=")
+        return
+
+    try:
+        canonical_doc = apply_canonical_rmw(_shared._vault_store(), target, job.job_id, transform)
+    except _shared.QueueProcessorError:
+        raise
+    except Exception as exc:
+        raise _shared.QueueJobError(
+            "canonical couchdb write failed "
+            f"job_type={job.job_type} job_id={job.job_id} entity_id={doc_id}: {exc}"
+        ) from exc
+
+    if canonical_doc is None:
+        print(f"Job {job.job_id}: job_id marker already present — skipping")
+        moved_path = _shared.move_job_file(job_path, processed_dir)
+        print(f"Job {job.job_id}: moved queue file to {moved_path}")
+        _shared.write_log_line(context.log_path, f"job_id={job.job_id} action=skip status=success reason=job-id-marker-present")
+        return
+
+    print(f"Job {job.job_id}: validated")
+    print(f"Job {job.job_id}: target {doc_id}")
+    _shared.write_mutation_evidence(
+        context,
+        job,
+        canonical_doc,
+        f"site_issue {issue_id} marked {target_status}",
+    )
+
+    moved_path = _shared.move_job_file(job_path, processed_dir)
+    print(f"Job {job.job_id}: updated {doc_id}")
+    print(f"Job {job.job_id}: moved queue file to {moved_path}")
+    _shared.write_log_line(context.log_path, f"job_id={job.job_id} action=mark-issue-{target_status} status=success error=")
+
 def process_mark_supply_ordered_job(job_path: Path, job: QueueJob, context: RunContext, processed_dir: Path) -> None:
     _process_mark_supply_job(
         job_path,
@@ -500,4 +632,43 @@ def process_mark_equipment_no_action_needed_job(job_path: Path, job: QueueJob, c
         timestamp_field=None,
         actor_field=None,
         note_field=None,
+    )
+
+def process_mark_issue_monitoring_job(job_path: Path, job: QueueJob, context: RunContext, processed_dir: Path) -> None:
+    _process_mark_issue_job(
+        job_path,
+        job,
+        context,
+        processed_dir,
+        target_status="monitoring",
+        valid_source_statuses=("open",),
+        timestamp_field="monitoring_at",
+        actor_field="monitoring_by",
+        note_field="monitoring_note",
+    )
+
+def process_mark_issue_resolved_job(job_path: Path, job: QueueJob, context: RunContext, processed_dir: Path) -> None:
+    _process_mark_issue_job(
+        job_path,
+        job,
+        context,
+        processed_dir,
+        target_status="resolved",
+        valid_source_statuses=("open", "monitoring"),
+        timestamp_field="resolved_at",
+        actor_field="resolved_by",
+        note_field="resolved_note",
+    )
+
+def process_mark_issue_open_job(job_path: Path, job: QueueJob, context: RunContext, processed_dir: Path) -> None:
+    _process_mark_issue_job(
+        job_path,
+        job,
+        context,
+        processed_dir,
+        target_status="open",
+        valid_source_statuses=("monitoring", "resolved"),
+        timestamp_field="open_at",
+        actor_field="open_by",
+        note_field="open_note",
     )

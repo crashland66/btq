@@ -937,7 +937,8 @@ http://127.0.0.1:8765/
 - `/captures` renders the read-only capture browser with per-capture detail
   pages that show inline photo-vision cards (preview + AI metadata), other
   uploads, action candidates, and drafts
-- `/field-capture/issues` renders read-only structured site issues
+- `/field-capture/issues` renders structured site issues, detail/source views,
+  and queue-job-driven status transition forms
 - `/supplies` renders a read-only list of supply-need records parsed from
   `Accounts/*/Locations/*/Supplies/*.md`. Filters by `?site_id=<id>` and
   `?status=<open|ordered|...>`
@@ -1002,6 +1003,12 @@ recent log warnings/errors. The Inbox is the default operator landing page.
 - `/equipment/mark-no-action-needed` stages a
   `mark_equipment_no_action_needed` queue job; any non-terminal equipment
   status to `no_action_needed`
+- `/field-capture/issues/mark-monitoring` stages a
+  `mark_issue_monitoring` queue job; `open` to `monitoring`
+- `/field-capture/issues/mark-resolved` stages a
+  `mark_issue_resolved` queue job; `open` or `monitoring` to `resolved`
+- `/field-capture/issues/reopen` stages a `mark_issue_open` queue job;
+  `monitoring` or `resolved` to `open`
 - `/failed/retry-sidecar` mutates one retry-intent file consumed by
   `pipeline_watcher`
 - `/sites/save` mutates one `btq_sites` document

@@ -20,6 +20,7 @@ from queue_spec import (
     JOB_LOG_EQUIPMENT_REQUEST, JOB_LOG_PERSONNEL_EVENT, JOB_LOG_SITE_ISSUE, JOB_LOG_SUPPLY_NEED,
     JOB_MARK_EQUIPMENT_APPROVED, JOB_MARK_EQUIPMENT_DENIED, JOB_MARK_EQUIPMENT_NO_ACTION_NEEDED,
     JOB_MARK_EQUIPMENT_ORDERED, JOB_MARK_EQUIPMENT_PROVIDED, JOB_MARK_SUPPLY_DELIVERED,
+    JOB_MARK_ISSUE_MONITORING, JOB_MARK_ISSUE_OPEN, JOB_MARK_ISSUE_RESOLVED,
     JOB_MARK_SUPPLY_NO_ACTION_NEEDED, JOB_MARK_SUPPLY_ORDERED, JOB_MARK_SUPPLY_STOCKED,
     JOB_PARSE_SUPPLY_EMAIL, JOB_PERSONAL_JOURNAL_ENTRY, JOB_PHOTO_CAPTURE, JOB_PROMOTE_PROSPECT,
     JOB_RECLASSIFY_UNKNOWN, JOB_REMOVE_FROM_SCHEDULE, JOB_RETARGET_CAPTURE, JOB_TRIGGER_RECRUITING,
@@ -77,6 +78,7 @@ process_log_equipment_request_job = supplies_equipment.process_log_equipment_req
 process_update_site_equipment_job = supplies_equipment.process_update_site_equipment_job
 _process_mark_supply_job = supplies_equipment_transitions._process_mark_supply_job
 _process_mark_equipment_job = supplies_equipment_transitions._process_mark_equipment_job
+_process_mark_issue_job = supplies_equipment_transitions._process_mark_issue_job
 process_mark_supply_ordered_job = supplies_equipment_transitions.process_mark_supply_ordered_job
 process_mark_supply_delivered_job = supplies_equipment_transitions.process_mark_supply_delivered_job
 process_mark_supply_stocked_job = supplies_equipment_transitions.process_mark_supply_stocked_job
@@ -86,6 +88,9 @@ process_mark_equipment_denied_job = supplies_equipment_transitions.process_mark_
 process_mark_equipment_ordered_job = supplies_equipment_transitions.process_mark_equipment_ordered_job
 process_mark_equipment_provided_job = supplies_equipment_transitions.process_mark_equipment_provided_job
 process_mark_equipment_no_action_needed_job = supplies_equipment_transitions.process_mark_equipment_no_action_needed_job
+process_mark_issue_monitoring_job = supplies_equipment_transitions.process_mark_issue_monitoring_job
+process_mark_issue_resolved_job = supplies_equipment_transitions.process_mark_issue_resolved_job
+process_mark_issue_open_job = supplies_equipment_transitions.process_mark_issue_open_job
 process_log_site_issue_job = site_flags_notes.process_log_site_issue_job
 process_append_to_note_job = site_flags_notes.process_append_to_note_job
 process_flag_access_constraint_job = site_flags_notes.process_flag_access_constraint_job
@@ -446,6 +451,9 @@ def target_path_hint(job: QueueJob, context: RunContext) -> str:
             return str(target_path) if target_path is not None else "unknown"
         if job.job_type in {JOB_MARK_EQUIPMENT_APPROVED, JOB_MARK_EQUIPMENT_DENIED, JOB_MARK_EQUIPMENT_ORDERED, JOB_MARK_EQUIPMENT_PROVIDED, JOB_MARK_EQUIPMENT_NO_ACTION_NEEDED}:
             target_path = supplies_equipment_transitions.locate_equipment_file_by_id(context, str(payload["equipment_id"]))
+            return str(target_path) if target_path is not None else "unknown"
+        if job.job_type in {JOB_MARK_ISSUE_MONITORING, JOB_MARK_ISSUE_RESOLVED, JOB_MARK_ISSUE_OPEN}:
+            target_path = supplies_equipment_transitions.locate_issue_file_by_id(context, str(payload["issue_id"]))
             return str(target_path) if target_path is not None else "unknown"
         if job.job_type == JOB_VOICE_MEMO_NOTE:
             targets = misc.voice_memo_note_targets(payload, context)
