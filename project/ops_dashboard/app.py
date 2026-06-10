@@ -146,6 +146,8 @@ def route_response_with_headers(method: str, path: str, runtime_root: Path, body
         return candidates.handle_unarchive(ctx, body)
     if method == "POST" and route_path == "/field-capture/review/resubmit":
         return candidates.handle_resubmit(ctx, body)
+    if method == "POST" and route_path == "/field-capture/review/fix":
+        return candidates.handle_fix(ctx, body)
     if method == "POST" and route_path == "/field-capture/review/client-informed":
         return candidates.handle_client_informed(ctx, body)
     if method == "POST" and route_path == "/field-capture/review/resolve":

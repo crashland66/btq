@@ -19,6 +19,7 @@ from event_pipeline.couchdb_candidate_writer import (
     action_candidate_doc_id,
     get_action_candidate,
     list_action_candidates,
+    patch_action_candidate_fields as couchdb_patch_action_candidate_fields,
     set_action_candidate_archived as couchdb_set_action_candidate_archived,
     set_action_candidate_status,
     upsert_action_candidate,
@@ -957,6 +958,23 @@ def set_action_candidate_archived(
         archived=archived,
         by=by,
         at=at,
+        expected_rev=expected_rev,
+    )
+
+
+def patch_action_candidate_fields(
+    config: couchdb_config.CouchDBConfig,
+    db: str,
+    candidate_id: str,
+    *,
+    fields: dict[str, Any],
+    expected_rev: str | None = None,
+) -> dict[str, Any]:
+    return couchdb_patch_action_candidate_fields(
+        config,
+        db,
+        candidate_id,
+        fields=fields,
         expected_rev=expected_rev,
     )
 

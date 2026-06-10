@@ -9,9 +9,13 @@ from pathlib import Path
 from types import SimpleNamespace
 from urllib.parse import urlencode
 
+import pytest
+
 import ops_dashboard.app as ops_app
 from btq import parse_args
+from event_pipeline import couchdb_config
 from field_capture import action_candidates as field_action_candidates
+from field_capture import approved_job_drafts
 from field_capture import photo_vision as field_photo_vision
 from ops_dashboard.app import build_status, route_response, startup_lines
 from ops_dashboard.common import SectionContext
@@ -1438,6 +1442,186 @@ def test_field_capture_review_resubmit_invalid_failed_candidate_flashes_without_
     assert status_code == HTTPStatus.SEE_OTHER
     assert "the+proposed+job+isn%27t+valid+yet" in headers["Location"]
     assert couchdb_review.status_of(candidate_id) == "failed"
+    assert not (runtime_root / "queue").exists()
+
+
+def test_patch_action_candidate_fields_deep_merges_channel_metadata_and_rejects_disallowed_keys(
+    tmp_path: Path,
+    couchdb_review,
+) -> None:
+    runtime_root = tmp_path / "runtime"
+    candidate_dir = runtime_root / "reviews" / "action_candidates" / "field_capture"
+    candidate = action_candidate_payload(
+        candidate_type="field_capture_follow_up",
+        summary="Original summary",
+        source_text="Original source",
+        channel_metadata={"site_id": "bad-site", "area": "Lobby", "upload_id": "cap-1"},
+        status="failed",
+    )
+    write_action_candidate_review(candidate_dir, candidate)
+    couchdb_review.seed_from_fs(runtime_root)
+    candidate_id = str(candidate["candidate_id"])
+    cfg = couchdb_config.from_env()
+    db = couchdb_config.field_captures_database()
+    original_rev = couchdb_review.docs[f"action_candidate_{candidate_id}"]["_rev"]
+
+    updated = field_action_candidates.patch_action_candidate_fields(
+        cfg,
+        db,
+        candidate_id,
+        fields={"channel_metadata": {"site_id": "7010"}, "summary": "Fixed summary", "source_text": "Fixed source"},
+        expected_rev=original_rev,
+    )
+
+    metadata = couchdb_review.docs[f"action_candidate_{candidate_id}"]["source_detail"]["channel_metadata"]
+    assert updated["_rev"] != original_rev
+    assert metadata["site_id"] == "7010"
+    assert metadata["area"] == "Lobby"
+    assert metadata["upload_id"] == "cap-1"
+    assert couchdb_review.docs[f"action_candidate_{candidate_id}"]["summary"] == "Fixed summary"
+    assert couchdb_review.docs[f"action_candidate_{candidate_id}"]["source_detail"]["source_text"] == "Fixed source"
+
+    with pytest.raises(field_action_candidates.CouchDBCandidateWriterError):
+        field_action_candidates.patch_action_candidate_fields(
+            cfg,
+            db,
+            candidate_id,
+            fields={"status": "approved"},
+            expected_rev=updated["_rev"],
+        )
+    with pytest.raises(field_action_candidates.AlreadyDecided):
+        field_action_candidates.patch_action_candidate_fields(
+            cfg,
+            db,
+            candidate_id,
+            fields={"area": "Kitchen"},
+            expected_rev=original_rev,
+        )
+
+
+def test_candidate_card_failed_with_proposed_error_shows_fix_form_and_site_dropdown(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(
+        candidates_section,
+        "SITES",
+        [{"site_id": "fix-site", "canonical": "Fix Site", "note_path": "Accounts/fix-site.md"}],
+    )
+    payload = action_candidate_payload(
+        candidate_type="field_capture_follow_up",
+        summary="Review sink area.",
+        channel_metadata={"site_id": "fix-site", "area": "Lobby", "visit_proposed": True, "visit_type": "follow_up"},
+        status="failed",
+    )
+    failed = candidate_detail(tmp_path / "failed.json", payload)
+    failed["proposed_job_error"] = "missing target"
+    failed["proposed_jobs"] = [{"job_type": "", "payload": {}, "error": "missing target"}]
+
+    body = render_candidate_card(failed)
+
+    assert 'action="/field-capture/review/fix"' in body
+    assert "Fix &amp; resubmit" in body
+    assert "missing target" in body
+    assert '<option value="fix-site" selected>Fix Site (fix-site)</option>' in body
+    assert 'name="candidate_id"' in body
+    assert 'name="_rev"' in body
+    assert 'name="status"' not in body
+    assert 'name="provenance"' not in body
+
+
+def test_field_capture_review_fix_valid_payload_resubmits_candidate(tmp_path: Path, monkeypatch, couchdb_review) -> None:
+    monkeypatch.setattr(
+        approved_job_drafts,
+        "SITES",
+        [{"site_id": "fix-site", "canonical": "Fix Site", "note_path": "Accounts/fix-site.md"}],
+    )
+    runtime_root = tmp_path / "runtime"
+    candidate_dir = runtime_root / "reviews" / "action_candidates" / "field_capture"
+    candidate = action_candidate_payload(
+        candidate_type="field_capture_follow_up",
+        summary="Broken site payload",
+        source_text="Please add this to the site note.",
+        channel_metadata={"site_id": "missing-site", "area": "Lobby", "upload_id": "cap-1"},
+        status="failed",
+    )
+    write_action_candidate_review(candidate_dir, candidate)
+    couchdb_review.seed_from_fs(runtime_root)
+    candidate_id = str(candidate["candidate_id"])
+    rev = couchdb_review.docs[f"action_candidate_{candidate_id}"]["_rev"]
+
+    status_code, _content_type, _body = request_text(
+        "POST",
+        "/field-capture/review/fix",
+        runtime_root,
+        urlencode(
+            {
+                "candidate_id": candidate_id,
+                "_rev": rev,
+                "reviewer": "Jordan",
+                "site_id": "fix-site",
+                "area": "Lobby",
+                "summary": "Fixed site payload",
+                "visit_proposed_present": "1",
+            }
+        ),
+    )
+
+    assert status_code == HTTPStatus.SEE_OTHER
+    assert couchdb_review.status_of(candidate_id) == "approved"
+    assert len(list((runtime_root / "queue").glob("*.json"))) == 1
+    doc = couchdb_review.docs[f"action_candidate_{candidate_id}"]
+    assert doc["source_detail"]["channel_metadata"]["site_id"] == "fix-site"
+    assert doc["summary"] == "Fixed site payload"
+    history = doc["review_history"]
+    assert history[-1]["reason"] == "fix_resubmit"
+    assert history[-1]["prior_status"] == "failed"
+
+
+def test_field_capture_review_fix_still_invalid_saves_patch_without_staging(
+    tmp_path: Path,
+    monkeypatch,
+    couchdb_review,
+) -> None:
+    monkeypatch.setattr(
+        approved_job_drafts,
+        "SITES",
+        [{"site_id": "fix-site", "canonical": "Fix Site", "note_path": "Accounts/fix-site.md"}],
+    )
+    runtime_root = tmp_path / "runtime"
+    candidate_dir = runtime_root / "reviews" / "action_candidates" / "field_capture"
+    candidate = action_candidate_payload(
+        candidate_type="field_capture_follow_up",
+        summary="Still broken site payload",
+        source_text="Please add this to the site note.",
+        channel_metadata={"site_id": "missing-site", "area": "Lobby", "upload_id": "cap-1"},
+        status="failed",
+    )
+    write_action_candidate_review(candidate_dir, candidate)
+    couchdb_review.seed_from_fs(runtime_root)
+    candidate_id = str(candidate["candidate_id"])
+    rev = couchdb_review.docs[f"action_candidate_{candidate_id}"]["_rev"]
+
+    status_code, _content_type, _body, headers = ops_app.route_response_with_headers(
+        "POST",
+        "/field-capture/review/fix",
+        runtime_root,
+        urlencode(
+            {
+                "candidate_id": candidate_id,
+                "_rev": rev,
+                "reviewer": "Jordan",
+                "site_id": "still-missing",
+                "area": "Lobby",
+                "summary": "Saved but still invalid",
+                "visit_proposed_present": "1",
+            }
+        ).encode("utf-8"),
+    )
+
+    assert status_code == HTTPStatus.SEE_OTHER
+    assert "could+not+resolve+site+note+path" in headers["Location"]
+    assert couchdb_review.status_of(candidate_id) == "failed"
+    doc = couchdb_review.docs[f"action_candidate_{candidate_id}"]
+    assert doc["source_detail"]["channel_metadata"]["site_id"] == "still-missing"
+    assert doc["summary"] == "Saved but still invalid"
     assert not (runtime_root / "queue").exists()
 
 

@@ -12,6 +12,11 @@ ACTION_CANDIDATE_TYPE = "action_candidate"
 ACTION_CANDIDATE_ID_PREFIX = "action_candidate_"
 ALLOWED_STATUSES = frozenset({"pending_review", "approved", "rejected", "failed"})
 DEFAULT_FIND_LIMIT = 500
+ACTION_CANDIDATE_WRITABLE_FIELDS = frozenset(
+    {"site_id", "area", "visit_proposed", "visit_type", "summary", "rationale", "source_text", "confidence"}
+)
+ACTION_CANDIDATE_CHANNEL_METADATA_FIELDS = frozenset({"site_id", "area", "visit_proposed", "visit_type"})
+ACTION_CANDIDATE_SOURCE_FIELDS = frozenset({"rationale", "source_text", "confidence"})
 
 
 class CouchDBCandidateWriterError(Exception):
@@ -155,6 +160,52 @@ def set_action_candidate_status(
             "review_history": review_history,
         }
     )
+    return _put_document(config, db, str(updated["_id"]), updated, conflict_as_already_decided=True)
+
+
+def patch_action_candidate_fields(
+    config: couchdb_config.CouchDBConfig,
+    db: str,
+    candidate_id: str,
+    *,
+    fields: dict[str, Any],
+    expected_rev: str | None = None,
+) -> dict[str, Any]:
+    patch = _normalized_action_candidate_field_patch(fields)
+    doc = get_action_candidate(config, db, candidate_id)
+    if doc is None:
+        raise CouchDBCandidateWriterError(f"candidate not found: {candidate_id}")
+    current_rev = str(doc.get("_rev") or "")
+    if not current_rev:
+        raise CouchDBCandidateWriterError(f"candidate has no _rev: {candidate_id}")
+    if expected_rev is not None and str(expected_rev) != current_rev:
+        raise AlreadyDecided(f"candidate _rev changed: {candidate_id}")
+
+    updated = dict(doc)
+    source_targets = _mutable_candidate_source_targets(updated)
+    if any(key in patch for key in ACTION_CANDIDATE_CHANNEL_METADATA_FIELDS):
+        for target in source_targets:
+            metadata = target.get("channel_metadata")
+            merged_metadata = dict(metadata) if isinstance(metadata, dict) else {}
+            for key in ACTION_CANDIDATE_CHANNEL_METADATA_FIELDS:
+                if key in patch:
+                    merged_metadata[key] = _coerced_action_candidate_patch_value(key, patch[key])
+            target["channel_metadata"] = merged_metadata
+    if "site_id" in patch:
+        updated["site_id"] = str(_coerced_action_candidate_patch_value("site_id", patch["site_id"]) or "")
+    if "summary" in patch:
+        updated["summary"] = str(_coerced_action_candidate_patch_value("summary", patch["summary"]) or "")
+    if any(key in patch for key in ACTION_CANDIDATE_SOURCE_FIELDS):
+        evidence = updated.get("evidence")
+        merged_evidence = dict(evidence) if isinstance(evidence, dict) else {}
+        for key in ACTION_CANDIDATE_SOURCE_FIELDS:
+            if key not in patch:
+                continue
+            value = _coerced_action_candidate_patch_value(key, patch[key])
+            for target in source_targets:
+                target[key] = value
+            merged_evidence[key] = value
+        updated["evidence"] = merged_evidence
     return _put_document(config, db, str(updated["_id"]), updated, conflict_as_already_decided=True)
 
 
@@ -364,6 +415,58 @@ def _get_document(
     if not isinstance(parsed, dict):
         raise CouchDBCandidateWriterError("CouchDB action candidate GET returned non-object JSON")
     return parsed
+
+
+def _normalized_action_candidate_field_patch(fields: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(fields, dict):
+        raise CouchDBCandidateWriterError("candidate field patch must be an object")
+    patch: dict[str, Any] = {}
+    for key, value in fields.items():
+        key_text = str(key or "").strip()
+        if key_text == "channel_metadata":
+            if not isinstance(value, dict):
+                raise CouchDBCandidateWriterError("channel_metadata patch must be an object")
+            for nested_key, nested_value in value.items():
+                nested_key_text = str(nested_key or "").strip()
+                if nested_key_text not in ACTION_CANDIDATE_CHANNEL_METADATA_FIELDS:
+                    raise CouchDBCandidateWriterError(f"unsupported action candidate patch field: channel_metadata.{nested_key_text}")
+                patch[nested_key_text] = nested_value
+            continue
+        if key_text not in ACTION_CANDIDATE_WRITABLE_FIELDS:
+            raise CouchDBCandidateWriterError(f"unsupported action candidate patch field: {key_text}")
+        patch[key_text] = value
+    return patch
+
+
+def _mutable_candidate_source_targets(doc: dict[str, Any]) -> list[dict[str, Any]]:
+    targets: list[dict[str, Any]] = []
+    source = doc.get("source")
+    if isinstance(source, dict):
+        source_copy = dict(source)
+        doc["source"] = source_copy
+        targets.append(source_copy)
+    source_detail = doc.get("source_detail")
+    if isinstance(source_detail, dict):
+        source_detail_copy = dict(source_detail)
+        doc["source_detail"] = source_detail_copy
+        targets.append(source_detail_copy)
+    if not targets:
+        source_detail_copy = {}
+        doc["source_detail"] = source_detail_copy
+        targets.append(source_detail_copy)
+    return targets
+
+
+def _coerced_action_candidate_patch_value(key: str, value: Any) -> Any:
+    if key == "visit_proposed":
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return bool(value)
+        return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+    if key == "confidence":
+        return value
+    return str(value or "")
 
 
 def _put_document(

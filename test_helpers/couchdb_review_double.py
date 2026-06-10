@@ -11,8 +11,8 @@ lets those tests drive the NEW contract without a live CouchDB:
   * It patches ONLY the HTTP transport in
     ``event_pipeline.couchdb_candidate_writer`` (``_get_document`` /
     ``_put_document``) and the watcher's ``_request_json`` (`_find`), so ALL of
-    the real review/CAS/guard/watcher logic runs under test -- including the
-    real ``_rev`` 409 -> AlreadyDecided translation.
+    the real review/CAS/guard/watcher/payload-patch logic runs under test --
+    including the real ``_rev`` 409 -> AlreadyDecided translation.
   * It patches ``couchdb_config.from_env`` so the dashboard's
     ``_handle_review_post`` resolves a config without real env creds.
   * ``seed_from_fs`` mirrors the filesystem candidate artifacts the tests
@@ -212,6 +212,13 @@ class FakeCouchReview:
 
     def archived_of(self, candidate_id: str) -> bool:
         return bool(self.docs[f"action_candidate_{candidate_id}"].get("archived") is True)
+
+    def channel_metadata_of(self, candidate_id: str) -> dict:
+        source_detail = self.docs[f"action_candidate_{candidate_id}"].get("source_detail")
+        if not isinstance(source_detail, dict):
+            return {}
+        metadata = source_detail.get("channel_metadata")
+        return dict(metadata) if isinstance(metadata, dict) else {}
 
     def run_watcher(self, runtime_root: Path, *, stub_stage: bool = True):
         """Run one watcher pass. By default the actual filesystem staging is
