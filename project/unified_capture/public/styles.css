@@ -1175,6 +1175,7 @@ textarea:focus {
 }
 .inbox-actions .approve { background: var(--accent); border-color: var(--accent-dark); color: #06210a; }
 .inbox-actions .reject { background: var(--surface); color: var(--danger); border-color: var(--danger); }
+.inbox-actions .skip { background: var(--surface); color: var(--muted); border-color: var(--border); }
 .inbox-btn:disabled { opacity: .5; cursor: not-allowed; }
 
 .inbox-empty { text-align: center; color: var(--muted); padding: 2.5rem 1rem; }

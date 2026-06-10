@@ -202,6 +202,7 @@
         '<details class="inbox-detail"><summary>Proposed change</summary>' + payloadRows(action.payload) + "</details>" +
         '<div class="inbox-actions">' +
           '<button type="button" class="inbox-btn reject" data-act="reject">Reject</button>' +
+          '<button type="button" class="inbox-btn skip" data-act="skip">Skip</button>' +
           '<button type="button" class="inbox-btn approve" data-act="approve">Approve</button>' +
         "</div>" +
       "</article>";
@@ -228,6 +229,9 @@
   // ---- Decide -------------------------------------------------------------
   function decide(item, kind, cardEl) {
     if (state.loading) return;
+    // Skip just moves to the next card without writing anything; the item stays
+    // pending and comes back next time the inbox is opened.
+    if (kind === "skip") { advance(); return; }
     state.loading = true;
     if (cardEl) cardEl.classList.add(kind === "approve" ? "swiping-right" : "swiping-left");
     var reason = kind === "reject" ? "" : undefined; // reason optional; UI keeps it simple
@@ -311,6 +315,7 @@
     var card = els.mount.querySelector(".inbox-card");
     if (e.key === "a" || e.key === "A" || e.key === "ArrowRight") decide(item, "approve", card);
     else if (e.key === "r" || e.key === "R" || e.key === "ArrowLeft") decide(item, "reject", card);
+    else if (e.key === "s" || e.key === "S" || e.key === "ArrowDown") decide(item, "skip", card);
   });
 
   // Expose a hook app.js can call after a successful capture submit, so the
