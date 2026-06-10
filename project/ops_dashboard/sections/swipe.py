@@ -201,7 +201,7 @@ def render_body(request_ctx: object, *, payload: dict[str, object] | None = None
     </section>
 
     <p class="swipe-help muted">
-      Keyboard: <kbd>A</kbd> or <kbd>→</kbd> approve · <kbd>R</kbd> or <kbd>←</kbd> reject · <kbd>U</kbd> mark unknown
+      Keyboard: <kbd>A</kbd> or <kbd>→</kbd> approve · <kbd>R</kbd> or <kbd>←</kbd> reject · <kbd>S</kbd> or <kbd>↓</kbd> skip · <kbd>U</kbd> mark unknown
     </p>
 
     <form id="swipe-action-form" method="post" hidden>
@@ -300,6 +300,7 @@ window.__btqSwipeInit = function () {
         warn +
         '<div class="swipe-actions">' +
           '<button type="button" class="swipe-btn reject" data-act="reject" title="Reject (R / Left)">Reject</button>' +
+          '<button type="button" class="swipe-btn skip" data-act="skip" title="Skip without acting — leaves it pending (S / Down)">Skip</button>' +
           '<button type="button" class="swipe-btn edit" disabled title="Editing a proposed payload has no backend write path yet">Edit</button>' +
           '<button type="button" class="swipe-btn defer" disabled title="A distinct deferred status does not exist yet">Defer</button>' +
           '<button type="button" class="swipe-btn approve" data-act="approve"' + approveDisabled +
@@ -315,6 +316,9 @@ window.__btqSwipeInit = function () {
 
   function decide(card, action, btn) {
     if (btn && btn.disabled) return;
+    // Skip just advances to the next card without writing anything; the
+    // candidate stays pending_review and reappears on reload.
+    if (action === 'skip') { index += 1; render(); return; }
     if (action === 'approve' && !card.approvable) return;
     var reviewer = reviewerName();
     var route = action === 'approve' ? '/field-capture/review/approve' : '/field-capture/review/reject';
@@ -358,6 +362,8 @@ window.__btqSwipeInit = function () {
       decide(c, 'reject', null);
     } else if (e.key === 'u' || e.key === 'U') {
       decide(c, 'unknown', null);
+    } else if (e.key === 's' || e.key === 'S' || e.key === 'ArrowDown') {
+      decide(c, 'skip', null);
     }
   });
 

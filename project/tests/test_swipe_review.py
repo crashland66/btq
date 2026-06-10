@@ -80,6 +80,25 @@ def test_swipe_review_counts_are_filter_links(tmp_path):
     assert '<strong>1</strong> rejected / teachable</a>' in body
 
 
+def test_swipe_has_skip_control_that_advances_without_acting(tmp_path):
+    """A reviewer can move to the next card without approving/rejecting."""
+    from ops_dashboard.sections import swipe
+
+    body = swipe.render_body(
+        SimpleNamespace(runtime_root=tmp_path, config=SimpleNamespace(vault_dir=tmp_path / "vault")),
+        payload={"cards": [], "counts": {}},
+    )
+
+    # The Skip button is rendered in the action row...
+    assert 'data-act="skip"' in body
+    assert ">Skip<" in body
+    # ...wired to advance the index without any network write...
+    assert "if (action === 'skip') { index += 1; render(); return; }" in body
+    # ...bound to S / Down, and documented in the keyboard help.
+    assert "e.key === 's' || e.key === 'S' || e.key === 'ArrowDown'" in body
+    assert "<kbd>S</kbd>" in body and "skip" in body
+
+
 def test_swipe_card_carries_fallback_proposed_job(tmp_path, couchdb_review):
     # A field-capture candidate with only a summary still gets a proposed job:
     # proposed_queue_jobs falls back to a generated append_to_note. The card
