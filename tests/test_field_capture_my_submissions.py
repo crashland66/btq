@@ -491,6 +491,101 @@ def test_collect_my_submissions_track_a_processed(tmp_path):
     assert result[0]["stage"] == "processed"
 
 
+def test_collect_my_submissions_uses_couchdb_photo_vision_docs(tmp_path):
+    upload_dir = tmp_path / "uploads"
+    pv_dir = tmp_path / "pv"
+    cand_dir = tmp_path / "candidates"
+    for d in (upload_dir, pv_dir, cand_dir):
+        d.mkdir()
+
+    docs = [_make_full_doc("cap-couch", has_note=False, has_audio=False)]
+    result = collect_my_submissions(
+        "p1",
+        docs,
+        upload_dir=upload_dir,
+        photo_vision_dir=pv_dir,
+        candidates_dir=cand_dir,
+        photo_vision_couchdb_docs={
+            "cap-couch": [
+                {
+                    "capture_id": "cap-couch",
+                    "photo_id": "photo-001",
+                    "description": "Janitor closet shelf with unlabeled spray bottles.",
+                    "possible_issues": ["unlabeled bottle", "items stored on floor"],
+                    "quality": {"severity": "degraded", "flags": ["too_dark"]},
+                }
+            ]
+        },
+    )
+
+    assert result[0]["stage"] == "processed"
+    assert result[0]["per_photo_quality"] == [
+        {
+            "severity": "degraded",
+            "flags": ["too_dark"],
+            "description": "Janitor closet shelf with unlabeled spray bottles.",
+            "possible_issues": ["unlabeled bottle", "items stored on floor"],
+        }
+    ]
+
+
+def test_collect_my_submissions_prefers_couchdb_photo_vision_docs_over_filesystem(tmp_path):
+    upload_dir = tmp_path / "uploads"
+    pv_dir = tmp_path / "pv"
+    cand_dir = tmp_path / "candidates"
+    for d in (upload_dir, pv_dir, cand_dir):
+        d.mkdir()
+
+    _make_sidecar(pv_dir, "cap-prefers-couch", [{"description": "Filesystem sidecar description."}])
+    result = collect_my_submissions(
+        "p1",
+        [_make_full_doc("cap-prefers-couch", has_note=False, has_audio=False)],
+        upload_dir=upload_dir,
+        photo_vision_dir=pv_dir,
+        candidates_dir=cand_dir,
+        photo_vision_couchdb_docs={
+            "cap-prefers-couch": [
+                {
+                    "capture_id": "cap-prefers-couch",
+                    "photo_id": "photo-001",
+                    "description": "CouchDB description wins.",
+                    "possible_issues": [],
+                    "quality": {"severity": "ok", "flags": []},
+                }
+            ]
+        },
+    )
+
+    assert result[0]["per_photo_quality"][0]["description"] == "CouchDB description wins."
+
+
+def test_collect_my_submissions_filesystem_photo_vision_fallback_still_works(tmp_path):
+    upload_dir = tmp_path / "uploads"
+    pv_dir = tmp_path / "pv"
+    cand_dir = tmp_path / "candidates"
+    for d in (upload_dir, pv_dir, cand_dir):
+        d.mkdir()
+
+    _make_sidecar(pv_dir, "cap-fs", [{
+        "severity": "ok",
+        "flags": [],
+        "description": "Floor area near entrance.",
+        "possible_issues": ["paper towel on floor"],
+    }])
+    result = collect_my_submissions(
+        "p1",
+        [_make_full_doc("cap-fs", has_note=False, has_audio=False)],
+        upload_dir=upload_dir,
+        photo_vision_dir=pv_dir,
+        candidates_dir=cand_dir,
+        photo_vision_couchdb_docs=None,
+    )
+
+    assert result[0]["stage"] == "processed"
+    assert result[0]["per_photo_quality"][0]["description"] == "Floor area near entrance."
+    assert result[0]["per_photo_quality"][0]["possible_issues"] == ["paper towel on floor"]
+
+
 def test_collect_my_submissions_track_b_acted_on(tmp_path):
     upload_dir = tmp_path / "uploads"
     pv_dir = tmp_path / "pv"

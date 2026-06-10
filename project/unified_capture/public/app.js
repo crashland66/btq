@@ -586,6 +586,27 @@
       .join("");
   }
 
+  function truncateText(value, maxLength) {
+    const text = String(value || "").trim();
+    if (!text) return "";
+    if (text.length <= maxLength) return text;
+    return `${text.slice(0, Math.max(0, maxLength - 3)).trimEnd()}...`;
+  }
+
+  function buildAnalysisLine(perPhotoQuality) {
+    if (!Array.isArray(perPhotoQuality) || perPhotoQuality.length === 0) return "";
+    const firstPhoto = perPhotoQuality[0] || {};
+    const description = truncateText(firstPhoto.description, 140);
+    if (!description) return "";
+    const issues = Array.isArray(firstPhoto.possible_issues) ? firstPhoto.possible_issues : [];
+    const issueChips = issues
+      .filter((issue) => String(issue || "").trim())
+      .slice(0, 3)
+      .map((issue) => `<span class="analysis-chip">${escapeHtml(truncateText(issue, 48))}</span>`)
+      .join("");
+    return `<div class="sub-analysis-line"><span class="sub-analysis-description">${escapeHtml(description)}</span>${issueChips}</div>`;
+  }
+
   function buildDetailStepper(submission) {
     if (submission.track === "A") {
       const step2Class = submission.stage === "processed" ? "step step--done" : "step step--current";
@@ -730,6 +751,7 @@
       const noteSnippet = submission.note_text
         ? `<div class="sub-note-snippet">${escapeHtml(submission.note_text.length > 120 ? `${submission.note_text.slice(0, 120)}...` : submission.note_text)}</div>`
         : "";
+      const analysisLine = buildAnalysisLine(submission.per_photo_quality);
       const photoStrip = urls.length
         ? `<div class="sub-photo-strip">${urls.map((url) => `<img src="${escapeHtml(url)}" alt="" loading="lazy">`).join("")}</div>`
         : "";
@@ -738,6 +760,7 @@
           <div class="sub-meta">${escapeHtml(submission.site_name || "Submission")} &middot; ${escapeHtml(formatRelativeTime(submission.captured_at))}</div>
           <div class="sub-contents">${escapeHtml(parts.join(" / "))}</div>
           ${noteSnippet}
+          ${analysisLine}
           <div class="sub-status">
             ${buildStatusPill(submission)}
             ${buildQualityChips(submission.per_photo_quality)}

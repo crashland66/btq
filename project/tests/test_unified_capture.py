@@ -3195,6 +3195,13 @@ class MySubmissionsEndpointTests(unittest.TestCase):
         )
         started.append(quality_patch)
 
+        photo_vision_patch = mock.patch.object(
+            uc_server,
+            "query_photo_vision_by_capture_ids",
+            return_value={},
+        )
+        started.append(photo_vision_patch)
+
         # Read-only tripwires: ANY writer/stager invocation fails the test.
         def _tripwire(*args, **kwargs):
             raise _WriteTripwire("read-only endpoint invoked a write path")
@@ -3288,6 +3295,9 @@ class MySubmissionsEndpointTests(unittest.TestCase):
         collect_patch = mock.patch.object(
             uc_server.my_submissions_module, "collect_my_submissions", return_value=[]
         )
+        photo_vision_patch = mock.patch.object(
+            uc_server, "query_photo_vision_by_capture_ids", return_value={}
+        )
         quality_patch = mock.patch.object(
             uc_server.my_submissions_module, "rolling_quality_summary", return_value=None
         )
@@ -3295,7 +3305,7 @@ class MySubmissionsEndpointTests(unittest.TestCase):
             uc_server, "put_field_capture_document",
             side_effect=lambda *a, **k: (_ for _ in ()).throw(_WriteTripwire("write!")),
         )
-        for p in (q_patch, collect_patch, quality_patch, write_patch):
+        for p in (q_patch, collect_patch, photo_vision_patch, quality_patch, write_patch):
             p.start()
         try:
             resp = drive_my_subs_request(
@@ -3306,12 +3316,54 @@ class MySubmissionsEndpointTests(unittest.TestCase):
                 headers={"Authorization": f"Bearer {token}"},
             )
         finally:
-            for p in (write_patch, quality_patch, collect_patch, q_patch):
+            for p in (write_patch, quality_patch, photo_vision_patch, collect_patch, q_patch):
                 p.stop()
             stop_all(auth)
         self.assertEqual(resp.status, 200, resp.text)
         self.assertEqual(captured.get("person_id"), "per_unified01")
         self.assertIs(captured.get("config"), _COUCH_CONFIG_SENTINEL)
+
+    def test_photo_vision_docs_are_fetched_and_passed_to_collector(self) -> None:
+        store, token = make_store(self.tmp.name, site_ids=["7060"])
+        auth = install_couch_fakes(EMP_SINGLE, SITES_TWO)
+        capture_docs = [
+            {"capture_id": "cap-1", "_id": "cap-1", "person_id": "per_unified01"},
+            {"capture_id": "cap-2", "_id": "cap-2", "person_id": "per_unified01"},
+        ]
+        vision_docs = {"cap-1": [{"capture_id": "cap-1", "description": "Clean hallway."}]}
+        captured = {}
+
+        def fake_collect(*args, **kwargs):
+            captured["photo_vision_couchdb_docs"] = kwargs.get("photo_vision_couchdb_docs")
+            return []
+
+        q_patch = mock.patch.object(uc_server, "query_captures_by_person_id", return_value=capture_docs)
+        pv_patch = mock.patch.object(uc_server, "query_photo_vision_by_capture_ids", return_value=vision_docs)
+        collect_patch = mock.patch.object(
+            uc_server.my_submissions_module, "collect_my_submissions", side_effect=fake_collect
+        )
+        quality_patch = mock.patch.object(
+            uc_server.my_submissions_module, "rolling_quality_summary", return_value=None
+        )
+        pv_mock = pv_patch.start()
+        for p in (q_patch, collect_patch, quality_patch):
+            p.start()
+        try:
+            resp = drive_my_subs_request(
+                store,
+                self.vault,
+                couchdb_config=_COUCH_CONFIG_SENTINEL,
+                upload_dir=self.upload_dir,
+                headers={"Authorization": f"Bearer {token}"},
+            )
+        finally:
+            for p in (quality_patch, collect_patch, pv_patch, q_patch):
+                p.stop()
+            stop_all(auth)
+
+        self.assertEqual(resp.status, 200, resp.text)
+        self.assertEqual(pv_mock.call_args.args[1], ["cap-1", "cap-2"])
+        self.assertIs(captured.get("photo_vision_couchdb_docs"), vision_docs)
 
     # -- Fail-closed -------------------------------------------------------- #
 

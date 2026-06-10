@@ -39,6 +39,7 @@ from field_capture import my_submissions as my_submissions_module
 from field_capture import photo_vision as photo_vision_module
 from field_capture.action_candidates import apply_candidate_review, list_action_candidates
 from field_capture.auth import AuthorizedSession, TokenStore, authorize_token
+from field_capture.photo_vision_couchdb import query_photo_vision_by_capture_ids
 from field_capture.site_viewer import resolve_media_request
 from field_capture.server import (
     AUDIO_ALLOWED_EXTENSIONS,
@@ -318,6 +319,16 @@ class UnifiedCaptureHandler(BaseHTTPRequestHandler):
                 HTTPStatus.SERVICE_UNAVAILABLE,
             )
             return
+        capture_ids = [
+            str(doc.get("capture_id") or doc.get("_id") or "").strip()
+            for doc in capture_docs
+            if isinstance(doc, dict) and str(doc.get("capture_id") or doc.get("_id") or "").strip()
+        ]
+        try:
+            photo_vision_couchdb_docs = query_photo_vision_by_capture_ids(couchdb_config, capture_ids)
+        except Exception as error:
+            self.log_message("CouchDB photo-vision lookup unavailable person_id=%s error=%s", person_id, error)
+            photo_vision_couchdb_docs = {}
 
         submissions = my_submissions_module.collect_my_submissions(
             person_id,
@@ -326,6 +337,7 @@ class UnifiedCaptureHandler(BaseHTTPRequestHandler):
             photo_vision_dir=photo_vision_dir,
             candidates_dir=candidates_dir,
             can_retarget=session.record.role == "site_admin",
+            photo_vision_couchdb_docs=photo_vision_couchdb_docs,
         )
         quality_summary = my_submissions_module.rolling_quality_summary(
             person_id,

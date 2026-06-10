@@ -14,6 +14,7 @@ from field_capture.photo_vision_couchdb import (
     build_photo_vision_document,
     put_photo_vision_document,
     query_photo_vision,
+    query_photo_vision_by_capture_ids,
 )
 
 
@@ -250,6 +251,28 @@ class QueryPhotoVisionTests(unittest.TestCase):
         ):
             with self.assertRaises(PhotoVisionCouchDBError):
                 query_photo_vision(config, {"selector": {}}, database="btq_photo_vision")
+
+    def test_query_by_capture_ids_groups_and_sorts_docs(self) -> None:
+        config = _make_config()
+        response = {
+            "docs": [
+                {"_id": "fcp-3", "capture_id": "cap-2", "photo_id": "photo-2"},
+                {"_id": "fcp-2", "capture_id": "cap-1", "photo_id": "photo-2"},
+                {"_id": "fcp-1", "capture_id": "cap-1", "photo_id": "photo-1"},
+            ]
+        }
+
+        with mock.patch(
+            "field_capture.photo_vision_couchdb.query_photo_vision",
+            return_value=response,
+        ) as query_mock:
+            grouped = query_photo_vision_by_capture_ids(config, ["cap-1", "cap-2", "cap-1"])
+
+        query_mock.assert_called_once()
+        mango = query_mock.call_args.args[1]
+        self.assertEqual(mango["selector"], {"capture_id": {"$in": ["cap-1", "cap-2"]}})
+        self.assertEqual([doc["_id"] for doc in grouped["cap-1"]], ["fcp-1", "fcp-2"])
+        self.assertEqual([doc["_id"] for doc in grouped["cap-2"]], ["fcp-3"])
 
 
 class ProvisionPhotoVisionDatabaseTests(unittest.TestCase):

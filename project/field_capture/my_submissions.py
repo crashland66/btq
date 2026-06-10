@@ -147,10 +147,35 @@ def build_photo_vision_index(photo_vision_dir: Path) -> dict[str, list[dict]]:
     return index
 
 
+def _quality_record_from_photo_vision_doc(doc: dict) -> dict:
+    """Map a CouchDB photo vision doc to the existing per_photo_quality shape."""
+    quality = doc.get("quality") if isinstance(doc.get("quality"), dict) else None
+    if quality is not None:
+        severity = str(quality.get("severity") or "ok")
+        flags_raw = quality.get("flags")
+    else:
+        severity = "ok"
+        flags_raw = []
+    flags = [str(flag) for flag in flags_raw if str(flag)] if isinstance(flags_raw, list) else []
+    possible_issues_raw = doc.get("possible_issues")
+    possible_issues = (
+        [str(issue) for issue in possible_issues_raw if str(issue)]
+        if isinstance(possible_issues_raw, list)
+        else []
+    )
+    return {
+        "severity": severity,
+        "flags": flags,
+        "description": str(doc.get("description") or "").strip(),
+        "possible_issues": possible_issues,
+    }
+
+
 def quality_for_capture(
     capture_id: str,
     photo_vision_dir: Path,
     index: dict[str, list[dict]] | None = None,
+    couchdb_docs: list[dict] | None = None,
 ) -> list[dict]:
     """Return per-photo quality+description records for a capture.
 
@@ -160,6 +185,15 @@ def quality_for_capture(
     Pass a pre-built index (from build_photo_vision_index) when calling for
     multiple captures to avoid redundant filesystem scans.
     """
+    if couchdb_docs:
+        mapped = [
+            _quality_record_from_photo_vision_doc(doc)
+            for doc in couchdb_docs
+            if isinstance(doc, dict)
+        ]
+        if mapped:
+            return mapped
+
     if index is not None:
         return list(index.get(capture_id, []))
     # Single-capture path: build a targeted index for just this capture
@@ -267,6 +301,7 @@ def collect_my_submissions(
     can_retarget: bool = False,
     window_days: int = 14,
     window_count: int = 30,
+    photo_vision_couchdb_docs: dict[str, list[dict]] | None = None,
 ) -> list[dict]:
     """Return submissions for the feed, newest first.
 
@@ -326,7 +361,12 @@ def collect_my_submissions(
                 if upload_id:
                     photo_urls.append(f"/media/{upload_id}")
 
-        per_photo_quality = quality_for_capture(capture_id, photo_vision_dir, index=vision_index)
+        per_photo_quality = quality_for_capture(
+            capture_id,
+            photo_vision_dir,
+            index=vision_index,
+            couchdb_docs=(photo_vision_couchdb_docs or {}).get(capture_id),
+        )
         # The capture doc's processing_state is the canonical/replicated signal that
         # the pipeline finished. Edge deployments (the VPS fc app) don't have the
         # filesystem photo_vision_dir/candidates_dir the legacy stage logic reads, so

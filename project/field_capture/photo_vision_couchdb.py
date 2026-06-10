@@ -180,3 +180,37 @@ def query_photo_vision(
     if not isinstance(parsed, dict):
         raise PhotoVisionCouchDBError("CouchDB photo vision _find returned non-object JSON")
     return parsed
+
+
+def query_photo_vision_by_capture_ids(
+    config: couchdb_config.CouchDBConfig,
+    capture_ids: list[str],
+    *,
+    database: str | None = None,
+) -> dict[str, list[dict]]:
+    """Return photo vision docs grouped by capture_id, ordered by photo_id."""
+    cleaned_ids = sorted({str(capture_id).strip() for capture_id in capture_ids if str(capture_id).strip()})
+    if not cleaned_ids:
+        return {}
+
+    mango = {
+        "selector": {"capture_id": {"$in": cleaned_ids}},
+        "limit": max(100, len(cleaned_ids) * 10),
+    }
+    response = query_photo_vision(config, mango, database=database)
+    docs_raw = response.get("docs")
+    if not isinstance(docs_raw, list):
+        return {}
+
+    grouped: dict[str, list[dict]] = {}
+    for doc in docs_raw:
+        if not isinstance(doc, dict):
+            continue
+        capture_id = str(doc.get("capture_id") or "").strip()
+        if not capture_id:
+            continue
+        grouped.setdefault(capture_id, []).append(doc)
+
+    for docs in grouped.values():
+        docs.sort(key=lambda doc: (str(doc.get("photo_id") or ""), str(doc.get("_id") or "")))
+    return grouped
