@@ -4,8 +4,6 @@ from pathlib import Path
 from typing import Any
 
 from queue_processor.canonical_rmw import CanonicalEntityState, CanonicalMutation, CanonicalTarget, apply_canonical_rmw
-from site_equipment import EquipmentRequest, parse_site_equipment
-from site_supplies import SupplyNeed, parse_site_supply
 
 from . import _shared
 from ._shared import QueueJob, QueueProcessorError, RunContext
@@ -82,86 +80,6 @@ def locate_issue_file_by_id(context: RunContext, issue_id: str) -> Path | None:
     accounts_root = _shared.ensure_within_root(context.vault_root / "Accounts", context.vault_root, "Accounts root")
     matches = sorted(accounts_root.glob(f"*/Locations/*/Issues/{issue_id}__*.md"))
     return _shared.ensure_within_root(matches[0], context.vault_root, "Issue target") if matches else None
-
-def supply_as_payload(supply: SupplyNeed) -> dict:
-    payload: dict[str, object] = {
-        "supply_id": supply.supply_id,
-        "site_id": supply.site_id,
-        "site_name": supply.site_name,
-        "account": supply.account,
-        "item_name": supply.item_name,
-        "quantity_needed": supply.quantity_needed,
-        "urgency": supply.urgency,
-        "requested_by": supply.requested_by,
-        "observed_at": supply.observed_at,
-        "source": supply.source,
-        "status": supply.status,
-        "notes": supply.notes,
-        "related_capture_ids": list(supply.related_capture_ids),
-        "related_candidate_ids": list(supply.related_candidate_ids),
-        "created_at": supply.created_at,
-        "ordered_at": supply.ordered_at,
-        "ordered_by": supply.ordered_by,
-        "ordered_note": supply.ordered_note,
-        "delivered_at": supply.delivered_at,
-        "delivered_by": supply.delivered_by,
-        "delivered_note": supply.delivered_note,
-        "stocked_at": supply.stocked_at,
-        "stocked_by": supply.stocked_by,
-        "stocked_note": supply.stocked_note,
-    }
-    return {key: value for key, value in payload.items() if value not in ("", [])}
-
-def equipment_as_payload(equipment: EquipmentRequest) -> dict:
-    payload: dict[str, object] = {
-        "equipment_id": equipment.equipment_id,
-        "site_id": equipment.site_id,
-        "site_name": equipment.site_name,
-        "account": equipment.account,
-        "equipment_name": equipment.equipment_name,
-        "reason": equipment.reason,
-        "priority": equipment.priority,
-        "requested_by": equipment.requested_by,
-        "observed_at": equipment.observed_at,
-        "source": equipment.source,
-        "status": equipment.status,
-        "notes": equipment.notes,
-        "related_capture_ids": list(equipment.related_capture_ids),
-        "related_candidate_ids": list(equipment.related_candidate_ids),
-        "created_at": equipment.created_at,
-        "approved_at": equipment.approved_at,
-        "approved_by": equipment.approved_by,
-        "approval_note": equipment.approval_note,
-        "denied_at": equipment.denied_at,
-        "denied_by": equipment.denied_by,
-        "denial_note": equipment.denial_note,
-        "ordered_at": equipment.ordered_at,
-        "ordered_by": equipment.ordered_by,
-        "ordered_note": equipment.ordered_note,
-        "provided_at": equipment.provided_at,
-        "provided_by": equipment.provided_by,
-        "provided_note": equipment.provided_note,
-    }
-    return {key: value for key, value in payload.items() if value not in ("", [])}
-
-def preserve_frontmatter_lists(payload: dict, existing_text: str, fields: tuple[str, ...]) -> None:
-    frontmatter, _body, has_frontmatter = _shared.parse_frontmatter_text(existing_text)
-    if not has_frontmatter:
-        return
-    for field in fields:
-        value = frontmatter.get(field)
-        if isinstance(value, list):
-            cleaned = [str(item).strip() for item in value if str(item).strip()]
-            if cleaned and not payload.get(field):
-                payload[field] = cleaned
-
-def _job_ids_with(existing_text: str, job_id: str) -> list[str]:
-    frontmatter, _body, has_frontmatter = _shared.parse_frontmatter_text(existing_text)
-    values = frontmatter.get("btq_job_ids") if has_frontmatter else None
-    job_ids = [str(value).strip() for value in values if str(value).strip()] if isinstance(values, list) else []
-    if job_id not in job_ids:
-        job_ids.append(job_id)
-    return job_ids
 
 def _merge_transition_note(existing_notes: str, note: str) -> str:
     existing_notes = existing_notes.strip()
@@ -516,6 +434,109 @@ def _process_mark_issue_job(
     print(f"Job {job.job_id}: updated {doc_id}")
     print(f"Job {job.job_id}: moved queue file to {moved_path}")
     _shared.write_log_line(context.log_path, f"job_id={job.job_id} action=mark-issue-{target_status} status=success error=")
+
+ARCHIVABLE_RECORD_TYPES = {"site_issue", "supply_need", "equipment_request"}
+
+
+def _resolve_record_doc_id(record_type: str, record_id: str) -> str:
+    if record_id.startswith(f"{record_type}_"):
+        return record_id
+    if record_type == "site_issue":
+        return _resolve_issue_doc_id(record_id)
+    if record_type == "supply_need":
+        return _resolve_supply_doc_id(record_id)
+    if record_type == "equipment_request":
+        return _resolve_equipment_doc_id(record_id)
+    raise _shared.QueueProcessorError(f"Unsupported archivable record_type: {record_type}")
+
+
+def _process_mark_record_archive_job(job_path: Path, job: QueueJob, context: RunContext, processed_dir: Path, *, archived: bool) -> None:
+    payload = job.payload
+    record_type = str(payload.get("record_type") or "").strip()
+    record_id = str(payload.get("record_id") or "").strip()
+    actor = str(payload.get("actor") or "").strip()
+    note = str(payload.get("note") or "").strip()
+    occurred_at = datetime.now(timezone.utc).isoformat()
+    if record_type not in ARCHIVABLE_RECORD_TYPES or not record_id or not actor:
+        raise _shared.QueueProcessorError("mark_record archive job requires valid record_type, record_id, and actor")
+    processed_destination = processed_dir / job_path.name
+    if not context.dry_run and processed_destination.exists():
+        raise _shared.QueueProcessorError(f"Destination already exists: {processed_destination}")
+    doc_id = _resolve_record_doc_id(record_type, record_id)
+    target = CanonicalTarget(doc_id=doc_id, doc_type=record_type, allow_create=False, require_existing=True)
+
+    def transform(state: CanonicalEntityState) -> CanonicalMutation:
+        if state.doc is None:
+            raise _shared.QueueProcessorError(f"No canonical {record_type} with id {record_id} found")
+        outgoing = dict(state.doc)
+        if archived:
+            outgoing["archived"] = True
+            outgoing.setdefault("archived_at", occurred_at)
+            outgoing.setdefault("archived_by", actor)
+            if note:
+                outgoing.setdefault("archive_note", note)
+        else:
+            outgoing["archived"] = False
+            for field in ("archived_at", "archived_by", "archive_note"):
+                outgoing.pop(field, None)
+        action = "archived" if archived else "unarchived"
+        return CanonicalMutation(doc=outgoing, evidence_text=f"{record_type} {record_id} marked {action}")
+
+    if context.dry_run:
+        try:
+            current_doc = _shared._vault_store().get_optional(doc_id)
+        except Exception as exc:
+            raise _shared.QueueJobError(
+                "canonical couchdb write failed "
+                f"job_type={job.job_type} job_id={job.job_id} entity_id={doc_id}: {exc}"
+            ) from exc
+        if current_doc is None:
+            raise _shared.QueueJobError(
+                "canonical couchdb write failed "
+                f"job_type={job.job_type} job_id={job.job_id} entity_id={doc_id}: "
+                f"CouchDB required document not found for canonical RMW: {doc_id}"
+            )
+        if job.job_id in [str(value).strip() for value in current_doc.get("btq_job_ids") or []]:
+            print(f"Job {job.job_id}: job_id marker already present — skipping")
+            _shared.write_log_line(context.log_path, f"job_id={job.job_id} action=skip status=success reason=job-id-marker-present")
+            return
+        print(f"Job {job.job_id}: validated")
+        print(f"Job {job.job_id}: target {doc_id}")
+        print(f"Job {job.job_id}: would {'archive' if archived else 'unarchive'} {record_type}")
+        _shared.write_log_line(context.log_path, f"job_id={job.job_id} action=mark-record-{'archive' if archived else 'unarchive'} status=success error=")
+        return
+
+    try:
+        canonical_doc = apply_canonical_rmw(_shared._vault_store(), target, job.job_id, transform)
+    except _shared.QueueProcessorError:
+        raise
+    except Exception as exc:
+        raise _shared.QueueJobError(
+            "canonical couchdb write failed "
+            f"job_type={job.job_type} job_id={job.job_id} entity_id={doc_id}: {exc}"
+        ) from exc
+    action = "archive" if archived else "unarchive"
+    if canonical_doc is None:
+        print(f"Job {job.job_id}: job_id marker already present — skipping")
+        moved_path = _shared.move_job_file(job_path, processed_dir)
+        print(f"Job {job.job_id}: moved queue file to {moved_path}")
+        _shared.write_log_line(context.log_path, f"job_id={job.job_id} action=skip status=success reason=job-id-marker-present")
+        return
+    print(f"Job {job.job_id}: validated")
+    print(f"Job {job.job_id}: target {doc_id}")
+    _shared.write_mutation_evidence(context, job, canonical_doc, f"{record_type} {record_id} marked {action}d")
+    moved_path = _shared.move_job_file(job_path, processed_dir)
+    print(f"Job {job.job_id}: updated {doc_id}")
+    print(f"Job {job.job_id}: moved queue file to {moved_path}")
+    _shared.write_log_line(context.log_path, f"job_id={job.job_id} action=mark-record-{action} status=success error=")
+
+
+def process_mark_record_archived_job(job_path: Path, job: QueueJob, context: RunContext, processed_dir: Path) -> None:
+    _process_mark_record_archive_job(job_path, job, context, processed_dir, archived=True)
+
+
+def process_mark_record_unarchived_job(job_path: Path, job: QueueJob, context: RunContext, processed_dir: Path) -> None:
+    _process_mark_record_archive_job(job_path, job, context, processed_dir, archived=False)
 
 def process_mark_supply_ordered_job(job_path: Path, job: QueueJob, context: RunContext, processed_dir: Path) -> None:
     _process_mark_supply_job(

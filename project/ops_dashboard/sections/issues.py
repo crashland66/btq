@@ -57,10 +57,11 @@ def render_field_capture_issues_body(request_ctx: object, *, embedded: bool = Fa
     config = request_ctx.config
     site_id = query_value(query, "site_id") or None
     sort = query_value(query, "sort")
-    report = discover_site_issues(config.vault_dir, site_id=site_id)
+    archived = query_value(query, "archived") == "1"
+    report = discover_site_issues(config.vault_dir, site_id=site_id, include_archived=archived, archived_only=archived)
     issues = report.get("issues") if isinstance(report.get("issues"), list) else []
     exported = sort_issues([issue_as_export(issue, include_path=True) for issue in issues], sort)
-    title = build_title(site_id)
+    title = f"Archived {build_title(site_id)}" if archived else build_title(site_id)
     action = "/" if embedded else "/field-capture/issues"
     tab = "issues" if embedded else None
     return f"""
@@ -74,11 +75,11 @@ def render_field_capture_issues_body(request_ctx: object, *, embedded: bool = Fa
     </section>
     <section>
       <h2>Filters</h2>
-      {render_filter_form(site_id, sort, action=action, tab=tab)}
+      {render_filter_form(site_id, sort, archived=archived, action=action, tab=tab)}
     </section>
     <section>
       <h2>Issues</h2>
-      {render_issue_list(exported, "No site issues found.")}
+      {render_archived_issue_list(exported) if archived else render_issue_list(exported, "No site issues found.")}
     </section>
 """
 
@@ -91,7 +92,7 @@ def query_value(query: dict[str, list[str]], key: str) -> str:
     return str((query.get(key) or [""])[0]).strip()
 
 
-def render_filter_form(site_id: str | None, sort: str, *, action: str, tab: str | None = None) -> str:
+def render_filter_form(site_id: str | None, sort: str, *, archived: bool = False, action: str, tab: str | None = None) -> str:
     tab_input = f'<input type="hidden" name="tab" value="{html.escape(tab)}">' if tab else ""
     sort_options = []
     for value in ISSUE_SORT_OPTIONS:
@@ -104,6 +105,7 @@ def render_filter_form(site_id: str | None, sort: str, *, action: str, tab: str 
         <input id="site_id" name="site_id" value="{html.escape(site_id or '')}">
         <label for="sort">Sort</label>
         <select id="sort" name="sort">{"".join(sort_options)}</select>
+        <label><input type="checkbox" name="archived" value="1"{' checked' if archived else ''}> Archived</label>
         <p><button type="submit">Apply filters</button></p>
       </form>"""
 
@@ -129,7 +131,7 @@ def issues_from_report(report: dict[str, object]) -> list[dict[str, object]]:
 
 
 def find_issue(vault_root: Path, issue_id: str) -> dict[str, object] | None:
-    report = discover_site_issues(vault_root)
+    report = discover_site_issues(vault_root, include_archived=True)
     for issue in issues_from_report(report):
         if str(issue.get("issue_id") or "") == issue_id:
             return issue
@@ -149,6 +151,7 @@ def render_issue_detail(ctx: object, issue_id: str) -> str:
         <section>
           <h2>{html.escape(title)}</h2>
           <p>{render_pill(issue.get("status"))}</p>
+          {render_archived_notice(issue)}
           <h3>Summary</h3>
           <p>{html.escape(str(issue.get("summary") or ""))}</p>
           {render_kv(issue, labels={key: humanize_key(key) for key in issue})}
@@ -162,6 +165,7 @@ def render_issue_detail(ctx: object, issue_id: str) -> str:
           {render_lifecycle_history(issue)}
         </section>
         {render_action_panel(issue)}
+        {render_archive_panel(issue)}
         """
     return html_page("Issue Detail", f"<header><h1>Issue Detail</h1></header>{render_back_link('/field-capture/issues', 'Back to Issues')}{flash}{content}", active_section="issues")
 
@@ -192,9 +196,9 @@ def valid_transitions(status: object) -> list[tuple[str, dict[str, object]]]:
 
 def render_action_panel(issue: dict[str, object]) -> str:
     transitions = valid_transitions(issue.get("status"))
-    if not transitions:
-        return ""
     issue_id = str(issue.get("issue_id") or "")
+    if not issue_id or is_archived(issue) or not transitions:
+        return ""
     current_status = str(issue.get("status") or "")
     current_pill = f'<p>Currently: <span class="pill status-{slugify_status(current_status)}">{html.escape(current_status)}</span></p>' if current_status else ""
     links = "".join(
@@ -202,6 +206,65 @@ def render_action_panel(issue: dict[str, object]) -> str:
         for _name, config in transitions
     )
     return f"<section><h2>Actions</h2>{current_pill}{links}</section>"
+
+
+def render_archive_panel(issue: dict[str, object]) -> str:
+    if not str(issue.get("issue_id") or ""):
+        return ""
+    return f"<section><h2>Archive</h2>{render_archive_control(issue)}</section>"
+
+
+def is_archived(issue: dict[str, object]) -> bool:
+    return issue.get("archived") is True or str(issue.get("archived") or "").strip().lower() == "true"
+
+
+def render_archived_notice(issue: dict[str, object]) -> str:
+    if not is_archived(issue):
+        return ""
+    archived_at = str(issue.get("archived_at") or "").strip()
+    archived_by = str(issue.get("archived_by") or "").strip()
+    detail = " ".join(part for part in (archived_at, f"by {archived_by}" if archived_by else "") if part)
+    return f'<p class="muted">Archived{": " + html.escape(detail) if detail else ""}</p>'
+
+
+def render_archive_control(issue: dict[str, object]) -> str:
+    issue_id = str(issue.get("issue_id") or "")
+    archived = is_archived(issue)
+    route = "/field-capture/issues/restore" if archived else "/field-capture/issues/archive"
+    label = "Restore" if archived else "Archive (Delete)"
+    return f"""
+      <form method="post" action="{route}">
+        <input type="hidden" name="issue_id" value="{html.escape(issue_id)}">
+        <input type="hidden" name="confirm" value="1">
+        <input type="hidden" name="actor" value="{html.escape(default_actor())}">
+        <label>Note (optional)</label>
+        <textarea name="note"></textarea>
+        <button type="submit">{label}</button>
+      </form>
+    """
+
+
+def render_archived_issue_list(issues: list[dict[str, object]]) -> str:
+    return render_table(
+        issues,
+        [
+            {"key": "title", "label": "Issue", "format": lambda value, row: f'<a href="/field-capture/issues?issue_id={quote(str(row.get("issue_id") or ""))}">{html.escape(str(value or "Site issue"))}</a>'},
+            {"key": "status", "label": "Status", "format": lambda value, _row: render_pill(value), "nowrap": True},
+            {"key": "site_id", "label": "Site", "nowrap": True},
+            {"key": "archived_at", "label": "Archived At", "nowrap": True},
+            {"key": "issue_id", "label": "Actions", "format": lambda _value, row: render_restore_form(str(row.get("issue_id") or "")), "nowrap": True},
+        ],
+        empty_text="No archived site issues found.",
+    )
+
+
+def render_restore_form(issue_id: str) -> str:
+    return f"""<form method="post" action="/field-capture/issues/restore">
+        <input type="hidden" name="issue_id" value="{html.escape(issue_id)}">
+        <input type="hidden" name="actor" value="{html.escape(default_actor())}">
+        <input type="hidden" name="confirm" value="1">
+        <button type="submit">Restore</button>
+      </form>"""
 
 
 def render_issue_mark_confirm(ctx: object, transition_name: str) -> str:
@@ -289,3 +352,27 @@ def handle_mark_issue_resolved(ctx: object, body: bytes):
 
 def handle_mark_issue_open(ctx: object, body: bytes):
     return handle_issue_mark_post(ctx, body, job_type="mark_issue_open", route="/field-capture/issues/reopen")
+
+
+def handle_issue_archive(ctx: object, body: bytes):
+    return handle_mark_transition_post(
+        ctx, body,
+        job_type="mark_record_archived",
+        route="/field-capture/issues/archive",
+        id_field="issue_id",
+        redirect_path="/field-capture/issues",
+        payload_id_key="record_id",
+        extra_payload={"record_type": "site_issue"},
+    )
+
+
+def handle_issue_restore(ctx: object, body: bytes):
+    return handle_mark_transition_post(
+        ctx, body,
+        job_type="mark_record_unarchived",
+        route="/field-capture/issues/restore",
+        id_field="issue_id",
+        redirect_path="/field-capture/issues",
+        payload_id_key="record_id",
+        extra_payload={"record_type": "site_issue"},
+    )

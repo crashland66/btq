@@ -34,8 +34,11 @@ def test_completion_dismiss_handler_writes_dismissed_with_reason(tmp_path, couch
 def test_completion_dismiss_endpoint_registered_in_app():
     import inspect
     from ops_dashboard import app as app_module
+    from ops_dashboard import post_routes as post_routes_module
 
-    src = inspect.getsource(app_module)
+    # POST-route dispatch lives in post_routes.py (app.py kept under its size budget);
+    # assert the endpoint is wired in either module.
+    src = inspect.getsource(app_module) + inspect.getsource(post_routes_module)
     assert "/field-capture/review/dismiss-completion" in src
     assert "handle_completion_dismiss_post" in src
 

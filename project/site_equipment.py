@@ -41,9 +41,19 @@ class EquipmentRequest:
     provided_at: str = ""
     provided_by: str = ""
     provided_note: str = ""
+    archived: bool = False
+    archived_at: str = ""
+    archived_by: str = ""
 
 
-def discover_site_equipment(vault_root: Path, *, site_id: str | None = None, status: str | None = None) -> dict[str, object]:
+def discover_site_equipment(
+    vault_root: Path,
+    *,
+    site_id: str | None = None,
+    status: str | None = None,
+    include_archived: bool = False,
+    archived_only: bool = False,
+) -> dict[str, object]:
     """Equipment requests, from CouchDB ``btq_vault`` (canonical) when configured.
 
     The on-disk vault is iCloud-synced; a background launchd daemon scanning it
@@ -53,8 +63,8 @@ def discover_site_equipment(vault_root: Path, *, site_id: str | None = None, sta
     import os
 
     if os.environ.get("BTQ_COUCHDB_URL", "").strip():
-        return _discover_site_equipment_couchdb(site_id=site_id, status=status)
-    return _discover_site_equipment_filesystem(vault_root, site_id=site_id, status=status)
+        return _discover_site_equipment_couchdb(site_id=site_id, status=status, include_archived=include_archived, archived_only=archived_only)
+    return _discover_site_equipment_filesystem(vault_root, site_id=site_id, status=status, include_archived=include_archived, archived_only=archived_only)
 
 
 def _equipment_from_couch_doc(doc: dict[str, Any]) -> EquipmentRequest | None:
@@ -100,10 +110,25 @@ def _equipment_from_couch_doc(doc: dict[str, Any]) -> EquipmentRequest | None:
         provided_at=clean_string(doc.get("provided_at")),
         provided_by=clean_string(doc.get("provided_by")),
         provided_note=clean_string(doc.get("provided_note")),
+        archived=bool(doc.get("archived")),
+        archived_at=clean_string(doc.get("archived_at")),
+        archived_by=clean_string(doc.get("archived_by")),
     )
 
 
-def _discover_site_equipment_couchdb(*, site_id: str | None = None, status: str | None = None) -> dict[str, object]:
+def _include_archived_item(archived: bool, *, include_archived: bool, archived_only: bool) -> bool:
+    if archived_only:
+        return archived
+    return include_archived or not archived
+
+
+def _discover_site_equipment_couchdb(
+    *,
+    site_id: str | None = None,
+    status: str | None = None,
+    include_archived: bool = False,
+    archived_only: bool = False,
+) -> dict[str, object]:
     import json
     from urllib import parse as urllib_parse, request as urllib_request
 
@@ -113,6 +138,10 @@ def _discover_site_equipment_couchdb(*, site_id: str | None = None, status: str 
     db_name = couchdb_config.vault_database()
     url = f"{cfg.base_url.rstrip('/')}/{urllib_parse.quote(db_name, safe='')}/_find"
     selector: dict[str, object] = {"type": "equipment_request"}
+    if archived_only:
+        selector["archived"] = True
+    elif not include_archived:
+        selector["archived"] = {"$ne": True}
     if site_id is not None:
         selector["site_id"] = str(site_id)
     payload = {"selector": selector, "limit": 100000}
@@ -130,16 +159,25 @@ def _discover_site_equipment_couchdb(*, site_id: str | None = None, status: str 
         request = _equipment_from_couch_doc(doc)
         if request is None:
             continue
+        if not _include_archived_item(request.archived, include_archived=include_archived, archived_only=archived_only):
+            continue
         if site_id is not None and request.site_id != str(site_id):
             continue
         if status_filter is not None and request.status != status_filter:
             continue
         equipment.append(request)
     equipment.sort(key=lambda item: (status_sort(item.status), priority_sort(item.priority), item.site_id, item.created_at, item.equipment_id))
-    return {"equipment": equipment, "warnings": [], "counts": equipment_counts(equipment)}
+    return {"equipment": equipment, "warnings": [], "counts": equipment_counts(equipment, include_archived=include_archived or archived_only)}
 
 
-def _discover_site_equipment_filesystem(vault_root: Path, *, site_id: str | None = None, status: str | None = None) -> dict[str, object]:
+def _discover_site_equipment_filesystem(
+    vault_root: Path,
+    *,
+    site_id: str | None = None,
+    status: str | None = None,
+    include_archived: bool = False,
+    archived_only: bool = False,
+) -> dict[str, object]:
     equipment: list[EquipmentRequest] = []
     warnings: list[dict[str, str]] = []
     root = vault_root.expanduser().resolve(strict=False)
@@ -155,13 +193,15 @@ def _discover_site_equipment_filesystem(vault_root: Path, *, site_id: str | None
             continue
         if request is None:
             continue
+        if not _include_archived_item(request.archived, include_archived=include_archived, archived_only=archived_only):
+            continue
         if site_id is not None and request.site_id != str(site_id):
             continue
         if status_filter is not None and request.status != status_filter:
             continue
         equipment.append(request)
     equipment.sort(key=lambda item: (status_sort(item.status), priority_sort(item.priority), item.site_id, item.created_at, item.equipment_id))
-    return {"equipment": equipment, "warnings": warnings, "counts": equipment_counts(equipment)}
+    return {"equipment": equipment, "warnings": warnings, "counts": equipment_counts(equipment, include_archived=include_archived or archived_only)}
 
 
 def parse_site_equipment(path: Path) -> tuple[EquipmentRequest | None, dict[str, str] | None]:
@@ -209,6 +249,9 @@ def parse_site_equipment(path: Path) -> tuple[EquipmentRequest | None, dict[str,
             provided_at=clean_string(frontmatter.get("provided_at")),
             provided_by=clean_string(frontmatter.get("provided_by")),
             provided_note=clean_string(frontmatter.get("provided_note")),
+            archived=bool_from_frontmatter(frontmatter.get("archived")),
+            archived_at=clean_string(frontmatter.get("archived_at")),
+            archived_by=clean_string(frontmatter.get("archived_by")),
         ),
         None,
     )
@@ -223,8 +266,14 @@ def clean_string(value: Any) -> str:
     return text
 
 
-def equipment_counts(equipment: Iterable[EquipmentRequest]) -> dict[str, object]:
-    items = list(equipment)
+def bool_from_frontmatter(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    return clean_string(value).lower() == "true"
+
+
+def equipment_counts(equipment: Iterable[EquipmentRequest], *, include_archived: bool = False) -> dict[str, object]:
+    items = [request for request in equipment if include_archived or not request.archived]
     return {
         "total": len(items),
         "by_status": count_by(items, "status"),
@@ -277,6 +326,9 @@ def equipment_as_export(equipment: EquipmentRequest, *, include_path: bool = Fal
         "provided_at": equipment.provided_at,
         "provided_by": equipment.provided_by,
         "provided_note": equipment.provided_note,
+        "archived": equipment.archived,
+        "archived_at": equipment.archived_at,
+        "archived_by": equipment.archived_by,
     }
     if include_path:
         payload["_id"] = equipment.doc_id

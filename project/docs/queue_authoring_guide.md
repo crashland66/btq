@@ -1464,6 +1464,42 @@ Example:
 }
 ```
 
+#### `mark_record_archived` / `mark_record_unarchived`
+
+Required payload fields for `mark_record_archived` and
+`mark_record_unarchived`:
+
+- `record_type`: one of `site_issue`, `supply_need`, `equipment_request`
+- `record_id`: string; the canonical record id without the type prefix, or the
+  full canonical `_id`
+- `actor`: string
+
+Optional payload fields:
+
+- `note`: string
+
+Archive transitions:
+
+| Job type | Effect |
+| --- | --- |
+| `mark_record_archived` | Sets `archived=true`, `archived_at`, and `archived_by` on the canonical record. |
+| `mark_record_unarchived` | Sets `archived=false` and clears `archived_at`, `archived_by`, and `archive_note`. |
+
+Example:
+
+```json
+{
+  "job_id": "2026-06-10T14-00-00Z__mark-record-archived",
+  "job_type": "mark_record_archived",
+  "payload": {
+    "record_type": "site_issue",
+    "record_id": "iss_summit_drain",
+    "actor": "Jordan",
+    "note": "Duplicate issue."
+  }
+}
+```
+
 ## Pipeline-internal job types
 
 These job types are **emitted by the automated pipeline** — Whisper audio

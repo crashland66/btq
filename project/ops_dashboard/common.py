@@ -64,6 +64,8 @@ KNOWN_JOB_SUMMARY_TYPES = {
     "mark_issue_monitoring",
     "mark_issue_resolved",
     "mark_issue_open",
+    "mark_record_archived",
+    "mark_record_unarchived",
     "voice_memo_note",
 }
 
@@ -900,6 +902,11 @@ def render_job_summary(job_type: object, payload: object) -> str:
         return _mark_job_summary(job_type_text, body, kind="equipment", id_key="equipment_id")
     if job_type_text.startswith("mark_issue_"):
         return _mark_job_summary(job_type_text, body, kind="issue", id_key="issue_id")
+    if job_type_text in {"mark_record_archived", "mark_record_unarchived"}:
+        action = "Archive record" if job_type_text == "mark_record_archived" else "Restore record"
+        record_type = html.escape(_clean_display_part(body.get("record_type")))
+        record_id = html.escape(_clean_display_part(body.get("record_id")))
+        return _summary_with_suffix(action, _join_summary_parts(record_type, record_id))
     if job_type_text == "voice_memo_note":
         note = _clean_display_part(body.get("note") or body.get("transcript_text"))[:60]
         suffix = f"({html.escape(note)})" if note else ""
@@ -1016,6 +1023,7 @@ def write_mark_job(
     entity_id: str,
     actor: str,
     note: str = "",
+    extra_payload: dict[str, object] | None = None,
 ) -> Path:
     suffix = str(uuid.uuid4())
     job = {
@@ -1026,6 +1034,8 @@ def write_mark_job(
             "actor": actor,
         },
     }
+    if extra_payload:
+        job["payload"].update(extra_payload)
     if note:
         job["payload"]["note"] = note
     queue_dir = runtime_root.expanduser().resolve(strict=False) / "queue"
@@ -1410,6 +1420,8 @@ def handle_mark_transition_post(
     route: str,
     id_field: str,
     redirect_path: str,
+    payload_id_key: str | None = None,
+    extra_payload: dict[str, object] | None = None,
 ) -> tuple:
     """Shared POST handler for entity status-transition forms (supply, equipment, etc.).
 
@@ -1449,7 +1461,15 @@ def handle_mark_transition_post(
         return _redirect(f"{redirect_path}?error=missing_field")
 
     try:
-        queue_path = write_mark_job(root, job_type=job_type, payload_id_key=id_field, entity_id=entity_id, actor=actor, note=note)
+        queue_path = write_mark_job(
+            root,
+            job_type=job_type,
+            payload_id_key=payload_id_key or id_field,
+            entity_id=entity_id,
+            actor=actor,
+            note=note,
+            extra_payload=extra_payload,
+        )
     except Exception as exc:  # noqa: BLE001
         _audit_append(f"failed: {exc}")
         return _redirect(f"{redirect_path}?{id_field}={quote(entity_id)}&error={quote(str(exc))}")

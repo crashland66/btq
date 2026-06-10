@@ -16,6 +16,7 @@ def write_issue(
     priority: str = "high",
     category: str = "maintenance",
     client_notified: bool = True,
+    archived: bool = False,
 ) -> Path:
     path = vault_root / "Accounts" / account / "Locations" / site_dir / "Issues" / f"{issue_id}__issue.md"
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -34,6 +35,9 @@ client_notified: {str(client_notified).lower()}
 client_notified_at: 2026-05-08T15:28:09+00:00
 client_notified_by: Jordan
 client_notified_method: email
+archived: {str(archived).lower()}
+archived_at: 2026-06-10T12:00:00+00:00
+archived_by: Jordan
 reported_by: Tom Walsh
 observed_at: 2026-05-08T14:12:43+00:00
 created_at: 2026-05-08T17:43:43+00:00
@@ -93,3 +97,17 @@ def test_site_issues_filters_by_site(tmp_path: Path) -> None:
 
     assert [issue.issue_id for issue in report["issues"]] == ["iss_7060"]
     assert report["counts"]["by_site"] == {"7060": 1}
+
+
+def test_site_issues_excludes_archived_by_default_and_can_list_archived(tmp_path: Path) -> None:
+    vault_root = tmp_path / "vault"
+    write_issue(vault_root, issue_id="iss_open")
+    write_issue(vault_root, issue_id="iss_archived", archived=True)
+
+    default_report = discover_site_issues(vault_root)
+    archived_report = discover_site_issues(vault_root, include_archived=True, archived_only=True)
+
+    assert [issue.issue_id for issue in default_report["issues"]] == ["iss_open"]
+    assert default_report["counts"]["total"] == 1
+    assert [issue.issue_id for issue in archived_report["issues"]] == ["iss_archived"]
+    assert archived_report["counts"]["total"] == 1

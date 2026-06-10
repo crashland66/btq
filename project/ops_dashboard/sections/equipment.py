@@ -76,9 +76,10 @@ def render_field_capture_equipment_body(ctx: object, *, embedded: bool = False) 
     site_id = query_value(query, "site_id") or None
     status = query_value(query, "status") or None
     sort = query_value(query, "sort")
-    report = discover_site_equipment(config.vault_dir, site_id=site_id, status=status)
+    archived = query_value(query, "archived") == "1"
+    report = discover_site_equipment(config.vault_dir, site_id=site_id, status=status, include_archived=archived, archived_only=archived)
     exported = sort_equipment(equipment_from_report(report), sort)
-    title = build_title(site_id, status)
+    title = f"Archived {build_title(site_id, status)}" if archived else build_title(site_id, status)
     action = "/" if embedded else "/equipment"
     tab = "equipment" if embedded else None
     return f"""
@@ -92,7 +93,7 @@ def render_field_capture_equipment_body(ctx: object, *, embedded: bool = False) 
     </section>
     <section>
       <h2>Filters</h2>
-      {render_filter_form(site_id, status, report.get("counts") if isinstance(report.get("counts"), dict) else {}, action=action, tab=tab, sort=sort)}
+      {render_filter_form(site_id, status, report.get("counts") if isinstance(report.get("counts"), dict) else {}, action=action, tab=tab, sort=sort, archived=archived)}
     </section>
     <section>
       <h2>Equipment</h2>
@@ -118,6 +119,7 @@ def render_filter_form(
     action: str = "/equipment",
     tab: str | None = None,
     sort: str = "",
+    archived: bool = False,
 ) -> str:
     options = []
     counts = counts if isinstance(counts, dict) else {}
@@ -144,6 +146,7 @@ def render_filter_form(
         <select id="status" name="status">{"".join(options)}</select>
         <label for="sort">Sort</label>
         <select id="sort" name="sort">{"".join(sort_options)}</select>
+        <label><input type="checkbox" name="archived" value="1"{' checked' if archived else ''}> Archived</label>
         <p><button type="submit">Apply filters</button></p>
       </form>"""
 
@@ -193,7 +196,7 @@ def sort_equipment(equipment: list[dict[str, object]], sort: str) -> list[dict[s
 
 
 def find_equipment(vault_root: Path, equipment_id: str) -> dict[str, object] | None:
-    report = discover_site_equipment(vault_root)
+    report = discover_site_equipment(vault_root, include_archived=True)
     for request in equipment_from_report(report):
         if str(request.get("equipment_id") or "") == equipment_id:
             return request
@@ -213,6 +216,7 @@ def render_equipment_detail(ctx: object, equipment_id: str) -> str:
         <section>
           <h2>{html.escape(title)}</h2>
           <p>{render_pill(request.get("status"))}</p>
+          {render_archived_notice(request)}
           {render_kv(request, labels={key: humanize_key(key) for key in request})}
         </section>
         <section>
@@ -220,6 +224,7 @@ def render_equipment_detail(ctx: object, equipment_id: str) -> str:
           {render_lifecycle_history(request)}
         </section>
         {render_action_panel(request)}
+        {render_archive_panel(request)}
         """
     return html_page("Equipment Detail", f"<header><h1>Equipment Detail</h1></header>{render_back_link('/equipment', 'Back to Equipment')}{flash}{content}", active_section="equipment")
 
@@ -254,9 +259,9 @@ def valid_transitions(status: object) -> list[tuple[str, dict[str, object]]]:
 
 def render_action_panel(request: dict[str, object]) -> str:
     transitions = valid_transitions(request.get("status"))
-    if not transitions:
-        return ""
     equipment_id = str(request.get("equipment_id") or "")
+    if not equipment_id or is_archived(request) or not transitions:
+        return ""
     current_status = str(request.get("status") or "")
     current_pill = f'<p>Currently: <span class="pill status-{slugify_status(current_status)}">{html.escape(current_status)}</span></p>' if current_status else ""
     links = "".join(
@@ -266,13 +271,60 @@ def render_action_panel(request: dict[str, object]) -> str:
     return f"<section><h2>Actions</h2>{current_pill}{links}</section>"
 
 
+def render_archive_panel(request: dict[str, object]) -> str:
+    if not str(request.get("equipment_id") or ""):
+        return ""
+    return f"<section><h2>Archive</h2>{render_archive_control(request)}</section>"
+
+
 def render_row_actions(request: dict[str, object]) -> str:
     equipment_id = str(request.get("equipment_id") or "")
+    if is_archived(request):
+        return render_restore_form(equipment_id)
     links = [
         f'<a href="{html.escape(str(config["confirm_route"]))}?equipment_id={quote(equipment_id)}">{html.escape(str(config["label"]))}</a>'
         for _name, config in valid_transitions(request.get("status"))
     ]
     return " ".join(links)
+
+
+def is_archived(request: dict[str, object]) -> bool:
+    return request.get("archived") is True or str(request.get("archived") or "").strip().lower() == "true"
+
+
+def render_archived_notice(request: dict[str, object]) -> str:
+    if not is_archived(request):
+        return ""
+    archived_at = str(request.get("archived_at") or "").strip()
+    archived_by = str(request.get("archived_by") or "").strip()
+    detail = " ".join(part for part in (archived_at, f"by {archived_by}" if archived_by else "") if part)
+    return f'<p class="muted">Archived{": " + html.escape(detail) if detail else ""}</p>'
+
+
+def render_archive_control(request: dict[str, object]) -> str:
+    equipment_id = str(request.get("equipment_id") or "")
+    archived = is_archived(request)
+    route = "/equipment/restore" if archived else "/equipment/archive"
+    label = "Restore" if archived else "Archive (Delete)"
+    return f"""
+      <form method="post" action="{route}">
+        <input type="hidden" name="equipment_id" value="{html.escape(equipment_id)}">
+        <input type="hidden" name="confirm" value="1">
+        <input type="hidden" name="actor" value="{html.escape(default_actor())}">
+        <label>Note (optional)</label>
+        <textarea name="note"></textarea>
+        <button type="submit">{label}</button>
+      </form>
+    """
+
+
+def render_restore_form(equipment_id: str) -> str:
+    return f"""<form method="post" action="/equipment/restore">
+        <input type="hidden" name="equipment_id" value="{html.escape(equipment_id)}">
+        <input type="hidden" name="actor" value="{html.escape(default_actor())}">
+        <input type="hidden" name="confirm" value="1">
+        <button type="submit">Restore</button>
+      </form>"""
 
 
 def render_equipment_mark_confirm(ctx: object, transition_name: str) -> str:
@@ -373,3 +425,27 @@ def handle_mark_equipment_provided(ctx: object, body: bytes):
 
 def handle_mark_equipment_no_action_needed(ctx: object, body: bytes):
     return handle_equipment_mark_post(ctx, body, job_type="mark_equipment_no_action_needed", route="/equipment/mark-no-action-needed")
+
+
+def handle_equipment_archive(ctx: object, body: bytes):
+    return handle_mark_transition_post(
+        ctx, body,
+        job_type="mark_record_archived",
+        route="/equipment/archive",
+        id_field="equipment_id",
+        redirect_path="/equipment",
+        payload_id_key="record_id",
+        extra_payload={"record_type": "equipment_request"},
+    )
+
+
+def handle_equipment_restore(ctx: object, body: bytes):
+    return handle_mark_transition_post(
+        ctx, body,
+        job_type="mark_record_unarchived",
+        route="/equipment/restore",
+        id_field="equipment_id",
+        redirect_path="/equipment",
+        payload_id_key="record_id",
+        extra_payload={"record_type": "equipment_request"},
+    )

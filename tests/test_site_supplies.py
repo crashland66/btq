@@ -15,6 +15,7 @@ def write_supply(
     status: str = "open",
     urgency: str = "high",
     item_name: str = "BrightWash cleaner",
+    archived: bool = False,
 ) -> Path:
     path = vault_root / "Accounts" / account / "Locations" / site_dir / "Supplies" / f"{supply_id}__supply.md"
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -32,6 +33,9 @@ requested_by: Tom Walsh
 observed_at: 2026-05-08T14:12:43+00:00
 source: field_capture
 status: {status}
+archived: {str(archived).lower()}
+archived_at: 2026-06-10T12:00:00+00:00
+archived_by: Jordan
 created_at: 2026-05-08T20:00:00+00:00
 notes: Supply closet is empty.
 related_capture_ids:
@@ -116,6 +120,20 @@ def test_discover_site_supplies_counts_by_urgency(tmp_path: Path) -> None:
     report = discover_site_supplies(vault_root)
 
     assert report["counts"]["by_urgency"] == {"critical": 1, "high": 1}
+
+
+def test_discover_site_supplies_excludes_archived_by_default_and_can_list_archived(tmp_path: Path) -> None:
+    vault_root = tmp_path / "vault"
+    write_supply(vault_root, supply_id="sup_open")
+    write_supply(vault_root, supply_id="sup_archived", archived=True)
+
+    default_report = discover_site_supplies(vault_root)
+    archived_report = discover_site_supplies(vault_root, include_archived=True, archived_only=True)
+
+    assert [supply.supply_id for supply in default_report["supplies"]] == ["sup_open"]
+    assert default_report["counts"]["total"] == 1
+    assert [supply.supply_id for supply in archived_report["supplies"]] == ["sup_archived"]
+    assert archived_report["counts"]["total"] == 1
 
 
 def test_discover_site_supplies_reports_warnings_for_malformed_file(tmp_path: Path) -> None:

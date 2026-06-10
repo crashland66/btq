@@ -9,6 +9,7 @@ from queue_spec import (
     JOB_LOG_SUPPLY_NEED, JOB_MARK_EQUIPMENT_APPROVED, JOB_MARK_EQUIPMENT_DENIED,
     JOB_MARK_EQUIPMENT_NO_ACTION_NEEDED, JOB_MARK_EQUIPMENT_ORDERED, JOB_MARK_EQUIPMENT_PROVIDED,
     JOB_MARK_ISSUE_MONITORING, JOB_MARK_ISSUE_OPEN, JOB_MARK_ISSUE_RESOLVED,
+    JOB_MARK_RECORD_ARCHIVED, JOB_MARK_RECORD_UNARCHIVED,
     JOB_MARK_SUPPLY_DELIVERED, JOB_MARK_SUPPLY_NO_ACTION_NEEDED, JOB_MARK_SUPPLY_ORDERED,
     JOB_MARK_SUPPLY_STOCKED, JOB_PARSE_SUPPLY_EMAIL, JOB_PERSONAL_JOURNAL_ENTRY, JOB_PHOTO_CAPTURE,
     JOB_PROMOTE_PROSPECT, JOB_RECORD_UNKNOWN_CAPTURE, JOB_RECLASSIFY_UNKNOWN, JOB_REMOVE_FROM_SCHEDULE, JOB_RETARGET_CAPTURE,
@@ -54,6 +55,8 @@ JOB_HANDLERS: dict[str, JobHandler] = {
     JOB_MARK_ISSUE_MONITORING: supplies_equipment_transitions.process_mark_issue_monitoring_job,
     JOB_MARK_ISSUE_RESOLVED: supplies_equipment_transitions.process_mark_issue_resolved_job,
     JOB_MARK_ISSUE_OPEN: supplies_equipment_transitions.process_mark_issue_open_job,
+    JOB_MARK_RECORD_ARCHIVED: supplies_equipment_transitions.process_mark_record_archived_job,
+    JOB_MARK_RECORD_UNARCHIVED: supplies_equipment_transitions.process_mark_record_unarchived_job,
     JOB_VOICE_MEMO_NOTE: misc.process_voice_memo_note_job,
 }
 

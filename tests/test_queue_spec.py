@@ -9,6 +9,8 @@ from queue_spec import (
     JOB_MARK_ISSUE_MONITORING,
     JOB_MARK_ISSUE_OPEN,
     JOB_MARK_ISSUE_RESOLVED,
+    JOB_MARK_RECORD_ARCHIVED,
+    JOB_MARK_RECORD_UNARCHIVED,
     JOB_MARK_SUPPLY_DELIVERED,
     JOB_MARK_SUPPLY_NO_ACTION_NEEDED,
     JOB_MARK_SUPPLY_ORDERED,
@@ -1071,6 +1073,48 @@ def test_validate_mark_issue_payload_rejects_unknown_field() -> None:
     ) is False
 
 
+def test_validate_mark_record_archive_payload_passes_with_required_fields() -> None:
+    assert validate_job(
+        {
+            "job_type": JOB_MARK_RECORD_ARCHIVED,
+            "payload": {"record_type": "site_issue", "record_id": "iss_summit_drain", "actor": "Jordan"},
+        }
+    ) is True
+    assert validate_job(
+        {
+            "job_type": JOB_MARK_RECORD_UNARCHIVED,
+            "payload": {
+                "record_type": "equipment_request",
+                "record_id": "eqr_summit_vacuum",
+                "actor": "Jordan",
+                "note": "Restored after review.",
+            },
+        }
+    ) is True
+
+
+def test_validate_mark_record_archive_payload_rejects_invalid_record_type() -> None:
+    assert validate_job(
+        {
+            "job_type": JOB_MARK_RECORD_ARCHIVED,
+            "payload": {"record_type": "action_candidate", "record_id": "ac_1", "actor": "Jordan"},
+        }
+    ) is False
+
+
+def test_validate_mark_record_archive_payload_rejects_missing_record_id() -> None:
+    assert validate_job({"job_type": JOB_MARK_RECORD_ARCHIVED, "payload": {"record_type": "site_issue", "actor": "Jordan"}}) is False
+
+
+def test_validate_mark_record_archive_payload_rejects_unknown_field() -> None:
+    assert validate_job(
+        {
+            "job_type": JOB_MARK_RECORD_ARCHIVED,
+            "payload": {"record_type": "site_issue", "record_id": "iss_1", "actor": "Jordan", "status": "archived"},
+        }
+    ) is False
+
+
 def test_job_schemas_register_all_mark_supply_jobs() -> None:
     assert JOB_SCHEMAS[JOB_MARK_SUPPLY_ORDERED] == ["supply_id", "actor"]
     assert JOB_SCHEMAS[JOB_MARK_SUPPLY_DELIVERED] == ["supply_id", "actor"]
@@ -1090,3 +1134,8 @@ def test_job_schemas_register_all_mark_issue_jobs() -> None:
     assert JOB_SCHEMAS[JOB_MARK_ISSUE_MONITORING] == ["issue_id", "actor"]
     assert JOB_SCHEMAS[JOB_MARK_ISSUE_RESOLVED] == ["issue_id", "actor"]
     assert JOB_SCHEMAS[JOB_MARK_ISSUE_OPEN] == ["issue_id", "actor"]
+
+
+def test_job_schemas_register_mark_record_archive_jobs() -> None:
+    assert JOB_SCHEMAS[JOB_MARK_RECORD_ARCHIVED] == ["record_type", "record_id", "actor"]
+    assert JOB_SCHEMAS[JOB_MARK_RECORD_UNARCHIVED] == ["record_type", "record_id", "actor"]

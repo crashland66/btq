@@ -37,12 +37,21 @@ class SiteIssue:
     resolved_at: str
     resolved_by: str
     resolved_note: str
+    archived: bool
+    archived_at: str
+    archived_by: str
     related_capture_ids: tuple[str, ...]
     related_candidate_ids: tuple[str, ...]
     path: Path
 
 
-def discover_site_issues(vault_root: Path, *, site_id: str | None = None) -> dict[str, object]:
+def discover_site_issues(
+    vault_root: Path,
+    *,
+    site_id: str | None = None,
+    include_archived: bool = False,
+    archived_only: bool = False,
+) -> dict[str, object]:
     """Return site issues.
 
     CouchDB (``btq_vault``) is the canonical store for site issues. When CouchDB
@@ -52,8 +61,8 @@ def discover_site_issues(vault_root: Path, *, site_id: str | None = None) -> dic
     With no CouchDB env (dev/CI) we fall back to the on-disk Markdown glob.
     """
     if _couchdb_site_issues_enabled():
-        return _discover_site_issues_couchdb(site_id=site_id)
-    return _discover_site_issues_filesystem(vault_root, site_id=site_id)
+        return _discover_site_issues_couchdb(site_id=site_id, include_archived=include_archived, archived_only=archived_only)
+    return _discover_site_issues_filesystem(vault_root, site_id=site_id, include_archived=include_archived, archived_only=archived_only)
 
 
 def _couchdb_site_issues_enabled() -> bool:
@@ -97,13 +106,27 @@ def _site_issue_from_couch_doc(doc: dict[str, Any]) -> SiteIssue | None:
         resolved_at=clean_string(doc.get("resolved_at")),
         resolved_by=clean_string(doc.get("resolved_by")),
         resolved_note=clean_string(doc.get("resolved_note")),
+        archived=bool(doc.get("archived")),
+        archived_at=clean_string(doc.get("archived_at")),
+        archived_by=clean_string(doc.get("archived_by")),
         related_capture_ids=tuple(str(x) for x in (doc.get("related_capture_ids") or []) if x),
         related_candidate_ids=tuple(str(x) for x in (doc.get("related_candidate_ids") or []) if x),
         path=Path(str(doc.get("_id") or issue_id)),
     )
 
 
-def _discover_site_issues_couchdb(*, site_id: str | None = None) -> dict[str, object]:
+def _include_archived_item(archived: bool, *, include_archived: bool, archived_only: bool) -> bool:
+    if archived_only:
+        return archived
+    return include_archived or not archived
+
+
+def _discover_site_issues_couchdb(
+    *,
+    site_id: str | None = None,
+    include_archived: bool = False,
+    archived_only: bool = False,
+) -> dict[str, object]:
     import json
     from urllib import parse as urllib_parse, request as urllib_request
 
@@ -113,6 +136,10 @@ def _discover_site_issues_couchdb(*, site_id: str | None = None) -> dict[str, ob
     db_name = couchdb_config.vault_database()
     url = f"{cfg.base_url.rstrip('/')}/{urllib_parse.quote(db_name, safe='')}/_find"
     selector: dict[str, object] = {"type": "site_issue"}
+    if archived_only:
+        selector["archived"] = True
+    elif not include_archived:
+        selector["archived"] = {"$ne": True}
     if site_id is not None:
         selector["site_id"] = str(site_id)
     payload = {"selector": selector, "limit": 100000}
@@ -133,14 +160,22 @@ def _discover_site_issues_couchdb(*, site_id: str | None = None) -> dict[str, ob
         issue = _site_issue_from_couch_doc(doc)
         if issue is None:
             continue
+        if not _include_archived_item(issue.archived, include_archived=include_archived, archived_only=archived_only):
+            continue
         if site_id is not None and issue.site_id != str(site_id):
             continue
         issues.append(issue)
     issues.sort(key=lambda item: (status_sort(item.status), item.site_id, item.priority, item.created_at, item.issue_id))
-    return {"issues": issues, "warnings": [], "counts": issue_counts(issues)}
+    return {"issues": issues, "warnings": [], "counts": issue_counts(issues, include_archived=include_archived or archived_only)}
 
 
-def _discover_site_issues_filesystem(vault_root: Path, *, site_id: str | None = None) -> dict[str, object]:
+def _discover_site_issues_filesystem(
+    vault_root: Path,
+    *,
+    site_id: str | None = None,
+    include_archived: bool = False,
+    archived_only: bool = False,
+) -> dict[str, object]:
     issues: list[SiteIssue] = []
     warnings: list[dict[str, str]] = []
     root = vault_root.expanduser().resolve(strict=False)
@@ -155,11 +190,13 @@ def _discover_site_issues_filesystem(vault_root: Path, *, site_id: str | None = 
             continue
         if issue is None:
             continue
+        if not _include_archived_item(issue.archived, include_archived=include_archived, archived_only=archived_only):
+            continue
         if site_id is not None and issue.site_id != str(site_id):
             continue
         issues.append(issue)
     issues.sort(key=lambda item: (status_sort(item.status), item.site_id, item.priority, item.created_at, item.issue_id))
-    return {"issues": issues, "warnings": warnings, "counts": issue_counts(issues)}
+    return {"issues": issues, "warnings": warnings, "counts": issue_counts(issues, include_archived=include_archived or archived_only)}
 
 
 def parse_site_issue(path: Path) -> tuple[SiteIssue | None, dict[str, str] | None]:
@@ -200,6 +237,9 @@ def parse_site_issue(path: Path) -> tuple[SiteIssue | None, dict[str, str] | Non
             resolved_at=clean_string(frontmatter.get("resolved_at")),
             resolved_by=clean_string(frontmatter.get("resolved_by")),
             resolved_note=clean_string(frontmatter.get("resolved_note")),
+            archived=bool_from_frontmatter(frontmatter.get("archived")),
+            archived_at=clean_string(frontmatter.get("archived_at")),
+            archived_by=clean_string(frontmatter.get("archived_by")),
             related_capture_ids=tuple(frontmatter_list(frontmatter.get("related_capture_ids"))),
             related_candidate_ids=tuple(frontmatter_list(frontmatter.get("related_candidate_ids"))),
             path=path.expanduser().resolve(strict=False),
@@ -240,8 +280,8 @@ def summary_from_body(body: str) -> str:
     return " ".join(collected).strip()
 
 
-def issue_counts(issues: Iterable[SiteIssue]) -> dict[str, object]:
-    items = list(issues)
+def issue_counts(issues: Iterable[SiteIssue], *, include_archived: bool = False) -> dict[str, object]:
+    items = [issue for issue in issues if include_archived or not issue.archived]
     current = [issue for issue in items if issue.status in CURRENT_STATUSES]
     return {
         "total": len(items),
@@ -298,6 +338,9 @@ def issue_as_export(issue: SiteIssue, *, include_path: bool = False) -> dict[str
         "resolved_at": issue.resolved_at,
         "resolved_by": issue.resolved_by,
         "resolved_note": issue.resolved_note,
+        "archived": issue.archived,
+        "archived_at": issue.archived_at,
+        "archived_by": issue.archived_by,
         "related_capture_ids": list(issue.related_capture_ids),
         "related_candidate_ids": list(issue.related_candidate_ids),
     }

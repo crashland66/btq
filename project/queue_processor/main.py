@@ -21,6 +21,7 @@ from queue_spec import (
     JOB_MARK_EQUIPMENT_APPROVED, JOB_MARK_EQUIPMENT_DENIED, JOB_MARK_EQUIPMENT_NO_ACTION_NEEDED,
     JOB_MARK_EQUIPMENT_ORDERED, JOB_MARK_EQUIPMENT_PROVIDED, JOB_MARK_SUPPLY_DELIVERED,
     JOB_MARK_ISSUE_MONITORING, JOB_MARK_ISSUE_OPEN, JOB_MARK_ISSUE_RESOLVED,
+    JOB_MARK_RECORD_ARCHIVED, JOB_MARK_RECORD_UNARCHIVED,
     JOB_MARK_SUPPLY_NO_ACTION_NEEDED, JOB_MARK_SUPPLY_ORDERED, JOB_MARK_SUPPLY_STOCKED,
     JOB_PARSE_SUPPLY_EMAIL, JOB_PERSONAL_JOURNAL_ENTRY, JOB_PHOTO_CAPTURE, JOB_PROMOTE_PROSPECT,
     JOB_RECLASSIFY_UNKNOWN, JOB_REMOVE_FROM_SCHEDULE, JOB_RETARGET_CAPTURE, JOB_TRIGGER_RECRUITING,
@@ -91,6 +92,8 @@ process_mark_equipment_no_action_needed_job = supplies_equipment_transitions.pro
 process_mark_issue_monitoring_job = supplies_equipment_transitions.process_mark_issue_monitoring_job
 process_mark_issue_resolved_job = supplies_equipment_transitions.process_mark_issue_resolved_job
 process_mark_issue_open_job = supplies_equipment_transitions.process_mark_issue_open_job
+process_mark_record_archived_job = supplies_equipment_transitions.process_mark_record_archived_job
+process_mark_record_unarchived_job = supplies_equipment_transitions.process_mark_record_unarchived_job
 process_log_site_issue_job = site_flags_notes.process_log_site_issue_job
 process_append_to_note_job = site_flags_notes.process_append_to_note_job
 process_flag_access_constraint_job = site_flags_notes.process_flag_access_constraint_job

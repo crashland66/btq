@@ -62,6 +62,8 @@ JOB_MARK_EQUIPMENT_NO_ACTION_NEEDED = "mark_equipment_no_action_needed"
 JOB_MARK_ISSUE_MONITORING = "mark_issue_monitoring"
 JOB_MARK_ISSUE_RESOLVED = "mark_issue_resolved"
 JOB_MARK_ISSUE_OPEN = "mark_issue_open"
+JOB_MARK_RECORD_ARCHIVED = "mark_record_archived"
+JOB_MARK_RECORD_UNARCHIVED = "mark_record_unarchived"
 JOB_VOICE_MEMO_NOTE = "voice_memo_note"
 # Reserved for future deterministic person-note route. Not produced by any
 # current extraction or routing path. Add back to APPEND_DESTINATIONS only
@@ -97,6 +99,7 @@ PERSONNEL_EVENT_STATUSES = {"open", "monitoring", "resolved"}
 ENTITY_STATUS_TYPES = {"site", "employee"}
 ENTITY_STATUSES = {"active", "inactive"}
 SITE_EQUIPMENT_ITEM_STATUSES = {"operational", "non_functional", "untested"}
+ARCHIVABLE_RECORD_TYPES = {"site_issue", "supply_need", "equipment_request"}
 ENTITY_STATUS_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 INSPECTION_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 RECRUITING_CLOSE_OUTCOMES = {"filled", "cancelled", "withdrawn", "superseded"}
@@ -134,6 +137,8 @@ ALLOWED_JOB_TYPES = {
     JOB_MARK_ISSUE_MONITORING,
     JOB_MARK_ISSUE_RESOLVED,
     JOB_MARK_ISSUE_OPEN,
+    JOB_MARK_RECORD_ARCHIVED,
+    JOB_MARK_RECORD_UNARCHIVED,
     JOB_VOICE_MEMO_NOTE,
 }
 
@@ -186,6 +191,8 @@ JOB_SCHEMAS = {
     JOB_MARK_ISSUE_MONITORING: ["issue_id", "actor"],
     JOB_MARK_ISSUE_RESOLVED: ["issue_id", "actor"],
     JOB_MARK_ISSUE_OPEN: ["issue_id", "actor"],
+    JOB_MARK_RECORD_ARCHIVED: ["record_type", "record_id", "actor"],
+    JOB_MARK_RECORD_UNARCHIVED: ["record_type", "record_id", "actor"],
     JOB_VOICE_MEMO_NOTE: ["capture_id", "timestamp", "audio_file", "raw_transcript_path", "transcript_text"],
 }
 
@@ -350,6 +357,12 @@ MARK_ISSUE_ALLOWED_PAYLOAD_FIELDS = {
     "actor",
     "note",
     "occurred_at",
+}
+MARK_RECORD_ALLOWED_PAYLOAD_FIELDS = {
+    "record_type",
+    "record_id",
+    "actor",
+    "note",
 }
 PATH_FIELD_TOKENS = {"path", "file", "directory", "dir", "folder"}
 VAULT_PATH_PREFIXES = _vault_path_prefixes()
@@ -826,6 +839,21 @@ def _validate_mark_issue_payload(payload: dict) -> bool:
     return True
 
 
+def _validate_mark_record_payload(payload: dict) -> bool:
+    if set(payload) - MARK_RECORD_ALLOWED_PAYLOAD_FIELDS:
+        return False
+    if payload.get("record_type") not in ARCHIVABLE_RECORD_TYPES:
+        return False
+    if not _is_non_empty_string(payload.get("record_id")):
+        return False
+    if not _is_non_empty_string(payload.get("actor")):
+        return False
+    note = payload.get("note")
+    if note is not None and not isinstance(note, str):
+        return False
+    return True
+
+
 def validate_job(job: dict) -> bool:
     if not isinstance(job, dict):
         return False
@@ -976,6 +1004,9 @@ def validate_job(job: dict) -> bool:
         JOB_MARK_ISSUE_OPEN,
     }:
         if not _validate_mark_issue_payload(payload):
+            return False
+    if job_type in {JOB_MARK_RECORD_ARCHIVED, JOB_MARK_RECORD_UNARCHIVED}:
+        if not _validate_mark_record_payload(payload):
             return False
     if job_type == JOB_VOICE_MEMO_NOTE:
         for field in ("capture_id", "timestamp", "audio_file", "raw_transcript_path", "transcript_text"):

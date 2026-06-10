@@ -1469,6 +1469,85 @@ def test_mark_issue_skips_when_job_id_in_canonical_doc(
     assert store.docs == [existing_doc]
 
 
+def archive_payload(record_type: str, record_id: str) -> dict:
+    return {"record_type": record_type, "record_id": record_id, "actor": "Jordan", "note": "Duplicate."}
+
+
+@pytest.mark.parametrize(
+    ("record_type", "record_id", "doc_factory", "handler", "job_type"),
+    [
+        ("site_issue", "issue-fixed", canonical_issue_doc, qp.process_mark_record_archived_job, "mark_record_archived"),
+        ("supply_need", "supply-fixed", canonical_supply_doc, qp.process_mark_record_archived_job, "mark_record_archived"),
+        ("equipment_request", "equipment-fixed", canonical_equipment_doc, qp.process_mark_record_archived_job, "mark_record_archived"),
+    ],
+)
+def test_mark_record_archived_sets_archive_fields(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    record_type: str,
+    record_id: str,
+    doc_factory: Callable[[], dict[str, Any]],
+    handler: Handler,
+    job_type: str,
+) -> None:
+    context = context_for(tmp_path)
+    store = RecordingRmwVaultStore([doc_factory()])
+    monkeypatch.setattr(shared, "_VAULT_STORE", store)
+    queue_file = make_queue_file(context, "job-one")
+
+    handler(queue_file, job(job_type, archive_payload(record_type, record_id), job_id="job-one"), context, context.runtime_root / "processed")
+
+    doc = store.get_optional(f"{record_type}_{record_id}")
+    assert doc is not None
+    assert doc["archived"] is True
+    assert doc["archived_at"]
+    assert doc["archived_by"] == "Jordan"
+    assert doc["archive_note"] == "Duplicate."
+    assert doc["btq_job_ids"] == ["job-one"]
+
+
+def test_mark_record_unarchived_clears_archive_fields(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    context = context_for(tmp_path)
+    archived_doc = canonical_issue_doc(job_ids=["archive-job"])
+    archived_doc.update({"archived": True, "archived_at": "2026-06-10T12:00:00+00:00", "archived_by": "Jordan", "archive_note": "Duplicate."})
+    store = RecordingRmwVaultStore([archived_doc])
+    monkeypatch.setattr(shared, "_VAULT_STORE", store)
+    queue_file = make_queue_file(context, "restore-job")
+
+    qp.process_mark_record_unarchived_job(
+        queue_file,
+        job("mark_record_unarchived", archive_payload("site_issue", "issue-fixed"), job_id="restore-job"),
+        context,
+        context.runtime_root / "processed",
+    )
+
+    doc = store.get_optional("site_issue_issue-fixed")
+    assert doc is not None
+    assert doc["archived"] is False
+    assert "archived_at" not in doc
+    assert "archived_by" not in doc
+    assert "archive_note" not in doc
+    assert doc["btq_job_ids"] == ["archive-job", "restore-job"]
+
+
+def test_mark_record_archived_skips_when_job_id_already_applied(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    context = context_for(tmp_path)
+    existing_doc = canonical_issue_doc(job_ids=["job-one"])
+    store = RecordingRmwVaultStore([existing_doc])
+    monkeypatch.setattr(shared, "_VAULT_STORE", store)
+    queue_file = make_queue_file(context, "job-one")
+
+    qp.process_mark_record_archived_job(
+        queue_file,
+        job("mark_record_archived", archive_payload("site_issue", "issue-fixed"), job_id="job-one"),
+        context,
+        context.runtime_root / "processed",
+    )
+
+    assert store.update_doc_calls == []
+    assert store.docs == [existing_doc]
+
+
 def test_mark_supply_valid_transition_uses_canonical_status(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

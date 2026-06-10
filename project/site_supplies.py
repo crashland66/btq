@@ -38,9 +38,19 @@ class SupplyNeed:
     stocked_at: str = ""
     stocked_by: str = ""
     stocked_note: str = ""
+    archived: bool = False
+    archived_at: str = ""
+    archived_by: str = ""
 
 
-def discover_site_supplies(vault_root: Path, *, site_id: str | None = None, status: str | None = None) -> dict[str, object]:
+def discover_site_supplies(
+    vault_root: Path,
+    *,
+    site_id: str | None = None,
+    status: str | None = None,
+    include_archived: bool = False,
+    archived_only: bool = False,
+) -> dict[str, object]:
     """Supplies, from CouchDB ``btq_vault`` (canonical) when configured.
 
     The on-disk vault is iCloud-synced; a background launchd daemon scanning it
@@ -50,8 +60,8 @@ def discover_site_supplies(vault_root: Path, *, site_id: str | None = None, stat
     import os
 
     if os.environ.get("BTQ_COUCHDB_URL", "").strip():
-        return _discover_site_supplies_couchdb(site_id=site_id, status=status)
-    return _discover_site_supplies_filesystem(vault_root, site_id=site_id, status=status)
+        return _discover_site_supplies_couchdb(site_id=site_id, status=status, include_archived=include_archived, archived_only=archived_only)
+    return _discover_site_supplies_filesystem(vault_root, site_id=site_id, status=status, include_archived=include_archived, archived_only=archived_only)
 
 
 def _supply_from_couch_doc(doc: dict[str, Any]) -> SupplyNeed | None:
@@ -94,10 +104,25 @@ def _supply_from_couch_doc(doc: dict[str, Any]) -> SupplyNeed | None:
         stocked_at=clean_string(doc.get("stocked_at")),
         stocked_by=clean_string(doc.get("stocked_by")),
         stocked_note=clean_string(doc.get("stocked_note")),
+        archived=bool(doc.get("archived")),
+        archived_at=clean_string(doc.get("archived_at")),
+        archived_by=clean_string(doc.get("archived_by")),
     )
 
 
-def _discover_site_supplies_couchdb(*, site_id: str | None = None, status: str | None = None) -> dict[str, object]:
+def _include_archived_item(archived: bool, *, include_archived: bool, archived_only: bool) -> bool:
+    if archived_only:
+        return archived
+    return include_archived or not archived
+
+
+def _discover_site_supplies_couchdb(
+    *,
+    site_id: str | None = None,
+    status: str | None = None,
+    include_archived: bool = False,
+    archived_only: bool = False,
+) -> dict[str, object]:
     import json
     from urllib import parse as urllib_parse, request as urllib_request
 
@@ -107,6 +132,10 @@ def _discover_site_supplies_couchdb(*, site_id: str | None = None, status: str |
     db_name = couchdb_config.vault_database()
     url = f"{cfg.base_url.rstrip('/')}/{urllib_parse.quote(db_name, safe='')}/_find"
     selector: dict[str, object] = {"type": "supply_need"}
+    if archived_only:
+        selector["archived"] = True
+    elif not include_archived:
+        selector["archived"] = {"$ne": True}
     if site_id is not None:
         selector["site_id"] = str(site_id)
     payload = {"selector": selector, "limit": 100000}
@@ -124,16 +153,25 @@ def _discover_site_supplies_couchdb(*, site_id: str | None = None, status: str |
         supply = _supply_from_couch_doc(doc)
         if supply is None:
             continue
+        if not _include_archived_item(supply.archived, include_archived=include_archived, archived_only=archived_only):
+            continue
         if site_id is not None and supply.site_id != str(site_id):
             continue
         if status_filter is not None and supply.status != status_filter:
             continue
         supplies.append(supply)
     supplies.sort(key=lambda item: (status_sort(item.status), urgency_sort(item.urgency), item.site_id, item.created_at, item.supply_id))
-    return {"supplies": supplies, "warnings": [], "counts": supply_counts(supplies)}
+    return {"supplies": supplies, "warnings": [], "counts": supply_counts(supplies, include_archived=include_archived or archived_only)}
 
 
-def _discover_site_supplies_filesystem(vault_root: Path, *, site_id: str | None = None, status: str | None = None) -> dict[str, object]:
+def _discover_site_supplies_filesystem(
+    vault_root: Path,
+    *,
+    site_id: str | None = None,
+    status: str | None = None,
+    include_archived: bool = False,
+    archived_only: bool = False,
+) -> dict[str, object]:
     supplies: list[SupplyNeed] = []
     warnings: list[dict[str, str]] = []
     root = vault_root.expanduser().resolve(strict=False)
@@ -149,13 +187,15 @@ def _discover_site_supplies_filesystem(vault_root: Path, *, site_id: str | None 
             continue
         if supply is None:
             continue
+        if not _include_archived_item(supply.archived, include_archived=include_archived, archived_only=archived_only):
+            continue
         if site_id is not None and supply.site_id != str(site_id):
             continue
         if status_filter is not None and supply.status != status_filter:
             continue
         supplies.append(supply)
     supplies.sort(key=lambda item: (status_sort(item.status), urgency_sort(item.urgency), item.site_id, item.created_at, item.supply_id))
-    return {"supplies": supplies, "warnings": warnings, "counts": supply_counts(supplies)}
+    return {"supplies": supplies, "warnings": warnings, "counts": supply_counts(supplies, include_archived=include_archived or archived_only)}
 
 
 def parse_site_supply(path: Path) -> tuple[SupplyNeed | None, dict[str, str] | None]:
@@ -200,6 +240,9 @@ def parse_site_supply(path: Path) -> tuple[SupplyNeed | None, dict[str, str] | N
             stocked_at=clean_string(frontmatter.get("stocked_at")),
             stocked_by=clean_string(frontmatter.get("stocked_by")),
             stocked_note=clean_string(frontmatter.get("stocked_note")),
+            archived=bool_from_frontmatter(frontmatter.get("archived")),
+            archived_at=clean_string(frontmatter.get("archived_at")),
+            archived_by=clean_string(frontmatter.get("archived_by")),
         ),
         None,
     )
@@ -214,8 +257,14 @@ def clean_string(value: Any) -> str:
     return text
 
 
-def supply_counts(supplies: Iterable[SupplyNeed]) -> dict[str, object]:
-    items = list(supplies)
+def bool_from_frontmatter(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    return clean_string(value).lower() == "true"
+
+
+def supply_counts(supplies: Iterable[SupplyNeed], *, include_archived: bool = False) -> dict[str, object]:
+    items = [supply for supply in supplies if include_archived or not supply.archived]
     return {
         "total": len(items),
         "by_status": count_by(items, "status"),
@@ -265,6 +314,9 @@ def supply_as_export(supply: SupplyNeed, *, include_path: bool = False) -> dict[
         "stocked_at": supply.stocked_at,
         "stocked_by": supply.stocked_by,
         "stocked_note": supply.stocked_note,
+        "archived": supply.archived,
+        "archived_at": supply.archived_at,
+        "archived_by": supply.archived_by,
     }
     if include_path:
         payload["_id"] = supply.doc_id

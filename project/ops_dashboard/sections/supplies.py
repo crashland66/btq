@@ -67,9 +67,10 @@ def render_field_capture_supplies_body(ctx: object, *, embedded: bool = False) -
     site_id = query_value(query, "site_id") or None
     status = query_value(query, "status") or None
     sort = query_value(query, "sort")
-    report = discover_site_supplies(config.vault_dir, site_id=site_id, status=status)
+    archived = query_value(query, "archived") == "1"
+    report = discover_site_supplies(config.vault_dir, site_id=site_id, status=status, include_archived=archived, archived_only=archived)
     exported = sort_supplies(supplies_from_report(report), sort)
-    title = build_title(site_id, status)
+    title = f"Archived {build_title(site_id, status)}" if archived else build_title(site_id, status)
     action = "/" if embedded else "/supplies"
     tab = "supplies" if embedded else None
     return f"""
@@ -83,7 +84,7 @@ def render_field_capture_supplies_body(ctx: object, *, embedded: bool = False) -
     </section>
     <section>
       <h2>Filters</h2>
-      {render_filter_form(site_id, status, report.get("counts") if isinstance(report.get("counts"), dict) else {}, action=action, tab=tab, sort=sort)}
+      {render_filter_form(site_id, status, report.get("counts") if isinstance(report.get("counts"), dict) else {}, action=action, tab=tab, sort=sort, archived=archived)}
     </section>
     <section>
       <h2>Supplies</h2>
@@ -109,6 +110,7 @@ def render_filter_form(
     action: str = "/supplies",
     tab: str | None = None,
     sort: str = "",
+    archived: bool = False,
 ) -> str:
     options = []
     counts = counts if isinstance(counts, dict) else {}
@@ -135,6 +137,7 @@ def render_filter_form(
         <select id="status" name="status">{"".join(options)}</select>
         <label for="sort">Sort</label>
         <select id="sort" name="sort">{"".join(sort_options)}</select>
+        <label><input type="checkbox" name="archived" value="1"{' checked' if archived else ''}> Archived</label>
         <p><button type="submit">Apply filters</button></p>
       </form>"""
 
@@ -185,7 +188,7 @@ def sort_supplies(supplies: list[dict[str, object]], sort: str) -> list[dict[str
 
 
 def find_supply(vault_root: Path, supply_id: str) -> dict[str, object] | None:
-    report = discover_site_supplies(vault_root)
+    report = discover_site_supplies(vault_root, include_archived=True)
     for supply in supplies_from_report(report):
         if str(supply.get("supply_id") or "") == supply_id:
             return supply
@@ -205,6 +208,7 @@ def render_supply_detail(ctx: object, supply_id: str) -> str:
         <section>
           <h2>{html.escape(title)}</h2>
           <p>{render_pill(supply.get("status"))}</p>
+          {render_archived_notice(supply)}
           {render_kv(supply, labels={key: humanize_key(key) for key in supply})}
         </section>
         <section>
@@ -212,6 +216,7 @@ def render_supply_detail(ctx: object, supply_id: str) -> str:
           {render_lifecycle_history(supply, ("ordered", "delivered", "stocked"))}
         </section>
         {render_action_panel(supply)}
+        {render_archive_panel(supply)}
         """
     return html_page("Supply Detail", f"<header><h1>Supply Detail</h1></header>{render_back_link('/supplies', 'Back to Supplies')}{flash}{content}", active_section="supplies")
 
@@ -234,9 +239,9 @@ def valid_transitions(status: object) -> list[tuple[str, dict[str, object]]]:
 
 def render_action_panel(supply: dict[str, object]) -> str:
     transitions = valid_transitions(supply.get("status"))
-    if not transitions:
-        return ""
     supply_id = str(supply.get("supply_id") or "")
+    if not supply_id or is_archived(supply) or not transitions:
+        return ""
     current_status = str(supply.get("status") or "")
     current_pill = f'<p>Currently: <span class="pill status-{slugify_status(current_status)}">{html.escape(current_status)}</span></p>' if current_status else ""
     links = "".join(
@@ -246,13 +251,60 @@ def render_action_panel(supply: dict[str, object]) -> str:
     return f"<section><h2>Actions</h2>{current_pill}{links}</section>"
 
 
+def render_archive_panel(supply: dict[str, object]) -> str:
+    if not str(supply.get("supply_id") or ""):
+        return ""
+    return f"<section><h2>Archive</h2>{render_archive_control(supply)}</section>"
+
+
 def render_row_actions(supply: dict[str, object]) -> str:
     supply_id = str(supply.get("supply_id") or "")
+    if is_archived(supply):
+        return render_restore_form(supply_id)
     links = [
         f'<a href="{html.escape(str(config["confirm_route"]))}?supply_id={quote(supply_id)}">{html.escape(str(config["label"]))}</a>'
         for _name, config in valid_transitions(supply.get("status"))
     ]
     return " ".join(links)
+
+
+def is_archived(supply: dict[str, object]) -> bool:
+    return supply.get("archived") is True or str(supply.get("archived") or "").strip().lower() == "true"
+
+
+def render_archived_notice(supply: dict[str, object]) -> str:
+    if not is_archived(supply):
+        return ""
+    archived_at = str(supply.get("archived_at") or "").strip()
+    archived_by = str(supply.get("archived_by") or "").strip()
+    detail = " ".join(part for part in (archived_at, f"by {archived_by}" if archived_by else "") if part)
+    return f'<p class="muted">Archived{": " + html.escape(detail) if detail else ""}</p>'
+
+
+def render_archive_control(supply: dict[str, object]) -> str:
+    supply_id = str(supply.get("supply_id") or "")
+    archived = is_archived(supply)
+    route = "/supplies/restore" if archived else "/supplies/archive"
+    label = "Restore" if archived else "Archive (Delete)"
+    return f"""
+      <form method="post" action="{route}">
+        <input type="hidden" name="supply_id" value="{html.escape(supply_id)}">
+        <input type="hidden" name="confirm" value="1">
+        <input type="hidden" name="actor" value="{html.escape(default_actor())}">
+        <label>Note (optional)</label>
+        <textarea name="note"></textarea>
+        <button type="submit">{label}</button>
+      </form>
+    """
+
+
+def render_restore_form(supply_id: str) -> str:
+    return f"""<form method="post" action="/supplies/restore">
+        <input type="hidden" name="supply_id" value="{html.escape(supply_id)}">
+        <input type="hidden" name="actor" value="{html.escape(default_actor())}">
+        <input type="hidden" name="confirm" value="1">
+        <button type="submit">Restore</button>
+      </form>"""
 
 
 def render_supply_mark_confirm(ctx: object, transition_name: str) -> str:
@@ -349,3 +401,27 @@ def handle_mark_supply_stocked(ctx: object, body: bytes):
 
 def handle_mark_supply_no_action_needed(ctx: object, body: bytes):
     return handle_supply_mark_post(ctx, body, job_type="mark_supply_no_action_needed", route="/supplies/mark-no-action-needed")
+
+
+def handle_supply_archive(ctx: object, body: bytes):
+    return handle_mark_transition_post(
+        ctx, body,
+        job_type="mark_record_archived",
+        route="/supplies/archive",
+        id_field="supply_id",
+        redirect_path="/supplies",
+        payload_id_key="record_id",
+        extra_payload={"record_type": "supply_need"},
+    )
+
+
+def handle_supply_restore(ctx: object, body: bytes):
+    return handle_mark_transition_post(
+        ctx, body,
+        job_type="mark_record_unarchived",
+        route="/supplies/restore",
+        id_field="supply_id",
+        redirect_path="/supplies",
+        payload_id_key="record_id",
+        extra_payload={"record_type": "supply_need"},
+    )

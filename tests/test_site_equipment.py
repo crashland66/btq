@@ -15,6 +15,7 @@ def write_equipment(
     status: str = "open",
     priority: str = "urgent",
     equipment_name: str = "vacuum",
+    archived: bool = False,
 ) -> Path:
     path = vault_root / "Accounts" / account / "Locations" / site_dir / "Equipment" / f"{equipment_id}__equipment.md"
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -32,6 +33,9 @@ requested_by: Tom Walsh
 observed_at: 2026-05-08T14:12:43+00:00
 source: field_capture
 status: {status}
+archived: {str(archived).lower()}
+archived_at: 2026-06-10T12:00:00+00:00
+archived_by: Jordan
 created_at: 2026-05-08T20:00:00+00:00
 notes: Needed for lobby carpet.
 related_capture_ids:
@@ -123,6 +127,20 @@ def test_discover_site_equipment_counts_by_priority(tmp_path: Path) -> None:
     report = discover_site_equipment(vault_root)
 
     assert report["counts"]["by_priority"] == {"high": 1, "urgent": 1}
+
+
+def test_discover_site_equipment_excludes_archived_by_default_and_can_list_archived(tmp_path: Path) -> None:
+    vault_root = tmp_path / "vault"
+    write_equipment(vault_root, equipment_id="eqr_open")
+    write_equipment(vault_root, equipment_id="eqr_archived", archived=True)
+
+    default_report = discover_site_equipment(vault_root)
+    archived_report = discover_site_equipment(vault_root, include_archived=True, archived_only=True)
+
+    assert [request.equipment_id for request in default_report["equipment"]] == ["eqr_open"]
+    assert default_report["counts"]["total"] == 1
+    assert [request.equipment_id for request in archived_report["equipment"]] == ["eqr_archived"]
+    assert archived_report["counts"]["total"] == 1
 
 
 def test_discover_site_equipment_reports_warnings_for_malformed_file(tmp_path: Path) -> None:

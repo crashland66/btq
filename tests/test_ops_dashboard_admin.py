@@ -1788,6 +1788,16 @@ def test_supplies_mark_no_action_needed_post_writes_queue_file(tmp_path: Path) -
     assert job["payload"] == {"actor": "Jordan", "supply_id": "sup_cleaner"}
 
 
+def test_supplies_archive_post_writes_generic_archive_job(tmp_path: Path) -> None:
+    runtime_root = tmp_path / "runtime"
+
+    route_response("POST", "/supplies/archive", runtime_root, b"supply_id=sup_cleaner&actor=Jordan&confirm=1")
+    job = read_single_queue_job(runtime_root)
+
+    assert job["job_type"] == "mark_record_archived"
+    assert job["payload"] == {"record_type": "supply_need", "record_id": "sup_cleaner", "actor": "Jordan"}
+
+
 def test_issues_mark_resolved_post_writes_queue_file(tmp_path: Path) -> None:
     runtime_root = tmp_path / "runtime"
 
@@ -1818,6 +1828,26 @@ def test_issues_reopen_post_writes_queue_file(tmp_path: Path) -> None:
 
     assert job["job_type"] == "mark_issue_open"
     assert job["payload"] == {"actor": "Jordan", "issue_id": "iss_drain"}
+
+
+def test_issue_archive_post_writes_generic_archive_job(tmp_path: Path) -> None:
+    runtime_root = tmp_path / "runtime"
+
+    route_response("POST", "/field-capture/issues/archive", runtime_root, b"issue_id=iss_drain&actor=Jordan&note=dupe&confirm=1")
+    job = read_single_queue_job(runtime_root)
+
+    assert job["job_type"] == "mark_record_archived"
+    assert job["payload"] == {"record_type": "site_issue", "record_id": "iss_drain", "actor": "Jordan", "note": "dupe"}
+
+
+def test_issue_restore_post_writes_generic_unarchive_job(tmp_path: Path) -> None:
+    runtime_root = tmp_path / "runtime"
+
+    route_response("POST", "/field-capture/issues/restore", runtime_root, b"issue_id=iss_drain&actor=Jordan&confirm=1")
+    job = read_single_queue_job(runtime_root)
+
+    assert job["job_type"] == "mark_record_unarchived"
+    assert job["payload"] == {"record_type": "site_issue", "record_id": "iss_drain", "actor": "Jordan"}
 
 
 def test_equipment_route_renders_200_and_contains_section_header(tmp_path: Path, monkeypatch) -> None:
@@ -2032,6 +2062,16 @@ def test_equipment_mark_no_action_needed_post_writes_queue_file(tmp_path: Path) 
 
     assert job["job_type"] == "mark_equipment_no_action_needed"
     assert job["payload"] == {"actor": "Jordan", "equipment_id": "eqr_vacuum"}
+
+
+def test_equipment_archive_post_writes_generic_archive_job(tmp_path: Path) -> None:
+    runtime_root = tmp_path / "runtime"
+
+    route_response("POST", "/equipment/archive", runtime_root, b"equipment_id=eqr_vacuum&actor=Jordan&confirm=1")
+    job = read_single_queue_job(runtime_root)
+
+    assert job["job_type"] == "mark_record_archived"
+    assert job["payload"] == {"record_type": "equipment_request", "record_id": "eqr_vacuum", "actor": "Jordan"}
 
 
 def test_render_issue_list_lives_in_common_module() -> None:
