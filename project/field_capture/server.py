@@ -1662,6 +1662,67 @@ def list_tokens(args: argparse.Namespace) -> int:
     return 0
 
 
+def audit_tokens(args: argparse.Namespace) -> int:
+    """Flag tokens whose ``person_id`` no longer resolves to a live employee.
+
+    The SQLite token store is separate from canonical CouchDB, so a person_id
+    rename/merge in the vault can leave a token pointing at a person that no
+    longer exists. ``authenticate`` still succeeds (the secret is valid), but
+    ``authorize_token`` then fails person resolution and the surface returns
+    ``invalid_token`` — exactly the drift that broke the batch-image import after
+    the ULID→lastname_firstname migration. Run this after any person_id change.
+
+    Exit status is non-zero when at least one checked token is stale, so a cron
+    or CI gate can alarm on it.
+    """
+    include_revoked = bool(getattr(args, "include_revoked", False))
+    records = TokenStore(args.db).list_tokens()
+    if not include_revoked:
+        records = [record for record in records if not record.revoked]
+    try:
+        store = CouchDBEntityStore.from_env()
+    except Exception as exc:  # noqa: BLE001 - audit can only run against a reachable canonical store.
+        raise SystemExit(f"audit unavailable: canonical store unreachable ({exc})")
+
+    status_by_person: dict[str, str] = {}
+
+    def resolve_status(person_id: str) -> str:
+        if person_id not in status_by_person:
+            try:
+                load_person_from_canonical(store, person_id)
+                status_by_person[person_id] = "ok"
+            except NotFoundError:
+                status_by_person[person_id] = "MISSING"
+            except Exception as exc:  # noqa: BLE001 - report lookup errors without treating them as stale.
+                status_by_person[person_id] = f"error: {exc}"
+        return status_by_person[person_id]
+
+    stale = 0
+    print("status | token_id | person_id | type | revoked | label")
+    for record in records:
+        status = resolve_status(record.person_id)
+        if status == "MISSING":
+            stale += 1
+        print(
+            " | ".join(
+                [
+                    status,
+                    record.token_id,
+                    record.person_id,
+                    record.token_type,
+                    "yes" if record.revoked else "no",
+                    record.label,
+                ]
+            )
+        )
+    if stale:
+        print(
+            f"\n{stale} token(s) reference a person_id with no live employee doc — "
+            "re-mint onto the current person_id or revoke."
+        )
+    return 1 if stale else 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     config = get_config()
     parser = argparse.ArgumentParser(description="Run field-capture and manage access tokens.")
@@ -1700,6 +1761,17 @@ def build_parser() -> argparse.ArgumentParser:
 
     list_parser = token_subparsers.add_parser("list", help="List token metadata without raw token values.")
     list_parser.set_defaults(func=list_tokens)
+
+    audit_parser = token_subparsers.add_parser(
+        "audit",
+        help="Flag tokens whose person_id no longer resolves to a live employee (exit 1 if any are stale).",
+    )
+    audit_parser.add_argument(
+        "--include-revoked",
+        action="store_true",
+        help="Also check revoked tokens (default: active tokens only).",
+    )
+    audit_parser.set_defaults(func=audit_tokens)
 
     return parser
 
