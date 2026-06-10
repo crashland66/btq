@@ -515,3 +515,37 @@ def test_collect_my_submissions_track_b_acted_on(tmp_path):
     assert result[0]["track"] == "B"
     assert result[0]["stage"] == "acted_on"
     assert result[0]["outcome_label"] == "Client notified"
+
+
+def test_collect_my_submissions_track_a_complete_via_processing_state(tmp_path):
+    """Edge deployments have no filesystem vision, but the replicated capture doc is
+    complete -> stage=processed (not stuck 'processing'/'analyzing')."""
+    upload_dir = tmp_path / "uploads"
+    pv_dir = tmp_path / "pv"  # intentionally empty (no vision sidecars)
+    cand_dir = tmp_path / "candidates"
+    for d in (upload_dir, pv_dir, cand_dir):
+        d.mkdir()
+    doc = _make_full_doc("cap-a3", has_note=False, has_audio=False)
+    doc["processing_state"] = "complete"
+    result = collect_my_submissions(
+        "p1", [doc], upload_dir=upload_dir, photo_vision_dir=pv_dir, candidates_dir=cand_dir
+    )
+    assert len(result) == 1
+    assert result[0]["track"] == "A"
+    assert result[0]["stage"] == "processed"
+
+
+def test_collect_my_submissions_track_a_incomplete_is_processing(tmp_path):
+    """Without a complete processing_state and no vision -> still processing."""
+    upload_dir = tmp_path / "uploads"
+    pv_dir = tmp_path / "pv"
+    cand_dir = tmp_path / "candidates"
+    for d in (upload_dir, pv_dir, cand_dir):
+        d.mkdir()
+    doc = _make_full_doc("cap-a4", has_note=False, has_audio=False)
+    doc["processing_state"] = "pending"
+    result = collect_my_submissions(
+        "p1", [doc], upload_dir=upload_dir, photo_vision_dir=pv_dir, candidates_dir=cand_dir
+    )
+    assert len(result) == 1
+    assert result[0]["stage"] == "processing"

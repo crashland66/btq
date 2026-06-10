@@ -327,14 +327,24 @@ def collect_my_submissions(
                     photo_urls.append(f"/media/{upload_id}")
 
         per_photo_quality = quality_for_capture(capture_id, photo_vision_dir, index=vision_index)
+        # The capture doc's processing_state is the canonical/replicated signal that
+        # the pipeline finished. Edge deployments (the VPS fc app) don't have the
+        # filesystem photo_vision_dir/candidates_dir the legacy stage logic reads, so
+        # without this they'd show "analyzing" forever even though the replicated doc
+        # is complete.
+        processing_complete = str(doc.get("processing_state") or "").strip().lower() == "complete"
 
         if is_track_b(doc):
             track = "B"
             stage, outcome_label = derive_track_b_stage(capture_id, candidates_dir)
+            if stage == "processing" and processing_complete:
+                # Complete with no candidate surfaced = reviewed, nothing actionable.
+                stage, outcome_label = "reviewed", "No action needed"
         else:
             track = "A"
-            # Stage reflects whether photo vision processing has completed
-            stage = "processed" if per_photo_quality else "processing"
+            # Stage reflects whether processing has completed: prefer the replicated
+            # processing_state, fall back to the presence of vision quality.
+            stage = "processed" if (processing_complete or per_photo_quality) else "processing"
             outcome_label = ""
 
         result.append({
