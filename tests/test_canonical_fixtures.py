@@ -32,6 +32,10 @@ def test_sandbox_site_doc_shape() -> None:
     assert doc["site_id"] == SANDBOX_SITE_ID
     assert doc["type"] == "site"
     assert doc["location"] == SANDBOX_SITE_NAME
+    # active:True (boolean) is required for the site to resolve/submit (by_site_id view);
+    # account is what the fc app shows as the site label.
+    assert doc["active"] is True
+    assert doc["account"] == SANDBOX_SITE_NAME
 
 
 def test_sandbox_site_registry_entry_shape() -> None:

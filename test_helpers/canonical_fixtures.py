@@ -44,13 +44,20 @@ def sandbox_employee_doc(**overrides: Any) -> dict[str, Any]:
 
 
 def sandbox_site_doc(**overrides: Any) -> dict[str, Any]:
-    """Canonical site doc (``btq_sites``, ``_id`` == ``site_id``, type ``site``)."""
+    """Canonical site doc (``btq_sites``, ``_id`` == ``site_id``, type ``site``).
+
+    ``active: True`` (boolean) is REQUIRED for the site to be submittable: the
+    btq_sites ``by_site_id`` view gates on ``doc.active === true`` and emits
+    ``canonical: doc.account`` — so without it the fc app's /api/session returns an
+    empty ``sites`` list and disables capture (mis-reported as "cannot submit").
+    """
     doc: dict[str, Any] = {
         "_id": SANDBOX_SITE_ID,
         "type": "site",
         "site_id": SANDBOX_SITE_ID,
-        "account": SANDBOX_ACCOUNT,
+        "account": SANDBOX_SITE_NAME,  # fc app uses account as the site's display name
         "location": SANDBOX_SITE_NAME,
+        "active": True,
         "status": "active",
     }
     doc.update(overrides)
