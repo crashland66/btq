@@ -516,7 +516,10 @@ def quality_filtered_summaries(payload: dict[str, object]) -> list[str]:
             continue
         if normalized_text(summary) == normalized_text(AFTER_PHOTO_ACTION) and has_specific_after_photo:
             continue
-        if is_generic_summary(summary) and any(not is_generic_summary(existing) for existing in raw_summaries):
+        # A note whose only "action" is the generic review fallback (e.g. status
+        # notes like "complete" / "area done") has nothing to action — drop it
+        # always so it never becomes a pending-review candidate.
+        if is_generic_summary(summary):
             continue
         filtered.append(summary)
     return list(dict.fromkeys(filtered))
@@ -574,6 +577,11 @@ def structured_payloads_from_semantic(path: Path, payload: dict[str, object]) ->
     provenance = semantic_provenance(path, payload)
     records: list[dict[str, object]] = []
     for action in actions:
+        # The rule engine emits a generic "review this note" extracted action when
+        # it finds nothing actionable; that is not a real action item, so skip it
+        # (a generic-only capture then produces no candidate at all).
+        if is_generic_summary(action.summary):
+            continue
         source_kind = structured_action_source_kind(payload, action)
         proposed_job_type = ""
         if isinstance(action.proposed_queue_job, dict):
