@@ -255,6 +255,61 @@ def test_handle_submit_import_token_can_override_person_and_source(
     assert len(doc["photos"]) == 2
 
 
+def test_handle_submit_import_token_accepts_batch_above_app_max_images(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    # The dashboard batch importer (import token) must accept a WhatsApp-fallback
+    # dump larger than the app's small per-capture ceiling (server max_images=6).
+    server, _normal_token, _queue_dir, _upload_dir = build_test_server(tmp_path, monkeypatch)
+    token = create_import_token(server)
+    put_calls: list[object] = []
+
+    def fake_urlopen(req: object, timeout: float) -> FakeResponse:
+        method = getattr(req, "method", "GET")
+        if method == "GET":
+            from urllib import error as _error
+            raise _error.HTTPError(getattr(req, "full_url", ""), 404, "Not Found", hdrs=None, fp=None)
+        put_calls.append(req)
+        return FakeResponse({"ok": True, "id": "cap-photo-couchdb", "rev": "1-a"})
+
+    monkeypatch.setattr("event_pipeline.couchdb_capture_writer.request.urlopen", fake_urlopen)
+    fields = valid_fields() | {"person_id": "damon-smith", "source": "whatsapp_import"}
+    photos = [("photos", f"photo-{i}.jpg", "image/jpeg", b"\xff\xd8photo-%d" % i) for i in range(20)]
+    body, content_type = multipart_body(fields, photos)
+
+    status, _headers, response_body = submit_request(server, token, body, content_type)
+
+    response = json.loads(response_body)
+    assert status == 201
+    assert response["photo_count"] == 20
+    doc = json.loads(getattr(put_calls[0], "data").decode("utf-8"))
+    assert len(doc["photos"]) == 20
+
+
+def test_handle_submit_normal_token_still_capped_at_app_max_images(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    # Regression guard: the raised ceiling is scoped to the import token; a normal
+    # capture token must still be rejected above the app's max_images.
+    server, token, _queue_dir, _upload_dir = build_test_server(tmp_path, monkeypatch)
+
+    def fake_urlopen(req: object, timeout: float) -> FakeResponse:
+        from urllib import error as _error
+        raise _error.HTTPError(getattr(req, "full_url", ""), 404, "Not Found", hdrs=None, fp=None)
+
+    monkeypatch.setattr("event_pipeline.couchdb_capture_writer.request.urlopen", fake_urlopen)
+    photos = [("photos", f"photo-{i}.jpg", "image/jpeg", b"\xff\xd8photo-%d" % i) for i in range(7)]
+    body, content_type = multipart_body(valid_fields(), photos)
+
+    status, _headers, response_body = submit_request(server, token, body, content_type)
+
+    response = json.loads(response_body)
+    assert status == 400
+    assert response["error"] == "too_many_photos"
+
+
 def test_handle_submit_normal_token_cannot_override_person_or_source(
     tmp_path: Path,
     monkeypatch,

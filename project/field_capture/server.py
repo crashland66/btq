@@ -16,6 +16,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, quote, urlencode, urlsplit, urlunsplit
 
 from capture_ingest import (
+    IMPORT_MAX_IMAGES,
     IngestLimits,
     SubmissionError,
     UploadedFile,
@@ -91,9 +92,9 @@ AUDIO_ALLOWED_EXTENSIONS = {
 }
 
 
-def field_capture_ingest_limits(server: object) -> IngestLimits:
+def field_capture_ingest_limits(server: object, *, max_images: int | None = None) -> IngestLimits:
     return IngestLimits(
-        max_images=int(getattr(server, "max_images")),
+        max_images=int(max_images if max_images is not None else getattr(server, "max_images")),
         max_upload_bytes=int(getattr(server, "max_upload_bytes")),
         request_max_bytes=int(getattr(server, "request_max_bytes")),
         photo_mime_extensions=PHOTO_MIME_EXTENSIONS,
@@ -1025,8 +1026,15 @@ class FieldCaptureHandler(BaseHTTPRequestHandler):
         if session is None:
             self.write_json({"error": "invalid_token"}, HTTPStatus.UNAUTHORIZED)
             return
+        # The dedicated batch-image import token may submit a large WhatsApp-fallback
+        # dump as one capture; regular capture tokens keep the app's small ceiling.
+        effective_max_images = (
+            max(self.server.max_images, IMPORT_MAX_IMAGES)
+            if can_override_submission_attribution(session)
+            else self.server.max_images
+        )
         try:
-            fields, photos, audio_files = self.read_multipart_submission()
+            fields, photos, audio_files = self.read_multipart_submission(max_images=effective_max_images)
             self.validate_submit_authorization(session, fields)
             # Idempotency: if a document with this capture_id already
             # exists, return the original success response without
@@ -1112,12 +1120,14 @@ class FieldCaptureHandler(BaseHTTPRequestHandler):
             HTTPStatus.CREATED,
         )
 
-    def read_multipart_submission(self) -> tuple[dict[str, str], list[UploadedFile], list[UploadedFile]]:
+    def read_multipart_submission(
+        self, *, max_images: int | None = None
+    ) -> tuple[dict[str, str], list[UploadedFile], list[UploadedFile]]:
         return read_capture_multipart_submission(
             self.headers.get("Content-Length"),
             self.headers.get("Content-Type", ""),
             self.rfile.read,
-            field_capture_ingest_limits(self.server),
+            field_capture_ingest_limits(self.server, max_images=max_images),
         )
 
     def authorize_site_view(self, site_id: str) -> AuthorizedSession | None:

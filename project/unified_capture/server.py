@@ -13,6 +13,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlsplit
 
 from capture_ingest import (
+    IMPORT_MAX_IMAGES,
     IngestLimits,
     SubmissionError,
     UploadedFile,
@@ -53,6 +54,7 @@ from field_capture.server import (
     query_captures_by_person_id,
     resolve_display_categories,
     resolve_submission_attribution,
+    can_override_submission_attribution,
     TERMINAL_PROSPECT_STATUSES,
 )
 from queue_spec import validate_job
@@ -190,8 +192,15 @@ class UnifiedCaptureHandler(BaseHTTPRequestHandler):
             )
             return
 
+        # The dedicated batch-image import token may submit a large WhatsApp-fallback
+        # dump as one capture; regular capture tokens keep the app's small ceiling.
+        effective_max_images = (
+            max(int(getattr(self.server, "max_images")), IMPORT_MAX_IMAGES)
+            if can_override_submission_attribution(session)
+            else None
+        )
         try:
-            fields, photos, audio_files = self.read_multipart_submission()
+            fields, photos, audio_files = self.read_multipart_submission(max_images=effective_max_images)
             self.validate_submit_authorization(session, fields)
             capture_id = normalize_capture_id(fields.get("capture_id", ""), fallback_prefix="cap-unified-")
             if fields.get("capture_id"):
@@ -621,7 +630,9 @@ class UnifiedCaptureHandler(BaseHTTPRequestHandler):
                 self.log_message("WARNING: site label lookup failed site_id=%s error=%s", site_id, error)
         return site_id
 
-    def read_multipart_submission(self) -> tuple[dict[str, str], list[UploadedFile], list[UploadedFile]]:
+    def read_multipart_submission(
+        self, *, max_images: int | None = None
+    ) -> tuple[dict[str, str], list[UploadedFile], list[UploadedFile]]:
         request_max_bytes = int(getattr(self.server, "request_max_bytes"))
         content_length = validate_content_length(self.headers.get("Content-Length"), request_max_bytes)
         content_type = self.headers.get("Content-Type", "")
@@ -634,13 +645,13 @@ class UnifiedCaptureHandler(BaseHTTPRequestHandler):
         if len(photos) + len(audio_files) < 1 and not note:
             raise SubmissionError(HTTPStatus.BAD_REQUEST, "missing_asset", "Add at least one photo, voice note, or text note")
         if photos:
-            validate_uploaded_photos(photos, self.photo_ingest_limits())
+            validate_uploaded_photos(photos, self.photo_ingest_limits(max_images=max_images))
         self.validate_uploaded_audio(audio_files)
         return fields, photos, audio_files
 
-    def photo_ingest_limits(self) -> IngestLimits:
+    def photo_ingest_limits(self, *, max_images: int | None = None) -> IngestLimits:
         return IngestLimits(
-            max_images=int(getattr(self.server, "max_images")),
+            max_images=int(max_images if max_images is not None else getattr(self.server, "max_images")),
             max_upload_bytes=int(getattr(self.server, "max_upload_bytes")),
             request_max_bytes=int(getattr(self.server, "request_max_bytes")),
             photo_mime_extensions=PHOTO_MIME_EXTENSIONS,
