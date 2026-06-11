@@ -13,10 +13,9 @@ The card shows only what the operator needs to decide "is this proposed change
 true enough to commit?": what happened, who/what it affects, the proposed
 mutation, confidence, and the source evidence. Pipeline internals stay hidden.
 
-Approve and Reject are live. Edit and Defer are intentionally rendered as
-disabled for this prompt; draft editing is handled by the next review increment.
-Showing them as stubs (rather than fake buttons) keeps the surface honest about
-what actually commits.
+Approve, Reject, and Edit are live. Multi-job groups are reviewed as a
+checklist: checked drafts are approved, unchecked drafts are rejected, and each
+draft remains its own decision.
 """
 
 from __future__ import annotations
@@ -70,17 +69,7 @@ def _plain_site_label(html_label: str) -> str:
     return html.unescape(re.sub(r"<[^>]+>", "", html_label or "")).strip()
 
 
-def swipe_card(
-    path: Path,
-    payload: dict[str, object],
-    *,
-    runtime_root: Path,
-    submitters: dict[str, dict[str, str]],
-) -> dict[str, object]:
-    """Reduce a job_draft artifact to the minimal card the operator decides on."""
-    capture_id = str(payload.get("source_capture_id") or "")
-    submitter = submitters.get(capture_id, {})
-
+def _draft_detail(payload: dict[str, object]) -> dict[str, object]:
     proposed_job_type = str(payload.get("job_type") or "")
     proposed_payload = payload.get("payload") if isinstance(payload.get("payload"), dict) else {}
     proposed_error = str(payload.get("validation_error") or "")
@@ -92,9 +81,31 @@ def swipe_card(
         and bool(proposed_job_type)
         and isinstance(proposed_payload, dict)
     )
-
     return {
         "draft_id": str(payload.get("draft_id") or ""),
+        "job_type": proposed_job_type,
+        "payload": proposed_payload if isinstance(proposed_payload, dict) else {},
+        "validation_error": proposed_error,
+        "_rev": str(payload.get("_rev") or ""),
+        "approvable": approvable,
+    }
+
+
+def swipe_card(
+    path: Path,
+    payload: dict[str, object],
+    *,
+    runtime_root: Path,
+    submitters: dict[str, dict[str, str]],
+) -> dict[str, object]:
+    """Reduce a job_draft artifact to the minimal card the operator decides on."""
+    capture_id = str(payload.get("source_capture_id") or "")
+    submitter = submitters.get(capture_id, {})
+    draft = _draft_detail(payload)
+
+    return {
+        "draft_id": draft["draft_id"],
+        "group_id": str(payload.get("group_id") or capture_id or draft["draft_id"]),
         "review_status": str(payload.get("review_status") or ""),
         "site_id": str(payload.get("site_id") or ""),
         "area": "",
@@ -110,26 +121,46 @@ def swipe_card(
         # context the operator decides on (vs the technical proposed mutation).
         "message": str(payload.get("message") or ""),
         "photos": capture_thumbnails(runtime_root, capture_id),
-        "proposed_job_type": str(proposed_job_type or ""),
-        "proposed_payload": proposed_payload if isinstance(proposed_payload, dict) else {},
-        "proposed_error": str(proposed_error or ""),
-        "approvable": approvable,
+        "proposed_job_type": str(draft["job_type"] or ""),
+        "proposed_payload": draft["payload"],
+        "proposed_error": str(draft["validation_error"] or ""),
+        "approvable": bool(draft["approvable"]),
+        "drafts": [draft],
         "age_seconds": _age_seconds_from_timestamp(payload.get("created_at")),
         "artifact_path": str(path),
-        "_rev": str(payload.get("_rev") or ""),
+        "_rev": str(draft["_rev"] or ""),
     }
 
 
 def collect_cards(runtime_root: Path, *, status: str = QUEUE_NEEDS_APPROVAL) -> list[dict[str, object]]:
     submitters = submitters_by_capture(runtime_root)
-    cards: list[dict[str, object]] = []
+    grouped: dict[str, dict[str, object]] = {}
     for path, payload in job_draft_review.couchdb_job_draft_payloads(review_status=status):
         if payload.get("type") != "job_draft_review":
             continue
-        cards.append(swipe_card(path, payload, runtime_root=runtime_root, submitters=submitters))
+        card = swipe_card(path, payload, runtime_root=runtime_root, submitters=submitters)
+        group_id = str(card.get("group_id") or card.get("draft_id") or "")
+        if group_id not in grouped:
+            grouped[group_id] = card
+            continue
+        existing = grouped[group_id]
+        drafts = existing.get("drafts") if isinstance(existing.get("drafts"), list) else []
+        drafts.extend(card.get("drafts") if isinstance(card.get("drafts"), list) else [])
+        existing["drafts"] = drafts
+        existing["age_seconds"] = max(int(existing.get("age_seconds") or 0), int(card.get("age_seconds") or 0))
+        existing["approvable"] = any(bool(draft.get("approvable")) for draft in drafts if isinstance(draft, dict))
+        if not existing.get("proposed_error"):
+            existing["proposed_error"] = next(
+                (str(draft.get("validation_error") or "") for draft in drafts if isinstance(draft, dict) and draft.get("validation_error")),
+                "",
+            )
+    cards = list(grouped.values())
+    for card in cards:
+        drafts = card.get("drafts") if isinstance(card.get("drafts"), list) else []
+        drafts.sort(key=lambda draft: str(draft.get("draft_id") or "") if isinstance(draft, dict) else "")
     # Oldest first: the operator clears the backlog tail, and ordering is stable
     # for the keyboard-driven single-card flow.
-    cards.sort(key=lambda card: (-int(card["age_seconds"]), str(card["draft_id"])))
+    cards.sort(key=lambda card: (-int(card["age_seconds"]), str(card["group_id"]), str(card["draft_id"])))
     return cards
 
 
@@ -284,6 +315,100 @@ window.__btqSwipeInit = function () {
     return '<table class="swipe-payload">' + rows + '</table>';
   }
 
+  function prettyPayload(p) {
+    try { return JSON.stringify(p || {}, null, 2); } catch (e) { return '{}'; }
+  }
+
+  function shortPayloadSummary(p) {
+    var keys = Object.keys(p || {});
+    if (!keys.length) return '(empty payload)';
+    return keys.slice(0, 3).map(function (k) {
+      var v = p[k];
+      if (v && typeof v === 'object') v = JSON.stringify(v);
+      return k + '=' + String(v);
+    }).join(', ');
+  }
+
+  function editDomId(draftId, index) {
+    var raw = String(draftId || ('draft-' + index));
+    return 'swipe-edit-' + raw.replace(/[^A-Za-z0-9_-]/g, '-');
+  }
+
+  function draftEditForm(d, id) {
+    return '<form class="swipe-edit-form" method="post" action="/field-capture/review/edit" hidden id="' + esc(id) + '">' +
+      '<input type="hidden" name="draft_id" value="' + esc(d.draft_id || '') + '">' +
+      '<input type="hidden" name="_rev" value="' + esc(d._rev || '') + '">' +
+      '<input type="hidden" name="reviewer" value="" class="swipe-edit-reviewer">' +
+      '<label>Payload JSON</label>' +
+      '<textarea name="payload" rows="10" spellcheck="false" required>' + esc(prettyPayload(d.payload || {})) + '</textarea>' +
+      '<p><button type="submit" class="swipe-btn edit">Save payload</button></p>' +
+    '</form>';
+  }
+
+  function renderSingleDraft(c, draft) {
+    var editId = editDomId(draft.draft_id || c.draft_id || 'draft', 0);
+    var error = draft.validation_error || c.proposed_error || '';
+    var warn = draft.approvable ? '' :
+      '<p class="swipe-warn">⚠ ' + esc(error || 'Proposed job is invalid') + '</p>';
+    return warn +
+      '<section class="swipe-proposed-job">' +
+        '<p class="muted">Proposed change</p>' +
+        '<p><strong>' + esc(draft.job_type || c.proposed_job_type || '(unknown job)') + '</strong></p>' +
+        payloadRows(draft.payload || {}) +
+      '</section>' +
+      draftEditForm(draft, editId);
+  }
+
+  function renderChecklist(c, drafts) {
+    var items = drafts.map(function (d, i) {
+      var editId = editDomId(d.draft_id, i);
+      var disabled = d.approvable ? '' : ' disabled';
+      var checked = d.approvable ? ' checked' : '';
+      var error = d.validation_error
+        ? '<p class="swipe-warn">⚠ ' + esc(d.validation_error) + '</p>'
+        : '';
+      return '<div class="swipe-checklist-item">' +
+        '<input type="hidden" name="draft_id" value="' + esc(d.draft_id || '') + '">' +
+        '<input type="hidden" name="_rev" value="' + esc(d._rev || '') + '">' +
+        '<label>' +
+          '<input type="checkbox" name="checked" value="' + esc(d.draft_id || '') + '"' + checked + disabled + '> ' +
+          '<strong>' + esc(d.job_type || '(unknown job)') + '</strong> ' +
+          '<span class="muted">' + esc(shortPayloadSummary(d.payload || {})) + '</span>' +
+        '</label>' +
+        error +
+        '<p><button type="button" class="swipe-btn edit" data-edit="' + esc(editId) + '">Edit</button></p>' +
+        draftEditForm(d, editId) +
+      '</div>';
+    }).join('');
+    return '<form class="swipe-checklist" data-approve-set="1">' +
+      '<p class="muted">' + drafts.length + ' proposed changes. Checked drafts will execute; unchecked drafts will be denied.</p>' +
+      items +
+    '</form>';
+  }
+
+  function bindEditForms(cardEl) {
+    cardEl.querySelectorAll('button[data-edit]').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        var form = document.getElementById(btn.getAttribute('data-edit'));
+        if (form) form.hidden = !form.hidden;
+      });
+    });
+    cardEl.querySelectorAll('form.swipe-edit-form').forEach(function (form) {
+      form.addEventListener('submit', function (e) {
+        var reviewer = reviewerName();
+        if (!reviewer) {
+          e.preventDefault();
+          var ri = document.getElementById('swipe-reviewer-input');
+          if (ri) ri.focus();
+          window.alert('Enter your name in the "Reviewer" field above first — it is recorded on every edit.');
+          return;
+        }
+        var input = form.querySelector('input.swipe-edit-reviewer');
+        if (input) input.value = reviewer;
+      });
+    });
+  }
+
   function render() {
     if (index >= cards.length) {
       mount.innerHTML = '';
@@ -295,18 +420,26 @@ window.__btqSwipeInit = function () {
     var remaining = cards.length - index;
     var site = c.site_label || c.site_id || 'Unknown site';
     var confClass = 'conf-' + esc(c.confidence || 'unknown');
-    var approveDisabled = c.approvable ? '' : ' disabled';
-    var approveHint = c.approvable ? 'Approve and stage this job'
-      : (c.proposed_error || 'Cannot approve: the proposed job is invalid');
-
-    var warn = c.approvable ? '' :
-      '<p class="swipe-warn">⚠ ' + esc(c.proposed_error || 'Proposed job is invalid') + '</p>';
+    var drafts = (c.drafts && c.drafts.length) ? c.drafts : [{
+      draft_id: c.draft_id,
+      job_type: c.proposed_job_type,
+      payload: c.proposed_payload || {},
+      validation_error: c.proposed_error || '',
+      _rev: c._rev || '',
+      approvable: c.approvable
+    }];
+    var isMulti = drafts.length > 1;
+    var firstDraft = drafts[0] || {};
+    var approveDisabled = (!isMulti && !firstDraft.approvable) ? ' disabled' : '';
+    var approveHint = isMulti ? 'Approve checked jobs and deny unchecked jobs'
+      : (firstDraft.approvable ? 'Approve and stage this job' : (firstDraft.validation_error || 'Cannot approve: the proposed job is invalid'));
 
     var thumbs = (c.photos && c.photos.length)
       ? '<div class="swipe-thumbs">' + c.photos.map(function (u) {
           return '<img class="candidate-thumb" src="' + esc(u) + '" alt="capture photo" loading="lazy">';
         }).join('') + '</div>'
       : '';
+    var proposed = isMulti ? renderChecklist(c, drafts) : renderSingleDraft(c, firstDraft);
 
     // The card leads with the human context -- the worker's message, who sent
     // it, for which site, and the photos -- not the technical proposed mutation.
@@ -320,11 +453,11 @@ window.__btqSwipeInit = function () {
         '<p class="swipe-meta muted">' + esc(c.submitter_name || 'Unknown submitter') +
           ' · ' + esc(site) + (c.area ? ' · ' + esc(c.area) : '') + '</p>' +
         thumbs +
-        warn +
+        proposed +
         '<div class="swipe-actions">' +
           '<button type="button" class="swipe-btn reject" data-act="reject" title="Reject (R / Left)">Reject</button>' +
           '<button type="button" class="swipe-btn skip" data-act="skip" title="Skip without acting — leaves it pending (S / Down)">Skip</button>' +
-          '<button type="button" class="swipe-btn edit" disabled title="Draft editing is enabled in the next review increment">Edit</button>' +
+          (isMulti ? '' : '<button type="button" class="swipe-btn edit" data-edit="' + esc(editDomId(firstDraft.draft_id || c.draft_id || 'draft', 0)) + '">Edit</button>') +
           '<button type="button" class="swipe-btn defer" disabled title="Defer is not a draft review action">Defer</button>' +
           '<button type="button" class="swipe-btn approve" data-act="approve"' + approveDisabled +
             ' title="' + esc(approveHint) + '">Approve</button>' +
@@ -332,6 +465,7 @@ window.__btqSwipeInit = function () {
       '</article>';
 
     var card = mount.querySelector('.swipe-card');
+    bindEditForms(card);
     card.querySelectorAll('button[data-act]').forEach(function (btn) {
       btn.addEventListener('click', function () { decide(c, btn.getAttribute('data-act'), btn); });
     });
@@ -342,7 +476,13 @@ window.__btqSwipeInit = function () {
     // Skip just advances to the next card without writing anything; the
     // Skip just advances client-side; the draft stays pending_approval and reappears on reload.
     if (action === 'skip') { index += 1; render(); return; }
-    if (action === 'approve' && !card.approvable) return;
+    var drafts = (card.drafts && card.drafts.length) ? card.drafts : [{
+      draft_id: card.draft_id,
+      _rev: card._rev || '',
+      approvable: card.approvable
+    }];
+    var isMulti = drafts.length > 1;
+    if (action === 'approve' && !isMulti && !drafts[0].approvable) return;
     var reviewer = reviewerName();
     if (!reviewer) {
       var ri = document.getElementById('swipe-reviewer-input');
@@ -350,12 +490,25 @@ window.__btqSwipeInit = function () {
       window.alert('Enter your name in the "Reviewer" field above first — it is recorded on every approval.');
       return;
     }
-    var route = action === 'approve' ? '/field-capture/review/approve' : '/field-capture/review/reject';
     var body = new URLSearchParams();
-    body.set('draft_id', card.draft_id);
-    body.set('_rev', card._rev || '');
     body.set('reviewer', reviewer);
     body.set('rationale', action === 'unknown' ? 'mark unknown' : '');
+    var route = action === 'approve' ? '/field-capture/review/approve' : '/field-capture/review/reject';
+    if (isMulti) {
+      route = '/field-capture/review/approve-set';
+      drafts.forEach(function (d) {
+        body.append('draft_id', d.draft_id || '');
+        body.append('_rev', d._rev || '');
+      });
+      if (action === 'approve') {
+        mount.querySelectorAll('input[name="checked"]:checked').forEach(function (input) {
+          body.append('checked', input.value);
+        });
+      }
+    } else {
+      body.set('draft_id', card.draft_id);
+      body.set('_rev', card._rev || '');
+    }
     var stage = mount.parentElement;
     stage.classList.add(action === 'approve' ? 'swiping-right' : 'swiping-left');
     fetch(route, {

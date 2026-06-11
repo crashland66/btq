@@ -76,6 +76,14 @@ def handle_review_post(request_ctx: object, body: bytes) -> tuple[HTTPStatus, st
     return _handle_review_post(action, request_ctx, body)
 
 
+def handle_edit(request_ctx: object, body: bytes) -> tuple[HTTPStatus, str, bytes, dict[str, str]]:
+    return _handle_edit_post(request_ctx, body)
+
+
+def handle_approve_set(request_ctx: object, body: bytes) -> tuple[HTTPStatus, str, bytes, dict[str, str]]:
+    return _handle_approve_set_post(request_ctx, body)
+
+
 def handle_client_informed(request_ctx: object, body: bytes) -> tuple[HTTPStatus, str, bytes, dict[str, str]]:
     return _handle_client_informed_post(request_ctx, body)
 
@@ -563,6 +571,33 @@ def render_candidate_fix_form(candidate: dict[str, object], proposed_error: str)
     """
 
 
+def render_candidate_edit_form(candidate: dict[str, object]) -> str:
+    raw_draft_id = str(candidate.get("draft_id") or candidate.get("candidate_id") or "")
+    draft_id = html.escape(raw_draft_id)
+    rev = html.escape(str(candidate.get("_rev") or ""), quote=True)
+    payload = candidate.get("proposed_payload") if isinstance(candidate.get("proposed_payload"), dict) else {}
+    payload_text = json.dumps(payload, indent=2, sort_keys=True)
+    return f"""
+    <details class="review-action-form edit-form">
+      <summary>Edit payload</summary>
+      <form method="post" action="/field-capture/review/edit">
+        <p class="action-identity">
+          <strong>Edit</strong>
+          <code>{draft_id}</code><br>
+          Update this draft payload, then revalidate it.
+        </p>
+        <input type="hidden" value="{draft_id}" name="draft_id">
+        <input type="hidden" name="_rev" value="{rev}">
+        <label>Reviewer</label>
+        <input name="reviewer" value="{html.escape(default_actor())}" required>
+        <label>Payload JSON</label>
+        <textarea name="payload" rows="10" spellcheck="false" required>{html.escape(payload_text)}</textarea>
+        <p><button class="icon-button" type="submit" aria-label="Save edited draft payload">Save payload</button></p>
+      </form>
+    </details>
+    """
+
+
 def render_site_id_options(current_site_id: str) -> str:
     current = str(current_site_id or "").strip()
     options = ['<option value="">Select site</option>']
@@ -683,6 +718,7 @@ def render_candidate_card(candidate: dict[str, object], thumb_urls: list[str] | 
             <textarea name="rationale" rows="2"></textarea>
             <p><button class="reject icon-button" type="submit" aria-label="Deny this proposed job">{render_action_icon("deny")} <span>Deny</span></button></p>
           </form>
+          {render_candidate_edit_form(candidate)}
         </div>
         """
     operator_details = render_fields(
@@ -1086,6 +1122,137 @@ def _handle_review_post(action: str, ctx: object, body: bytes) -> tuple[HTTPStat
         )
     message = "approved" if action == "approve" else "denied"
     return redirect_to_inbox(message=message)
+
+
+def _handle_edit_post(ctx: object, body: bytes) -> tuple[HTTPStatus, str, bytes, dict[str, str]]:
+    form = parse_qs(body.decode("utf-8", errors="replace"), keep_blank_values=True)
+    draft_id = first_query_value(form, "draft_id").strip()
+    reviewer = first_query_value(form, "reviewer").strip()
+    expected_rev = first_query_value(form, "_rev").strip() or None
+    payload_text = first_query_value(form, "payload")
+    route = "/field-capture/review/edit"
+    runtime_resolved = ctx.runtime_root
+
+    def audit_result(result_summary: str) -> None:
+        audit.append_audit(
+            runtime_resolved,
+            {
+                "route": route,
+                "actor": "localhost",
+                "payload": ctx.form_payload(form),
+                "result_summary": result_summary,
+            },
+        )
+
+    if not draft_id:
+        audit_result("failed: draft_id is required")
+        return redirect_to_inbox(error="draft_id is required")
+    if not reviewer:
+        audit_result("failed: reviewer is required")
+        return redirect_to_inbox(error="reviewer is required")
+    try:
+        new_payload = json.loads(payload_text)
+    except json.JSONDecodeError as exc:
+        message = f"malformed payload JSON: {exc.msg}"
+        audit_result(f"failed: {message}")
+        return redirect_to_inbox(error=message)
+    if not isinstance(new_payload, dict):
+        message = "payload JSON must be an object"
+        audit_result(f"failed: {message}")
+        return redirect_to_inbox(error=message)
+
+    try:
+        cdb_config = couchdb_config.from_env()
+        result = job_draft_review.edit_job_draft_payload(
+            cdb_config,
+            couchdb_config.field_captures_database(),
+            draft_id,
+            new_payload,
+            editor=reviewer,
+            expected_rev=expected_rev,
+        )
+    except couchdb_config.CouchDBConfigError as exc:
+        audit_result(f"failed: {exc}")
+        return redirect_to_inbox(error=str(exc))
+
+    if result.already_decided:
+        audit_result(f"already_decided: {result.draft_id} review_status={result.review_status}")
+        return redirect_to_inbox(error="already decided")
+    if result.error:
+        audit_result(f"failed: {result.error}")
+        return redirect_to_inbox(error=result.error)
+    audit_result(f"success: {result.draft_id} payload updated")
+    return redirect_to_inbox(message="payload updated")
+
+
+def _handle_approve_set_post(ctx: object, body: bytes) -> tuple[HTTPStatus, str, bytes, dict[str, str]]:
+    form = parse_qs(body.decode("utf-8", errors="replace"), keep_blank_values=True)
+    draft_ids = [str(value).strip() for value in form.get("draft_id", []) if str(value).strip()]
+    revs = [str(value).strip() for value in form.get("_rev", [])]
+    checked = {str(value).strip() for value in form.get("checked", []) if str(value).strip()}
+    reviewer = first_query_value(form, "reviewer").strip()
+    rationale = first_query_value(form, "rationale").strip()
+    route = "/field-capture/review/approve-set"
+    runtime_resolved = ctx.runtime_root
+
+    def audit_result(result_summary: str) -> None:
+        audit.append_audit(
+            runtime_resolved,
+            {
+                "route": route,
+                "actor": "localhost",
+                "payload": ctx.form_payload(form),
+                "result_summary": result_summary,
+            },
+        )
+
+    if not draft_ids:
+        audit_result("failed: draft_id is required")
+        return redirect_to_inbox(error="draft_id is required")
+    if not reviewer:
+        audit_result("failed: reviewer is required")
+        return redirect_to_inbox(error="reviewer is required")
+
+    approved = 0
+    rejected = 0
+    already_decided = 0
+    errors: list[str] = []
+    try:
+        cdb_config = couchdb_config.from_env()
+        db = couchdb_config.field_captures_database()
+        for index, draft_id in enumerate(draft_ids):
+            expected_rev = revs[index] if index < len(revs) and revs[index] else None
+            action = "approve" if draft_id in checked else "reject"
+            result = job_draft_review.apply_job_draft_review(
+                cdb_config,
+                db,
+                draft_id,
+                action,
+                reviewer,
+                expected_rev=expected_rev,
+                rationale=rationale,
+            )
+            if result.already_decided:
+                already_decided += 1
+            elif result.error:
+                errors.append(f"{draft_id}: {result.error}")
+            elif action == "approve":
+                approved += 1
+            else:
+                rejected += 1
+    except couchdb_config.CouchDBConfigError as exc:
+        audit_result(f"failed: {exc}")
+        return redirect_to_inbox(error=str(exc))
+
+    summary = f"approved {approved}, rejected {rejected}, {already_decided} already-decided"
+    if errors:
+        summary = f"{summary}, {len(errors)} error"
+        if len(errors) != 1:
+            summary += "s"
+    audit_result(f"success: {summary}" if not errors else f"partial: {summary}; {'; '.join(errors)}")
+    if errors:
+        return redirect_to_inbox(error=f"{summary}: {'; '.join(errors)}")
+    return redirect_to_inbox(message=summary)
 
 
 def valid_proposed_jobs(candidate: dict[str, object], runtime_root: Path) -> bool:

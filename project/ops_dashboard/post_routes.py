@@ -17,6 +17,10 @@ def dispatch_post_route(
     if route_path in {"/field-capture/review/approve", "/field-capture/review/reject"}:
         ctx.action = "approve" if route_path.endswith("/approve") else "reject"
         return candidates.handle_review_post(ctx, body)
+    if route_path == "/field-capture/review/edit":
+        return candidates.handle_edit(ctx, body)
+    if route_path == "/field-capture/review/approve-set":
+        return candidates.handle_approve_set(ctx, body)
     if route_path == "/field-capture/review/archive":
         return candidates.handle_archive(ctx, body)
     if route_path == "/field-capture/review/unarchive":
