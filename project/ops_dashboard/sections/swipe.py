@@ -182,6 +182,14 @@ def render_body(request_ctx: object, *, payload: dict[str, object] | None = None
             card["site_label"] = str(card.get("site_id") or "")
 
     bootstrap = json.dumps({"cards": cards, "counts": counts}, sort_keys=True)
+    # Embed the JSON in <script type="application/json"> WITHOUT html.escape: the
+    # browser does not decode character references inside a <script>, so escaping
+    # the JSON's quotes to &quot; makes JSON.parse throw and the card stack render
+    # empty (the "31 needs approval / Nothing waiting" bug). Escape only the chars
+    # that could break out of the script context; the result stays valid JSON.
+    bootstrap_safe = (
+        bootstrap.replace("&", "\\u0026").replace("<", "\\u003c").replace(">", "\\u003e")
+    )
     needs_approval = int(counts.get("pending_review", 0))
     rejected = int(counts.get("rejected", 0))
     failed = int(counts.get("failed", 0))
@@ -217,7 +225,7 @@ def render_body(request_ctx: object, *, payload: dict[str, object] | None = None
     </form>
 
     <script>{_SWIPE_SCRIPT}</script>
-    <script id="swipe-bootstrap" type="application/json">{html.escape(bootstrap)}</script>
+    <script id="swipe-bootstrap" type="application/json">{bootstrap_safe}</script>
     <script>window.__btqSwipeInit && window.__btqSwipeInit();</script>
     """
 

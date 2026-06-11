@@ -99,6 +99,36 @@ def test_swipe_has_skip_control_that_advances_without_acting(tmp_path):
     assert "<kbd>S</kbd>" in body and "skip" in body
 
 
+def test_swipe_bootstrap_is_valid_json_for_the_browser(tmp_path, couchdb_review):
+    """The embedded bootstrap must parse as JSON the way a browser reads it.
+
+    Inside a <script>, the browser does NOT decode HTML entities, so html.escape
+    would turn the JSON quotes into &quot; and JSON.parse would throw -- the card
+    stack then silently renders empty (the "N needs approval / Nothing waiting"
+    bug). Regression for that.
+    """
+    import json as _json
+    import re
+
+    from ops_dashboard.sections import swipe
+    from field_capture.action_candidates import default_candidate_dir
+
+    candidate_dir = default_candidate_dir(tmp_path)
+    candidate_dir.mkdir(parents=True, exist_ok=True)
+    _approvable_candidate(candidate_dir, "ac_ok")
+    couchdb_review.seed_from_fs(tmp_path)
+
+    body = swipe.render_body(
+        SimpleNamespace(runtime_root=tmp_path, config=SimpleNamespace(vault_dir=tmp_path / "vault")),
+    )
+    m = re.search(r'id="swipe-bootstrap" type="application/json">(.*?)</script>', body, re.S)
+    assert m, "bootstrap script not found"
+    raw = m.group(1)
+    assert "&quot;" not in raw, "bootstrap is html-escaped -> browser JSON.parse would fail"
+    data = _json.loads(raw)  # browser-equivalent parse must succeed
+    assert any(c["candidate_id"] == "ac_ok" for c in data["cards"])
+
+
 def test_swipe_card_surfaces_message_and_photo_thumbnails(tmp_path, couchdb_review):
     """The card carries the worker's message + /media thumbnail URLs for its photos."""
     from ops_dashboard.sections import swipe
