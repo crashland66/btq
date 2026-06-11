@@ -65,6 +65,14 @@ def _pin_synthetic_site_registry() -> None:
 from test_helpers.couchdb_review_double import couchdb_review  # noqa: E402,F401
 
 # --------------------------------------------------------------------------- #
+# Prompt 334b: shared CouchDB job_draft emission double (INDEPENDENT VERIFIER).
+# The repointed emission sites now write job_draft docs; this fixture installs a
+# faithful in-memory job_draft writer so the retargeted tests drive the new
+# (job_draft) contract -- including the exists->skip no-clobber guard.
+# --------------------------------------------------------------------------- #
+from test_helpers.couchdb_job_draft_double import couchdb_job_drafts  # noqa: E402,F401
+
+# --------------------------------------------------------------------------- #
 # Hermetic CouchDB guard: no test may open a real CouchDB (:5984) connection.
 #
 # CouchDB clients build their target from BTQ_COUCHDB_URL (default

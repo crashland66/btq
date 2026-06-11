@@ -1114,25 +1114,32 @@ def run(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     runtime_root = args.runtime_root.expanduser()
     semantic_target = args.semantic_dir.expanduser() if args.semantic_dir is not None else default_semantic_dirs(runtime_root)
-    candidate_dir = args.candidate_dir.expanduser() if args.candidate_dir is not None else default_candidate_dir(runtime_root)
     if args.dry_run:
+        candidate_dir = args.candidate_dir.expanduser() if args.candidate_dir is not None else default_candidate_dir(runtime_root)
         report = collect_action_candidates_report(semantic_target, candidate_dir, runtime_root=runtime_root, dry_run=True)
         counts = report["counts"]
     else:
+        from field_capture import job_draft_emission
+
         report = None
-        counts = collect_action_candidates(semantic_target, candidate_dir, runtime_root=runtime_root)
+        counts = job_draft_emission.collect_job_drafts(semantic_target, runtime_root=runtime_root)
     if args.json:
         print(json.dumps(report if args.dry_run else counts, indent=2, sort_keys=True))
     else:
-        prefix = "field action candidates dry-run" if args.dry_run else "field action candidates"
-        print(
-            f"{prefix}: "
-            f"discovered={counts['discovered']} skipped={counts['skipped']} "
-            f"completed={counts['completed']} failed={counts['failed']}"
-        )
-        if args.dry_run and report is not None:
+        if args.dry_run:
+            print(
+                "field action candidates dry-run: "
+                f"discovered={counts['discovered']} skipped={counts['skipped']} "
+                f"completed={counts['completed']} failed={counts['failed']}"
+            )
             for result in report["results"]:
                 print(f"- {result['candidate_id']} {result['status']}: {result['reason']}")
+        else:
+            print(
+                "field job drafts: "
+                f"discovered={counts['discovered']} emitted={counts['emitted']} "
+                f"skipped={counts['skipped']} existing={counts.get('existing', 0)}"
+            )
     return 0
 
 

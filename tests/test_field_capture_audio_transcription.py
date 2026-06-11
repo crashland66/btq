@@ -294,7 +294,7 @@ def test_site_viewer_shows_raw_internal_transcript_when_artifact_exists(tmp_path
     assert "Raw sink note." in html
 
 
-def test_field_capture_pipeline_cycle_runs_safe_steps_in_order_and_limits_transcription(tmp_path: Path, couchdb_review) -> None:
+def test_field_capture_pipeline_cycle_runs_safe_steps_in_order_and_limits_transcription(tmp_path: Path, couchdb_review, couchdb_job_drafts) -> None:
     runtime_root = tmp_path / "runtime"
     vault_root = tmp_path / "vault"
     vault_root.mkdir()
@@ -336,26 +336,43 @@ def test_field_capture_pipeline_cycle_runs_safe_steps_in_order_and_limits_transc
 
     assert cycle["ok"] is True
     assert calls == ["transcribe", "vision"]
+    # 334b: the final emission step is now job-draft emission (collect_job_drafts),
+    # not action-candidate collection. Same position in the cycle, same "safe
+    # steps in order" guarantee -- only the emitted artifact type changed.
     assert [step["step"] for step in cycle["steps"]] == [
         "transcribe_field_audio",
         "process_field_audio_semantics",
         "route_field_reported_issues",
         "describe_field_photos",
         "process_cat_vision",
-        "collect_action_candidates",
+        "collect_job_drafts",
     ]
     assert cycle["steps"][0]["counts"] == {"pending": 2, "transcribed": 1, "failed": 0, "skipped": 1}
     assert cycle["steps"][2]["counts"] == {"discovered": 0, "routed": 0, "skipped": 0, "failed": 0}
     assert cycle["steps"][3]["counts"] == {"discovered": 2, "would_create": 0, "would_replace": 0, "completed": 1, "failed": 0, "skipped": 1}
+    # The emission step ran and emitted job_draft docs (job-draft counts schema).
+    emission_step = cycle["steps"][5]
+    assert emission_step["step"] == "collect_job_drafts"
+    assert emission_step["status"] == "completed"
+    assert set(emission_step["counts"]) == {"discovered", "emitted", "skipped", "existing"}
+    assert emission_step["counts"]["emitted"] == emission_step["counts"]["discovered"] >= 1
+    assert emission_step["counts"]["existing"] == 0
     assert len(list((runtime_root / "field_capture" / "audio_transcripts").glob("*.json"))) == 1
     assert len(list((runtime_root / "field_capture" / "audio_semantics").glob("*.json"))) == 1
     assert len(list((runtime_root / "field_capture" / "photo_vision").glob("*.json"))) == 1
-    assert len(list((runtime_root / "reviews" / "action_candidates" / "field_capture").glob("*.json"))) == 1
+    # 334b: the reviewable artifact is now a job_draft doc in CouchDB (the
+    # in-memory double), NOT a filesystem action_candidate review file. At least
+    # one pending_approval job_draft landed; nothing was written to the legacy
+    # candidate review dir.
+    assert emission_step["counts"]["emitted"] == len(couchdb_job_drafts.drafts) >= 1
+    assert all(d["type"] == "job_draft" for d in couchdb_job_drafts.drafts.values())
+    assert all(d["review_status"] == "pending_approval" for d in couchdb_job_drafts.drafts.values())
+    assert not (runtime_root / "reviews" / "action_candidates" / "field_capture").exists()
     assert not (runtime_root / "queue").exists()
     assert sentinel.read_text(encoding="utf-8") == "do not touch\n"
 
 
-def test_field_capture_pipeline_repeated_cycles_are_idempotent(tmp_path: Path, couchdb_review) -> None:
+def test_field_capture_pipeline_repeated_cycles_are_idempotent(tmp_path: Path, couchdb_review, couchdb_job_drafts) -> None:
     runtime_root = tmp_path / "runtime"
     write_capture_with_audio(runtime_root / "field_capture" / "intake", runtime_root / "uploads", capture_id="cap-audio-1")
 
@@ -374,6 +391,7 @@ def test_field_capture_pipeline_repeated_cycles_are_idempotent(tmp_path: Path, c
         logger=logger,
         run_vision=False,
     )
+    drafts_after_first = couchdb_job_drafts.draft_ids()
     second = pipeline_watcher.run_cycle(
         runtime_root=runtime_root,
         transcribe_limit=1,
@@ -391,7 +409,19 @@ def test_field_capture_pipeline_repeated_cycles_are_idempotent(tmp_path: Path, c
     assert second["steps"][0]["counts"]["transcribed"] == 0
     assert second["steps"][0]["counts"]["skipped"] == 1
     assert second["steps"][1]["counts"]["skipped"] == 1
-    assert len(list((runtime_root / "reviews" / "action_candidates" / "field_capture").glob("*.json"))) == 1
+    # 334b: repeated cycles re-walk the same artifact tree but must NOT duplicate
+    # job_drafts. The first cycle emitted the drafts; the second cycle's emission
+    # step hits the exists->skip guard for every one (emitted==0, existing>=1) and
+    # the stored draft_id set is byte-for-byte unchanged -- the idempotency that
+    # the legacy "exactly one candidate file after two cycles" assertion protected.
+    assert drafts_after_first  # the first cycle actually emitted drafts
+    first_emit = first["steps"][-1]
+    second_emit = second["steps"][-1]
+    assert first_emit["step"] == second_emit["step"] == "collect_job_drafts"
+    assert first_emit["counts"]["emitted"] == len(drafts_after_first) >= 1
+    assert second_emit["counts"]["emitted"] == 0
+    assert second_emit["counts"]["existing"] == len(drafts_after_first)
+    assert couchdb_job_drafts.draft_ids() == drafts_after_first
     assert not (runtime_root / "queue").exists()
 
 
@@ -422,13 +452,14 @@ def test_field_capture_pipeline_transcription_failure_is_reported_without_queue_
     assert cycle["ok"] is False
     assert cycle["steps"][0]["status"] == "failed"
     assert cycle["steps"][0]["error"] == "transcriber unavailable"
+    # 334b: final emission step renamed collect_action_candidates -> collect_job_drafts.
     assert [step["step"] for step in cycle["steps"]] == [
         "transcribe_field_audio",
         "process_field_audio_semantics",
         "route_field_reported_issues",
         "describe_field_photos",
         "process_cat_vision",
-        "collect_action_candidates",
+        "collect_job_drafts",
     ]
     assert not (runtime_root / "queue").exists()
     assert sentinel.read_text(encoding="utf-8") == "do not touch\n"
@@ -537,7 +568,9 @@ def test_field_capture_pipeline_vision_failure_is_reported_without_queue_or_vaul
     assert cycle["steps"][3]["status"] == "failed"
     assert cycle["steps"][3]["error"] == "ollama unavailable"
     assert cycle["steps"][4] == {"step": "process_cat_vision", "status": "skipped", "counts": {}, "error": "disabled"}
-    assert cycle["steps"][5]["step"] == "collect_action_candidates"
+    # 334b: emission step renamed; it still runs to completion after a vision
+    # failure (the cycle continues to the emission stage).
+    assert cycle["steps"][5]["step"] == "collect_job_drafts"
     assert cycle["steps"][5]["status"] == "completed"
     assert not (runtime_root / "queue").exists()
     assert sentinel.read_text(encoding="utf-8") == "do not touch\n"

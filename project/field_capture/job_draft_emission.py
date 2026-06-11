@@ -10,6 +10,7 @@ from event_pipeline import couchdb_config
 from event_pipeline.couchdb_job_draft_writer import (
     JOB_DRAFT_REVIEW_STATUS_DEFAULT,
     CouchDBJobDraftWriterError,
+    get_job_draft,
     upsert_job_draft,
 )
 from field_capture.action_candidates import (
@@ -78,7 +79,7 @@ def collect_job_drafts(
     *,
     runtime_root: Path | None = None,
 ) -> dict[str, int]:
-    counts = {"discovered": 0, "emitted": 0, "skipped": 0}
+    counts = {"discovered": 0, "emitted": 0, "skipped": 0, "existing": 0}
     dirs = (semantic_dirs,) if isinstance(semantic_dirs, Path) else tuple(semantic_dirs)
     config = couchdb_candidate_config_or_none()
     db = couchdb_config.field_captures_database() if config is not None else ""
@@ -98,6 +99,10 @@ def collect_job_drafts(
             if config is None:
                 continue
             for draft in drafts:
+                draft_id = str(draft.get("draft_id") or "")
+                if couchdb_job_draft_exists(config, db, draft_id):
+                    counts["existing"] += 1
+                    continue
                 try:
                     upsert_job_draft(config, db, draft)
                 except CouchDBJobDraftWriterError as exc:
@@ -110,6 +115,18 @@ def collect_job_drafts(
                 counts["emitted"] += 1
 
     return counts
+
+
+def couchdb_job_draft_exists(config: couchdb_config.CouchDBConfig, db: str, draft_id: str) -> bool:
+    try:
+        return get_job_draft(config, db, draft_id) is not None
+    except CouchDBJobDraftWriterError as exc:
+        LOGGER.error(
+            "field job draft CouchDB existence check failed: draft_id=%s error=%s",
+            draft_id,
+            exc,
+        )
+        raise
 
 
 def _dict_field(candidate: dict[str, object], field: str) -> dict[str, object]:

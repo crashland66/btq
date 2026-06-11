@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from field_capture import action_candidates
+from field_capture import job_draft_emission
 from processing_core.artifacts import write_json_object
 from processing_core.capture_semantics import (
     CaptureSemanticInput,
@@ -315,7 +316,7 @@ def run_semantic_pass(
         )
         write_json_object(artifact_path, payload)
         candidate_dir = default_candidate_dir(runtime_root)
-        action_candidates.collect_action_candidates(artifact_path.parent, candidate_dir, runtime_root=runtime_root)
+        job_draft_emission.collect_job_drafts(artifact_path.parent, runtime_root=runtime_root)
         candidate_paths = candidate_paths_for_artifact(artifact_path, payload, candidate_dir)
         return VoiceMemoSemanticPass(result=result, artifact_path=artifact_path, candidate_paths=candidate_paths)
     except Exception as exc:  # noqa: BLE001

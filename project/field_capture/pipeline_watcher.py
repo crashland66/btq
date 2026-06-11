@@ -17,6 +17,7 @@ from event_pipeline import couchdb_config
 from field_capture import action_candidates
 from field_capture import audio_semantics
 from field_capture import audio_transcription
+from field_capture import job_draft_emission
 from field_capture import photo_vision
 from field_capture import text_semantics
 from processing_core.artifacts import write_json_object
@@ -837,18 +838,17 @@ def run_cycle(
 
     if run_candidates:
         try:
-            counts = action_candidates.collect_action_candidates(
+            counts = job_draft_emission.collect_job_drafts(
                 action_candidates.default_semantic_dirs(runtime_resolved),
-                action_candidates.default_candidate_dir(runtime_resolved),
                 runtime_root=runtime_resolved,
             )
-            steps.append(step_result("collect_action_candidates", "completed", counts))
+            steps.append(step_result("collect_job_drafts", "completed", counts))
         except Exception as exc:  # noqa: BLE001
             cycle["ok"] = False
-            steps.append(step_result("collect_action_candidates", "failed", error=str(exc)))
-            logger.exception("field-capture action candidate collection failed")
+            steps.append(step_result("collect_job_drafts", "failed", error=str(exc)))
+            logger.exception("field-capture job draft collection failed")
     else:
-        steps.append(step_result("collect_action_candidates", "skipped", error="disabled"))
+        steps.append(step_result("collect_job_drafts", "skipped", error="disabled"))
 
     cycle["completed_at"] = datetime.now(timezone.utc).isoformat()
     logger.info("field-capture pipeline cycle completed ok=%s", cycle["ok"])

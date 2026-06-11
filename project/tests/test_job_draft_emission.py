@@ -427,3 +427,67 @@ class TestCollectRealCouchDB:
         # Idempotent: SAME draft_ids and SAME count -- zero new docs on re-run.
         assert ids_second == ids_first
         assert len(ids_second) == len(ids_first)
+
+    # ------------------------------------------------------------------- #
+    # KEYSTONE (334b): no-clobber on re-walk.
+    #
+    # The pipeline watcher re-walks the artifact tree every cycle. The most
+    # important new guarantee of 334b is that a re-walk must NOT overwrite a
+    # draft a human has already reviewed. ``build_job_draft_document`` always
+    # stamps review_status from the (pipeline-emitted) draft -- i.e.
+    # ``pending_approval`` -- so WITHOUT the exists->skip guard a second
+    # ``collect_job_drafts`` run would upsert the doc in place and RESET an
+    # ``approved`` draft back to ``pending_approval`` (a silent review-loss bug).
+    # The exists->skip guard (``couchdb_job_draft_exists``) is what prevents it.
+    #
+    # This proves the guarantee end-to-end against REAL CouchDB:
+    #   1. collect -> a draft lands as pending_approval;
+    #   2. out-of-band flip that draft's review_status to approved (raw HTTP PUT);
+    #   3. collect again over the SAME tree (the re-walk);
+    #   4. the draft is STILL approved, not duplicated, and the second run
+    #      reports emitted==0 / existing>=1.
+    # ------------------------------------------------------------------- #
+    def test_rewalk_does_not_clobber_an_already_approved_draft(self, live_db, tmp_path, monkeypatch) -> None:
+        cfg, db = live_db
+        self._point_emission_at(cfg, db, monkeypatch)
+        semantic_dir = _write_artifact_tree(tmp_path)
+
+        # (1) First walk: drafts land as pending_approval.
+        first_counts = collect_job_drafts([semantic_dir])
+        assert first_counts["emitted"] >= 1
+        assert first_counts["existing"] == 0
+        doc_ids = self._count_job_drafts(cfg, db)
+        assert doc_ids
+
+        # Pick one concrete draft to "approve" out of band.
+        target_id = doc_ids[0]
+        _, before = _http(cfg, "GET", f"{db}/{target_id}")
+        assert before["review_status"] == "pending_approval"
+
+        # (2) Out-of-band review: a reviewer/Pro watcher flips it to approved.
+        approved_doc = dict(before)
+        approved_doc["review_status"] = "approved"
+        approved_doc["reviewed_by"] = "verifier"
+        status, put_resp = _http(cfg, "PUT", f"{db}/{target_id}", approved_doc)
+        assert 200 <= status < 300, put_resp
+        _, after_review = _http(cfg, "GET", f"{db}/{target_id}")
+        assert after_review["review_status"] == "approved"  # the state we must protect
+        rev_after_review = after_review["_rev"]
+
+        # (3) Re-walk: the watcher re-runs collect_job_drafts over the SAME tree.
+        second_counts = collect_job_drafts([semantic_dir])
+
+        # (4a) No draft was re-emitted: every existing draft hit exists->skip.
+        assert second_counts["emitted"] == 0
+        assert second_counts["existing"] >= 1
+        assert second_counts["existing"] == first_counts["emitted"]
+
+        # (4b) No duplicate doc was created: the draft_id set is unchanged.
+        assert self._count_job_drafts(cfg, db) == doc_ids
+
+        # (4c) THE no-clobber assertion: the approved draft is STILL approved and
+        # was not even re-written (its _rev is untouched by the re-walk).
+        _, after_rewalk = _http(cfg, "GET", f"{db}/{target_id}")
+        assert after_rewalk["review_status"] == "approved"
+        assert after_rewalk["reviewed_by"] == "verifier"
+        assert after_rewalk["_rev"] == rev_after_review  # not even touched

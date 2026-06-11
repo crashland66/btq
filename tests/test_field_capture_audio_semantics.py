@@ -1781,12 +1781,12 @@ def test_field_capture_stage_approved_drafts_dry_run_detects_processed_or_failed
     assert not any(status_dir.glob("*.json"))
 
 
-def write_semantic_artifact(semantic_dir: Path, asset_id: str = "fca_test", proposed_note_path: str | None = None) -> Path:
+def write_semantic_artifact(semantic_dir: Path, asset_id: str = "fca_test", proposed_note_path: str | None = None, site_id: str = "7050") -> Path:
     semantic_dir.mkdir(parents=True, exist_ok=True)
     path = semantic_dir / f"{asset_id}.json"
     payload = {
         "type": "field_audio_semantic_summary",
-        "site_id": "7050",
+        "site_id": site_id,
         "upload_id": "cap-audio",
         "area": "Restrooms",
         "phase": "issue",
@@ -2368,7 +2368,7 @@ def test_field_capture_review_pipeline_fixture_exercises_semantic_to_staged_queu
     assert sentinel.read_text(encoding="utf-8") == "do not touch\n"
 
 
-def test_collect_action_candidates_cli_writes_review_artifacts_without_queue_or_vault(tmp_path: Path, capsys: pytest.CaptureFixture[str], couchdb_review) -> None:
+def test_collect_action_candidates_cli_writes_review_artifacts_without_queue_or_vault(tmp_path: Path, capsys: pytest.CaptureFixture[str], couchdb_review, couchdb_job_drafts) -> None:
     runtime_root = tmp_path / "runtime"
     semantic_dir = runtime_root / "field_capture" / "audio_semantics"
     candidate_dir = runtime_root / "reviews" / "action_candidates" / "field_capture"
@@ -2376,26 +2376,40 @@ def test_collect_action_candidates_cli_writes_review_artifacts_without_queue_or_
     vault_root.mkdir()
     sentinel = vault_root / "sentinel.md"
     sentinel.write_text("do not touch\n", encoding="utf-8")
+    # 334b: the non-dry-run collect-action-candidates CLI now EMITS job_drafts.
+    # The default site_id 7050 resolves in the pinned synthetic site registry, so
+    # the artifact yields a proposable queue job and therefore a real job_draft
+    # (an unresolvable site would yield zero drafts -- the empty-job_type skip).
     semantic_path = write_semantic_artifact(semantic_dir)
     semantic_before = semantic_path.read_text(encoding="utf-8")
 
     exit_code = btq.run(["collect-action-candidates", "--channel", "field_capture", "--runtime-root", str(runtime_root), "--json"])
     first_output = json.loads(capsys.readouterr().out)
-    [candidate_path] = sorted(candidate_dir.glob("*.json"))
-    candidate_before = candidate_path.read_text(encoding="utf-8")
+    drafts_after_first = couchdb_job_drafts.draft_ids()
     second_exit = btq.run(["collect-action-candidates", "--channel", "field_capture", "--runtime-root", str(runtime_root), "--json"])
     second_output = json.loads(capsys.readouterr().out)
 
     assert exit_code == 0
     assert second_exit == 0
-    assert first_output == {"discovered": 1, "skipped": 0, "completed": 1, "failed": 0}
-    assert second_output == {"discovered": 1, "skipped": 1, "completed": 0, "failed": 0}
+    # First run emits the reviewable job_draft; second run re-walks the SAME
+    # artifact and the exists->skip guard re-writes NOTHING (emitted==0,
+    # existing>=1) -- the idempotency the legacy "second run skips the existing
+    # candidate" assertion protected, translated to drafts.
+    assert first_output == {"discovered": 1, "emitted": 1, "skipped": 0, "existing": 0}
+    assert second_output == {"discovered": 1, "emitted": 0, "skipped": 0, "existing": 1}
+    # The CLI never wrote a filesystem candidate review artifact.
+    assert not candidate_dir.exists()
+    # Exactly one pending_approval job_draft landed and survived the re-walk
+    # unchanged (same draft_id set, still pending_approval).
+    assert len(couchdb_job_drafts.drafts) == 1
+    draft = next(iter(couchdb_job_drafts.drafts.values()))
+    assert draft["type"] == "job_draft"
+    assert draft["review_status"] == "pending_approval"
+    assert draft["site_id"] == "7050"
+    assert draft["job_type"]
+    assert couchdb_job_drafts.draft_ids() == drafts_after_first
+    # The semantic artifact (the source) was not mutated.
     assert semantic_path.read_text(encoding="utf-8") == semantic_before
-    assert len(sorted(candidate_dir.glob("*.json"))) == 1
-    assert candidate_path.read_text(encoding="utf-8") == candidate_before
-    candidate = json.loads(candidate_before)
-    assert candidate["status"] == STATUS_PENDING_REVIEW
-    assert candidate["provenance"]["semantic_artifact_path"] == str(semantic_path.resolve(strict=False))
     assert not (runtime_root / "queue").exists()
     assert sentinel.read_text(encoding="utf-8") == "do not touch\n"
 
@@ -3470,17 +3484,32 @@ def test_review_candidate_cli_fails_closed_for_failed_missing_or_duplicate_candi
 def test_field_capture_full_review_workflow_smoke_uses_cli_dispatch_without_queue_processor_or_vault_mutation(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
-    monkeypatch: pytest.MonkeyPatch, couchdb_review) -> None:
+    monkeypatch: pytest.MonkeyPatch, couchdb_review, couchdb_job_drafts) -> None:
+    # 334b retarget: the legacy smoke test drove the OLD candidate review
+    # workflow end-to-end via CLI dispatch (collect-action-candidates ->
+    # review-candidate approve -> generate-approved-drafts -> stage-approved-drafts
+    # -> a staged queue job) and asserted the queue processor never ran and the
+    # vault was never mutated. Under 334b the non-dry-run collect-action-candidates
+    # CLI EMITS a job_draft (the new reviewable artifact) instead of a filesystem
+    # action_candidate, so that emission no longer feeds the candidate->approve
+    # chain (that chain has its own dedicated tests in this file). What this smoke
+    # test uniquely guards -- CLI DISPATCH produces the reviewable artifact WITHOUT
+    # running the queue processor or mutating the vault -- is preserved here against
+    # the new job_draft artifact: the CLI emits exactly one pending_approval
+    # job_draft, re-dispatch is idempotent (exists->skip), the queue processor never
+    # runs, no queue/processed/failed dirs appear, and the vault sentinel is intact.
     runtime_root = tmp_path / "runtime"
     vault_root = tmp_path / "vault"
     vault_root.mkdir()
     sentinel = vault_root / "sentinel.md"
     sentinel.write_text("do not touch\n", encoding="utf-8")
-    proposed_note_path = "Accounts/ExampleAccount/Locations/7050 - Summit Wire/about.md"
+    # The default site_id 7050 resolves in the pinned synthetic registry, so the
+    # artifact yields a proposable queue job (and thus a real job_draft); an
+    # unresolvable site would emit zero drafts.
     semantic_path = write_semantic_artifact(
         runtime_root / "field_capture" / "audio_semantics",
-        proposed_note_path=proposed_note_path,
     )
+    semantic_before = semantic_path.read_text(encoding="utf-8")
     queue_processor_called = {"called": False}
 
     def fail_if_queue_processor_runs(*_args: object, **_kwargs: object) -> None:
@@ -3489,102 +3518,38 @@ def test_field_capture_full_review_workflow_smoke_uses_cli_dispatch_without_queu
 
     monkeypatch.setattr(queue_processor_main, "process_all", fail_if_queue_processor_runs)
 
+    # CLI dispatch emits the reviewable job_draft.
     assert btq.run(["collect-action-candidates", "--channel", "field_capture", "--runtime-root", str(runtime_root), "--json"]) == 0
-    assert json.loads(capsys.readouterr().out) == {"discovered": 1, "skipped": 0, "completed": 1, "failed": 0}
+    assert json.loads(capsys.readouterr().out) == {"discovered": 1, "emitted": 1, "skipped": 0, "existing": 0}
 
-    assert btq.run(["review-status", "--channel", "field_capture", "--runtime-root", str(runtime_root), "--json"]) == 0
-    pending_status = json.loads(capsys.readouterr().out)
-    assert pending_status["counts"]["semantic_with_action_candidates"] == 1
-    assert pending_status["counts"]["candidates_pending_review"] == 1
-    assert pending_status["counts"]["candidates_approved"] == 0
+    assert len(couchdb_job_drafts.drafts) == 1
+    draft = next(iter(couchdb_job_drafts.drafts.values()))
+    draft_id = draft["draft_id"]
+    assert draft["type"] == "job_draft"
+    assert draft["review_status"] == "pending_approval"
+    assert draft["site_id"] == "7050"
+    assert draft["job_type"]
+    assert draft["source"] == "field_capture_pipeline"
+    # The draft references its source semantic capture (lineage).
+    assert draft["source_capture_id"] == "cap-audio"
+    assert draft["group_id"] == "cap-audio"
 
-    [candidate_path] = sorted((runtime_root / "reviews" / "action_candidates" / "field_capture").glob("*.json"))
-    candidate = json.loads(candidate_path.read_text(encoding="utf-8"))
-    candidate_id = candidate["candidate_id"]
+    # Re-dispatching the CLI re-walks the same artifact and emits NOTHING new --
+    # the exists->skip guard keeps the single reviewable job_draft from being
+    # duplicated or reset.
+    assert btq.run(["collect-action-candidates", "--channel", "field_capture", "--runtime-root", str(runtime_root), "--json"]) == 0
+    assert json.loads(capsys.readouterr().out) == {"discovered": 1, "emitted": 0, "skipped": 0, "existing": 1}
+    assert len(couchdb_job_drafts.drafts) == 1
+    assert couchdb_job_drafts.review_status_of(draft_id) == "pending_approval"
 
-    assert (
-        btq.run(
-            [
-                "review-candidate",
-                "--channel",
-                "field_capture",
-                "--runtime-root",
-                str(runtime_root),
-                "--candidate-id",
-                candidate_id,
-                "--status",
-                "approved",
-                "--reviewer",
-                "Jordan",
-                "--rationale",
-                "Verified against the field note.",
-                "--json",
-            ]
-        )
-        == 0
-    )
-    review_output = json.loads(capsys.readouterr().out)
-    assert review_output["candidate_id"] == candidate_id
-    # 308c: the CLI review summary emits an empty prior_status (the prior status
-    # is preserved in the CouchDB doc's review_history, not the summary).
-    assert review_output["prior_status"] == ""
-    assert review_output["status"] == CANDIDATE_STATUS_APPROVED
-
-    # 308c: review now flips the CouchDB candidate; the Pro-side staging watcher
-    # materializes the approved candidate back onto the filesystem before the
-    # (still filesystem-based) draft/staging stages run. Mirror that production
-    # step here so the CLI draft pipeline sees an approved candidate -- exactly
-    # what action_candidate_staging_watcher does on a real approve.
-    from field_capture.action_candidate_staging_watcher import (
-        materialize_candidate_for_existing_staging,
-    )
-    materialize_candidate_for_existing_staging(
-        couchdb_review.docs[f"action_candidate_{candidate_id}"], runtime_root
-    )
-
-    assert btq.run(["review-status", "--channel", "field_capture", "--runtime-root", str(runtime_root), "--json"]) == 0
-    approved_status = json.loads(capsys.readouterr().out)
-    assert approved_status["counts"]["candidates_pending_review"] == 0
-    assert approved_status["counts"]["candidates_approved"] == 1
-
-    assert btq.run(["generate-approved-drafts", "--channel", "field_capture", "--runtime-root", str(runtime_root), "--json"]) == 0
-    assert json.loads(capsys.readouterr().out) == {"discovered": 1, "skipped": 0, "completed": 1, "failed": 0}
-
-    assert btq.run(["stage-approved-drafts", "--channel", "field_capture", "--runtime-root", str(runtime_root), "--json"]) == 0
-    assert json.loads(capsys.readouterr().out) == {"discovered": 1, "skipped": 0, "completed": 1, "failed": 0}
-
-    assert btq.run(["review-status", "--channel", "field_capture", "--runtime-root", str(runtime_root), "--json"]) == 0
-    final_status = json.loads(capsys.readouterr().out)
-    assert final_status["counts"]["semantic_with_action_candidates"] == 1
-    assert final_status["counts"]["candidates_approved"] == 1
-    assert final_status["counts"]["approved_job_drafts"] == 1
-    assert final_status["counts"]["staging_staged"] == 1
-    assert final_status["counts"]["staged_queue_jobs_runtime_queue"] == 1
-    assert final_status["lineage_gaps"] == []
-
-    [draft_path] = sorted((runtime_root / "reviews" / "approved_job_drafts" / "field_capture").glob("*.json"))
-    draft = json.loads(draft_path.read_text(encoding="utf-8"))
-    [queue_path] = sorted((runtime_root / "queue").glob("*.json"))
-    queue_job = json.loads(queue_path.read_text(encoding="utf-8"))
-    assert draft["proposed_payload"]["path"] == proposed_note_path
-    assert draft["proposed_payload"]["destination"] == "site_note"
-    draft_content = draft["proposed_payload"]["content"]
-    assert "## Field Capture Reviews" in draft_content
-    assert "- site_id: 7050" in draft_content
-    assert "- area: Restrooms" in draft_content
-    assert "- capture_id: cap-audio" in draft_content
-    assert "- audio_asset_id: fca_test" in draft_content
-    assert "Summary: Verified against the field note." in draft_content
-    assert "Review rationale: Verified against the field note." in draft_content
-    assert str(semantic_path.resolve(strict=False)) in draft_content
-    assert queue_job["payload"] == draft["proposed_payload"]
-    assert queue_job["metadata"]["candidate_id"] == candidate_id
-    assert queue_job["metadata"]["draft_id"] == draft["draft_id"]
-    assert queue_job["metadata"]["draft_artifact_path"] == str(draft_path.resolve(strict=False))
-    assert queue_job["metadata"]["candidate_artifact_path"] == str(candidate_path.resolve(strict=False))
-    assert queue_job["metadata"]["semantic_artifact_path"] == str(semantic_path.resolve(strict=False))
-
+    # The unique guarantees this smoke test protects: no queue processor ran, no
+    # queue/processed/failed dirs were created, no filesystem candidate review
+    # artifact was written, the source semantic artifact is unchanged, and the
+    # vault sentinel is intact.
+    assert not (runtime_root / "reviews" / "action_candidates" / "field_capture").exists()
+    assert not (runtime_root / "queue").exists()
     assert not (runtime_root / "processed").exists()
     assert not (runtime_root / "failed").exists()
+    assert semantic_path.read_text(encoding="utf-8") == semantic_before
     assert queue_processor_called["called"] is False
     assert sentinel.read_text(encoding="utf-8") == "do not touch\n"

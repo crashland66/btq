@@ -648,7 +648,7 @@ def western_gas_sidecar(**overrides: Any) -> dict[str, Any]:
     return payload
 
 
-def test_voice_memo_semantics_stages_reviewable_site_inactive_action(tmp_path: Path, monkeypatch, couchdb_review) -> None:
+def test_voice_memo_semantics_stages_reviewable_site_inactive_action(tmp_path: Path, monkeypatch, couchdb_review, couchdb_job_drafts) -> None:
     root = tmp_path
     audio = root / "western-gas.webm"
     audio.write_bytes(b"audio")
@@ -685,34 +685,43 @@ def test_voice_memo_semantics_stages_reviewable_site_inactive_action(tmp_path: P
     assert semantic["action_count"] == 1
     assert semantic["extracted_actions"][0]["job_type"] == "set_entity_status"
 
-    candidates = sorted((root / "runtime" / "reviews" / "action_candidates" / "field_capture").glob("*.json"))
-    assert len(candidates) == 1
-    candidate = json.loads(candidates[0].read_text(encoding="utf-8"))
-    assert candidate["candidate_type"] == "voice_memo_operator_action"
-    assert candidate["status"] == "pending_review"
-    assert candidate["channel_metadata"]["channel"] == "voice_memo"
-    assert candidate["channel_metadata"]["site_id"] == "7030"
-    assert "inactive" in candidate["summary"].lower()
+    # 334b: the reviewable artifact emitted by run_semantic_pass is now a
+    # pending_approval job_draft (not an action_candidate review doc). It carries
+    # the same operational context the legacy voice_memo_operator_action
+    # candidate did: a voice_memo-sourced set_entity_status proposing site 7030
+    # inactive.
+    drafts = list(couchdb_job_drafts.drafts.values())
+    assert len(drafts) == 1
+    draft = drafts[0]
+    assert draft["type"] == "job_draft"
+    assert draft["review_status"] == "pending_approval"
+    assert draft["source_kind"] == "voice_memo"
+    assert draft["site_id"] == "7030"
+    assert draft["job_type"] == "set_entity_status"
+    assert draft["payload"]["entity_type"] == "site"
+    assert draft["payload"]["entity_id"] == "7030"
+    assert draft["payload"]["status"] == "inactive"
+    assert "inactive" in draft["message"].lower()
 
     [job_path] = sorted((root / "local" / "queue_jobs").glob("*.json"))
     job = json.loads(job_path.read_text(encoding="utf-8"))
     assert job["job_type"] == "voice_memo_note"
     assert job["metadata"]["semantic_artifact_path"] == str(semantic_path)
-    # 308c: the job references the candidate by its CouchDB pseudo-path (sole
-    # canonical store), not the legacy filesystem artifact path.
-    assert job["metadata"]["action_candidate_paths"] == [
-        "couchdb/btq_field_captures/action_candidate_" + candidate["candidate_id"]
-    ]
+    # The voice_memo_note job still references the reviewable item by its CouchDB
+    # pseudo-path (one entry, the single reviewable action), built deterministically
+    # from the semantic artifact -- unchanged by 334b. Assert that single,
+    # self-consistent pseudo-path is present and well-formed rather than reading a
+    # (no-longer-projected) filesystem candidate file.
+    candidate_paths = job["metadata"]["action_candidate_paths"]
+    assert len(candidate_paths) == 1
+    pseudo_path = candidate_paths[0]
+    assert pseudo_path.startswith("couchdb/btq_field_captures/action_candidate_")
     assert job["payload"]["semantic_intent"] == "site_status_change"
     assert job["payload"]["semantic_primary_intent"] == "site_status_change"
     assert job["payload"]["semantic_action_count"] == 1
     assert job["payload"]["semantic_review_required"] is True
-    assert job["payload"]["action_candidate_path"] == (
-        "couchdb/btq_field_captures/action_candidate_" + candidate["candidate_id"]
-    )
-    assert job["payload"]["action_candidate_paths"] == [
-        "couchdb/btq_field_captures/action_candidate_" + candidate["candidate_id"]
-    ]
+    assert job["payload"]["action_candidate_path"] == pseudo_path
+    assert job["payload"]["action_candidate_paths"] == [pseudo_path]
 
 
 def test_voice_memo_semantic_failure_falls_back_to_voice_memo_note(tmp_path: Path, monkeypatch) -> None:

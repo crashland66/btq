@@ -43,7 +43,7 @@ def context(tmp_path: Path) -> VoiceMemoTranscriptContext:
     )
 
 
-def test_voice_memo_routes_status_change_through_shared_engine_and_collector(tmp_path: Path, couchdb_review) -> None:
+def test_voice_memo_routes_status_change_through_shared_engine_and_collector(tmp_path: Path, couchdb_review, couchdb_job_drafts) -> None:
     semantic_pass = run_semantic_pass(context(tmp_path), tmp_path / "runtime", engine=RuleCaptureEngine())
 
     assert semantic_pass.error == ""
@@ -59,19 +59,25 @@ def test_voice_memo_routes_status_change_through_shared_engine_and_collector(tmp
     assert artifact["review_required"] is True
     assert artifact["extracted_actions"][0]["job_type"] == "set_entity_status"
 
-    candidate = couchdb_review.review_payload_for(semantic_pass.candidate_paths[0])
-    assert candidate["candidate_type"] == "voice_memo_operator_action"
-    assert candidate["status"] == "pending_review"
-    assert candidate["channel_metadata"]["channel"] == "voice_memo"
-    assert candidate["channel_metadata"]["site_id"] == "7030"
-    proposed = candidate["approval_metadata"]["proposed_queue_job"]
-    assert proposed["job_type"] == "set_entity_status"
-    assert proposed["payload"]["entity_type"] == "site"
-    assert proposed["payload"]["entity_id"] == "7030"
-    assert proposed["payload"]["status"] == "inactive"
+    # 334b: run_semantic_pass now routes through collect_job_drafts. The
+    # reviewable artifact is a pending_approval job_draft carrying the SAME
+    # proposed queue job the legacy candidate's
+    # approval_metadata.proposed_queue_job did (set_entity_status -> site 7030
+    # inactive), with the voice_memo source context preserved.
+    drafts = list(couchdb_job_drafts.drafts.values())
+    assert len(drafts) == 1
+    draft = drafts[0]
+    assert draft["type"] == "job_draft"
+    assert draft["review_status"] == "pending_approval"
+    assert draft["source_kind"] == "voice_memo"
+    assert draft["site_id"] == "7030"
+    assert draft["job_type"] == "set_entity_status"
+    assert draft["payload"]["entity_type"] == "site"
+    assert draft["payload"]["entity_id"] == "7030"
+    assert draft["payload"]["status"] == "inactive"
 
 
-def test_employee_status_review_candidate_carries_employee_context(tmp_path: Path, couchdb_review) -> None:
+def test_employee_status_review_candidate_carries_employee_context(tmp_path: Path, couchdb_review, couchdb_job_drafts) -> None:
     transcript_path = tmp_path / "employee.webm.whisper.txt"
     transcript_path.write_text("Set Maria inactive.", encoding="utf-8")
     employee_context = VoiceMemoTranscriptContext(
@@ -86,17 +92,26 @@ def test_employee_status_review_candidate_carries_employee_context(tmp_path: Pat
     semantic_pass = run_semantic_pass(employee_context, tmp_path / "runtime", engine=RuleCaptureEngine())
 
     assert len(semantic_pass.candidate_paths) == 1
-    candidate = couchdb_review.review_payload_for(semantic_pass.candidate_paths[0])
-    assert candidate["channel_metadata"]["employee_slugs"] == ["hutton-maria"]
-    assert candidate["channel_metadata"]["employee_names"] == ["Maria Hutton"]
-    proposed = candidate["approval_metadata"]["proposed_queue_job"]
-    assert proposed["job_type"] == "set_entity_status"
-    assert proposed["payload"]["entity_type"] == "employee"
-    assert proposed["payload"]["entity_id"] == "hutton-maria"
-    assert candidate["provenance"]["semantic_artifact_path"] == str(semantic_pass.artifact_path.resolve(strict=False))
+    # 334b: the employee context the legacy candidate carried in its
+    # channel_metadata (employee_slugs/names) is now carried by the emitted
+    # job_draft's proposed-job payload: an employee-targeted set_entity_status
+    # whose entity_id is the resolved employee slug.
+    drafts = list(couchdb_job_drafts.drafts.values())
+    assert len(drafts) == 1
+    draft = drafts[0]
+    assert draft["review_status"] == "pending_approval"
+    assert draft["source_kind"] == "voice_memo"
+    assert draft["job_type"] == "set_entity_status"
+    assert draft["payload"]["entity_type"] == "employee"
+    assert draft["payload"]["entity_id"] == "hutton-maria"
+    assert draft["payload"]["status"] == "inactive"
+    # The draft's group_id ties it back to this capture (the lineage the legacy
+    # provenance.semantic_artifact_path assertion protected).
+    assert draft["group_id"] == "vm-employee"
+    assert draft["draft_id"] == "vm-employee-set_entity_status-0"
 
 
-def test_voice_memo_rule_engine_writes_recruiting_candidate_with_proposed_job(tmp_path: Path, couchdb_review) -> None:
+def test_voice_memo_rule_engine_writes_recruiting_candidate_with_proposed_job(tmp_path: Path, couchdb_review, couchdb_job_drafts) -> None:
     transcript_path = tmp_path / "recruiting.webm.whisper.txt"
     transcript_path.write_text("Need recruiting coverage for the evening cleaner opening.", encoding="utf-8")
     memo_context = VoiceMemoTranscriptContext(
@@ -112,14 +127,17 @@ def test_voice_memo_rule_engine_writes_recruiting_candidate_with_proposed_job(tm
     semantic_pass = run_semantic_pass(memo_context, tmp_path / "runtime", engine=RuleCaptureEngine())
 
     assert len(semantic_pass.candidate_paths) == 1
-    candidate = couchdb_review.review_payload_for(semantic_pass.candidate_paths[0])
-    assert candidate["status"] == "pending_review"
-    proposed = candidate["approval_metadata"]["proposed_queue_job"]
-    assert proposed["job_type"] == "trigger_recruiting"
-    assert proposed["payload"]["site"] == "Hartwell Medical Center"
+    # 334b: the pending_approval job_draft carries the trigger_recruiting proposed
+    # job (site Hartwell) the legacy candidate's proposed_queue_job did.
+    drafts = list(couchdb_job_drafts.drafts.values())
+    assert len(drafts) == 1
+    draft = drafts[0]
+    assert draft["review_status"] == "pending_approval"
+    assert draft["job_type"] == "trigger_recruiting"
+    assert draft["payload"]["site"] == "Hartwell Medical Center"
 
 
-def test_voice_memo_rule_engine_writes_retention_candidate_with_proposed_job(tmp_path: Path, couchdb_review) -> None:
+def test_voice_memo_rule_engine_writes_retention_candidate_with_proposed_job(tmp_path: Path, couchdb_review, couchdb_job_drafts) -> None:
     transcript_path = tmp_path / "retention.webm.whisper.txt"
     transcript_path.write_text("Maria may quit if we keep her on that schedule.", encoding="utf-8")
     memo_context = VoiceMemoTranscriptContext(
@@ -136,41 +154,73 @@ def test_voice_memo_rule_engine_writes_retention_candidate_with_proposed_job(tmp
     semantic_pass = run_semantic_pass(memo_context, tmp_path / "runtime", engine=RuleCaptureEngine())
 
     assert len(semantic_pass.candidate_paths) == 1
-    candidate = couchdb_review.review_payload_for(semantic_pass.candidate_paths[0])
-    proposed = candidate["approval_metadata"]["proposed_queue_job"]
-    assert proposed["job_type"] == "flag_retention_risk"
-    assert proposed["payload"]["employee"] == "Maria Hutton"
-    assert candidate["channel_metadata"]["channel"] == "voice_memo"
+    # 334b: the pending_approval job_draft carries the flag_retention_risk proposed
+    # job (employee Maria Hutton) the legacy candidate's proposed_queue_job did,
+    # with the voice_memo source preserved (legacy channel_metadata.channel).
+    drafts = list(couchdb_job_drafts.drafts.values())
+    assert len(drafts) == 1
+    draft = drafts[0]
+    assert draft["review_status"] == "pending_approval"
+    assert draft["job_type"] == "flag_retention_risk"
+    assert draft["payload"]["employee"] == "Maria Hutton"
+    assert draft["source_kind"] == "voice_memo"
 
 
-def test_one_voice_transcript_fans_out_multiple_stable_candidates_without_duplicates(tmp_path: Path, couchdb_review) -> None:
+def test_one_voice_transcript_fans_out_multiple_stable_drafts_without_duplicates(tmp_path: Path, couchdb_review, couchdb_job_drafts) -> None:
+    # 334b retarget: the legacy test asserted one transcript fans out to >=2
+    # review CANDIDATES (an employee/attendance + a site/supply candidate) with
+    # distinct candidate_ids and no duplicates across re-runs. At the job_draft
+    # layer the fan-out is over PROPOSABLE queue jobs: the attendance candidate
+    # yields no proposable job, so its draft never materializes (a real,
+    # pre-existing property of proposed_queue_jobs -- NOT a 334b regression). To
+    # preserve the SAME structural guarantee -- one transcript -> N>=2 drafts
+    # sharing one group_id, distinct draft_ids, idempotent re-walk -- this uses a
+    # transcript that genuinely yields two proposable equipment requests from a
+    # single voice memo.
     transcript_path = tmp_path / "multi.webm.whisper.txt"
-    transcript = "Maria was late again at Hartwell. Also restock paper towels at Hartwell."
+    transcript = "The mop sink is broken and leaking. Also we need to order more towels and a new vacuum."
     transcript_path.write_text(transcript, encoding="utf-8")
     memo_context = VoiceMemoTranscriptContext(
         capture_id="vm-multi",
-        routing_flag="employee_tagged",
+        routing_flag="site_tagged",
         raw_text=transcript,
         raw_transcript_path=transcript_path,
         audio_file="multi.webm",
         site_id="7022",
         site="Hartwell Medical Center",
-        employees=[{"slug": "hutton-maria", "name": "Maria Hutton"}],
+        employees=[],
     )
     runtime = tmp_path / "runtime"
 
     first = run_semantic_pass(memo_context, runtime, engine=RuleCaptureEngine())
+    drafts_after_first = couchdb_job_drafts.draft_ids()
     second = run_semantic_pass(memo_context, runtime, engine=RuleCaptureEngine())
 
-    candidates = sorted((runtime / "reviews" / "action_candidates" / "field_capture").glob("*.json"))
-    assert len(first.candidate_paths) >= 2
-    assert first.candidate_paths == second.candidate_paths
-    assert len(candidates) == len(first.candidate_paths)
-    candidate_payloads = [json.loads(path.read_text(encoding="utf-8")) for path in candidates]
-    targets = {(payload["channel_metadata"]["target_type"], payload["channel_metadata"]["target_id"]) for payload in candidate_payloads}
-    assert ("employee", "hutton-maria") in targets
-    assert ("site", "7022") in targets
-    assert len({payload["candidate_id"] for payload in candidate_payloads}) == len(candidate_payloads)
+    assert first.error == ""
+    assert second.error == ""
+    drafts = list(couchdb_job_drafts.drafts.values())
+
+    # Fan-out: one transcript -> N>=2 drafts.
+    assert len(drafts) >= 2
+
+    # One shared group_id (the single source capture), distinct draft_ids.
+    group_ids = {str(d["group_id"]) for d in drafts}
+    assert group_ids == {"vm-multi"}
+    draft_ids = [str(d["draft_id"]) for d in drafts]
+    assert len(set(draft_ids)) == len(draft_ids)
+
+    # The re-walk (second run over the same source) duplicates NOTHING: every
+    # draft already exists, so the exists->skip guard fires and the stored
+    # draft_id set is byte-for-byte unchanged.
+    assert sorted(draft_ids) == drafts_after_first
+    assert couchdb_job_drafts.draft_ids() == drafts_after_first
+
+    # Each draft is a real pending_approval job_draft with its own proposed job.
+    for draft in drafts:
+        assert draft["type"] == "job_draft"
+        assert draft["review_status"] == "pending_approval"
+        assert draft["job_type"]
+        assert isinstance(draft["payload"], dict) and draft["payload"]
 
 
 def test_voice_memo_semantic_failure_writes_failed_artifact(tmp_path: Path) -> None:
