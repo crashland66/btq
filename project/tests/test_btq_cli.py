@@ -46,6 +46,7 @@ EXPECTED_SUBCOMMANDS = [
     "watch-field-capture-pipeline",
     "watch-couchdb-field-captures",
     "watch-couchdb-queue",
+    "watch-couchdb-job-drafts",
     "watch-couchdb-voice-memos",
     "setup-couchdb",
     "migrate-vault",

@@ -263,6 +263,19 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
     queue_watcher_parser.add_argument("--json", action="store_true")
     queue_watcher_parser.add_argument("--log-path", type=Path)
     queue_watcher_parser.set_defaults(func=handle_watch_couchdb_queue)
+    job_draft_watcher_parser = subparsers.add_parser(
+        "watch-couchdb-job-drafts",
+        help="Watch CouchDB approved job_drafts and materialize them into the local runtime queue.",
+    )
+    job_draft_watcher_parser.add_argument("--runtime-root", type=Path)
+    job_draft_watcher_parser.add_argument("--database")
+    job_draft_watcher_parser.add_argument("--poll-seconds", type=float)
+    job_draft_watcher_parser.add_argument("--limit", type=int)
+    job_draft_watcher_parser.add_argument("--dry-run", action="store_true")
+    job_draft_watcher_parser.add_argument("--once", action="store_true")
+    job_draft_watcher_parser.add_argument("--json", action="store_true")
+    job_draft_watcher_parser.add_argument("--log-path", type=Path)
+    job_draft_watcher_parser.set_defaults(func=handle_watch_couchdb_job_drafts)
     voice_memo_watcher_parser = subparsers.add_parser(
         "watch-couchdb-voice-memos",
         help="Listen to CouchDB voice memos and place audio plus metadata sidecars into the transcription inbox.",
@@ -591,6 +604,25 @@ def handle_watch_couchdb_queue(args: argparse.Namespace) -> int:
     if args.log_path:
         argv_pass += ["--log-path", str(args.log_path)]
     return couchdb_queue_watcher.run(argv_pass)
+
+
+def handle_watch_couchdb_job_drafts(args: argparse.Namespace) -> int:
+    from queue_processor import job_draft_queue_watcher
+
+    argv_pass = []
+    for name in ("runtime_root", "database", "poll_seconds", "limit"):
+        value = getattr(args, name)
+        if value is not None:
+            argv_pass.extend([f"--{name.replace('_', '-')}", str(value)])
+    if args.dry_run:
+        argv_pass.append("--dry-run")
+    if args.once:
+        argv_pass.append("--once")
+    if args.json:
+        argv_pass.append("--json")
+    if args.log_path:
+        argv_pass += ["--log-path", str(args.log_path)]
+    return job_draft_queue_watcher.run(argv_pass)
 
 
 def handle_watch_couchdb_voice_memos(args: argparse.Namespace) -> int:

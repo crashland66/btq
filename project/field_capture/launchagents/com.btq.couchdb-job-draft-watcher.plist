@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.btq.couchdb-job-draft-watcher</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>@@BTQ_PROJECT_ROOT@@/scripts/btq</string>
+    <string>watch-couchdb-job-drafts</string>
+    <string>--json</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>@@BTQ_PROJECT_ROOT@@</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>BTQ_COUCHDB_URL</key>
+    <string>REPLACE_ME</string>
+    <key>BTQ_COUCHDB_USER</key>
+    <string>REPLACE_ME</string>
+    <key>BTQ_COUCHDB_PASSWORD</key>
+    <string>REPLACE_ME</string>
+    <key>BTQ_COUCHDB_REMOTE_HOST</key>
+    <string>btq-vps</string>
+    <key>PYTHONUNBUFFERED</key>
+    <string>1</string>
+  </dict>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>@@BTQ_RUNTIME@@/logs/couchdb-job-draft-watcher.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>@@BTQ_RUNTIME@@/logs/couchdb-job-draft-watcher.err.log</string>
+</dict>
+</plist>

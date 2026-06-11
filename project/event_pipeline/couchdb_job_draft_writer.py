@@ -167,6 +167,34 @@ def set_job_draft_payload(
         raise CouchDBJobDraftWriterError(str(exc)) from exc
 
 
+def set_job_draft_queue_materialized_at(
+    config: couchdb_config.CouchDBConfig,
+    db: str,
+    draft_id: str,
+    *,
+    materialized_at: str,
+    expected_rev: str | None = None,
+) -> dict[str, Any]:
+    doc = get_job_draft(config, db, draft_id)
+    if doc is None:
+        raise CouchDBJobDraftWriterError(f"job_draft not found: {draft_id}")
+    if doc.get("queue_materialized_at"):
+        raise AlreadyDecided(f"job_draft already queue-materialized: {draft_id}")
+    current_rev = str(doc.get("_rev") or "")
+    if not current_rev:
+        raise CouchDBJobDraftWriterError(f"job_draft has no _rev: {draft_id}")
+    if expected_rev is not None and str(expected_rev) != current_rev:
+        raise AlreadyDecided(f"job_draft _rev changed before queue materialization mark: {draft_id}")
+    updated = dict(doc)
+    updated["queue_materialized_at"] = materialized_at
+    try:
+        return _put_document(config, db, str(updated["_id"]), updated, conflict_as_already_decided=True)
+    except AlreadyDecided:
+        raise
+    except CouchDBCandidateWriterError as exc:
+        raise CouchDBJobDraftWriterError(str(exc)) from exc
+
+
 def upsert_job_draft(
     config: couchdb_config.CouchDBConfig,
     db: str,
