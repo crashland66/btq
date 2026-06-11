@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 from typing import Any
+from datetime import datetime, timezone
 from urllib import error
 
 from event_pipeline import couchdb_config
 from event_pipeline.couchdb_candidate_writer import (
+    AlreadyDecided,
     CouchDBCandidateWriterError,
     _get_document,
     _put_document,
@@ -47,6 +49,122 @@ def get_job_draft(
 ) -> dict[str, Any] | None:
     """Fetch a job_draft document by draft_id, including _rev."""
     return get_job_draft_document(config, db, draft_id)
+
+
+def set_job_draft_review_status(
+    config: couchdb_config.CouchDBConfig,
+    db: str,
+    draft_id: str,
+    *,
+    review_status: str,
+    reviewed_by: str,
+    rationale: str,
+    expected_rev: str | None = None,
+    expected_prior_statuses: set[str] | frozenset[str] | tuple[str, ...] = ("pending_approval",),
+    reason: str | None = None,
+) -> dict[str, Any]:
+    if review_status not in {"approved", "rejected"}:
+        raise CouchDBJobDraftWriterError(f"unsupported job_draft review status: {review_status}")
+    doc = get_job_draft(config, db, draft_id)
+    if doc is None:
+        raise CouchDBJobDraftWriterError(f"job_draft not found: {draft_id}")
+    current_rev = str(doc.get("_rev") or "")
+    if not current_rev:
+        raise CouchDBJobDraftWriterError(f"job_draft has no _rev: {draft_id}")
+    if expected_rev is not None and str(expected_rev) != current_rev:
+        raise AlreadyDecided(f"job_draft _rev changed: {draft_id}")
+    allowed_prior_statuses = {str(item) for item in expected_prior_statuses}
+    prior_status = str(doc.get("review_status") or "")
+    if allowed_prior_statuses and prior_status not in allowed_prior_statuses:
+        raise AlreadyDecided(f"job_draft already decided: {draft_id}")
+
+    timestamp = datetime.now(timezone.utc).isoformat()
+    history = doc.get("review_history")
+    review_history = list(history) if isinstance(history, list) else []
+    history_entry = {
+        "reviewer": str(reviewed_by or ""),
+        "reviewed_at": timestamp,
+        "review_rationale": str(rationale or ""),
+        "prior_status": prior_status,
+        "review_status": review_status,
+    }
+    if reason:
+        history_entry["reason"] = str(reason)
+    review_history.append(history_entry)
+
+    updated = dict(doc)
+    updated.update(
+        {
+            "review_status": review_status,
+            "reviewed_at": timestamp,
+            "reviewed_by": str(reviewed_by or ""),
+            "reviewer": str(reviewed_by or ""),
+            "review_rationale": str(rationale or ""),
+            "prior_status": prior_status,
+            "review_history": review_history,
+        }
+    )
+    try:
+        return _put_document(config, db, str(updated["_id"]), updated, conflict_as_already_decided=True)
+    except AlreadyDecided:
+        raise
+    except CouchDBCandidateWriterError as exc:
+        raise CouchDBJobDraftWriterError(str(exc)) from exc
+
+
+def set_job_draft_payload(
+    config: couchdb_config.CouchDBConfig,
+    db: str,
+    draft_id: str,
+    *,
+    payload: dict[str, Any],
+    validation_error: str | None = None,
+    edited_by: str,
+    expected_rev: str | None = None,
+) -> dict[str, Any]:
+    doc = get_job_draft(config, db, draft_id)
+    if doc is None:
+        raise CouchDBJobDraftWriterError(f"job_draft not found: {draft_id}")
+    current_rev = str(doc.get("_rev") or "")
+    if not current_rev:
+        raise CouchDBJobDraftWriterError(f"job_draft has no _rev: {draft_id}")
+    if expected_rev is not None and str(expected_rev) != current_rev:
+        raise AlreadyDecided(f"job_draft _rev changed: {draft_id}")
+    prior_status = str(doc.get("review_status") or "")
+    if prior_status != JOB_DRAFT_REVIEW_STATUS_DEFAULT:
+        raise AlreadyDecided(f"job_draft is not editable: {draft_id}")
+    if not isinstance(payload, dict):
+        raise CouchDBJobDraftWriterError("job_draft payload must be an object")
+
+    timestamp = datetime.now(timezone.utc).isoformat()
+    history = doc.get("review_history")
+    review_history = list(history) if isinstance(history, list) else []
+    review_history.append(
+        {
+            "editor": str(edited_by or ""),
+            "edited_at": timestamp,
+            "prior_status": prior_status,
+            "review_status": prior_status,
+            "action": "edit_payload",
+        }
+    )
+
+    updated = dict(doc)
+    updated.update(
+        {
+            "payload": dict(payload),
+            "validation_error": validation_error,
+            "edited_at": timestamp,
+            "edited_by": str(edited_by or ""),
+            "review_history": review_history,
+        }
+    )
+    try:
+        return _put_document(config, db, str(updated["_id"]), updated, conflict_as_already_decided=True)
+    except AlreadyDecided:
+        raise
+    except CouchDBCandidateWriterError as exc:
+        raise CouchDBJobDraftWriterError(str(exc)) from exc
 
 
 def upsert_job_draft(
