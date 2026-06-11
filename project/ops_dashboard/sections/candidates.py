@@ -646,7 +646,6 @@ def render_candidate_card(candidate: dict[str, object], thumb_urls: list[str] | 
     raw_rationale = str(candidate["rationale"]) or "No machine rationale."
     summary = html.escape(raw_summary)
     rationale = html.escape(raw_rationale)
-    thumb_strip = _render_thumb_strip(thumb_urls or [])
     actions = ""
     if candidate.get("archived") is True:
         actions = render_restore_action(candidate)
@@ -721,16 +720,15 @@ def render_candidate_card(candidate: dict[str, object], thumb_urls: list[str] | 
     return f"""
     <article>
       {render_resolution_pill(resolution_status(candidate))}
-      {render_proposed_job(candidate)}
-      {render_evidence_summary(candidate)}
+      <p class="candidate-action"><strong>{summary}</strong></p>
       {actions}
-      {thumb_strip}
       {render_resolution_progression(candidate)}
       <details>
         <summary>Review details</summary>
+        {render_proposed_job(candidate)}
+        {render_evidence_summary(candidate)}
         <section class="machine-interpretation">
-          <p class="muted">Machine summary</p>
-          <p><strong>{summary}</strong></p>
+          <p class="muted">Machine rationale</p>
           <p>{rationale}</p>
         </section>
         {operator_details}
@@ -895,18 +893,36 @@ def render_candidate_groups(candidates: list[dict[str, object]], runtime_root: P
             vision_summary = " ".join(str(vision_items[0].get(key) or "") for key in ("area_guess", "description")).strip()
         thumb_urls = capture_thumbnails(runtime_root, capture_id)
         thumb_strip = _render_thumb_strip(thumb_urls)
+        # The capture IS the message + photos; the cards below are its proposed
+        # actions. Lead with what the worker said, then who/site, then thumbnails.
+        raw_message = (
+            str(first.get("source_text") or "").strip()
+            or str(first.get("source_context") or "").strip()
+            or str(first.get("summary") or "").strip()
+        )
+        message_html = html.escape(raw_message) if raw_message else "(no message)"
+        who = html.escape(str(first.get("submitter_name") or UNKNOWN_SUBMITTER))
+        site = html.escape(str(first.get("site_id") or ""))
+        when = str(first.get("captured_at") or "").strip()
+        meta_html = f"{who} · Site {site}" + (f" · {html.escape(when)}" if when else "")
+        vision_note = (
+            f'<p class="muted candidate-vision-note">{html.escape(vision_summary[:220])}</p>'
+            if vision_summary
+            else ""
+        )
+        cards_html = "".join(render_candidate_card(candidate, thumb_urls) for candidate in group)
         rendered.append(
             f"""<section class="candidate-group" id="capture-{html.escape(capture_id)}">
         <div class="candidate-group-header">
           <div>
-            <h2>{html.escape(capture_id)}</h2>
-            <p class="muted">Site {html.escape(str(first.get("site_id") or ""))} | {html.escape(str(first.get("submitter_name") or UNKNOWN_SUBMITTER))} | {html.escape(str(first.get("captured_at") or ""))}</p>
+            <p class="candidate-message">{message_html}</p>
+            <p class="candidate-meta muted">{meta_html}</p>
             {capture_signal}
-            <p>{html.escape(vision_summary[:220])}</p>
+            {vision_note}
           </div>
           {thumb_strip}
         </div>
-        {''.join(render_candidate_card(candidate, thumb_urls) for candidate in group)}
+        {cards_html}
       </section>"""
         )
     return "".join(rendered)

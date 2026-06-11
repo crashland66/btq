@@ -573,6 +573,10 @@ button.reject { background: var(--reject-bg); border-color: var(--reject-border)
 .candidate-thumb { width: 100px; height: 100px; object-fit: cover; border: 1px solid var(--line); border-radius: 6px; background: var(--pill-bg); transition: opacity .15s; }
 .candidate-thumb:hover { opacity: .82; }
 .thumb-strip { display: flex; flex-wrap: wrap; gap: 6px; align-items: flex-start; }
+.candidate-message { font-size: 1.15rem; line-height: 1.45; font-weight: 600; margin: 0 0 .35rem; }
+.candidate-meta { font-size: .85rem; margin: 0 0 .5rem; }
+.candidate-action { margin: .4rem 0 .6rem; }
+.candidate-vision-note { font-size: .82rem; margin: .3rem 0; }
 .inbox-card .count { font-size: 1.7rem; font-weight: 700; margin: 0; }
 .count-badge { font-weight: 700; }
 .count-danger { color: var(--danger); font-weight: 700; }

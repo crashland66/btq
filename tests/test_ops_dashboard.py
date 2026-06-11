@@ -21,7 +21,7 @@ from ops_dashboard.app import build_status, route_response, startup_lines
 from ops_dashboard.common import SectionContext
 from ops_dashboard.sections import field_photos
 from ops_dashboard.sections import candidates as candidates_section
-from ops_dashboard.sections.candidates import _handle_review_post, candidate_detail, filter_candidates, render_candidate_card, render_candidate_context
+from ops_dashboard.sections.candidates import _handle_review_post, candidate_detail, filter_candidates, render_candidate_card, render_candidate_context, render_candidate_groups
 from processing_core.action_candidates import action_candidate_payload, write_action_candidate_review
 from processing_core.artifacts import write_json_object
 from queue_processor import health as queue_health
@@ -748,7 +748,9 @@ def test_candidate_card_approve_form_precedes_kv_table(tmp_path: Path, couchdb_r
 
     assert status_code == HTTPStatus.OK
     article = body[body.index("<article>") :]
-    assert article.index('class="proposed-job"') < article.index('class="review-action-form approve-form"')
+    # The actionable approve form now leads; the technical proposed job moved into
+    # the collapsed "Review details".
+    assert article.index('class="review-action-form approve-form"') < article.index('class="proposed-job"')
 
 
 def test_pending_voice_status_candidate_shows_proposed_job_deck(tmp_path: Path, couchdb_review) -> None:
@@ -992,12 +994,20 @@ def test_candidate_card_context_expanded_by_default(tmp_path: Path, monkeypatch)
     assert "<details" not in body
 
 
-def test_candidate_card_renders_thumb_strip_when_thumb_urls_provided(tmp_path: Path) -> None:
+def test_capture_group_renders_thumbs_and_card_has_none(tmp_path: Path) -> None:
+    # Thumbnails now render once per capture (the group header), not per candidate
+    # card — the capture IS the message+photos, the cards are its proposed actions.
+    cap = "cap-thumb-1"
+    photo_dir = tmp_path / "uploads" / "2026-06-10" / cap
+    photo_dir.mkdir(parents=True, exist_ok=True)
+    (photo_dir / "p.jpg").write_bytes(b"\xff\xd8\xff\xe0jpeg")
     payload = action_candidate_payload(candidate_type="field_capture_follow_up", summary="Review sink area.")
+    cand = candidate_detail(tmp_path / "candidate.json", payload)
+    cand["capture_id"] = cap
 
-    body = render_candidate_card(candidate_detail(tmp_path / "candidate.json", payload), thumb_urls=["/media/test.jpg"])
-
-    assert "/media/test.jpg" in body
+    group_html = render_candidate_groups([cand], tmp_path)
+    assert f"/media/2026-06-10/{cap}/p.jpg" in group_html  # thumbnail at the group level
+    assert "<img" not in render_candidate_card(cand, thumb_urls=[f"/media/2026-06-10/{cap}/p.jpg"])  # not per card
 
 
 def test_candidate_card_renders_without_thumb_strip_when_not_provided(tmp_path: Path) -> None:
