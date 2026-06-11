@@ -1,8 +1,8 @@
 (function () {
   "use strict";
 
-  const INTERFACE_VERSION = "2026.06.08-photo-limit";
-  // Previous INTERFACE_VERSION values: "2026.06.08-text-and-gating", "2026.06.06-unified-capture" (legacy static smoke tests).
+  const INTERFACE_VERSION = "2026.06.11-job-first-review";
+  // Previous INTERFACE_VERSION values: "2026.06.08-photo-limit", "2026.06.08-text-and-gating", "2026.06.06-unified-capture" (legacy static smoke tests).
   const PIPELINE_VERSION = "unified-capture-intake-v2";
   const DEFAULT_MAX_PHOTOS = 6; // fallback only; the live limit comes from /api/session.max_images
   const TOKEN_KEY = "unifiedCaptureToken";

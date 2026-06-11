@@ -309,7 +309,8 @@ window.__btqSwipeInit = function () {
     if (!keys.length) return '';
     var rows = keys.map(function (k) {
       var v = p[k];
-      if (v && typeof v === 'object') v = JSON.stringify(v);
+      if (Array.isArray(v)) v = v.join(', ');
+      else if (v && typeof v === 'object') v = JSON.stringify(v);
       return '<tr><th>' + esc(k) + '</th><td>' + esc(v) + '</td></tr>';
     }).join('');
     return '<table class="swipe-payload">' + rows + '</table>';
