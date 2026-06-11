@@ -137,6 +137,18 @@
         "apex powdered metal",
         "apex"
       ]
+    },
+    {
+      "canonical": "Sandbox Site",
+      "site_id": "SANDBOX",
+      "note_path": "Accounts/Sandbox/Locations/SANDBOX - Sandbox Site/about.md",
+      "aliases": [
+        "sandbox",
+        "sandbox site",
+        "sandbox-site",
+        "the sandbox",
+        "SANDBOX"
+      ]
     }
   ],
   "vision_contexts": {
@@ -163,6 +175,12 @@
       "label": "Continental Metalworks",
       "environment": "industrial manufacturing",
       "summary": "Photos are interior field-capture images from a manufacturing site with offices, restrooms, locker rooms, plant-adjacent spaces, and supply areas."
+    },
+    "SANDBOX": {
+      "context_id": "SANDBOX",
+      "label": "Sandbox Site",
+      "environment": "demo / test sandbox site",
+      "summary": "Demo/test sandbox site for exercising capture, semantic extraction, and review end-to-end. Treat as a generic commercial cleaning site with the usual restrooms, break rooms, offices, entryways, and supply areas."
     }
   }
 }

@@ -23,6 +23,23 @@ _DIR = Path(__file__).resolve().parent
 _REAL = _DIR / "site_registry.json"
 _EXAMPLE = _DIR / "site_registry.example.json"
 
+BUILTIN_SANDBOX_SITE: dict[str, Any] = {
+    "canonical": "Sandbox Site",
+    "site_id": "SANDBOX",
+    "note_path": "Accounts/Sandbox/Locations/SANDBOX - Sandbox Site/about.md",
+    "aliases": ["sandbox", "sandbox site", "sandbox-site", "the sandbox", "SANDBOX"],
+}
+BUILTIN_SANDBOX_VISION_CONTEXT: dict[str, str] = {
+    "context_id": "SANDBOX",
+    "label": "Sandbox Site",
+    "environment": "demo / test sandbox site",
+    "summary": (
+        "Demo/test sandbox site for exercising capture, semantic extraction, and review end-to-end. "
+        "Treat as a generic commercial cleaning site with the usual restrooms, break rooms, offices, "
+        "entryways, and supply areas."
+    ),
+}
+
 _cache: dict[str, Any] | None = None
 
 
@@ -33,6 +50,18 @@ def _resolve_path() -> Path:
     if _REAL.exists():
         return _REAL
     return _EXAMPLE
+
+
+def _ensure_builtin_sandbox(data: dict[str, Any]) -> dict[str, Any]:
+    sites = data["sites"]
+    contexts = data["vision_contexts"]
+    if not any(site.get("site_id") == "SANDBOX" for site in sites if isinstance(site, dict)):
+        sandbox_site = dict(BUILTIN_SANDBOX_SITE)
+        sandbox_site["aliases"] = list(BUILTIN_SANDBOX_SITE["aliases"])
+        sites.append(sandbox_site)
+    if "SANDBOX" not in contexts:
+        contexts["SANDBOX"] = dict(BUILTIN_SANDBOX_VISION_CONTEXT)
+    return data
 
 
 def load_site_registry(*, force_reload: bool = False) -> dict[str, Any]:
@@ -46,7 +75,7 @@ def load_site_registry(*, force_reload: bool = False) -> dict[str, Any]:
     contexts = data.get("vision_contexts")
     if not isinstance(sites, list) or not isinstance(contexts, dict):
         raise ValueError(f"site registry at {path} must have list 'sites' and dict 'vision_contexts'")
-    _cache = {"sites": sites, "vision_contexts": contexts}
+    _cache = _ensure_builtin_sandbox({"sites": sites, "vision_contexts": contexts})
     return _cache
 
 
