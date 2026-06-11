@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import html
 import json
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -65,6 +66,12 @@ def _confidence_label(value: object) -> str:
     if not text or text == "unknown":
         return "unknown"
     return text
+
+
+def _plain_site_label(html_label: str) -> str:
+    """resolve_site_label returns HTML (<span> markup); the swipe card renders the
+    site through JS esc(), so it needs the plain text ("Liberty Wire (1337)")."""
+    return html.unescape(re.sub(r"<[^>]+>", "", html_label or "")).strip()
 
 
 def _evidence_text(payload: dict[str, object]) -> str:
@@ -176,7 +183,7 @@ def render_body(request_ctx: object, *, payload: dict[str, object] | None = None
     # human-readable site name; the client never has to call back for it.
     if vault_root is not None:
         for card in cards:
-            card["site_label"] = resolve_site_label(card.get("site_id"), vault_root)
+            card["site_label"] = _plain_site_label(resolve_site_label(card.get("site_id"), vault_root))
     else:
         for card in cards:
             card["site_label"] = str(card.get("site_id") or "")

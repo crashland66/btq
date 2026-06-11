@@ -99,6 +99,15 @@ def test_swipe_has_skip_control_that_advances_without_acting(tmp_path):
     assert "<kbd>S</kbd>" in body and "skip" in body
 
 
+def test_plain_site_label_strips_html_markup():
+    from ops_dashboard.sections import swipe
+
+    label = '<span class="site-label">Liberty Wire <span class="site-id">(1337)</span></span>'
+    assert swipe._plain_site_label(label) == "Liberty Wire (1337)"
+    assert swipe._plain_site_label("B&amp;T") == "B&T"
+    assert swipe._plain_site_label("") == ""
+
+
 def test_swipe_bootstrap_is_valid_json_for_the_browser(tmp_path, couchdb_review):
     """The embedded bootstrap must parse as JSON the way a browser reads it.
 
