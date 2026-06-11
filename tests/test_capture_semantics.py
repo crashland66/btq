@@ -294,10 +294,10 @@ def test_rule_engine_no_false_retention_on_plain_attendance() -> None:
 def test_semantic_prompt_instructs_retention_coemission() -> None:
     prompt = _build_semantic_prompt(capture_input("Bruce Keller was a no-show and I may need to replace him."))
 
-    assert (
-        "emit BOTH an attendance log_personnel_event action AND a separate flag_retention_risk action "
-        "for the same employee; do not merge them"
-    ) in prompt
+    # The verbatim live-validated prompt is terser: attendance routes to log_personnel_event
+    # and instructs ADDING a separate flag_retention_risk action on replace/fire intent.
+    assert "attendance late/no-show -> log_personnel_event" in prompt
+    assert "ADD flag_retention_risk if replace/fire intent" in prompt
 
 
 def test_rule_engine_equipment_loss_routes_to_log_site_issue() -> None:
@@ -507,11 +507,14 @@ def test_rule_engine_loss_never_targets_update_site_equipment() -> None:
 def test_semantic_prompt_routes_equipment_loss() -> None:
     prompt = _build_semantic_prompt(capture_input("The backpack vacuum is missing."))
 
-    assert "append_to_note" in prompt
-    assert "missing, lost, gone, stolen, theft-related" in prompt
-    assert "emit log_site_issue with category supply" in prompt
-    assert "intentionally moved, removed off-site, taken with the operator, or brought to another job, emit append_to_note" in prompt
-    assert "Do NOT emit update_site_equipment for attribute-less loss or movement" in prompt
+    # The verbatim live-validated prompt routes lost/stolen/missing items to log_site_issue,
+    # returns a JSON object keyed by extracted_actions (not a bare array), and no longer
+    # carries the old array-instruction wording. Movement->append_to_note and attribute-less
+    # update_site_equipment suppression are enforced in CODE, not the prompt.
+    assert "lost/stolen/missing -> log_site_issue" in prompt
+    assert "a site problem/damage/leak/safety/clog -> log_site_issue" in prompt
+    assert '"extracted_actions"' in prompt
+    assert "exactly one JSON array" not in prompt
 
 
 def test_text_artifact_collects_multiple_structured_candidates(tmp_path: Path, couchdb_review) -> None:

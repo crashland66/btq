@@ -278,19 +278,6 @@ LocalModelSemanticEngine = LocalModelCaptureEngine
 
 def _build_semantic_prompt(capture: CaptureSemanticInput | FieldAudioTranscript) -> str:
     source = _coerce_input(capture)
-    context_json = {
-        "capture_id": source.capture_id,
-        "source_kind": source.source_kind,
-        "source_transcript_path": str(source.source_transcript_path or ""),
-        "site_id": source.site_id,
-        "site_label": source.site_label,
-        "selected_employees": source.selected_employees or [],
-        "submitter_person_id": source.submitter_person_id,
-        "captured_at": source.captured_at,
-        "area": source.area,
-        "phase": source.phase,
-        "audio_asset_id": source.audio_asset_id,
-    }
     allowed_job_types = sorted(
         job_type
         for job_type in ALLOWED_JOB_TYPES
@@ -311,43 +298,34 @@ def _build_semantic_prompt(capture: CaptureSemanticInput | FieldAudioTranscript)
             "update_site_equipment",
         }
     )
+    ctx = {
+        "site_id": source.site_id, "site_label": source.site_label, "area": source.area,
+        "selected_employees": source.selected_employees or [], "source_kind": source.source_kind,
+    }
     return (
-        "You are a BTQ source-neutral capture semantic extraction engine. Return exactly "
-        "one JSON array of action objects: no prose, no markdown fences, no commentary, "
-        "and no chain-of-thought.\n\n"
-        "This stage does not mutate records. It extracts independent reviewable facts "
-        "from field capture audio, typed ops-dashboard text, or voice memo source text. "
-        "Extract multiple actions when one note contains multiple facts. Do not collapse "
-        "separate employee, site, supply, equipment, quality, access, safety, water, visit, "
-        "retention, or recruiting facts into one action.\n\n"
-        "When a personnel attendance event (late, no-show, or no-contact) is accompanied "
-        "by operator intent to remove or replace the person (for example: may need to "
-        "replace, let him go, fire, returned to his old ways, or a referenced prior "
-        "termination), emit BOTH an attendance log_personnel_event action AND a separate "
-        "flag_retention_risk action for the same employee; do not merge them.\n\n"
-        "For equipment or supplies that are missing, lost, gone, stolen, theft-related, "
-        "or described as shrinkage of a specific item, emit log_site_issue with category "
-        "supply. Do NOT emit update_site_equipment for attribute-less loss or movement, "
-        "and do NOT route loss/theft to log_equipment_request. For equipment or supplies "
-        "intentionally moved, removed off-site, taken with the operator, or brought to "
-        "another job, emit append_to_note for the site note. Routine low/out/restock/"
-        "need-more supply notes stay as non-job reviewable actions with an empty job_type "
-        "unless the operator-selected area contains supply; when that supply area is selected, "
-        "emit log_supply_need with payload_fields.item_name set to the named supply items.\n\n"
-        "For each action return these fields: action_key, candidate_type, job_type, "
-        "target_type, target_label, summary, source_excerpt, evidence_terms. target_type "
-        "must be employee, site, or general. job_type must be empty or one of: "
-        f"{json.dumps(allowed_job_types)}. source_excerpt must be the exact note span that "
-        "triggered the action. Use the selected employees and site context to name the "
-        "correct per-action target. Do not assign an employee action to a selected employee "
-        "unless that action's target_label or source_excerpt supports that employee.\n\n"
-        "Use empty strings instead of null for strings and [] instead of null for arrays. "
-        "If there is no concrete reviewable action, return []. Preserve meta/system notes "
-        "as non-actions.\n\n"
-        "Context JSON:\n"
-        f"{json.dumps(context_json, sort_keys=True)}\n\n"
-        "Source text:\n"
-        f"{source.source_text}\n"
+        "You extract reviewable ACTIONS from an operator's field-cleaning note as executable jobs.\n"
+        "Return ONLY a JSON object (no prose, no markdown, no <think>): "
+        '{"extracted_actions":[ <action>, ... ]}\n'
+        "Emit MULTIPLE actions when the note has multiple distinct facts (e.g. a broken machine AND "
+        "low supplies = 2). Never merge distinct facts.\n\n"
+        "Each <action>: {\n"
+        '  "action_key": snake_case label,\n'
+        '  "job_type": one of ' + json.dumps(allowed_job_types) + ' (best executable job; "" only if none truly applies),\n'
+        '  "target_type": "site"|"employee"|"general",\n'
+        '  "target_label": site or employee name from context,\n'
+        '  "summary": one concise sentence,\n'
+        '  "source_excerpt": exact note span,\n'
+        '  "payload_fields": object with ONLY the named real-world items, never lead-in words '
+        '("a few things","a new"). For log_supply_need set item_name to the supply items only '
+        '(e.g. "vacuum, lint brushes"). For log_equipment_request set equipment_name. For '
+        'log_site_issue set summary.\n'
+        '  "evidence_terms": [keywords]\n}\n\n'
+        "Routing: supply low/out/order/restock -> log_supply_need. equipment broken/repair/replace "
+        "-> log_equipment_request. a site problem/damage/leak/safety/clog -> log_site_issue. "
+        "lost/stolen/missing -> log_site_issue. attendance late/no-show -> log_personnel_event "
+        "(ADD flag_retention_risk if replace/fire intent). access/lockout/key/code -> "
+        "flag_access_constraint.\n\n"
+        "Context: " + json.dumps(ctx) + "\nNote: " + source.source_text + "\n"
     )
 
 
@@ -983,6 +961,8 @@ def _normalized_action_payload(item: dict[str, object], source: CaptureSemanticI
     job_type = str(payload.get("job_type") or "").strip()
     if job_type and job_type not in ALLOWED_JOB_TYPES:
         payload["job_type"] = ""
+    if not str(payload.get("candidate_type") or "").strip():
+        payload["candidate_type"] = "field_capture_follow_up"
     if job_type == JOB_UPDATE_SITE_EQUIPMENT and is_attribute_less_loss_or_movement_action(payload):
         payload["job_type"] = ""
         payload.pop("proposed_queue_job", None)
