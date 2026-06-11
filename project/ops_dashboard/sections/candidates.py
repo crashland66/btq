@@ -12,6 +12,7 @@ from field_capture import approved_job_drafts
 from field_capture import action_candidates as field_action_candidates
 from field_capture import candidate_staging
 from field_capture import client_notifications as field_client_notifications
+from field_capture import job_draft_review
 from event_pipeline import couchdb_config
 from event_pipeline.sites import SITES
 from ops_dashboard import audit
@@ -109,9 +110,12 @@ def is_audio_file(path: Path) -> bool:
 
 
 def candidate_counts(candidate_dir: Path, runtime_root: Path) -> dict[str, int]:
-    report = field_action_candidates.list_action_candidates_report(candidate_dir, runtime_root=runtime_root)
-    counts = report["counts"]
-    return {status: int(counts.get(status, 0)) for status in ("pending_review", "approved", "rejected", "failed")}
+    counts = {"pending_approval": 0, "approved": 0, "rejected": 0}
+    for _path, payload in job_draft_review.couchdb_job_draft_payloads():
+        status = str(payload.get("review_status") or "")
+        if status in counts:
+            counts[status] += 1
+    return counts
 
 
 def candidate_detail(
@@ -121,48 +125,49 @@ def candidate_detail(
     vision_items: list[dict[str, object]] | None = None,
     notification: dict[str, object] | None = None,
 ) -> dict[str, object]:
-    provenance = payload.get("provenance") if isinstance(payload.get("provenance"), dict) else {}
-    metadata = payload.get("channel_metadata") if isinstance(payload.get("channel_metadata"), dict) else {}
     resolution = payload.get("resolution") if isinstance(payload.get("resolution"), dict) else {}
-    proposed_jobs = approved_job_drafts.proposed_queue_jobs(payload, runtime_root=runtime_root)
-    first_job = proposed_jobs[0] if proposed_jobs else ("", {}, "")
-    proposed_job_type, proposed_payload, proposed_error = first_job
+    draft_payload = payload.get("payload") if isinstance(payload.get("payload"), dict) else {}
+    proposed_job_type = str(payload.get("job_type") or "")
+    proposed_error = str(payload.get("validation_error") or "")
+    if not proposed_error and not validate_job({"job_type": proposed_job_type, "payload": draft_payload}):
+        proposed_error = "job_draft fails queue_spec validation"
     return {
-        "candidate_id": str(payload.get("candidate_id") or ""),
-        "status": str(payload.get("status") or ""),
-        "site_id": str(metadata.get("site_id") or provenance.get("site_id") or payload.get("site_id") or ""),
-        "area": str(metadata.get("area") or ""),
-        "visit_proposed": bool(metadata.get("visit_proposed") is True),
-        "visit_type": str(metadata.get("visit_type") or ""),
-        "capture_id": str(metadata.get("upload_id") or payload.get("capture_id") or ""),
-        "captured_at": str(metadata.get("captured_at") or payload.get("created_at") or ""),
-        "submitter_name": str(metadata.get("submitter_name") or ""),
-        "submitter_id": str(metadata.get("submitter_id") or metadata.get("person_id") or ""),
-        "audio_asset_id": str(provenance.get("audio_asset_id") or ""),
-        "summary": str(payload.get("summary") or ""),
-        "rationale": str(payload.get("rationale") or ""),
-        "source_text": str(payload.get("source_text") or ""),
-        "source_context": str(payload.get("source_context") or ""),
-        "semantic_artifact_path": str(provenance.get("semantic_artifact_path") or ""),
-        "source_transcript_path": str(provenance.get("source_transcript_path") or ""),
+        "candidate_id": str(payload.get("draft_id") or ""),
+        "draft_id": str(payload.get("draft_id") or ""),
+        "status": str(payload.get("review_status") or ""),
+        "review_status": str(payload.get("review_status") or ""),
+        "site_id": str(payload.get("site_id") or ""),
+        "area": "",
+        "visit_proposed": False,
+        "visit_type": "",
+        "capture_id": str(payload.get("source_capture_id") or ""),
+        "captured_at": str(payload.get("created_at") or ""),
+        "submitter_name": str(payload.get("submitter_name") or ""),
+        "submitter_id": "",
+        "audio_asset_id": "",
+        "summary": str(payload.get("message") or ""),
+        "rationale": "",
+        "source_text": str(payload.get("message") or ""),
+        "source_context": "",
+        "semantic_artifact_path": "",
+        "source_transcript_path": "",
         "artifact_path": str(path),
-        "reviewer": str(payload.get("reviewer") or ""),
+        "reviewer": str(payload.get("reviewed_by") or ""),
         "reviewed_at": str(payload.get("reviewed_at") or ""),
         "review_rationale": str(payload.get("review_rationale") or ""),
-        "review_history": payload.get("review_history") if isinstance(payload.get("review_history"), list) else [],
+        "review_history": [],
         "vision_items": vision_items or [],
         "client_notification": notification or {},
         "resolution": resolution,
-        "archived": bool(payload.get("archived") is True),
-        "archived_at": str(payload.get("archived_at") or ""),
-        "archived_by": str(payload.get("archived_by") or ""),
+        "archived": False,
+        "archived_at": "",
+        "archived_by": "",
         "proposed_job_type": str(proposed_job_type or ""),
-        "proposed_payload": proposed_payload if isinstance(proposed_payload, dict) else {},
+        "proposed_payload": draft_payload,
         "proposed_job_error": str(proposed_error or ""),
         "_rev": str(payload.get("_rev") or ""),
         "proposed_jobs": [
-            {"job_type": str(job_type or ""), "payload": payload if isinstance(payload, dict) else {}, "error": str(error or "")}
-            for job_type, payload, error in proposed_jobs
+            {"job_type": proposed_job_type, "payload": draft_payload, "error": str(proposed_error or "")}
         ],
     }
 
@@ -171,14 +176,11 @@ def review_candidates(candidate_dir: Path, status: str | None, runtime_root: Pat
     candidates: list[dict[str, object]] = []
     vision_by_capture = photo_vision_by_capture(runtime_root)
     submitters = submitters_by_capture(runtime_root)
-    notification_dir = field_client_notifications.default_notification_dir(runtime_root)
-    for path, payload in field_action_candidates.couchdb_candidate_payloads(status=status):
-        if payload.get("type") != "action_candidate_review":
+    for path, payload in job_draft_review.couchdb_job_draft_payloads(review_status=status):
+        if payload.get("type") != "job_draft_review":
             continue
-        metadata = payload.get("channel_metadata") if isinstance(payload.get("channel_metadata"), dict) else {}
-        capture_id = str(metadata.get("upload_id") or payload.get("capture_id") or "")
-        candidate_id = str(payload.get("candidate_id") or "")
-        notification = field_client_notifications.load_notification(notification_dir, candidate_id)
+        capture_id = str(payload.get("source_capture_id") or "")
+        notification: dict[str, object] = {}
         candidate = candidate_detail(path, payload, runtime_root, vision_by_capture.get(capture_id, []), notification)
         submitter = submitters.get(capture_id, safe_submitter({}))
         if not candidate["submitter_name"]:
@@ -203,11 +205,9 @@ def render_flash(query: dict[str, list[str]]) -> str:
 def render_filter_links(selected_status: str) -> str:
     links = []
     tabs = [
-        ("pending", "/field-capture/review?status=pending_review", selected_status == "pending_review"),
+        ("pending", "/field-capture/review?status=pending_approval", selected_status == "pending_approval"),
         ("open", "/field-capture/review?status=approved&resolution=open", selected_status == "approved"),
-        ("client notified", "/field-capture/review?status=approved&resolution=client_notified", False),
-        ("resolved", "/field-capture/review?status=approved&resolution=resolved", False),
-        ("dismissed", "/field-capture/review?status=approved&resolution=dismissed", False),
+        ("rejected", "/field-capture/review?status=rejected", selected_status == "rejected"),
         ("all", "/field-capture/review?status=all", selected_status == "all"),
     ]
     for label, href, active in tabs:
@@ -647,11 +647,9 @@ def render_candidate_card(candidate: dict[str, object], thumb_urls: list[str] | 
     summary = html.escape(raw_summary)
     rationale = html.escape(raw_rationale)
     actions = ""
-    if candidate.get("archived") is True:
-        actions = render_restore_action(candidate)
-    elif candidate["status"] == "pending_review":
-        raw_candidate_id = str(candidate["candidate_id"])
-        candidate_id = html.escape(raw_candidate_id)
+    if candidate["status"] == "pending_approval":
+        raw_draft_id = str(candidate.get("draft_id") or candidate["candidate_id"])
+        draft_id = html.escape(raw_draft_id)
         proposed_error = candidate_proposed_error(candidate)
         approve_disabled = " disabled" if proposed_error else ""
         approve_hint = "Approve and stage this job" if not proposed_error else "Cannot approve until the proposed job is valid"
@@ -660,10 +658,10 @@ def render_candidate_card(candidate: dict[str, object], thumb_urls: list[str] | 
           <form class="review-action-form approve-form" method="post" action="/field-capture/review/approve">
             <p class="action-identity">
               <strong>Approve</strong>
-              <code>{candidate_id}</code><br>
+              <code>{draft_id}</code><br>
               Stage this job for processing.
             </p>
-            <input type="hidden" name="candidate_id" value="{candidate_id}">
+            <input type="hidden" name="draft_id" value="{draft_id}">
             <input type="hidden" name="_rev" value="{html.escape(str(candidate.get('_rev') or ''), quote=True)}">
             <label>Reviewer</label>
             <input name="reviewer" value="{html.escape(default_actor())}" required>
@@ -674,10 +672,10 @@ def render_candidate_card(candidate: dict[str, object], thumb_urls: list[str] | 
           <form class="review-action-form reject-form" method="post" action="/field-capture/review/reject">
             <p class="action-identity">
               <strong>Deny</strong>
-              <code>{candidate_id}</code><br>
+              <code>{draft_id}</code><br>
               Leave the data unchanged.
             </p>
-            <input type="hidden" name="candidate_id" value="{candidate_id}">
+            <input type="hidden" name="draft_id" value="{draft_id}">
             <input type="hidden" name="_rev" value="{html.escape(str(candidate.get('_rev') or ''), quote=True)}">
             <label>Reviewer</label>
             <input name="reviewer" value="{html.escape(default_actor())}" required>
@@ -687,8 +685,6 @@ def render_candidate_card(candidate: dict[str, object], thumb_urls: list[str] | 
           </form>
         </div>
         """
-    elif candidate["status"] in {"failed", "rejected"}:
-        actions = render_resubmit_archive_actions(candidate)
     operator_details = render_fields(
         {
             "status": candidate["status"],
@@ -710,6 +706,7 @@ def render_candidate_card(candidate: dict[str, object], thumb_urls: list[str] | 
     internals = render_fields(
         {
             "candidate_id": candidate["candidate_id"],
+            "draft_id": candidate.get("draft_id", ""),
             "submitter_id": candidate["submitter_id"],
             "audio_asset_id": candidate["audio_asset_id"],
             "semantic_artifact_path": candidate["semantic_artifact_path"],
@@ -722,7 +719,6 @@ def render_candidate_card(candidate: dict[str, object], thumb_urls: list[str] | 
       {render_resolution_pill(resolution_status(candidate))}
       <p class="candidate-action"><strong>{summary}</strong></p>
       {actions}
-      {render_resolution_progression(candidate)}
       <details>
         <summary>Review details</summary>
         {render_proposed_job(candidate)}
@@ -796,7 +792,7 @@ def candidate_has_warning(candidate: dict[str, object]) -> bool:
 
 
 def filter_candidates(candidates: list[dict[str, object]], runtime_root: Path, query: dict[str, list[str]]) -> list[dict[str, object]]:
-    candidate_id = first_query_value(query, "candidate_id").strip()
+    candidate_id = first_query_value(query, "candidate_id").strip() or first_query_value(query, "draft_id").strip()
     resolutions = query_values(query, "resolution")
     sites = query_values(query, "site")
     submitters = query_values(query, "submitter")
@@ -810,7 +806,12 @@ def filter_candidates(candidates: list[dict[str, object]], runtime_root: Path, q
     if resolutions:
         filtered = [candidate for candidate in filtered if resolution_filter_status(candidate) in resolutions]
     if candidate_id:
-        filtered = [candidate for candidate in filtered if str(candidate.get("candidate_id") or "") == candidate_id]
+        filtered = [
+            candidate
+            for candidate in filtered
+            if str(candidate.get("candidate_id") or "") == candidate_id
+            or str(candidate.get("draft_id") or "") == candidate_id
+        ]
     if sites:
         filtered = [candidate for candidate in filtered if str(candidate.get("site_id") or "") in sites]
     if submitters:
@@ -840,25 +841,13 @@ def render_multi_select(name: str, label: str, options: list[str], selected: set
 
 
 def render_candidate_filters(query: dict[str, list[str]], all_candidates: list[dict[str, object]]) -> str:
-    selected_status = first_filter_value(query, "status") or "approved"
-    statuses = ["pending_review", "approved", "failed", "rejected", "archived", "all"]
+    selected_status = first_filter_value(query, "status") or "pending_approval"
+    statuses = ["pending_approval", "approved", "rejected", "all"]
     status_controls = "".join(
         f'<label><input type="radio" name="status" value="{html.escape(status)}"{" checked" if status == selected_status else ""}> {html.escape(status.replace("_", " "))}</label>'
         for status in statuses
     )
     resolution_controls = ""
-    if selected_status == "approved":
-        selected_resolutions = query_values(query, "resolution") or {RESOLUTION_OPEN, RESOLUTION_CLIENT_NOTIFIED}
-        resolution_options = [
-            (RESOLUTION_OPEN, "Open"),
-            (RESOLUTION_CLIENT_NOTIFIED, "Client Notified"),
-            (RESOLUTION_RESOLVED, "Resolved"),
-            (RESOLUTION_DISMISSED, "Dismissed"),
-        ]
-        resolution_controls = "<fieldset><legend>Resolution</legend>" + "".join(
-            f'<label><input type="checkbox" name="resolution" value="{html.escape(value)}"{" checked" if value in selected_resolutions else ""}> {html.escape(label)}</label>'
-            for value, label in resolution_options
-        ) + "</fieldset>"
     return f"""
     <form method="get" action="/candidates" data-submit-on-change>
       <fieldset><legend>Status</legend>{status_controls}</fieldset>
@@ -931,34 +920,21 @@ def render_candidate_groups(candidates: list[dict[str, object]], runtime_root: P
 def render_field_capture_review(runtime_root: Path, query: dict[str, list[str]]) -> str:
     runtime_resolved = runtime_root.expanduser().resolve(strict=False)
     explicit_status = bool(first_filter_value(query, "status"))
-    selected_status = first_filter_value(query, "status") or "approved"
+    selected_status = first_filter_value(query, "status") or "pending_approval"
     if selected_status == "all":
         status_filter = None
-    elif selected_status in field_action_candidates.REVIEW_STATUSES or selected_status == "archived":
+    elif selected_status in {"pending_approval", "approved", "rejected"}:
         status_filter = selected_status
     else:
-        selected_status = "approved"
+        selected_status = "pending_approval"
         status_filter = selected_status
     candidate_dir = field_action_candidates.default_candidate_dir(runtime_resolved)
     counts = candidate_counts(candidate_dir, runtime_resolved)
     all_candidates = review_candidates(candidate_dir, None, runtime_resolved)
-    if selected_status == "archived":
-        all_candidates = [*all_candidates, *review_candidates(candidate_dir, "archived", runtime_resolved)]
     pending_counts = pending_candidate_counts_by_capture(all_candidates)
-    approved_candidates = [candidate for candidate in all_candidates if candidate.get("status") == "approved"]
     candidates = review_candidates(candidate_dir, status_filter, runtime_resolved)
     effective_query = dict(query)
-    if selected_status == "approved" and "resolution" not in effective_query:
-        effective_query["resolution"] = [RESOLUTION_OPEN, RESOLUTION_CLIENT_NOTIFIED]
     candidates = filter_candidates(candidates, runtime_resolved, effective_query)
-    if not explicit_status and selected_status == "approved" and not candidates and counts.get("pending_review", 0) > 0:
-        selected_status = "pending_review"
-        status_filter = selected_status
-        fallback_query = dict(query)
-        fallback_query["status"] = [selected_status]
-        fallback_query.pop("resolution", None)
-        effective_query = fallback_query
-        candidates = filter_candidates(review_candidates(candidate_dir, status_filter, runtime_resolved), runtime_resolved, effective_query)
     apply_pending_candidate_counts(candidates, pending_counts)
     candidates.sort(key=candidate_capture_sort_value, reverse=True)
     cards = render_candidate_groups(candidates, runtime_resolved)
@@ -967,13 +943,12 @@ def render_field_capture_review(runtime_root: Path, query: dict[str, list[str]])
       <p><a href="/">BTQ Ops Dashboard</a></p>
       <h1>Captures</h1>
       <p class="muted">Runtime root: <code>{html.escape(str(runtime_resolved))}</code></p>
-      <p class="muted">Private localhost/Tailscale use only. Actions on this page track issue lifecycle state; vault mutation remains separate.</p>
+      <p class="muted">Private localhost/Tailscale use only. Actions on this page review job drafts; vault mutation remains separate.</p>
     </header>
     {render_flash(query)}
     <section class="notice">
       <h2>Review Counts</h2>
       {render_kv(counts)}
-      {render_resolution_counts(approved_candidates)}
       <p>{render_filter_links(selected_status)}</p>
       <p class="muted">Draft generation, approved draft staging, queue processing, transcription, semantic processing, VPS sync, and vault mutation remain CLI-only/separate operations.</p>
       <p class="muted"><a href="/field-photos">Browse photo vision sidecars →</a></p>
@@ -987,8 +962,8 @@ def render_field_capture_review(runtime_root: Path, query: dict[str, list[str]])
       </aside>
       <div>
         <section>
-          <h2>{html.escape(selected_status.replace("_", " ").title())} Candidates</h2>
-          <p class="muted">Showing {len(candidates)} candidate records grouped by capture.</p>
+          <h2>{html.escape(selected_status.replace("_", " ").title())} Drafts</h2>
+          <p class="muted">Showing {len(candidates)} job draft records grouped by capture.</p>
         </section>
         {cards}
       </div>
@@ -1034,23 +1009,25 @@ def stage_candidate_job_after_approval(runtime_root: Path, candidate_id: str) ->
 
 def _handle_review_post(action: str, ctx: object, body: bytes) -> tuple[HTTPStatus, str, bytes, dict[str, str]]:
     form = parse_qs(body.decode("utf-8", errors="replace"), keep_blank_values=True)
-    candidate_id = first_query_value(form, "candidate_id").strip()
+    draft_id = first_query_value(form, "draft_id").strip()
     reviewer = first_query_value(form, "reviewer").strip()
     rationale = first_query_value(form, "rationale").strip()
     expected_rev = first_query_value(form, "_rev").strip() or None
     route = f"/field-capture/review/{action}"
     runtime_resolved = ctx.runtime_root
-    if not candidate_id:
+    # Operator scope is provided by the ops-dashboard binding to localhost only;
+    # reviewer is audit attribution, not authentication.
+    if not draft_id:
         audit.append_audit(
             runtime_resolved,
             {
                 "route": route,
                 "actor": "localhost",
                 "payload": ctx.form_payload(form),
-                "result_summary": "failed: candidate_id is required",
+                "result_summary": "failed: draft_id is required",
             },
         )
-        return redirect_to_inbox(error="candidate_id is required")
+        return redirect_to_inbox(error="draft_id is required")
     if not reviewer:
         audit.append_audit(
             runtime_resolved,
@@ -1065,18 +1042,18 @@ def _handle_review_post(action: str, ctx: object, body: bytes) -> tuple[HTTPStat
 
     try:
         cdb_config = couchdb_config.from_env()
-        result = field_action_candidates.apply_candidate_review(
+        result = job_draft_review.apply_job_draft_review(
             cdb_config,
             couchdb_config.field_captures_database(),
-            candidate_id=candidate_id,
-            action=action,
-            reviewer=reviewer,
+            draft_id,
+            action,
+            reviewer,
             expected_rev=expected_rev,
             rationale=rationale,
         )
         if result.error:
-            raise field_action_candidates.CandidateReviewError(result.error)
-    except (field_action_candidates.CandidateReviewError, couchdb_config.CouchDBConfigError) as exc:
+            raise RuntimeError(result.error)
+    except (RuntimeError, couchdb_config.CouchDBConfigError) as exc:
         audit.append_audit(
             runtime_resolved,
             {
@@ -1094,19 +1071,19 @@ def _handle_review_post(action: str, ctx: object, body: bytes) -> tuple[HTTPStat
                 "route": route,
                 "actor": "localhost",
                 "payload": ctx.form_payload(form),
-                "result_summary": f"already_decided: {result.candidate_id} status={result.status}",
+                "result_summary": f"already_decided: {result.draft_id} review_status={result.review_status}",
             },
         )
-        return redirect_to_inbox(error="candidate was already decided")
+        return redirect_to_inbox(error="already decided by another reviewer")
     audit.append_audit(
         runtime_resolved,
-        {
-            "route": route,
-            "actor": "localhost",
-            "payload": ctx.form_payload(form),
-            "result_summary": f"success: {result.candidate_id} marked {result.status}",
-        },
-    )
+            {
+                "route": route,
+                "actor": "localhost",
+                "payload": ctx.form_payload(form),
+                "result_summary": f"success: {result.draft_id} marked {result.review_status}",
+            },
+        )
     message = "approved" if action == "approve" else "denied"
     return redirect_to_inbox(message=message)
 

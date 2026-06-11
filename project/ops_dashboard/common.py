@@ -279,7 +279,7 @@ def candidate_capture_sort_value(candidate: dict[str, object]) -> str:
 def pending_candidate_counts_by_capture(candidates: list[dict[str, object]]) -> dict[str, int]:
     counts: dict[str, int] = {}
     for candidate in candidates:
-        if str(candidate.get("status") or "") != "pending_review":
+        if str(candidate.get("status") or "") not in ("pending_review", "pending_approval"):
             continue
         capture_id = str(candidate.get("capture_id") or "").strip()
         if capture_id:
@@ -289,7 +289,7 @@ def pending_candidate_counts_by_capture(candidates: list[dict[str, object]]) -> 
 
 def apply_pending_candidate_counts(candidates: list[dict[str, object]], counts: dict[str, int]) -> None:
     for candidate in candidates:
-        if str(candidate.get("status") or "") != "pending_review":
+        if str(candidate.get("status") or "") not in ("pending_review", "pending_approval"):
             continue
         capture_id = str(candidate.get("capture_id") or "").strip()
         if capture_id:

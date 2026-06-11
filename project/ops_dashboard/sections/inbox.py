@@ -6,6 +6,7 @@ from pathlib import Path
 from urllib.parse import quote
 
 from field_capture import action_candidates as field_action_candidates
+from field_capture import job_draft_review
 from field_capture.review_status import review_status_report
 from ops_dashboard.common import (
     UNKNOWN_SUBMITTER,
@@ -67,28 +68,29 @@ def review_candidates(
     candidates: list[dict[str, object]] = []
     if submitters is None:
         submitters = submitters_by_capture(runtime_root)
-    for path, payload in field_action_candidates.couchdb_candidate_payloads(status=status):
-        if payload.get("type") != "action_candidate_review":
+    for path, payload in job_draft_review.couchdb_job_draft_payloads(review_status=status):
+        if payload.get("type") != "job_draft_review":
             continue
-        provenance = payload.get("provenance") if isinstance(payload.get("provenance"), dict) else {}
-        metadata = payload.get("channel_metadata") if isinstance(payload.get("channel_metadata"), dict) else {}
-        capture_id = str(metadata.get("upload_id") or payload.get("capture_id") or "")
+        capture_id = str(payload.get("source_capture_id") or "")
         submitter = submitters.get(capture_id, {})
         candidates.append(
             {
-                "candidate_id": str(payload.get("candidate_id") or ""),
-                "status": str(payload.get("status") or ""),
-                "site_id": str(metadata.get("site_id") or provenance.get("site_id") or payload.get("site_id") or ""),
-                "area": str(metadata.get("area") or ""),
+                "candidate_id": str(payload.get("draft_id") or ""),
+                "draft_id": str(payload.get("draft_id") or ""),
+                "status": str(payload.get("review_status") or ""),
+                "review_status": str(payload.get("review_status") or ""),
+                "site_id": str(payload.get("site_id") or ""),
+                "area": "",
                 "capture_id": capture_id,
-                "captured_at": str(metadata.get("captured_at") or payload.get("created_at") or ""),
-                "submitter_name": str(metadata.get("submitter_name") or submitter.get("submitter_name") or ""),
-                "summary": str(payload.get("summary") or ""),
-                "source_text": str(payload.get("source_text") or ""),
-                "source_context": str(payload.get("source_context") or ""),
-                "source_transcript_path": str(provenance.get("source_transcript_path") or ""),
+                "captured_at": str(payload.get("created_at") or ""),
+                "submitter_name": str(payload.get("submitter_name") or submitter.get("submitter_name") or ""),
+                "summary": str(payload.get("message") or ""),
+                "source_text": str(payload.get("message") or ""),
+                "source_context": "",
+                "source_transcript_path": str(payload.get("source_capture_id") or ""),
                 "artifact_path": str(path),
-                "visit_proposed": bool(metadata.get("visit_proposed") or payload.get("visit_proposed") or False),
+                "visit_proposed": False,
+                "job_type": str(payload.get("job_type") or ""),
             }
         )
     candidates.sort(key=lambda item: (str(item["candidate_id"]), str(item["artifact_path"])))
@@ -97,7 +99,6 @@ def review_candidates(
 
 def candidate_inbox_row(candidate: dict[str, object], artifact_path: str = "") -> dict[str, object]:
     path = Path(artifact_path or str(candidate.get("artifact_path") or ""))
-    metadata = candidate.get("channel_metadata") if isinstance(candidate.get("channel_metadata"), dict) else {}
     note_text = str(candidate.get("source_text") or "").strip()
     action_label = str(candidate.get("summary") or "").strip()
     display_summary = note_text or action_label
@@ -110,12 +111,13 @@ def candidate_inbox_row(candidate: dict[str, object], artifact_path: str = "") -
         "submitter": str(candidate.get("submitter_name") or UNKNOWN_SUBMITTER),
         "summary": display_summary,
         "age_seconds": age_seconds(path) if str(path) else 0,
-        "deep_link": f"/candidates?candidate_id={quote(str(candidate.get('candidate_id') or ''))}",
+        "deep_link": f"/candidates?draft_id={quote(str(candidate.get('draft_id') or candidate.get('candidate_id') or ''))}",
         "candidate_id": str(candidate.get("candidate_id") or ""),
+        "draft_id": str(candidate.get("draft_id") or ""),
         "capture_candidate_count": int(candidate.get("capture_candidate_count") or 0),
         "capture_signal": int(candidate.get("capture_candidate_count") or 0),
         "has_note": bool(candidate.get("source_transcript_path")),
-        "visit_proposed": bool(metadata.get("visit_proposed") or candidate.get("visit_proposed") or False),
+        "visit_proposed": bool(candidate.get("visit_proposed") or False),
     }
 
 
@@ -371,7 +373,7 @@ def console_counts(ctx: object) -> dict[str, int]:
     review_counts = console_review_queue_counts(ctx)
     cards = console_cards(ctx)
     counts = {
-        "review": int(review_counts.get("pending_review", 0)),
+        "review": int(review_counts.get("pending_approval", 0)),
         "issues": int(cards["issues"].get("count") or 0),
         "supplies": int(cards["supplies"].get("count") or 0),
         "equipment": int(cards["equipment"].get("count") or 0),
@@ -389,11 +391,11 @@ def inbox_cards(ctx: object) -> list[dict[str, object]]:
     # earlier version did them 3x per inbox load.
     submitters = submitters_by_capture(runtime_resolved)
     all_candidates = review_candidates(candidate_dir, None, runtime_resolved, submitters=submitters)
-    pending = [c for c in all_candidates if str(c.get("status") or "") == "pending_review"]
+    pending = [c for c in all_candidates if str(c.get("review_status") or c.get("status") or "") == "pending_approval"]
     apply_pending_candidate_counts(pending, pending_candidate_counts_by_capture(pending))
     pending.sort(key=candidate_capture_sort_value, reverse=True)
-    note_bearing = [candidate for candidate in pending if candidate_inbox_row(candidate).get("has_note") is True]
-    no_note = [candidate for candidate in pending if candidate not in note_bearing]
+    note_bearing = pending
+    no_note: list[dict[str, object]] = []
     status_report = review_status_report(runtime_root=runtime_resolved)
     gaps = status_report.get("lineage_gaps") if isinstance(status_report.get("lineage_gaps"), list) else []
     missing_draft = [gap for gap in gaps if isinstance(gap, dict) and gap.get("type") == "approved_candidate_missing_draft"]
@@ -440,8 +442,8 @@ def inbox_cards(ctx: object) -> list[dict[str, object]]:
         if isinstance(gap, dict)
     ]
     cards = [
-        {"id": "captures_with_note", "title": "Captures with a note — needs triage", "count": len(note_bearing), "top": [candidate_inbox_row(item) for item in note_bearing[:5]], "see_all": "/candidates?status=pending_review&has_audio=true", "shape": INBOX_SHAPE_CAPTURE},
-        {"id": "pending_candidates", "title": "Pending candidates without a note", "count": len(no_note), "top": [candidate_inbox_row(item) for item in no_note[:5]], "see_all": "/candidates?status=pending_review", "shape": INBOX_SHAPE_CAPTURE},
+        {"id": "captures_with_note", "title": "Job drafts needing review", "count": len(note_bearing), "top": [candidate_inbox_row(item) for item in note_bearing[:5]], "see_all": "/candidates?status=pending_approval", "shape": INBOX_SHAPE_CAPTURE},
+        {"id": "pending_candidates", "title": "Pending drafts without capture context", "count": len(no_note), "top": [candidate_inbox_row(item) for item in no_note[:5]], "see_all": "/candidates?status=pending_approval", "shape": INBOX_SHAPE_CAPTURE},
         {"id": "approved_missing_draft", "title": "Approved candidates missing a draft", "count": len(missing_draft), "top": missing_rows, "see_all": "/drafts", "shape": INBOX_SHAPE_CAPTURE},
         {"id": "approved_drafts_not_staged", "title": "Approved drafts not yet staged", "count": len(unstaged_drafts), "top": draft_rows, "see_all": "/drafts", "shape": INBOX_SHAPE_GAP},
         {"id": "failed_queue_jobs", "title": "Failed queue jobs", "count": failed_count, "top": failed_rows, "see_all": "/failed", "shape": INBOX_SHAPE_CAPTURE},

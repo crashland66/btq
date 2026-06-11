@@ -73,6 +73,16 @@ from test_helpers.couchdb_review_double import couchdb_review  # noqa: E402,F401
 from test_helpers.couchdb_job_draft_double import couchdb_job_drafts  # noqa: E402,F401
 
 # --------------------------------------------------------------------------- #
+# Prompt 337a: shared CouchDB job_draft REVIEW-SURFACE double (INDEPENDENT
+# VERIFIER). The ops-dashboard review surfaces (swipe/candidates/inbox) now read
+# job_draft docs and approve/reject via the 335 write path; this fixture installs
+# a faithful in-memory draft read+review transport so the retargeted surface
+# tests drive the new contract without a real CouchDB (patches the transport
+# bindings the DRAFT path resolves, which the candidate double does not reach).
+# --------------------------------------------------------------------------- #
+from test_helpers.couchdb_job_draft_review_double import couchdb_job_draft_review  # noqa: E402,F401
+
+# --------------------------------------------------------------------------- #
 # Hermetic CouchDB guard: no test may open a real CouchDB (:5984) connection.
 #
 # CouchDB clients build their target from BTQ_COUCHDB_URL (default

@@ -40,6 +40,27 @@ def write_pending_candidate(
     write_action_candidate_review(runtime_root / "reviews" / "action_candidates" / "field_capture", candidate)
 
 
+def seed_pending_draft(
+    couchdb_job_draft_review,
+    draft_id: str,
+    *,
+    capture_id: str | None = None,
+) -> None:
+    """337a: the inbox now projects job_draft docs (review_status
+    pending_approval). Seed one into the in-memory draft review double."""
+    cap = capture_id or f"capture-{draft_id}"
+    couchdb_job_draft_review.seed_draft({
+        "draft_id": draft_id,
+        "job_type": "append_to_note",
+        "payload": {"path": "Accounts/7050.md", "content": "x", "destination": "site_note"},
+        "message": f"Review {draft_id}.",
+        "site_id": "7050",
+        "submitter_name": "Sandy",
+        "source_capture_id": cap,
+        "created_at": f"2026-05-27T12:00:0{draft_id[-1]}+00:00",
+    })
+
+
 def card_by_id(cards: list[dict[str, object]], card_id: str) -> dict[str, object]:
     return next(card for card in cards if card.get("id") == card_id)
 
@@ -67,31 +88,37 @@ def test_inbox_cards_includes_pipeline_health(monkeypatch: pytest.MonkeyPatch, t
     assert card["see_all"] == "/health/pipeline"
 
 
-def test_inbox_cards_partition_captures_with_note_and_pending(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, couchdb_review) -> None:
+def test_inbox_cards_surface_all_pending_drafts(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, couchdb_job_draft_review) -> None:
+    # 337a: the inbox projects job_draft docs. The candidate-model note/no-note
+    # PARTITION is not ported (drafts carry no transcript distinction) -- every
+    # pending_approval draft lands in the single review card and the no-note
+    # bucket is empty. Retargeted to that draft reality.
     runtime_root = tmp_path / "runtime"
     vault_root = tmp_path / "vault"
-    write_pending_candidate(runtime_root, "ac_note_1", source_transcript_path=str(runtime_root / "transcripts" / "note-1.json"))
-    write_pending_candidate(runtime_root, "ac_note_2", source_transcript_path=str(runtime_root / "transcripts" / "note-2.json"))
-    write_pending_candidate(runtime_root, "ac_no_note_3")
+    seed_pending_draft(couchdb_job_draft_review, "ac_note_1")
+    seed_pending_draft(couchdb_job_draft_review, "ac_note_2")
+    seed_pending_draft(couchdb_job_draft_review, "ac_no_note_3")
 
     cards = inbox.inbox_cards(section_ctx(runtime_root, vault_root))
 
-    captures_with_note = card_by_id(cards, "captures_with_note")
-    pending_candidates = card_by_id(cards, "pending_candidates")
-    note_ids = {str(row.get("candidate_id") or "") for row in captures_with_note["top"]}
-    pending_ids = {str(row.get("candidate_id") or "") for row in pending_candidates["top"]}
-    assert captures_with_note["count"] == 2
-    assert pending_candidates["count"] == 1
-    assert note_ids.isdisjoint(pending_ids)
-    assert int(captures_with_note["count"]) + int(pending_candidates["count"]) == 3
+    review_card = card_by_id(cards, "captures_with_note")
+    no_context = card_by_id(cards, "pending_candidates")
+    draft_ids = {str(row.get("draft_id") or "") for row in review_card["top"]}
+    assert review_card["count"] == 3
+    assert draft_ids == {"ac_note_1", "ac_note_2", "ac_no_note_3"}
+    assert no_context["count"] == 0
 
 
-def test_inbox_renders_multi_candidate_capture_signal(tmp_path: Path, couchdb_review) -> None:
+def test_inbox_renders_multi_candidate_capture_signal(tmp_path: Path, couchdb_job_draft_review) -> None:
+    # 337a/338: retargeted to job_draft. Two pending_approval drafts sharing one
+    # source_capture_id surface the multi-pending-per-capture signal on the inbox;
+    # a draft on a distinct capture does not. Guards the common.py count helpers
+    # now keyed on status in ("pending_review", "pending_approval").
     runtime_root = tmp_path / "runtime"
     vault_root = tmp_path / "vault"
-    write_pending_candidate(runtime_root, "ac_multi_1", capture_id="cap-multi")
-    write_pending_candidate(runtime_root, "ac_multi_2", capture_id="cap-multi")
-    write_pending_candidate(runtime_root, "ac_single_3", capture_id="cap-single")
+    seed_pending_draft(couchdb_job_draft_review, "ac_multi_1", capture_id="cap-multi")
+    seed_pending_draft(couchdb_job_draft_review, "ac_multi_2", capture_id="cap-multi")
+    seed_pending_draft(couchdb_job_draft_review, "ac_single_3", capture_id="cap-single")
 
     body = inbox.render(section_ctx(runtime_root, vault_root))
 
@@ -100,9 +127,10 @@ def test_inbox_renders_multi_candidate_capture_signal(tmp_path: Path, couchdb_re
 
 
 def test_inbox_cards_pending_candidates_title_reflects_no_note(tmp_path: Path) -> None:
+    # 337a: the secondary inbox bucket is retitled for the draft model.
     cards = inbox.inbox_cards(section_ctx(tmp_path / "runtime"))
 
-    assert card_by_id(cards, "pending_candidates")["title"] == "Pending candidates without a note"
+    assert card_by_id(cards, "pending_candidates")["title"] == "Pending drafts without capture context"
 
 
 def test_candidate_inbox_row_summary_prefers_source_text() -> None:

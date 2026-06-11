@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+from pathlib import Path
 from typing import Any, Iterator
 
+from field_capture.action_candidates import couchdb_candidate_config_or_none
 from event_pipeline import couchdb_config
 from event_pipeline.couchdb_candidate_writer import AlreadyDecided
 from event_pipeline.couchdb_job_draft_writer import (
     CouchDBJobDraftWriterError,
     get_job_draft,
+    list_job_drafts,
     set_job_draft_payload,
     set_job_draft_review_status,
 )
@@ -30,6 +33,51 @@ class JobDraftReviewResult:
 
     def __iter__(self) -> Iterator[str]:
         return iter(self.to_dict())
+
+
+def job_draft_to_review_payload(doc: dict[str, Any]) -> dict[str, object]:
+    return {
+        "type": "job_draft_review",
+        "draft_id": str(doc.get("draft_id") or ""),
+        "review_status": str(doc.get("review_status") or ""),
+        "job_type": str(doc.get("job_type") or ""),
+        "payload": doc.get("payload") if isinstance(doc.get("payload"), dict) else {},
+        "validation_error": doc.get("validation_error"),
+        "message": str(doc.get("message") or ""),
+        "site_id": str(doc.get("site_id") or ""),
+        "submitter_name": str(doc.get("submitter_name") or ""),
+        "confidence": doc.get("confidence"),
+        "source_capture_id": str(doc.get("source_capture_id") or ""),
+        "source_kind": str(doc.get("source_kind") or ""),
+        "group_id": str(doc.get("group_id") or ""),
+        "reviewed_by": str(doc.get("reviewed_by") or doc.get("reviewer") or ""),
+        "reviewed_at": str(doc.get("reviewed_at") or ""),
+        "review_rationale": str(doc.get("review_rationale") or ""),
+        "created_at": str(doc.get("created_at") or ""),
+        "_id": str(doc.get("_id") or ""),
+        "_rev": str(doc.get("_rev") or ""),
+    }
+
+
+def couchdb_job_draft_payloads(
+    *,
+    review_status: str | None = None,
+    group_id: str | None = None,
+) -> list[tuple[Path, dict[str, object]]]:
+    config = couchdb_candidate_config_or_none()
+    if config is None:
+        return []
+    db = couchdb_config.field_captures_database()
+    docs = list_job_drafts(
+        config,
+        db,
+        review_status=review_status,
+        group_id=group_id,
+    )
+    return [
+        (Path("couchdb") / db / str(doc.get("_id") or ""), job_draft_to_review_payload(doc))
+        for doc in docs
+    ]
 
 
 def apply_job_draft_review(

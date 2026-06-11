@@ -45,37 +45,48 @@ def _candidate(candidate_id: str, *, status: str = "pending_review", site_id: st
 # GATE 1: filesystem candidate is NO LONGER read on the approval surfaces.
 # A candidate present ONLY on the filesystem (never in CouchDB) must NOT appear.
 # --------------------------------------------------------------------------- #
-def test_filesystem_only_candidate_is_not_surfaced(tmp_path, couchdb_review, monkeypatch):
+def test_filesystem_only_candidate_is_not_surfaced(tmp_path, couchdb_job_draft_review):
+    """337a: the swipe surface reads job_draft docs from CouchDB only. A
+    candidate sitting ONLY on the filesystem (and even a candidate doc in
+    CouchDB) is NOT a job_draft, so it must NOT surface on the draft review
+    page. The CouchDB draft store is empty here -> the reader surfaces nothing."""
     from ops_dashboard.sections import swipe
-    from processing_core.action_candidates import write_action_candidate_review
+    import json
 
-    # Write a candidate ONLY to the filesystem, bypassing the CouchDB mirror, so
-    # it exists on disk but never in CouchDB.
+    # Write an action_candidate artifact ONLY to the filesystem.
     candidate_dir = fc.default_candidate_dir(tmp_path)
     candidate_dir.mkdir(parents=True, exist_ok=True)
-    # Use the ORIGINAL (un-mirrored) writer captured before the fixture wrapped it.
-    import processing_core.action_candidates as _pc
-    # write straight to disk without touching the double
     payload = _candidate("fs_only")
-    path = candidate_dir / "fs_only.json"
-    import json
-    path.write_text(json.dumps({**payload, "type": "action_candidate_review"}), encoding="utf-8")
+    (candidate_dir / "fs_only.json").write_text(
+        json.dumps({**payload, "type": "action_candidate_review"}), encoding="utf-8"
+    )
 
-    # CouchDB store is EMPTY -> the swipe reader must surface nothing.
+    # Draft store is EMPTY -> the swipe reader must surface nothing (the FS read
+    # path is retired AND the surface reads drafts, not candidates).
     cards = swipe.collect_cards(tmp_path)
-    assert [c["candidate_id"] for c in cards] == [], (
-        "a filesystem-only candidate must NOT appear; the FS read path is retired"
+    assert [c["draft_id"] for c in cards] == [], (
+        "a filesystem-only candidate must NOT appear; the draft surface reads "
+        "job_draft docs from CouchDB only"
     )
 
 
-def test_couchdb_seeded_candidate_is_surfaced(tmp_path, couchdb_review):
-    """Positive companion: a candidate seeded into CouchDB IS surfaced (proves
-    the reader reads CouchDB, so test_filesystem_only above isn't vacuously empty)."""
+def test_couchdb_seeded_candidate_is_surfaced(tmp_path, couchdb_job_draft_review):
+    """Positive companion: a job_draft seeded into CouchDB IS surfaced (proves
+    the reader reads CouchDB, so test_filesystem_only above isn't vacuously
+    empty). 337a retargets this from action_candidate to job_draft."""
     from ops_dashboard.sections import swipe
 
-    couchdb_review.seed_doc(_candidate("in_couch"))
+    couchdb_job_draft_review.seed_draft({
+        "draft_id": "in_couch",
+        "job_type": "append_to_note",
+        "payload": {"path": "Accounts/7050.md", "content": "Staffing risk.", "destination": "site_note"},
+        "message": "Follow up in_couch",
+        "site_id": "7050",
+        "source_capture_id": "cap-in_couch",
+        "created_at": "2026-06-11T00:00:00Z",
+    })
     cards = swipe.collect_cards(tmp_path)
-    assert [c["candidate_id"] for c in cards] == ["in_couch"]
+    assert [c["draft_id"] for c in cards] == ["in_couch"]
 
 
 # --------------------------------------------------------------------------- #
@@ -178,23 +189,36 @@ def test_end_to_end_one_job(tmp_path, couchdb_review):
 # GATE 4: backfill compat -- BOTH new-shape (source string) and old-shape
 # (source object) docs are surfaced and shaped without choking.
 # --------------------------------------------------------------------------- #
-def test_backfill_old_and_new_source_shapes_both_surface(tmp_path, couchdb_review):
+def test_backfill_old_and_new_source_shapes_both_surface(tmp_path, couchdb_job_draft_review):
+    """337a: the draft surface must shape BOTH a fully-populated draft and a
+    sparse draft (minimal fields) without choking -- the dashboard shaping is
+    defensive against missing optional fields. Retargeted from the candidate
+    source-shape backfill compat to the draft reality (drafts carry no `source`
+    object; the analogous risk is a draft missing optional surface fields)."""
     from ops_dashboard.sections import swipe
 
-    # New-shape doc (writer emits source: "field_capture_pipeline" string).
-    couchdb_review.seed_doc(_candidate("new_shape"))
-    new_doc_id = "action_candidate_new_shape"
-    assert couchdb_review.docs[new_doc_id]["source"] == "field_capture_pipeline"
+    # Fully-populated draft.
+    couchdb_job_draft_review.seed_draft({
+        "draft_id": "new_shape",
+        "job_type": "append_to_note",
+        "payload": {"path": "Accounts/7050.md", "content": "x", "destination": "site_note"},
+        "message": "full draft",
+        "site_id": "7050",
+        "submitter_name": "Sandy",
+        "source_capture_id": "cap-new",
+        "confidence": "high",
+        "created_at": "2026-06-11T00:00:00Z",
+    })
+    # Sparse draft: only the required fields (no site/submitter/message/capture).
+    couchdb_job_draft_review.seed_draft({
+        "draft_id": "old_shape",
+        "job_type": "append_to_note",
+        "payload": {"path": "Accounts/7051.md", "content": "y", "destination": "site_note"},
+    })
 
-    # Old-shape backfilled doc: force `source` to an OBJECT (pre-308c shape).
-    couchdb_review.seed_doc(_candidate("old_shape"))
-    old = couchdb_review.docs["action_candidate_old_shape"]
-    old["source"] = {"artifact_type": "action_candidate_review", "rationale": "legacy"}
-    old.pop("source_detail", None)
-
-    cards = {c["candidate_id"]: c for c in swipe.collect_cards(tmp_path)}
-    assert {"new_shape", "old_shape"} <= set(cards), "both source shapes must surface"
-    # Dashboard shaping must not choke on the object form.
+    cards = {c["draft_id"]: c for c in swipe.collect_cards(tmp_path)}
+    assert {"new_shape", "old_shape"} <= set(cards), "both draft shapes must surface"
+    # Dashboard shaping must not choke on the sparse form.
     for c in cards.values():
         assert isinstance(c["site_id"], str)
         assert "approvable" in c

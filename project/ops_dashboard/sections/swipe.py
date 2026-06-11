@@ -5,18 +5,18 @@ new write path and no new approval semantics. A swipe-approve posts to the same
 ``/field-capture/review/approve`` endpoint the table-based review page uses, so
 the invariant holds unchanged:
 
-    AI proposes (action_candidate) -> operator approves -> deterministic writer
-    stages the approved_job_draft into the runtime queue -> queue processor
-    writes canonical CouchDB state.
+    AI proposes job_draft -> operator approves -> deterministic writer
+    materializes the approved job_draft into the runtime queue -> queue
+    processor writes canonical CouchDB state.
 
 The card shows only what the operator needs to decide "is this proposed change
 true enough to commit?": what happened, who/what it affects, the proposed
 mutation, confidence, and the source evidence. Pipeline internals stay hidden.
 
 Approve and Reject are live. Edit and Defer are intentionally rendered as
-disabled: there is no backend write path for editing a proposed payload or for
-a distinct "deferred" candidate status yet. Showing them as stubs (rather than
-fake buttons) keeps the surface honest about what actually commits.
+disabled for this prompt; draft editing is handled by the next review increment.
+Showing them as stubs (rather than fake buttons) keeps the surface honest about
+what actually commits.
 """
 
 from __future__ import annotations
@@ -27,8 +27,7 @@ import re
 from datetime import datetime, timezone
 from pathlib import Path
 
-from field_capture import action_candidates as field_action_candidates
-from field_capture import approved_job_drafts
+from field_capture import job_draft_review
 from ops_dashboard.common import (
     UNKNOWN_SUBMITTER,
     capture_thumbnails,
@@ -37,15 +36,12 @@ from ops_dashboard.common import (
     submitters_by_capture,
 )
 from ops_dashboard.layout import html_page
+from queue_spec import validate_job
 
 
-# Candidate review statuses, mapped to the four operator queues from the design.
-# "Needs clarification" has no first-class status yet; the closest signal is a
-# failed candidate (extraction produced something unusable). We surface it as a
-# read-only count rather than inventing a status the backend cannot persist.
-QUEUE_NEEDS_APPROVAL = "pending_review"
+QUEUE_NEEDS_APPROVAL = "pending_approval"
+QUEUE_APPROVED = "approved"
 QUEUE_REJECTED = "rejected"
-QUEUE_FAILED = "failed"
 
 
 def _age_seconds_from_timestamp(value: object) -> int:
@@ -74,15 +70,6 @@ def _plain_site_label(html_label: str) -> str:
     return html.unescape(re.sub(r"<[^>]+>", "", html_label or "")).strip()
 
 
-def _evidence_text(payload: dict[str, object]) -> str:
-    """The strongest available human-readable source quote for the card."""
-    for key in ("source_text", "source_context", "summary"):
-        value = str(payload.get(key) or "").strip()
-        if value:
-            return value
-    return ""
-
-
 def swipe_card(
     path: Path,
     payload: dict[str, object],
@@ -90,46 +77,38 @@ def swipe_card(
     runtime_root: Path,
     submitters: dict[str, dict[str, str]],
 ) -> dict[str, object]:
-    """Reduce a candidate artifact to the minimal card the operator decides on.
-
-    Reuses ``approved_job_drafts.proposed_queue_jobs`` so the validity check and
-    the proposed mutation shown on the card are exactly what approval will
-    stage -- no second extraction path.
-    """
-    provenance = payload.get("provenance") if isinstance(payload.get("provenance"), dict) else {}
-    metadata = payload.get("channel_metadata") if isinstance(payload.get("channel_metadata"), dict) else {}
-    capture_id = str(metadata.get("upload_id") or payload.get("capture_id") or "")
+    """Reduce a job_draft artifact to the minimal card the operator decides on."""
+    capture_id = str(payload.get("source_capture_id") or "")
     submitter = submitters.get(capture_id, {})
 
-    proposed_jobs = approved_job_drafts.proposed_queue_jobs(payload, runtime_root=runtime_root)
-    first = proposed_jobs[0] if proposed_jobs else ("", {}, "")
-    proposed_job_type, proposed_payload, proposed_error = first
-    if not proposed_jobs:
-        proposed_error = proposed_error or "candidate has no proposed queue job"
-    # Approvable only when every proposed job validates -- mirrors the guard in
-    # candidates._handle_review_post so the swipe button never offers an approve
-    # the backend will reject.
-    approvable = bool(proposed_jobs) and all(
-        not error and job_type and isinstance(job, dict) and job
-        for job_type, job, error in proposed_jobs
+    proposed_job_type = str(payload.get("job_type") or "")
+    proposed_payload = payload.get("payload") if isinstance(payload.get("payload"), dict) else {}
+    proposed_error = str(payload.get("validation_error") or "")
+    if not proposed_error and not validate_job({"job_type": proposed_job_type, "payload": proposed_payload}):
+        proposed_error = "job_draft fails queue_spec validation"
+    approvable = (
+        str(payload.get("review_status") or "") == QUEUE_NEEDS_APPROVAL
+        and not proposed_error
+        and bool(proposed_job_type)
+        and isinstance(proposed_payload, dict)
     )
 
     return {
-        "candidate_id": str(payload.get("candidate_id") or ""),
-        "status": str(payload.get("status") or ""),
-        "site_id": str(metadata.get("site_id") or provenance.get("site_id") or payload.get("site_id") or ""),
-        "area": str(metadata.get("area") or ""),
+        "draft_id": str(payload.get("draft_id") or ""),
+        "review_status": str(payload.get("review_status") or ""),
+        "site_id": str(payload.get("site_id") or ""),
+        "area": "",
         "submitter_name": str(
-            metadata.get("submitter_name") or submitter.get("submitter_name") or UNKNOWN_SUBMITTER
+            payload.get("submitter_name") or submitter.get("submitter_name") or UNKNOWN_SUBMITTER
         ),
-        "captured_at": str(metadata.get("captured_at") or payload.get("created_at") or ""),
-        "summary": str(payload.get("summary") or ""),
-        "rationale": str(payload.get("rationale") or ""),
+        "captured_at": str(payload.get("created_at") or ""),
+        "summary": str(payload.get("message") or ""),
+        "rationale": "",
         "confidence": _confidence_label(payload.get("confidence")),
-        "evidence": _evidence_text(payload),
+        "evidence": str(payload.get("message") or ""),
         # The worker's actual message + the photos they captured: the human
         # context the operator decides on (vs the technical proposed mutation).
-        "message": _evidence_text(payload),
+        "message": str(payload.get("message") or ""),
         "photos": capture_thumbnails(runtime_root, capture_id),
         "proposed_job_type": str(proposed_job_type or ""),
         "proposed_payload": proposed_payload if isinstance(proposed_payload, dict) else {},
@@ -144,23 +123,23 @@ def swipe_card(
 def collect_cards(runtime_root: Path, *, status: str = QUEUE_NEEDS_APPROVAL) -> list[dict[str, object]]:
     submitters = submitters_by_capture(runtime_root)
     cards: list[dict[str, object]] = []
-    for path, payload in field_action_candidates.couchdb_candidate_payloads(status=status):
-        if payload.get("type") != "action_candidate_review":
+    for path, payload in job_draft_review.couchdb_job_draft_payloads(review_status=status):
+        if payload.get("type") != "job_draft_review":
             continue
         cards.append(swipe_card(path, payload, runtime_root=runtime_root, submitters=submitters))
     # Oldest first: the operator clears the backlog tail, and ordering is stable
     # for the keyboard-driven single-card flow.
-    cards.sort(key=lambda card: (-int(card["age_seconds"]), str(card["candidate_id"])))
+    cards.sort(key=lambda card: (-int(card["age_seconds"]), str(card["draft_id"])))
     return cards
 
 
 def queue_counts(runtime_root: Path) -> dict[str, int]:
-    candidate_dir = field_action_candidates.default_candidate_dir(runtime_root)
-    report = field_action_candidates.list_action_candidates_report(
-        candidate_dir, runtime_root=runtime_root
-    )
-    counts = report.get("counts") if isinstance(report.get("counts"), dict) else {}
-    return {status: int(counts.get(status, 0)) for status in ("pending_review", "approved", "rejected", "failed")}
+    counts = {status: 0 for status in (QUEUE_NEEDS_APPROVAL, QUEUE_APPROVED, QUEUE_REJECTED)}
+    for _path, payload in job_draft_review.couchdb_job_draft_payloads():
+        status = str(payload.get("review_status") or "")
+        if status in counts:
+            counts[status] += 1
+    return counts
 
 
 def swipe_payload(runtime_root: Path, *, counts: dict[str, int] | None = None) -> dict[str, object]:
@@ -197,18 +176,16 @@ def render_body(request_ctx: object, *, payload: dict[str, object] | None = None
     bootstrap_safe = (
         bootstrap.replace("&", "\\u0026").replace("<", "\\u003c").replace(">", "\\u003e")
     )
-    needs_approval = int(counts.get("pending_review", 0))
+    needs_approval = int(counts.get("pending_approval", 0))
     rejected = int(counts.get("rejected", 0))
-    failed = int(counts.get("failed", 0))
 
     return f"""
     <header class="swipe-header">
       <h1>Review</h1>
       <p class="muted">One proposed job at a time. Decide whether it is true enough to commit.</p>
       <div class="swipe-queues" role="status">
-        <a class="swipe-queue" data-queue="approval" href="/field-capture/review?status=pending_review" aria-label="{needs_approval} candidates need approval"><strong>{needs_approval}</strong> needs approval</a>
-        <a class="swipe-queue" data-queue="clarify" href="/field-capture/review?status=failed" aria-label="{failed} candidates need clarification"><strong>{failed}</strong> needs clarification</a>
-        <a class="swipe-queue" data-queue="rejected" href="/field-capture/review?status=rejected" aria-label="{rejected} rejected or teachable candidates"><strong>{rejected}</strong> rejected / teachable</a>
+        <a class="swipe-queue" data-queue="approval" href="/field-capture/review?status=pending_approval" aria-label="{needs_approval} drafts need approval"><strong>{needs_approval}</strong> needs approval</a>
+        <a class="swipe-queue" data-queue="rejected" href="/field-capture/review?status=rejected" aria-label="{rejected} rejected drafts"><strong>{rejected}</strong> rejected</a>
       </div>
     </header>
 
@@ -231,7 +208,7 @@ def render_body(request_ctx: object, *, payload: dict[str, object] | None = None
     </p>
 
     <form id="swipe-action-form" method="post" hidden>
-      <input type="hidden" name="candidate_id" value="">
+      <input type="hidden" name="draft_id" value="">
       <input type="hidden" name="_rev" value="">
       <input type="hidden" name="reviewer" value="">
       <input type="hidden" name="rationale" value="">
@@ -334,7 +311,7 @@ window.__btqSwipeInit = function () {
     // The card leads with the human context -- the worker's message, who sent
     // it, for which site, and the photos -- not the technical proposed mutation.
     mount.innerHTML =
-      '<article class="swipe-card" data-candidate-id="' + esc(c.candidate_id) + '">' +
+      '<article class="swipe-card" data-draft-id="' + esc(c.draft_id) + '">' +
         '<div class="swipe-card-top">' +
           '<span class="swipe-progress">' + remaining + ' left</span>' +
           (c.captured_at ? '<span>' + esc(c.captured_at) + '</span>' : '') +
@@ -347,8 +324,8 @@ window.__btqSwipeInit = function () {
         '<div class="swipe-actions">' +
           '<button type="button" class="swipe-btn reject" data-act="reject" title="Reject (R / Left)">Reject</button>' +
           '<button type="button" class="swipe-btn skip" data-act="skip" title="Skip without acting — leaves it pending (S / Down)">Skip</button>' +
-          '<button type="button" class="swipe-btn edit" disabled title="Editing a proposed payload has no backend write path yet">Edit</button>' +
-          '<button type="button" class="swipe-btn defer" disabled title="A distinct deferred status does not exist yet">Defer</button>' +
+          '<button type="button" class="swipe-btn edit" disabled title="Draft editing is enabled in the next review increment">Edit</button>' +
+          '<button type="button" class="swipe-btn defer" disabled title="Defer is not a draft review action">Defer</button>' +
           '<button type="button" class="swipe-btn approve" data-act="approve"' + approveDisabled +
             ' title="' + esc(approveHint) + '">Approve</button>' +
         '</div>' +
@@ -363,7 +340,7 @@ window.__btqSwipeInit = function () {
   function decide(card, action, btn) {
     if (btn && btn.disabled) return;
     // Skip just advances to the next card without writing anything; the
-    // candidate stays pending_review and reappears on reload.
+    // Skip just advances client-side; the draft stays pending_approval and reappears on reload.
     if (action === 'skip') { index += 1; render(); return; }
     if (action === 'approve' && !card.approvable) return;
     var reviewer = reviewerName();
@@ -375,7 +352,7 @@ window.__btqSwipeInit = function () {
     }
     var route = action === 'approve' ? '/field-capture/review/approve' : '/field-capture/review/reject';
     var body = new URLSearchParams();
-    body.set('candidate_id', card.candidate_id);
+    body.set('draft_id', card.draft_id);
     body.set('_rev', card._rev || '');
     body.set('reviewer', reviewer);
     body.set('rationale', action === 'unknown' ? 'mark unknown' : '');

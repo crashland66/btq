@@ -8,8 +8,10 @@ from event_pipeline import couchdb_config
 from event_pipeline.couchdb_candidate_writer import (
     AlreadyDecided,
     CouchDBCandidateWriterError,
+    DEFAULT_FIND_LIMIT,
     _get_document,
     _put_document,
+    _request_json,
 )
 
 
@@ -49,6 +51,50 @@ def get_job_draft(
 ) -> dict[str, Any] | None:
     """Fetch a job_draft document by draft_id, including _rev."""
     return get_job_draft_document(config, db, draft_id)
+
+
+def list_job_drafts(
+    config: couchdb_config.CouchDBConfig,
+    db: str,
+    *,
+    review_status: str | None = None,
+    group_id: str | None = None,
+    limit: int = DEFAULT_FIND_LIMIT,
+) -> list[dict[str, Any]]:
+    """List job_draft documents from CouchDB for approval surfaces."""
+    page_limit = max(1, int(limit or DEFAULT_FIND_LIMIT))
+    selector: dict[str, Any] = {"type": JOB_DRAFT_TYPE}
+    if review_status is not None:
+        selector["review_status"] = str(review_status)
+    if group_id is not None:
+        selector["group_id"] = str(group_id)
+
+    docs: list[dict[str, Any]] = []
+    bookmark = ""
+    while True:
+        payload: dict[str, Any] = {
+            "selector": selector,
+            "limit": page_limit,
+        }
+        if bookmark:
+            payload["bookmark"] = bookmark
+        result = _request_json(config, db, "POST", "_find", payload)
+        result_docs = result.get("docs")
+        if not isinstance(result_docs, list):
+            raise CouchDBJobDraftWriterError("CouchDB job_draft _find returned no docs list")
+        page = [
+            doc
+            for doc in result_docs
+            if isinstance(doc, dict)
+            and str(doc.get("type") or "") == JOB_DRAFT_TYPE
+        ]
+        docs.extend(page)
+        next_bookmark = str(result.get("bookmark") or "")
+        if len(result_docs) < page_limit or not next_bookmark or next_bookmark == bookmark:
+            break
+        bookmark = next_bookmark
+    docs.sort(key=lambda doc: (str(doc.get("created_at") or ""), str(doc.get("draft_id") or "")))
+    return docs
 
 
 def set_job_draft_review_status(
