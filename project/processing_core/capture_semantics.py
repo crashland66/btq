@@ -867,13 +867,27 @@ def supply_item_name_from_text(text: str) -> str:
 def clean_supply_item_phrase(text: str) -> str:
     cleaned = collapse_whitespace(text)
     cleaned = cleaned.rstrip(".!?;:")
+    prior = cleaned
     cleaned = re.sub(r"^(?:please\s+)?(?:we\s+|we're\s+|we are\s+|i\s+|i'm\s+|i am\s+)?", "", cleaned, flags=re.IGNORECASE)
     cleaned = re.sub(r"\b(?:please|thanks|thank you)\b", "", cleaned, flags=re.IGNORECASE)
     cleaned = re.sub(r"\s+\b(?:at|for)\s+.+$", "", cleaned, flags=re.IGNORECASE)
     cleaned = re.sub(r"\s+\b(?:are|is)\s+(?:low|out|running low|needed)\b.*$", "", cleaned, flags=re.IGNORECASE)
     cleaned = re.sub(r"^(?:need(?: more)?|needs(?: more)?|needed|low on|running low on|out of|restock|reorder|order|bring)\s+", "", cleaned, flags=re.IGNORECASE)
+    preamble_stripped = re.sub(
+        r"^(?:(?:a|few|a few|couple of|a couple of|some|several)\s+)?(?:things|items|stuff|supplies|products)\b[\s.,;:-]+(?=\S)",
+        "",
+        cleaned,
+        count=1,
+        flags=re.IGNORECASE,
+    )
+    if preamble_stripped.strip():
+        cleaned = preamble_stripped
+    article_stripped = re.sub(r"^(?:(?:a|an|the|some|a new|an new|new)\s+)+", "", cleaned, flags=re.IGNORECASE)
+    if article_stripped.strip():
+        cleaned = article_stripped
     cleaned = cleaned.replace(" and ", ", ")
-    return collapse_whitespace(cleaned).strip(" ,")
+    cleaned = collapse_whitespace(cleaned).strip(" ,")
+    return cleaned or collapse_whitespace(prior).strip(" ,")
 
 
 def _semantic_result_from_legacy_dict(raw: dict[str, object], source: CaptureSemanticInput) -> SemanticResult:
@@ -1134,8 +1148,10 @@ def _rule_extracted_actions(source: CaptureSemanticInput, cleaned: str, issue_ty
         handled_supply_equipment = True
     if is_supply_area(source.area) and not handled_supply_equipment:
         raw_actions.append(supply_need_action_payload(source, cleaned, "field_capture_supply_need"))
+        handled_supply_equipment = True
     elif issue_type == "supplies" and not handled_supply_equipment:
         raw_actions.append(_rule_site_action(source, "supply_review", "Review supply/order follow-up.", cleaned, ["supply", *routine_terms]))
+        handled_supply_equipment = True
     if any(term in lowered for term in EQUIPMENT_TERMS) and not handled_supply_equipment:
         raw_actions.append(
             _rule_site_action(

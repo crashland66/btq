@@ -167,18 +167,27 @@ def test_voice_memo_rule_engine_writes_retention_candidate_with_proposed_job(tmp
 
 
 def test_one_voice_transcript_fans_out_multiple_stable_drafts_without_duplicates(tmp_path: Path, couchdb_review, couchdb_job_drafts) -> None:
-    # 334b retarget: the legacy test asserted one transcript fans out to >=2
-    # review CANDIDATES (an employee/attendance + a site/supply candidate) with
-    # distinct candidate_ids and no duplicates across re-runs. At the job_draft
-    # layer the fan-out is over PROPOSABLE queue jobs: the attendance candidate
-    # yields no proposable job, so its draft never materializes (a real,
-    # pre-existing property of proposed_queue_jobs -- NOT a 334b regression). To
-    # preserve the SAME structural guarantee -- one transcript -> N>=2 drafts
-    # sharing one group_id, distinct draft_ids, idempotent re-walk -- this uses a
-    # transcript that genuinely yields two proposable equipment requests from a
-    # single voice memo.
+    # 340 retarget (legit, NOT a regression): the prior transcript ("...order
+    # more towels and a new vacuum.") fanned out to TWO log_equipment_request
+    # drafts ONLY via the supply+equipment OVERLAP -- the rule engine double-fired
+    # the supply equipment_review follow-up on the same supply note. 340 collapses
+    # that duplicate (handled_supply_equipment after the supply branch), so that
+    # note now yields exactly ONE draft. The dropped draft was an empty-job_type
+    # equipment_review of the SAME job_type as the survivor -- a duplicate, not a
+    # distinct actionable job.
+    #
+    # To preserve the SAME structural guarantee -- one transcript -> N>=2 drafts
+    # sharing one group_id, distinct stable draft_ids, idempotent re-walk -- this
+    # now uses a transcript that yields two GENUINELY-DISTINCT actionable jobs: a
+    # site-status-change (set_entity_status) AND a separate equipment request.
+    # These are different job_types via different rule branches (the voice
+    # operator-action branch is NOT touched by the supply/equipment suppression),
+    # so the fan-out is real, not an overlap artifact.
     transcript_path = tmp_path / "multi.webm.whisper.txt"
-    transcript = "The mop sink is broken and leaking. Also we need to order more towels and a new vacuum."
+    transcript = (
+        "This site is no longer one of my accounts and needs to be set to inactive. "
+        "We also need to order a new vacuum for the crew."
+    )
     transcript_path.write_text(transcript, encoding="utf-8")
     memo_context = VoiceMemoTranscriptContext(
         capture_id="vm-multi",
@@ -208,6 +217,13 @@ def test_one_voice_transcript_fans_out_multiple_stable_drafts_without_duplicates
     assert group_ids == {"vm-multi"}
     draft_ids = [str(d["draft_id"]) for d in drafts]
     assert len(set(draft_ids)) == len(draft_ids)
+
+    # The fan-out is over GENUINELY-DISTINCT jobs: a site status change plus a
+    # separate equipment request (not the now-collapsed supply/equipment overlap).
+    job_types = {str(d["job_type"]) for d in drafts}
+    assert "set_entity_status" in job_types, job_types
+    assert "log_equipment_request" in job_types, job_types
+    assert len(job_types) >= 2, job_types
 
     # The re-walk (second run over the same source) duplicates NOTHING: every
     # draft already exists, so the exists->skip guard fires and the stored

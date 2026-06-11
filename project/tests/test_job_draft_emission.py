@@ -53,9 +53,26 @@ def _artifact(text: str, capture_id: str, *, area: str = "", site_id: str = "SAN
 
 # Concrete notes whose real classification is pinned by probing the engine:
 #   * ISSUE  -> exactly one log_site_issue draft
-#   * MULTI  -> two equipment-request drafts from ONE source (shared group)
+#   * EQUIP  -> exactly one log_equipment_request draft
+#   * SUPPLY -> exactly one log_supply_need draft (340: clean item_name)
 #   * STATUS -> zero candidates / zero drafts (the structural win)
+#
+# 340 RETARGET NOTE: the pre-340 ``MULTI_NOTE`` ("...order more towels and a new
+# vacuum.") fanned out to TWO ``log_equipment_request`` drafts ONLY because the
+# rule engine double-fired the supply ``equipment_review`` follow-up on the same
+# supply note -- the supply+equipment OVERLAP. 340 collapses that duplicate
+# (``handled_supply_equipment`` after the supply branch), so that note now
+# yields exactly ONE clean draft. The dropped draft was an empty-``job_type``
+# ``equipment_review`` of the SAME job_type as the survivor -- a genuine
+# duplicate, NOT a distinct actionable job (verified: legit, not a regression).
+# The rule engine emits at most one PROPOSABLE candidate per note, so the
+# "one source fans out to N>=2 distinct drafts" guarantee is now exercised at
+# the COLLECTION level across several genuinely-distinct single-draft sources
+# (issue + equipment + supply), each with its own group_id.
 ISSUE_NOTE = "The mop sink in the back is broken and leaking water everywhere."
+EQUIP_NOTE = "The vacuum is broken and needs repair."
+SUPPLY_NOTE = "We're low on paper towels and soap."
+# Kept as a single-draft supply source (item_name now cleaned by 340).
 MULTI_NOTE = (
     "The mop sink is broken and leaking. "
     "Also we need to order more towels and a new vacuum."
@@ -96,32 +113,47 @@ def test_valid_single_job_emits_one_fully_populated_draft() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Multi-job source: N>=2 drafts, shared group_id, distinct draft_ids.
+# Multi-source fan-out: N>=2 drafts across genuinely-distinct sources, EACH with
+# its own group_id, all draft_ids distinct, stable f"{group_id}-{job_type}-{i}".
+#
+# 340 RETARGET (legit, NOT a regression): the legacy single-note ``MULTI_NOTE``
+# produced 2 drafts only via the supply+equipment overlap that 340 correctly
+# collapses (same ``log_equipment_request`` job_type twice on one supply note --
+# a duplicate, not a distinct job). The rule engine emits at most one PROPOSABLE
+# candidate per note, so the genuine fan-out guarantee -- multiple distinct
+# actionable jobs, shared-vs-distinct group_ids, distinct stable draft_ids -- is
+# exercised across distinct sources (issue + equipment + supply) instead.
 # --------------------------------------------------------------------------- #
 def test_multi_job_source_shares_group_id_distinct_draft_ids() -> None:
-    art = _artifact(MULTI_NOTE, "cap-multi-1")
-    drafts = job_drafts_from_semantic(Path("multi.json"), art)
+    drafts: list[dict] = []
+    drafts += job_drafts_from_semantic(Path("issue.json"), _artifact(ISSUE_NOTE, "cap-multi-issue"))
+    drafts += job_drafts_from_semantic(Path("equip.json"), _artifact(EQUIP_NOTE, "cap-multi-equip"))
+    drafts += job_drafts_from_semantic(Path("supply.json"), _artifact(SUPPLY_NOTE, "cap-multi-supply"))
 
     assert len(drafts) >= 2, f"expected >=2 drafts, got {len(drafts)}"
 
+    # Genuinely-distinct jobs: at minimum a site issue, an equipment request, and
+    # a supply need -- three different actionable job_types.
+    job_types = {d["job_type"] for d in drafts}
+    assert {"log_site_issue", "log_equipment_request", "log_supply_need"} <= job_types, job_types
+
+    # Each source contributes its own group_id (== its capture id).
     group_ids = {d["group_id"] for d in drafts}
-    assert group_ids == {"cap-multi-1"}, group_ids  # ONE shared group
+    assert group_ids == {"cap-multi-issue", "cap-multi-equip", "cap-multi-supply"}, group_ids
 
     draft_ids = [d["draft_id"] for d in drafts]
     assert len(set(draft_ids)) == len(draft_ids), draft_ids  # all distinct
 
-    # New stable format: f"{group_id}-{job_type}-{ordinal}". This source emits
-    # two log_equipment_request drafts -- the SAME job_type twice -- so the
-    # ordinal (0, 1) is what keeps the draft_ids distinct.
-    assert draft_ids == [f"cap-multi-1-{d['job_type']}-{i}" for i, d in enumerate(drafts)], draft_ids
-    ordinals = [int(did.rsplit("-", 1)[-1]) for did in draft_ids]
-    assert ordinals == list(range(len(drafts))), ordinals  # 0,1,... contiguous
-
-    # Each draft carries its own job_type + a real payload.
+    # Stable, deterministic format f"{group_id}-{job_type}-{ordinal}". Each
+    # source emits a single draft of its own job_type, so ordinal is 0.
     for d in drafts:
+        assert d["draft_id"] == f"{d['group_id']}-{d['job_type']}-0", d["draft_id"]
         assert d["job_type"]
         assert isinstance(d["payload"], dict) and d["payload"]
-        assert d["draft_id"].startswith("cap-multi-1-")
+
+    # The single supply draft is a real log_supply_need queue job for the site.
+    supply_draft = next(d for d in drafts if d["job_type"] == "log_supply_need")
+    assert supply_draft["payload"].get("site_id") == "SANDBOX"
 
 
 # --------------------------------------------------------------------------- #
@@ -231,11 +263,20 @@ def test_skip_non_accepted_type() -> None:
 # collect_job_drafts: hermetic counts (CouchDB unconfigured -> no writes).
 # --------------------------------------------------------------------------- #
 def _write_artifact_tree(root: Path) -> Path:
-    """Write three real artifacts (issue, multi, status) into a semantic dir."""
+    """Write four real artifacts into a semantic dir.
+
+    340 RETARGET: the tree now uses THREE genuinely-distinct single-draft
+    sources (issue -> log_site_issue, equipment -> log_equipment_request,
+    supply -> log_supply_need) plus a status note (zero drafts). This yields
+    >=3 discovered drafts across distinct group_ids -- the same structural
+    coverage the old issue+multi(overlap) tree gave, without relying on the
+    supply/equipment overlap duplicate that 340 collapsed.
+    """
     semantic_dir = root / "field_capture" / "semantics"
     semantic_dir.mkdir(parents=True, exist_ok=True)
     write_json_object(semantic_dir / "issue.json", _artifact(ISSUE_NOTE, "cap-tree-issue"))
-    write_json_object(semantic_dir / "multi.json", _artifact(MULTI_NOTE, "cap-tree-multi"))
+    write_json_object(semantic_dir / "equip.json", _artifact(EQUIP_NOTE, "cap-tree-equip"))
+    write_json_object(semantic_dir / "supply.json", _artifact(SUPPLY_NOTE, "cap-tree-supply"))
     write_json_object(semantic_dir / "status.json", _artifact(STATUS_NOTE, "cap-tree-status"))
     return semantic_dir
 
@@ -248,7 +289,8 @@ def test_collect_counts_without_couchdb_does_not_write(tmp_path, monkeypatch) ->
     semantic_dir = _write_artifact_tree(tmp_path)
     counts = collect_job_drafts([semantic_dir])
 
-    # status.json yields no drafts -> skipped; issue (1) + multi (>=2) discovered.
+    # status.json yields no drafts -> skipped; issue + equip + supply each yield
+    # one genuinely-distinct draft -> >=3 discovered.
     assert counts["skipped"] == 1
     assert counts["discovered"] >= 3
     # CouchDB unconfigured -> nothing emitted, but discovered still counts.
@@ -406,7 +448,7 @@ class TestCollectRealCouchDB:
             assert doc["review_status"] == "pending_approval"
             assert doc["job_type"]
             assert doc["validation_error"] is None
-            assert doc["group_id"] in {"cap-tree-issue", "cap-tree-multi"}
+            assert doc["group_id"] in {"cap-tree-issue", "cap-tree-equip", "cap-tree-supply"}
 
     def test_second_run_does_not_duplicate(self, live_db, tmp_path, monkeypatch) -> None:
         """FIXED (334a): with stable draft_ids, a second collect_job_drafts run
