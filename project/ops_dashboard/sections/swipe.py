@@ -212,6 +212,12 @@ def render_body(request_ctx: object, *, payload: dict[str, object] | None = None
       </div>
     </header>
 
+    <div class="swipe-reviewer">
+      <label for="swipe-reviewer-input">Reviewer</label>
+      <input id="swipe-reviewer-input" type="text" autocomplete="name" spellcheck="false"
+             placeholder="Your name — recorded on every approval">
+    </div>
+
     <section class="swipe-stage" aria-live="polite">
       <div id="swipe-card-mount"></div>
       <div id="swipe-empty" class="swipe-empty" hidden>
@@ -258,15 +264,30 @@ window.__btqSwipeInit = function () {
   var cards = (data && data.cards) || [];
   var index = 0;
 
+  // Inline reviewer field: prefill from localStorage and persist on every edit,
+  // so the audit trail attributes each decision without a (suppressible) prompt.
+  (function () {
+    var input = document.getElementById('swipe-reviewer-input');
+    if (!input) return;
+    try { input.value = (window.localStorage && localStorage.getItem('btq-reviewer')) || ''; } catch (e) {}
+    input.addEventListener('input', function () {
+      try { if (window.localStorage) localStorage.setItem('btq-reviewer', input.value.trim()); } catch (e) {}
+    });
+  })();
+
   function reviewerName() {
+    // Read from the inline reviewer field / localStorage only. NEVER use a browser
+    // prompt in a loop: if the user dismisses or suppresses it ("Don't ask again")
+    // the call returns null forever and the tab hard-freezes.
+    var input = document.getElementById('swipe-reviewer-input');
+    if (input && input.value.trim()) {
+      var typed = input.value.trim();
+      try { if (window.localStorage) localStorage.setItem('btq-reviewer', typed); } catch (e) {}
+      return typed;
+    }
     var name = '';
     try { name = window.localStorage ? localStorage.getItem('btq-reviewer') || '' : ''; } catch (e) {}
-    while (!name) {
-      name = window.prompt('Your name (recorded on every approval):', '') || '';
-      name = name.trim();
-    }
-    try { if (window.localStorage) localStorage.setItem('btq-reviewer', name); } catch (e) {}
-    return name;
+    return name.trim();
   }
 
   function esc(s) {
@@ -346,6 +367,12 @@ window.__btqSwipeInit = function () {
     if (action === 'skip') { index += 1; render(); return; }
     if (action === 'approve' && !card.approvable) return;
     var reviewer = reviewerName();
+    if (!reviewer) {
+      var ri = document.getElementById('swipe-reviewer-input');
+      if (ri) { ri.focus(); }
+      window.alert('Enter your name in the "Reviewer" field above first — it is recorded on every approval.');
+      return;
+    }
     var route = action === 'approve' ? '/field-capture/review/approve' : '/field-capture/review/reject';
     var body = new URLSearchParams();
     body.set('candidate_id', card.candidate_id);

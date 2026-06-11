@@ -99,6 +99,23 @@ def test_swipe_has_skip_control_that_advances_without_acting(tmp_path):
     assert "<kbd>S</kbd>" in body and "skip" in body
 
 
+def test_swipe_reviewer_name_has_no_blocking_prompt_loop(tmp_path):
+    """Reviewer name comes from an inline field, never a window.prompt loop.
+
+    A `while (!name) { window.prompt(...) }` hard-freezes the tab once the user
+    checks "Don't ask again" (prompt returns null forever). Regression for that.
+    """
+    from ops_dashboard.sections import swipe
+
+    body = swipe.render_body(
+        SimpleNamespace(runtime_root=tmp_path, config=SimpleNamespace(vault_dir=tmp_path / "vault")),
+        payload={"cards": [], "counts": {}},
+    )
+    assert 'id="swipe-reviewer-input"' in body  # inline field present
+    assert "window.prompt" not in body  # no suppressible prompt
+    assert "while (!name)" not in body  # no infinite loop
+
+
 def test_plain_site_label_strips_html_markup():
     from ops_dashboard.sections import swipe
 

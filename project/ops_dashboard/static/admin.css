@@ -993,6 +993,10 @@ details.raw-json pre { margin-top: 4px; }
   background: var(--panel-soft); border-radius: 0 8px 8px 0; font-style: italic;
 }
 .swipe-meta { font-size: .8rem; margin: .35rem 0 .6rem; }
+.swipe-reviewer { display: flex; align-items: center; gap: .6rem; margin: 0 0 1rem; }
+.swipe-reviewer label { font-size: .85rem; color: var(--muted); font-weight: 700; }
+.swipe-reviewer input { flex: 1; max-width: 360px; padding: .45rem .7rem; border-radius: 8px;
+  border: 1px solid var(--line); background: var(--input-bg); color: var(--text); font-size: .95rem; }
 .swipe-message { font-size: 1.25rem; line-height: 1.45; margin: .6rem 0 .4rem; font-weight: 600; }
 .swipe-thumbs { display: flex; flex-wrap: wrap; gap: .5rem; margin: .5rem 0 .2rem; }
 .swipe-detail summary { cursor: pointer; color: var(--muted); font-size: .85rem; }
