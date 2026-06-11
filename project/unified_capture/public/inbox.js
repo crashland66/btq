@@ -2,29 +2,31 @@
  * Mobile approval inbox for the unified capture PWA.
  *
  * This is the phone-side surface of the BTQ review loop: a voice memo or photo
- * becomes a proposed job, the mail glyph badges, and the operator approves or
- * rejects one card at a time. It is the /swipe card model, mobile.
+ * becomes one or more job drafts, the mail glyph badges, and the operator
+ * approves or rejects the draft or draft set. It is the mobile PWA review
+ * surface for the job-first queue.
  *
- * Contract (ai-methodology/.../inbox_couchdb_candidates_spec.md):
+ * Contract:
  *   GET  /api/session         -> { ..., can_review, inbox_count: N }
  *                                  (drives visibility and the badge)
- *   GET  /api/inbox           -> { count, items: [ { candidate_id, _rev,
- *                                  capture_id, source, summary, evidence, site,
- *                                  created_at, proposed_action: { action_key,
- *                                  title, job_type, payload } } ] }
- *   POST /api/inbox/approve   <- { candidate_id, _rev }
- *   POST /api/inbox/reject    <- { candidate_id, _rev, reason? }
+ *   GET  /api/inbox           -> { count, items: [ { draft_id, _rev,
+ *                                  source_capture_id, source, message,
+ *                                  evidence, site, group_id, job_type,
+ *                                  payload, created_at } ] }
+ *   POST /api/inbox/approve   <- { draft_id, _rev }
+ *   POST /api/inbox/reject    <- { draft_id, _rev, reason? }
+ *   POST /api/inbox/approve-set <- { drafts: [{ draft_id, _rev, checked }] }
  *
  * Two contract obligations on the UI:
  *   1. Carry _rev from the item into the approve/reject POST (optimistic
  *      concurrency). A stale _rev means someone else already decided.
  *   2. Handle `already_decided`: another surface (the desktop /swipe, or this
- *      phone in another tab) already resolved the candidate. That is expected,
+ *      phone in another tab) already resolved the draft. That is expected,
  *      not an error -- show "already handled" and drop the card.
  *
- * There is intentionally NO approve write path here. approve/reject POST to the
- * single shared review endpoint; the UI never mutates candidate state itself.
- * That is the same one-blast-shield principle that kept /swipe clean.
+ * There is intentionally NO direct mutation path here. approve/reject and
+ * approve-set POST to the shared draft review endpoint; the UI never mutates
+ * draft state itself.
  *
  * Phase 3 swap: set INBOX_USE_MOCK = false. INBOX_API_BASE stays "" for
  * same-origin (unified_capture serves both the PWA and the API). Nothing else
@@ -56,7 +58,7 @@
   };
   if (!els.btn || !els.section || !els.mount) return; // markup not present
 
-  var state = { items: [], index: 0, loading: false, canReview: false };
+  var state = { groups: [], index: 0, loading: false, canReview: false };
   els.btn.hidden = true;
 
   // ---- Token (read exactly as app.js does) --------------------------------
@@ -100,7 +102,7 @@
   }
 
   function postDecision(kind, item, reason) {
-    var body = { candidate_id: item.candidate_id, _rev: item._rev };
+    var body = { draft_id: item.draft_id, _rev: item._rev };
     if (kind === "reject" && reason) body.reason = reason;
     if (INBOX_USE_MOCK) return Promise.resolve(MOCK.decide(kind, item));
     return fetch(apiUrl("/api/inbox/" + kind), {
@@ -110,14 +112,31 @@
     }).then(handleJson);
   }
 
+  function postDecisionSet(group, cardEl) {
+    var entries = Array.prototype.slice.call(cardEl.querySelectorAll("input[data-draft-id]"));
+    var drafts = entries.map(function (input) {
+      return {
+        draft_id: input.getAttribute("data-draft-id"),
+        _rev: input.getAttribute("data-rev"),
+        checked: input.checked,
+      };
+    });
+    if (INBOX_USE_MOCK) return Promise.resolve(MOCK.decideSet(group, drafts));
+    return fetch(apiUrl("/api/inbox/approve-set"), {
+      method: "POST",
+      headers: authHeaders({ "Content-Type": "application/json" }),
+      body: JSON.stringify({ drafts: drafts }),
+    }).then(handleJson);
+  }
+
   function handleJson(resp) {
     if (resp.status === 401 || resp.status === 403) {
       var authErr = new Error("auth_" + resp.status);
       authErr.status = resp.status;
       throw authErr;
     }
-    // 409 is the contract's optimistic-concurrency signal. Surface it as a
-    // structured already_decided result rather than a thrown error.
+    // Older endpoints used 409 for optimistic concurrency; current draft
+    // review returns HTTP 200 with {error:"already_decided"}.
     if (resp.status === 409) return resp.json().then(function (b) {
       return Object.assign({ status: "already_decided" }, b || {});
     });
@@ -174,32 +193,108 @@
     return '<table class="inbox-payload">' + rows + "</table>";
   }
 
+  function groupInboxItems(items) {
+    var groups = [];
+    var byId = {};
+    (items || []).forEach(function (item, idx) {
+      var key = item.group_id || item.draft_id || ("draft-" + idx);
+      if (!byId[key]) {
+        byId[key] = { group_id: key, items: [] };
+        groups.push(byId[key]);
+      }
+      byId[key].items.push(item);
+    });
+    return groups;
+  }
+
+  function itemTitle(item) {
+    return item.job_type || "Job draft";
+  }
+
+  function itemSummary(item) {
+    var text = item.message || "";
+    if (text) return text;
+    var payload = item.payload || {};
+    for (var i = 0, keys = ["title", "summary", "name", "path"]; i < keys.length; i += 1) {
+      var value = payload[keys[i]];
+      if (value) return String(value);
+    }
+    return "";
+  }
+
+  function renderDraftDetail(item) {
+    var summary = itemSummary(item);
+    return (
+      (summary ? '<p class="inbox-summary">' + esc(summary) + "</p>" : "") +
+      (item.evidence ? '<blockquote class="inbox-evidence">' + esc(item.evidence) + "</blockquote>" : "") +
+      '<details class="inbox-detail"><summary>Job payload</summary>' + payloadRows(item.payload) + "</details>"
+    );
+  }
+
   function renderCard() {
-    if (state.index >= state.items.length) {
+    if (state.index >= state.groups.length) {
       els.mount.innerHTML = "";
       if (els.empty) els.empty.hidden = false;
       if (els.progress) els.progress.textContent = "";
       return;
     }
     if (els.empty) els.empty.hidden = true;
-    var item = state.items[state.index];
-    var remaining = state.items.length - state.index;
-    var action = item.proposed_action || {};
+    var group = state.groups[state.index];
+    var items = group.items || [];
+    var item = items[0] || {};
+    var remaining = state.groups.length - state.index;
     var glyph = SOURCE_GLYPH[item.source] || "•";
     if (els.progress) els.progress.textContent = remaining + " to review";
 
+    if (items.length > 1) {
+      els.mount.innerHTML =
+        '<article class="inbox-card" data-group-id="' + esc(group.group_id) + '">' +
+          '<div class="inbox-card-top">' +
+            '<span class="inbox-source" title="' + esc(item.source || "") + '">' + glyph + " " + esc(item.source || "") + "</span>" +
+            '<span class="inbox-site">' + esc(item.site || "Unknown site") + "</span>" +
+          "</div>" +
+          '<h3 class="inbox-title">Review job set</h3>' +
+          (item.submitter_name ? '<p class="inbox-jobtype">' + esc(item.submitter_name) + "</p>" : "") +
+          '<div class="inbox-checklist">' +
+            items.map(function (draft) {
+              return (
+                '<label class="inbox-checkitem">' +
+                  '<input type="checkbox" checked data-draft-id="' + esc(draft.draft_id) + '" data-rev="' + esc(draft._rev) + '">' +
+                  '<span><strong>' + esc(itemTitle(draft)) + "</strong>" +
+                  (itemSummary(draft) ? '<small>' + esc(itemSummary(draft)) + "</small>" : "") +
+                  "</span>" +
+                "</label>"
+              );
+            }).join("") +
+          "</div>" +
+          '<details class="inbox-detail"><summary>Payloads</summary>' +
+            items.map(function (draft) {
+              return '<h4>' + esc(itemTitle(draft)) + "</h4>" + payloadRows(draft.payload);
+            }).join("") +
+          "</details>" +
+          '<div class="inbox-actions">' +
+            '<button type="button" class="inbox-btn skip" data-act="skip">Skip</button>' +
+            '<button type="button" class="inbox-btn approve" data-act="approve-set">Approve set</button>' +
+          "</div>" +
+        "</article>";
+
+      var groupCard = els.mount.querySelector(".inbox-card");
+      groupCard.querySelectorAll("button[data-act]").forEach(function (b) {
+        b.addEventListener("click", function () { decideGroup(group, b.getAttribute("data-act"), groupCard); });
+      });
+      return;
+    }
+
     els.mount.innerHTML =
-      '<article class="inbox-card" data-candidate-id="' + esc(item.candidate_id) + '">' +
+      '<article class="inbox-card" data-draft-id="' + esc(item.draft_id) + '">' +
         '<div class="inbox-card-top">' +
           '<span class="inbox-source" title="' + esc(item.source || "") + '">' + glyph + " " + esc(item.source || "") + "</span>" +
           '<span class="inbox-site">' + esc(item.site || "Unknown site") + "</span>" +
         "</div>" +
-        '<h3 class="inbox-title">' + esc(action.title || action.job_type || "Proposed update") + "</h3>" +
-        (action.job_type ? '<p class="inbox-jobtype">' + esc(action.job_type) + "</p>" : "") +
-        (item.summary ? '<p class="inbox-summary">' + esc(item.summary) + "</p>" : "") +
-        (item.evidence ? '<blockquote class="inbox-evidence">' + esc(item.evidence) + "</blockquote>" : "") +
+        '<h3 class="inbox-title">' + esc(itemTitle(item)) + "</h3>" +
+        (item.submitter_name ? '<p class="inbox-jobtype">' + esc(item.submitter_name) + "</p>" : "") +
+        renderDraftDetail(item) +
         '<p class="inbox-meta">' + esc(item.created_at || "") + "</p>" +
-        '<details class="inbox-detail"><summary>Proposed change</summary>' + payloadRows(action.payload) + "</details>" +
         '<div class="inbox-actions">' +
           '<button type="button" class="inbox-btn reject" data-act="reject">Reject</button>' +
           '<button type="button" class="inbox-btn skip" data-act="skip">Skip</button>' +
@@ -238,7 +333,7 @@
 
     postDecision(kind, item, reason).then(function (result) {
       state.loading = false;
-      if (result && result.status === "already_decided") {
+      if (result && (result.status === "already_decided" || result.error === "already_decided")) {
         // Expected concurrency outcome -- another surface handled it. Don't
         // error; tell the operator and drop the card.
         flash("Already handled on another device.", "info");
@@ -254,7 +349,36 @@
         flash("Your token is invalid or expired. Reopen capture and re-paste it.", "error");
       } else {
         // On a transient failure, re-fetch so the operator sees current truth
-        // (the candidate may or may not have been decided).
+        // (the draft may or may not have been decided).
+        flash("Action failed. Refreshing...", "error");
+        open();
+      }
+    });
+  }
+
+  function decideGroup(group, kind, cardEl) {
+    if (state.loading) return;
+    if (kind === "skip") { advance(); return; }
+    state.loading = true;
+    if (cardEl) cardEl.classList.add("swiping-right");
+
+    postDecisionSet(group, cardEl).then(function (result) {
+      state.loading = false;
+      var conflicts = Number(result && result.already_decided) || 0;
+      if (conflicts) {
+        flash("Set handled; " + conflicts + " already decided elsewhere.", "info");
+      } else if (result && result.results && result.results.some(function (r) { return r.error; })) {
+        flash("Set partly failed. Refreshing...", "error");
+      } else {
+        flash("Set reviewed.", "info");
+      }
+      advance();
+    }).catch(function (err) {
+      state.loading = false;
+      if (cardEl) cardEl.classList.remove("swiping-right");
+      if (err.status === 401 || err.status === 403) {
+        flash("Your token is invalid or expired. Reopen capture and re-paste it.", "error");
+      } else {
         flash("Action failed. Refreshing...", "error");
         open();
       }
@@ -275,9 +399,9 @@
     state.loading = true;
     getInbox().then(function (data) {
       state.loading = false;
-      state.items = (data && data.items) || [];
+      state.groups = groupInboxItems((data && data.items) || []);
       state.index = 0;
-      setBadge(data && typeof data.count === "number" ? data.count : state.items.length);
+      setBadge(data && typeof data.count === "number" ? data.count : state.groups.length);
       renderCard();
     }).catch(function (err) {
       state.loading = false;
@@ -308,13 +432,16 @@
 
   document.addEventListener("keydown", function (e) {
     if (els.section.hidden) return;
-    if (state.index >= state.items.length) return;
+    if (state.index >= state.groups.length) return;
     var tag = (e.target && e.target.tagName) || "";
     if (tag === "INPUT" || tag === "TEXTAREA") return;
-    var item = state.items[state.index];
+    var group = state.groups[state.index];
+    var item = group && group.items && group.items[0];
     var card = els.mount.querySelector(".inbox-card");
-    if (e.key === "a" || e.key === "A" || e.key === "ArrowRight") decide(item, "approve", card);
-    else if (e.key === "r" || e.key === "R" || e.key === "ArrowLeft") decide(item, "reject", card);
+    if (!group || !item) return;
+    if ((e.key === "a" || e.key === "A" || e.key === "ArrowRight") && group.items.length > 1) decideGroup(group, "approve-set", card);
+    else if (e.key === "a" || e.key === "A" || e.key === "ArrowRight") decide(item, "approve", card);
+    else if ((e.key === "r" || e.key === "R" || e.key === "ArrowLeft") && group.items.length === 1) decide(item, "reject", card);
     else if (e.key === "s" || e.key === "S" || e.key === "ArrowDown") decide(item, "skip", card);
   });
 
@@ -329,51 +456,72 @@
   var MOCK = (function () {
     var items = [
       {
-        candidate_id: "ac_mock_1", _rev: "1-aaa", capture_id: "cap-1", source: "voice",
-        site: "7050 — Summit Wire", created_at: "Today 8:42 PM",
-        summary: "Staffing risk: guard removed self from required group and no-showed.",
+        draft_id: "jd_mock_1", _rev: "1-aaa", source_capture_id: "cap-1", source: "voice",
+        site: "7050 — Summit Wire", site_id: "7050", group_id: "grp-1", submitter_name: "Preview Operator", created_at: "Today 8:42 PM",
+        message: "Staffing risk: guard removed self from required group and no-showed.",
         evidence: "Jordan removed themselves from the required group and no-showed again.",
-        proposed_action: {
-          action_key: "log_personnel_event", title: "Log staffing risk", job_type: "log_personnel_event",
-          payload: { employee: "Jordan", event_type: "attendance", summary: "Removed self from required group; no-show.", reported_by: "operator" },
-        },
+        job_type: "log_personnel_event",
+        payload: { employee: "Jordan", event_type: "attendance", summary: "Removed self from required group; no-show.", reported_by: "operator" },
       },
       {
-        candidate_id: "ac_mock_2", _rev: "1-bbb", capture_id: "cap-2", source: "photo",
-        site: "7050 — Summit Wire", created_at: "Today 8:50 PM",
-        summary: "Supply need: paper towels out in the east restroom.",
+        draft_id: "jd_mock_2", _rev: "1-bbb", source_capture_id: "cap-2", source: "photo",
+        site: "7050 — Summit Wire", site_id: "7050", group_id: "grp-2", submitter_name: "Preview Operator", created_at: "Today 8:50 PM",
+        message: "Supply need: paper towels out in the east restroom.",
         evidence: "Photo shows empty dispenser.",
-        proposed_action: {
-          action_key: "log_supply_need", title: "Log supply need", job_type: "log_supply_need",
-          payload: { site_id: "7050", item_name: "Paper towels", requested_by: "operator" },
-        },
+        job_type: "log_supply_need",
+        payload: { site_id: "7050", item_name: "Paper towels", requested_by: "operator" },
       },
       {
-        candidate_id: "ac_mock_3", _rev: "1-ccc", capture_id: "cap-3", source: "note",
-        site: "7060 — Continental Metalworks", created_at: "Yesterday",
-        summary: "Note appended to site record (this one simulates a conflict).",
+        draft_id: "jd_mock_3", _rev: "1-ccc", source_capture_id: "cap-3", source: "note",
+        site: "7060 — Continental Metalworks", site_id: "7060", group_id: "grp-3", submitter_name: "Preview Operator", created_at: "Yesterday",
+        message: "Note appended to site record.",
         evidence: "Front entrance mats need replacement.",
-        proposed_action: {
-          action_key: "append_to_note", title: "Append site note", job_type: "append_to_note",
-          payload: { path: "Accounts/7060.md", content: "Front entrance mats need replacement.", destination: "site_note" },
-        },
+        job_type: "append_to_note",
+        payload: { path: "Accounts/7060.md", content: "Front entrance mats need replacement.", destination: "site_note" },
+      },
+      {
+        draft_id: "jd_mock_4", _rev: "1-ddd", source_capture_id: "cap-4", source: "voice",
+        site: "7050 — Summit Wire", site_id: "7050", group_id: "grp-4", submitter_name: "Preview Operator", created_at: "Today 9:05 PM",
+        message: "Checklist item: log site note.",
+        evidence: "Three follow-up actions from one memo.",
+        job_type: "append_to_note",
+        payload: { path: "Accounts/7050.md", content: "East gate needs follow-up.", destination: "site_note" },
+      },
+      {
+        draft_id: "jd_mock_5", _rev: "1-eee", source_capture_id: "cap-4", source: "voice",
+        site: "7050 — Summit Wire", site_id: "7050", group_id: "grp-4", submitter_name: "Preview Operator", created_at: "Today 9:05 PM",
+        message: "Checklist item: log supply need.",
+        evidence: "Three follow-up actions from one memo.",
+        job_type: "log_supply_need",
+        payload: { site_id: "7050", item_name: "Traffic cones", requested_by: "operator" },
       },
     ];
     var decided = {};
-    var CONFLICT_ID = "ac_mock_3"; // approving/rejecting this returns already_decided
+    var CONFLICT_ID = "jd_mock_3"; // approving/rejecting this returns already_decided
     return {
-      count: function () { return items.filter(function (i) { return !decided[i.candidate_id]; }).length; },
+      count: function () { return items.filter(function (i) { return !decided[i.draft_id]; }).length; },
       inbox: function () {
-        var live = items.filter(function (i) { return !decided[i.candidate_id]; });
+        var live = items.filter(function (i) { return !decided[i.draft_id]; });
         return { count: live.length, items: live.map(function (i) { return JSON.parse(JSON.stringify(i)); }) };
       },
       decide: function (kind, item) {
-        if (item.candidate_id === CONFLICT_ID) {
-          decided[item.candidate_id] = true; // it's gone now
-          return { status: "already_decided", candidate_id: item.candidate_id };
+        if (item.draft_id === CONFLICT_ID) {
+          decided[item.draft_id] = true; // it's gone now
+          return { error: "already_decided", draft_id: item.draft_id };
         }
-        decided[item.candidate_id] = true;
-        return { status: kind === "approve" ? "approved" : "rejected", candidate_id: item.candidate_id };
+        decided[item.draft_id] = true;
+        return { status: kind === "approve" ? "approved" : "rejected", draft_id: item.draft_id };
+      },
+      decideSet: function (_group, drafts) {
+        var approved = 0;
+        var rejected = 0;
+        var results = drafts.map(function (draft) {
+          decided[draft.draft_id] = true;
+          if (draft.checked) approved += 1;
+          else rejected += 1;
+          return { draft_id: draft.draft_id, status: draft.checked ? "approved" : "rejected" };
+        });
+        return { ok: true, approved: approved, rejected: rejected, already_decided: 0, results: results };
       },
     };
   })();

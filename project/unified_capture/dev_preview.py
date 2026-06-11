@@ -52,7 +52,7 @@ CONTENT_TYPES = {
 }
 
 # A fake session shaped like the real /api/session payload, plus inbox_count.
-# inbox_count is set to match the three cards in inbox.js's MOCK so the badge
+# inbox_count is set to match the five drafts in inbox.js's MOCK so the badge
 # and the opened list agree.
 FAKE_SESSION = {
     "person": {"person_id": "preview-person", "name": "Preview Operator"},
@@ -63,8 +63,95 @@ FAKE_SESSION = {
     ],
     "can_submit": True,
     "can_review": True,
-    "inbox_count": 3,
+    "inbox_count": 5,
 }
+
+PREVIEW_INBOX_ITEMS = [
+    {
+        "draft_id": "jd_preview_1",
+        "_rev": "1-aaa",
+        "source_capture_id": "cap-1",
+        "source": "voice",
+        "site": "7050 — Summit Wire",
+        "site_id": "7050",
+        "group_id": "grp-1",
+        "submitter_name": "Preview Operator",
+        "created_at": "Today 8:42 PM",
+        "message": "Staffing risk: guard removed self from required group and no-showed.",
+        "evidence": "Jordan removed themselves from the required group and no-showed again.",
+        "job_type": "log_personnel_event",
+        "payload": {
+            "employee": "Jordan",
+            "event_type": "attendance",
+            "summary": "Removed self from required group; no-show.",
+            "reported_by": "operator",
+        },
+    },
+    {
+        "draft_id": "jd_preview_2",
+        "_rev": "1-bbb",
+        "source_capture_id": "cap-2",
+        "source": "photo",
+        "site": "7050 — Summit Wire",
+        "site_id": "7050",
+        "group_id": "grp-2",
+        "submitter_name": "Preview Operator",
+        "created_at": "Today 8:50 PM",
+        "message": "Supply need: paper towels out in the east restroom.",
+        "evidence": "Photo shows empty dispenser.",
+        "job_type": "log_supply_need",
+        "payload": {"site_id": "7050", "item_name": "Paper towels", "requested_by": "operator"},
+    },
+    {
+        "draft_id": "jd_preview_3",
+        "_rev": "1-ccc",
+        "source_capture_id": "cap-3",
+        "source": "note",
+        "site": "7060 — Continental Metalworks",
+        "site_id": "7060",
+        "group_id": "grp-3",
+        "submitter_name": "Preview Operator",
+        "created_at": "Yesterday",
+        "message": "Note appended to site record.",
+        "evidence": "Front entrance mats need replacement.",
+        "job_type": "append_to_note",
+        "payload": {
+            "path": "Accounts/7060.md",
+            "content": "Front entrance mats need replacement.",
+            "destination": "site_note",
+        },
+    },
+    {
+        "draft_id": "jd_preview_4",
+        "_rev": "1-ddd",
+        "source_capture_id": "cap-4",
+        "source": "voice",
+        "site": "7050 — Summit Wire",
+        "site_id": "7050",
+        "group_id": "grp-4",
+        "submitter_name": "Preview Operator",
+        "created_at": "Today 9:05 PM",
+        "message": "Checklist item: log site note.",
+        "evidence": "Three follow-up actions from one memo.",
+        "job_type": "append_to_note",
+        "payload": {"path": "Accounts/7050.md", "content": "East gate needs follow-up.", "destination": "site_note"},
+    },
+    {
+        "draft_id": "jd_preview_5",
+        "_rev": "1-eee",
+        "source_capture_id": "cap-4",
+        "source": "voice",
+        "site": "7050 — Summit Wire",
+        "site_id": "7050",
+        "group_id": "grp-4",
+        "submitter_name": "Preview Operator",
+        "created_at": "Today 9:05 PM",
+        "message": "Checklist item: log supply need.",
+        "evidence": "Three follow-up actions from one memo.",
+        "job_type": "log_supply_need",
+        "payload": {"site_id": "7050", "item_name": "Traffic cones", "requested_by": "operator"},
+    },
+]
 
 
 class PreviewHandler(BaseHTTPRequestHandler):
@@ -80,9 +167,7 @@ class PreviewHandler(BaseHTTPRequestHandler):
             self._json({"submissions": [], "quality_summary": None})
             return
         if path == "/api/inbox":
-            # Not used in mock mode, but provide a harmless empty live response
-            # so flipping INBOX_USE_MOCK=false here degrades gracefully.
-            self._json({"count": 0, "items": []})
+            self._json({"count": len(PREVIEW_INBOX_ITEMS), "items": PREVIEW_INBOX_ITEMS})
             return
         if self._serve_static(path):
             return
@@ -92,7 +177,35 @@ class PreviewHandler(BaseHTTPRequestHandler):
         # Accept and ack inbox decisions so live-mode poking here doesn't 404.
         path = urlsplit(self.path).path
         if path in ("/api/inbox/approve", "/api/inbox/reject"):
-            self._json({"status": "approved" if path.endswith("approve") else "rejected"})
+            body = self._read_json()
+            self._json(
+                {
+                    "ok": True,
+                    "draft_id": str(body.get("draft_id") or ""),
+                    "status": "approved" if path.endswith("approve") else "rejected",
+                }
+            )
+            return
+        if path == "/api/inbox/approve-set":
+            body = self._read_json()
+            drafts = body.get("drafts") if isinstance(body.get("drafts"), list) else []
+            results = []
+            approved = 0
+            rejected = 0
+            for draft in drafts:
+                if not isinstance(draft, dict):
+                    continue
+                checked = bool(draft.get("checked"))
+                approved += 1 if checked else 0
+                rejected += 0 if checked else 1
+                results.append(
+                    {
+                        "draft_id": str(draft.get("draft_id") or ""),
+                        "action": "approve" if checked else "reject",
+                        "status": "approved" if checked else "rejected",
+                    }
+                )
+            self._json({"ok": True, "approved": approved, "rejected": rejected, "already_decided": 0, "results": results})
             return
         self._json({"error": "not_found"}, HTTPStatus.NOT_FOUND)
 
@@ -123,6 +236,19 @@ class PreviewHandler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(body)
+
+    def _read_json(self) -> dict:
+        try:
+            length = int(self.headers.get("Content-Length") or "0")
+        except ValueError:
+            return {}
+        if length <= 0:
+            return {}
+        try:
+            payload = json.loads(self.rfile.read(length).decode("utf-8"))
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            return {}
+        return payload if isinstance(payload, dict) else {}
 
     def log_message(self, fmt: str, *args: object) -> None:
         # Quiet by default; uncomment for request logging.

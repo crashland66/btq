@@ -33,12 +33,12 @@ from event_pipeline.couchdb_capture_writer import (
     get_field_capture_document,
     put_field_capture_document,
 )
-from event_pipeline.couchdb_candidate_writer import CouchDBCandidateWriterError
+from event_pipeline.couchdb_job_draft_writer import CouchDBJobDraftWriterError, list_job_drafts
 from event_pipeline.couchdb_registry import CouchDBSiteRegistry
 from field_capture import my_submissions as my_submissions_module
 from field_capture import photo_vision as photo_vision_module
-from field_capture.action_candidates import apply_candidate_review, list_action_candidates
 from field_capture.auth import AuthorizedSession, TokenStore, authorize_token
+from field_capture.job_draft_review import apply_job_draft_review
 from field_capture.photo_vision_couchdb import query_photo_vision_by_capture_ids
 from field_capture.site_viewer import resolve_media_request
 from field_capture.server import (
@@ -146,6 +146,9 @@ class UnifiedCaptureHandler(BaseHTTPRequestHandler):
             return
         if path == "/api/inbox/reject":
             self.handle_inbox_review("reject")
+            return
+        if path == "/api/inbox/approve-set":
+            self.handle_inbox_review_set()
             return
         self.write_json({"error": "not_found"}, HTTPStatus.NOT_FOUND)
 
@@ -365,6 +368,7 @@ class UnifiedCaptureHandler(BaseHTTPRequestHandler):
         session = self.authorize_token_from_request()
         if session is None:
             return None
+        # Worker-token-403 gate: inbox review endpoints are operator-only.
         if session.record.token_type != "admin_viewer":
             self.write_json({"error": "not_authorized"}, HTTPStatus.FORBIDDEN)
             return None
@@ -382,7 +386,7 @@ class UnifiedCaptureHandler(BaseHTTPRequestHandler):
             return
         try:
             items = self.inbox_items()
-        except CouchDBCandidateWriterError as error:
+        except CouchDBJobDraftWriterError as error:
             self.log_message("CouchDB inbox lookup unavailable error=%s", error)
             self.write_json(
                 {"error": "couchdb_unavailable", "message": "CouchDB inbox unavailable"},
@@ -405,16 +409,16 @@ class UnifiedCaptureHandler(BaseHTTPRequestHandler):
         payload = self.read_json_payload(max_bytes=10_000)
         if payload is None:
             return
-        candidate_id = str(payload.get("candidate_id") or "").strip()
+        draft_id = str(payload.get("draft_id") or "").strip()
         expected_rev = str(payload.get("_rev") or "").strip()
-        if not candidate_id or not expected_rev:
+        if not draft_id or not expected_rev:
             self.write_json({"error": "invalid_payload"}, HTTPStatus.BAD_REQUEST)
             return
         reason = payload.get("reason")
-        result = apply_candidate_review(
+        result = apply_job_draft_review(
             couchdb_config,
             self.server.couchdb_database,
-            candidate_id,
+            draft_id,
             action=action,
             reviewer=str(session.person.person_id),
             expected_rev=expected_rev,
@@ -427,7 +431,80 @@ class UnifiedCaptureHandler(BaseHTTPRequestHandler):
             self.write_json({"error": "review_failed", "message": result.error}, HTTPStatus.BAD_REQUEST)
             return
         status = "approved" if action == "approve" else "rejected"
-        self.write_json({"ok": True, "candidate_id": result.candidate_id, "status": status}, HTTPStatus.OK)
+        self.write_json({"ok": True, "draft_id": result.draft_id, "status": status}, HTTPStatus.OK)
+
+    def handle_inbox_review_set(self) -> None:
+        session = self.authorize_inbox_operator()
+        if session is None:
+            return
+        couchdb_config = self.server.couchdb_config
+        if couchdb_config is None:
+            self.write_json(
+                {"error": "couchdb_unavailable", "message": "CouchDB inbox unavailable"},
+                HTTPStatus.SERVICE_UNAVAILABLE,
+            )
+            return
+        payload = self.read_json_payload(max_bytes=100_000)
+        if payload is None:
+            return
+        drafts = payload.get("drafts")
+        if not isinstance(drafts, list):
+            self.write_json({"error": "invalid_payload"}, HTTPStatus.BAD_REQUEST)
+            return
+
+        results: list[dict[str, object]] = []
+        approved = 0
+        rejected = 0
+        already_decided = 0
+        for entry in drafts:
+            if not isinstance(entry, dict):
+                self.write_json({"error": "invalid_payload"}, HTTPStatus.BAD_REQUEST)
+                return
+            draft_id = str(entry.get("draft_id") or "").strip()
+            expected_rev = str(entry.get("_rev") or "").strip()
+            if not draft_id or not expected_rev:
+                self.write_json({"error": "invalid_payload"}, HTTPStatus.BAD_REQUEST)
+                return
+            checked = bool(entry.get("checked"))
+            action = "approve" if checked else "reject"
+            result = apply_job_draft_review(
+                couchdb_config,
+                self.server.couchdb_database,
+                draft_id,
+                action=action,
+                reviewer=str(session.person.person_id),
+                expected_rev=expected_rev,
+                rationale="Approved in PWA checklist." if checked else "Unchecked in PWA checklist.",
+            )
+            result_payload: dict[str, object] = {
+                "draft_id": result.draft_id,
+                "action": action,
+                "status": "already_decided" if result.already_decided else result.review_status,
+            }
+            if result.new_rev:
+                result_payload["_rev"] = result.new_rev
+            if result.already_decided:
+                already_decided += 1
+                result_payload["error"] = "already_decided"
+            elif result.error:
+                result_payload["error"] = "review_failed"
+                result_payload["message"] = result.error
+            elif action == "approve":
+                approved += 1
+            else:
+                rejected += 1
+            results.append(result_payload)
+
+        self.write_json(
+            {
+                "ok": True,
+                "approved": approved,
+                "rejected": rejected,
+                "already_decided": already_decided,
+                "results": results,
+            },
+            HTTPStatus.OK,
+        )
 
     def read_json_payload(self, *, max_bytes: int) -> dict[str, object] | None:
         raw_length = self.headers.get("Content-Length")
@@ -450,10 +527,10 @@ class UnifiedCaptureHandler(BaseHTTPRequestHandler):
         return payload
 
     def inbox_items(self) -> list[dict[str, object]]:
-        docs = list_action_candidates(
+        docs = list_job_drafts(
             self.server.couchdb_config,
             self.server.couchdb_database,
-            status="pending_review",
+            review_status="pending_approval",
         )
         registry = self.site_registry()
         items: list[dict[str, object]] = []
@@ -474,45 +551,32 @@ class UnifiedCaptureHandler(BaseHTTPRequestHandler):
             return 0
 
     def inbox_item(self, doc: dict[str, object], registry: object | None) -> dict[str, object] | None:
-        proposed = doc.get("proposed_queue_job")
-        if not isinstance(proposed, dict):
-            return None
-        job_type = str(proposed.get("job_type") or "").strip()
-        payload = proposed.get("payload")
+        job_type = str(doc.get("job_type") or "").strip()
+        payload = doc.get("payload")
         if not isinstance(payload, dict):
             return None
-        proposed_job = {"job_type": job_type, "payload": dict(payload)}
         try:
-            if not validate_job(proposed_job):
+            if not validate_job({"job_type": job_type, "payload": dict(payload)}):
                 return None
         except Exception:
             return None
 
-        source_detail = doc.get("source_detail") if isinstance(doc.get("source_detail"), dict) else {}
-        channel_metadata = source_detail.get("channel_metadata") if isinstance(source_detail.get("channel_metadata"), dict) else {}
-        approval_metadata = source_detail.get("approval_metadata") if isinstance(source_detail.get("approval_metadata"), dict) else {}
-        extracted_action = approval_metadata.get("extracted_action") if isinstance(approval_metadata.get("extracted_action"), dict) else {}
         site_id = str(doc.get("site_id") or "").strip()
-        summary = str(doc.get("summary") or "").strip()
+        message = str(doc.get("message") or "").strip()
         return {
-            "candidate_id": str(doc.get("candidate_id") or ""),
+            "draft_id": str(doc.get("draft_id") or doc.get("_id") or ""),
             "_rev": str(doc.get("_rev") or ""),
-            "capture_id": str(doc.get("capture_id") or ""),
+            "source_capture_id": str(doc.get("source_capture_id") or ""),
             "source": self.inbox_source(doc),
-            "summary": summary,
+            "message": message,
             "evidence": self.inbox_evidence(doc),
             "site": self.site_label(site_id, registry),
+            "site_id": site_id,
+            "group_id": str(doc.get("group_id") or ""),
+            "submitter_name": str(doc.get("submitter_name") or ""),
             "created_at": str(doc.get("created_at") or ""),
-            "proposed_action": {
-                "action_key": str(
-                    channel_metadata.get("action_key")
-                    or extracted_action.get("action_key")
-                    or job_type
-                ),
-                "title": self.proposed_action_title(summary, payload),
-                "job_type": job_type,
-                "payload": dict(payload),
-            },
+            "job_type": job_type,
+            "payload": dict(payload),
         }
 
     def inbox_source(self, doc: dict[str, object]) -> str:
@@ -533,13 +597,6 @@ class UnifiedCaptureHandler(BaseHTTPRequestHandler):
                 if value:
                     return value
         return ""
-
-    def proposed_action_title(self, summary: str, payload: dict[str, object]) -> str:
-        for key in ("title", "summary", "name", "path"):
-            value = str(payload.get(key) or "").strip()
-            if value:
-                return value
-        return summary
 
     def site_registry(self) -> object | None:
         registry = getattr(self.server, "site_registry", None)
