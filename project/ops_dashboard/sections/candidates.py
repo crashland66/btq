@@ -32,6 +32,7 @@ from ops_dashboard.common import (
     render_list,
     render_relative_time,
     render_thumb,
+    capture_thumbnails,
     safe_media_url,
     safe_submitter,
     significant_warnings,
@@ -771,21 +772,6 @@ def capture_has_media(runtime_root: Path, capture_id: str, *, media_kind: str) -
             if media_kind == "audio" and is_audio_file(item):
                 return True
     return False
-
-
-def capture_thumbnails(runtime_root: Path, capture_id: str) -> list[str]:
-    """Return /media/ URLs for every image in the capture upload directory."""
-    upload_root = runtime_root / "uploads"
-    if not capture_id or not upload_root.exists():
-        return []
-    urls: list[str] = []
-    for capture_dir in upload_root.glob(f"*/{capture_id}"):
-        for item in sorted(capture_dir.glob("*")):
-            if item.is_file() and (mimetypes.guess_type(item.name)[0] or "").startswith("image/"):
-                url = safe_media_url(f"/media/{item.relative_to(upload_root)}")
-                if url:
-                    urls.append(url)
-    return urls
 
 
 def capture_thumbnail(runtime_root: Path, capture_id: str) -> str:

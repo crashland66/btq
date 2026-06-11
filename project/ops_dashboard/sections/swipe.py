@@ -30,6 +30,7 @@ from field_capture import action_candidates as field_action_candidates
 from field_capture import approved_job_drafts
 from ops_dashboard.common import (
     UNKNOWN_SUBMITTER,
+    capture_thumbnails,
     render_relative_time,
     resolve_site_label,
     submitters_by_capture,
@@ -119,6 +120,10 @@ def swipe_card(
         "rationale": str(payload.get("rationale") or ""),
         "confidence": _confidence_label(payload.get("confidence")),
         "evidence": _evidence_text(payload),
+        # The worker's actual message + the photos they captured: the human
+        # context the operator decides on (vs the technical proposed mutation).
+        "message": _evidence_text(payload),
+        "photos": capture_thumbnails(runtime_root, capture_id),
         "proposed_job_type": str(proposed_job_type or ""),
         "proposed_payload": proposed_payload if isinstance(proposed_payload, dict) else {},
         "proposed_error": str(proposed_error or ""),
@@ -284,19 +289,24 @@ window.__btqSwipeInit = function () {
     var warn = c.approvable ? '' :
       '<p class="swipe-warn">⚠ ' + esc(c.proposed_error || 'Proposed job is invalid') + '</p>';
 
+    var thumbs = (c.photos && c.photos.length)
+      ? '<div class="swipe-thumbs">' + c.photos.map(function (u) {
+          return '<img class="candidate-thumb" src="' + esc(u) + '" alt="capture photo" loading="lazy">';
+        }).join('') + '</div>'
+      : '';
+
+    // The card leads with the human context -- the worker's message, who sent
+    // it, for which site, and the photos -- not the technical proposed mutation.
     mount.innerHTML =
       '<article class="swipe-card" data-candidate-id="' + esc(c.candidate_id) + '">' +
         '<div class="swipe-card-top">' +
           '<span class="swipe-progress">' + remaining + ' left</span>' +
-          '<span class="swipe-conf ' + confClass + '">confidence: ' + esc(c.confidence) + '</span>' +
+          (c.captured_at ? '<span>' + esc(c.captured_at) + '</span>' : '') +
         '</div>' +
-        '<h2 class="swipe-site">' + esc(site) + (c.area ? ' <span class="swipe-area">· ' + esc(c.area) + '</span>' : '') + '</h2>' +
-        '<p class="swipe-type">' + esc(c.proposed_job_type || 'no proposed job') + '</p>' +
-        (c.summary ? '<p class="swipe-summary">' + esc(c.summary) + '</p>' : '') +
-        (c.evidence ? '<blockquote class="swipe-evidence">' + esc(c.evidence) + '</blockquote>' : '') +
+        '<p class="swipe-message">' + esc(c.message || c.summary || '(no message)') + '</p>' +
         '<p class="swipe-meta muted">' + esc(c.submitter_name || 'Unknown submitter') +
-          (c.captured_at ? ' · ' + esc(c.captured_at) : '') + '</p>' +
-        '<details class="swipe-detail"><summary>Proposed mutation</summary>' + payloadRows(c.proposed_payload) + '</details>' +
+          ' · ' + esc(site) + (c.area ? ' · ' + esc(c.area) : '') + '</p>' +
+        thumbs +
         warn +
         '<div class="swipe-actions">' +
           '<button type="button" class="swipe-btn reject" data-act="reject" title="Reject (R / Left)">Reject</button>' +

@@ -99,6 +99,46 @@ def test_swipe_has_skip_control_that_advances_without_acting(tmp_path):
     assert "<kbd>S</kbd>" in body and "skip" in body
 
 
+def test_swipe_card_surfaces_message_and_photo_thumbnails(tmp_path, couchdb_review):
+    """The card carries the worker's message + /media thumbnail URLs for its photos."""
+    from ops_dashboard.sections import swipe
+    from field_capture.action_candidates import default_candidate_dir
+
+    cid = "cap-test-7050"
+    photo_dir = tmp_path / "uploads" / "2026-06-10" / cid
+    photo_dir.mkdir(parents=True, exist_ok=True)
+    (photo_dir / "img-001.jpg").write_bytes(b"\xff\xd8\xff\xe0fakejpeg")
+
+    candidate_dir = default_candidate_dir(tmp_path)
+    candidate_dir.mkdir(parents=True, exist_ok=True)
+    _write_candidate(
+        candidate_dir,
+        "ac_msg",
+        source_text="A new vacuum and lint brushes are needed.",
+        channel_metadata={"site_id": "7050", "submitter_name": "Sandy", "upload_id": cid},
+    )
+    couchdb_review.seed_from_fs(tmp_path)
+
+    card = {c["candidate_id"]: c for c in swipe.swipe_payload(tmp_path)["cards"]}["ac_msg"]
+    assert card["message"] == "A new vacuum and lint brushes are needed."
+    assert card["submitter_name"] == "Sandy"
+    assert card["site_id"] == "7050"
+    assert card["photos"] == [f"/media/2026-06-10/{cid}/img-001.jpg"]
+
+
+def test_swipe_card_render_leads_with_message_not_mutation(tmp_path):
+    from ops_dashboard.sections import swipe
+
+    body = swipe.render_body(
+        SimpleNamespace(runtime_root=tmp_path, config=SimpleNamespace(vault_dir=tmp_path / "vault")),
+        payload={"cards": [], "counts": {}},
+    )
+    assert "swipe-message" in body
+    assert "swipe-thumbs" in body
+    # The technical proposed-mutation block is gone from the card.
+    assert "Proposed mutation" not in body
+
+
 def test_swipe_card_carries_fallback_proposed_job(tmp_path, couchdb_review):
     # A field-capture candidate with only a summary still gets a proposed job:
     # proposed_queue_jobs falls back to a generated append_to_note. The card

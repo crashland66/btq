@@ -1484,6 +1484,25 @@ def safe_media_url(value: object) -> str:
     return ""
 
 
+def capture_thumbnails(runtime_root: Path, capture_id: str) -> list[str]:
+    """Return /media/ URLs for every image in the capture upload directory.
+
+    Shared by the review surfaces (swipe card + candidates table) so a capture's
+    photos can be shown as thumbnails next to the operator's decision.
+    """
+    upload_root = runtime_root / "uploads"
+    if not capture_id or not upload_root.exists():
+        return []
+    urls: list[str] = []
+    for capture_dir in upload_root.glob(f"*/{capture_id}"):
+        for item in sorted(capture_dir.glob("*")):
+            if item.is_file() and (mimetypes.guess_type(item.name)[0] or "").startswith("image/"):
+                url = safe_media_url(f"/media/{item.relative_to(upload_root)}")
+                if url:
+                    urls.append(url)
+    return urls
+
+
 def audio_player(media_url: object) -> str:
     """Render an <audio> player for a /media/ URL (shared across sections)."""
     url = safe_media_url(media_url)
