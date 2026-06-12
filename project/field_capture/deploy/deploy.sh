@@ -72,6 +72,21 @@ if [ "${run_static}" = "1" ]; then
 	echo "Staging field-capture static assets in ${DIST_DIR}..."
 	sudo mkdir -p "${DIST_DIR}"
 	sudo rsync -a --delete "${SOURCE_DIR}/project/field_capture/public/" "${DIST_DIR}/"
+	# db.js and sw.js are served dynamically by server.py, so they are NOT in
+	# public/. Caddy serves /db.js and /sw.js statically from dist/, so they must
+	# be materialized here (the --delete above would otherwise leave them absent,
+	# 404-ing the IndexedDB wrapper and the offline-shell service worker).
+	echo "Materializing field-capture db.js + sw.js into ${DIST_DIR}..."
+	sudo env PYTHONPATH="${SOURCE_DIR}/project" python3 - "${DIST_DIR}" <<'PY'
+import sys
+from pathlib import Path
+from shared_pwa.assets import render_service_worker, shared_db_bytes
+dist = Path(sys.argv[1])
+dist.mkdir(parents=True, exist_ok=True)
+(dist / "db.js").write_bytes(shared_db_bytes())
+(dist / "sw.js").write_text(render_service_worker("field_capture"), encoding="utf-8")
+print(f"materialized db.js + sw.js into {dist}")
+PY
 fi
 
 if [ "${run_python}" = "1" ]; then
