@@ -119,6 +119,22 @@ _DATAVIEW_HEADINGS = {"Employees Assigned", "Open Issues", "Recent Visits"}
 _FENCE_RE = re.compile(r"^(\s*)```(.*)$")
 _CLOSE_FENCE_RE = re.compile(r"^\s*```\s*$")
 
+_BUILTIN_LOCATION_DOCS: dict[str, dict[str, Any]] = {
+    "SANDBOX": {
+        "_id": "location_SANDBOX",
+        "type": "location",
+        "site_id": "SANDBOX",
+        "location": "Sandbox Site",
+        "account": "Sandbox Site",
+        "active": True,
+        "content": (
+            "Demo / test sandbox site for exercising capture, semantic extraction, and "
+            "job review end-to-end. Treat as a generic commercial cleaning site."
+        ),
+        "_builtin": True,
+    },
+}
+
 
 def _cdb() -> tuple[str, dict[str, str], str, float]:
     base = sites.couchdb_base_url()
@@ -139,6 +155,11 @@ def _load_location(site_id: str) -> dict[str, Any] | None:
             return payload if isinstance(payload, dict) else None
     except Exception:
         return None
+
+
+def _builtin_location_doc(site_id: str) -> dict[str, Any] | None:
+    doc = _BUILTIN_LOCATION_DOCS.get(site_id)
+    return dict(doc) if doc is not None else None
 
 
 def _is_blank(line: str) -> bool:
@@ -408,6 +429,8 @@ def render(ctx: object, site_id: str) -> str:
     try:
         edit_section = first_query_value(getattr(ctx, "query", {}), "edit")
         doc = _load_location(site_id)
+        if not isinstance(doc, dict) or doc.get("type") != "location":
+            doc = _builtin_location_doc(site_id)
         if not isinstance(doc, dict) or doc.get("type") != "location":
             return _not_found(site_id)
 
