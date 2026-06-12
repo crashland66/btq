@@ -144,7 +144,12 @@ def test_console_supplies_tab_renders_open_full_list_with_filters_and_actions(
     assert '<option value="open" selected>Open (1)</option>' in body
     assert "BrightWash cleaner" in body
     assert "Mop heads" not in body
-    assert ">Actions</th>" in body  # Actions column present (header carries the td-nowrap class)
+    # 349: supplies list is now a responsive card GRID, not a <table>. Actions live
+    # in each card's <footer>, not an "Actions" column header. Assert the card markup
+    # and the per-card actions footer instead of the old ">Actions</th>" column header.
+    assert "<article" in body  # card markup present (was a table row before)
+    assert "minmax(260px,1fr)" in body  # responsive card grid wrapper
+    assert "<footer" in body  # actions rendered inside the card footer
     assert "Mark ordered" in body
     assert "Mark no action needed" in body
     assert "See all" not in body

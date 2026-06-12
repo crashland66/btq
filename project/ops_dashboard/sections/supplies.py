@@ -145,24 +145,42 @@ def render_filter_form(
 
 
 def render_supply_list(supplies: list[object]) -> str:
-    if not supplies:
-        return "<p>No supply needs found.</p>"
     rows = [supply for supply in supplies if isinstance(supply, dict)]
-    return render_table(
-        rows,
-        [
-            {"key": "item_name", "label": "Item", "format": lambda value, row: f'<a href="/supplies?supply_id={quote(str(row.get("supply_id") or ""))}">{html.escape(str(value or "Supply need"))}</a>'},
-            {"key": "status", "label": "Status", "format": lambda value, _row: render_pill(value), "nowrap": True},
-            {"key": "urgency", "label": "Urgency", "format": lambda value, _row: render_pill(value), "priority": 2, "nowrap": True},
-            {"key": "site_id", "label": "Site", "format": lambda value, row: render_site_label(value, site_name=row.get("site_name")), "priority": 1, "nowrap": True},
-            {"key": "quantity_needed", "label": "Quantity", "priority": 2, "nowrap": True},
-            {"key": "requested_by", "label": "Requested By", "priority": 2, "nowrap": True},
-            {"key": "notes", "label": "Notes", "format": lambda value, _row: html.escape(truncate(str(value or ""))), "priority": 3},
-            {"key": "supply_id", "label": "Actions", "format": lambda _value, row: render_row_actions(row), "priority": 2, "nowrap": True},
-            {"key": "_id", "label": "ID", "format": lambda value, _row: html.escape(str(value or "")), "priority": 3, "nowrap": True},
-        ],
-        empty_text="No supply needs found.",
-    )
+    if not rows:
+        return "<p>No supply needs found.</p>"
+    cards = []
+    for supply in rows:
+        supply_id = str(supply.get("supply_id") or "")
+        title = html.escape(str(supply.get("item_name") or "Supply need"))
+        pills = "".join((render_pill(supply.get("status")), render_pill(supply.get("urgency"))))
+        quantity = str(supply.get("quantity_needed") or "").strip()
+        requested_by = str(supply.get("requested_by") or "").strip()
+        record_id = str(supply.get("_id") or "").strip()
+        notes = truncate(str(supply.get("notes") or ""))
+        meta_lines = [
+            f'<div><span style="color:var(--muted)">Site:</span> {render_site_label(supply.get("site_id"), site_name=supply.get("site_name"))}</div>',
+        ]
+        if quantity:
+            meta_lines.append(f'<div><span style="color:var(--muted)">Quantity:</span> {html.escape(quantity)}</div>')
+        if requested_by:
+            meta_lines.append(f'<div><span style="color:var(--muted)">Requested by:</span> {html.escape(requested_by)}</div>')
+        if record_id:
+            meta_lines.append(f'<div><span style="color:var(--muted)">ID:</span> {html.escape(record_id)}</div>')
+        notes_html = f'<p style="margin:10px 0 0">{html.escape(notes)}</p>' if notes else ""
+        archived_notice = render_archived_notice(supply)
+        actions = render_row_actions(supply)
+        actions_footer = f'<footer style="margin-top:12px">{actions}</footer>' if actions else ""
+        cards.append(
+            f"""<article style="border:1px solid var(--line);border-radius:8px;background:var(--panel);padding:14px">
+  <h3 style="margin:0 0 8px"><a href="/supplies?supply_id={quote(supply_id)}">{title}</a></h3>
+  <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px">{pills}</div>
+  <div style="display:grid;gap:4px">{"".join(meta_lines)}</div>
+  {notes_html}
+  {archived_notice}
+  {actions_footer}
+</article>"""
+        )
+    return f'<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:16px;margin-top:12px">{"".join(cards)}</div>'
 
 
 def supplies_from_report(report: dict[str, object]) -> list[dict[str, object]]:

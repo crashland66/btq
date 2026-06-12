@@ -1557,8 +1557,12 @@ def test_supplies_table_uses_data_table_class(tmp_path: Path, monkeypatch) -> No
     status, _content_type, body = request_text("GET", "/supplies", tmp_path / "runtime")
 
     assert status == HTTPStatus.OK
-    assert 'class="data-table"' in body
-    assert "<table><tr><th>" not in body
+    # 349: the supplies list render is now a responsive card GRID, not a render_table()
+    # data-table. Assert the card-grid markup instead of the old 'class="data-table"'.
+    # (The page's Summary kv-table is a separate render_kv table and is unaffected.)
+    assert "<article" in body  # supply cards present (was a data-table before)
+    assert "minmax(260px,1fr)" in body  # responsive card grid wrapper
+    assert "<table><tr><th>" not in body  # original guard: no old-style supply table
 
 
 def test_supplies_route_filters_by_site_id_query_param(tmp_path: Path, monkeypatch) -> None:
