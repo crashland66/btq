@@ -10,7 +10,7 @@
 // is intentionally minimal so deploys can ship it without
 // new offline-cache invalidation risk.
 
-const SW_VERSION = "2026.05.28-drain-only";
+const SW_VERSION = "2026.06.12-blob-bytes";
 const SYNC_TAG = "__SYNC_TAG__";
 const DB_NAME = "field_capture_v1";
 const DB_VERSION = 1;
@@ -113,6 +113,13 @@ function nextBackoffMs(attempts) {
   return DRAIN_BACKOFF_SCHEDULE_MS[index];
 }
 
+// Records persist raw bytes (ArrayBuffer); rebuild a fresh Blob here. Legacy
+// records may carry a `blob` instead — fall back to it.
+function partBlob(part) {
+  if (part && part.bytes) return new Blob([part.bytes], { type: part.mimeType || "application/octet-stream" });
+  return part ? part.blob : null;
+}
+
 async function uploadOneCapture(record, token) {
   const form = new FormData();
   const fields = record.fields || {};
@@ -121,10 +128,10 @@ async function uploadOneCapture(record, token) {
     form.append(key, value == null ? "" : String(value));
   }
   for (const photo of record.photos || []) {
-    form.append("photos", photo.blob, photo.filename);
+    form.append("photos", partBlob(photo), photo.filename);
   }
   if (record.audio) {
-    form.append("audio", record.audio.blob, record.audio.filename);
+    form.append("audio", partBlob(record.audio), record.audio.filename);
     form.append("audio_duration_seconds", String(record.audio.durationSeconds || 0));
   }
   const response = await fetch("__API_ENDPOINT__", {

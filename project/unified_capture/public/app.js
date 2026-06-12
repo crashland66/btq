@@ -1,8 +1,8 @@
 (function () {
   "use strict";
 
-  const INTERFACE_VERSION = "2026.06.12-resilient-sync";
-  // Previous INTERFACE_VERSION values: "2026.06.11-job-first-review", "2026.06.08-photo-limit", "2026.06.08-text-and-gating", "2026.06.06-unified-capture" (legacy static smoke tests).
+  const INTERFACE_VERSION = "2026.06.12-blob-persist";
+  // Previous INTERFACE_VERSION values: "2026.06.12-resilient-sync", "2026.06.11-job-first-review", "2026.06.08-photo-limit", "2026.06.08-text-and-gating", "2026.06.06-unified-capture" (legacy static smoke tests).
   const PIPELINE_VERSION = "unified-capture-intake-v2";
   const DEFAULT_MAX_PHOTOS = 6; // fallback only; the live limit comes from /api/session.max_images
   const TOKEN_KEY = "unifiedCaptureToken";
@@ -1106,7 +1106,7 @@
     };
   }
 
-  function buildCaptureRecord() {
+  async function buildCaptureRecord() {
     const target = selectedTarget();
     const qcCategory = elements.categoryInput.value;
     const note = elements.notesInput.value.trim();
@@ -1146,16 +1146,23 @@
         captured_at: capturedAt,
         exported_at: exportedAt,
       },
-      photos: state.photos.map((photo) => ({
-        filename: photo.filename,
-        mimeType: photo.mimeType,
-        blob: photo.blob,
-      })),
+      // Persist raw bytes, NOT Blob objects. iOS WebKit invalidates Blobs
+      // stored in IndexedDB (WebKitBlobResource error 1 / "object can not be
+      // found"), permanently stranding any capture that doesn't upload
+      // immediately. Read bytes here while the in-memory blob is still valid;
+      // rebuild a fresh Blob at upload time. See partBlob().
+      photos: await Promise.all(
+        state.photos.map(async (photo) => ({
+          filename: photo.filename,
+          mimeType: photo.mimeType,
+          bytes: await photo.blob.arrayBuffer(),
+        })),
+      ),
       audio: state.audio
         ? {
             filename: state.audio.filename,
             mimeType: state.audio.mimeType,
-            blob: state.audio.blob,
+            bytes: await state.audio.blob.arrayBuffer(),
             durationSeconds: state.audio.durationSeconds,
           }
         : null,
@@ -1178,7 +1185,7 @@
       await finishActiveVoiceRecordingForSubmit();
       if (!elements.noteEditorPanel.hidden) closeNoteEditor();
       if (!window.fieldCaptureDb?.isSupported()) throw new Error("Local storage not available. Cannot save capture.");
-      const record = buildCaptureRecord();
+      const record = await buildCaptureRecord();
       await window.fieldCaptureDb.putCapture(record);
       clearPhotos();
       clearAudio();
@@ -1222,6 +1229,14 @@
     setStatus(readyStatusText());
   }
 
+  // Rebuild a fresh Blob from persisted bytes. Records written by this version
+  // store `bytes` (ArrayBuffer); legacy records may still carry a `blob` — fall
+  // back to it, though an iOS-invalidated legacy blob may no longer be readable.
+  function partBlob(part) {
+    if (part && part.bytes) return new Blob([part.bytes], { type: part.mimeType || "application/octet-stream" });
+    return part ? part.blob : null;
+  }
+
   async function uploadOneCapture(record) {
     const form = new FormData();
     const fields = record.fields || {};
@@ -1229,10 +1244,10 @@
       form.append(key, value == null ? "" : String(value));
     }
     for (const photo of record.photos || []) {
-      form.append("photos", photo.blob, photo.filename);
+      form.append("photos", partBlob(photo), photo.filename);
     }
     if (record.audio) {
-      form.append("audio", record.audio.blob, record.audio.filename);
+      form.append("audio", partBlob(record.audio), record.audio.filename);
       form.append("audio_duration_seconds", String(record.audio.durationSeconds || 0));
     }
     const response = await fetch("/api/submit", {
