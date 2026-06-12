@@ -18,6 +18,7 @@ from queue_spec import (
     ALLOWED_JOB_TYPES,
     JOB_APPEND_TO_NOTE,
     JOB_FLAG_RETENTION_RISK,
+    JOB_LOG_EQUIPMENT_REQUEST,
     JOB_LOG_SITE_ISSUE,
     JOB_LOG_SUPPLY_NEED,
     JOB_LOG_PERSONNEL_EVENT,
@@ -25,6 +26,7 @@ from queue_spec import (
     JOB_SET_ENTITY_STATUS,
     JOB_TRIGGER_RECRUITING,
     JOB_UPDATE_SITE_EQUIPMENT,
+    LOG_EQUIPMENT_REQUEST_ALLOWED_PAYLOAD_FIELDS,
     LOG_SITE_ISSUE_ALLOWED_PAYLOAD_FIELDS,
     LOG_SUPPLY_NEED_ALLOWED_PAYLOAD_FIELDS,
     LOG_PERSONNEL_EVENT_ALLOWED_PAYLOAD_FIELDS,
@@ -444,6 +446,7 @@ OPERATOR_PROPOSED_JOB_TYPES = frozenset(
     {
         JOB_APPEND_TO_NOTE,
         JOB_LOG_PERSONNEL_EVENT,
+        JOB_LOG_EQUIPMENT_REQUEST,
         JOB_LOG_SITE_ISSUE,
         JOB_LOG_SUPPLY_NEED,
         JOB_FLAG_RETENTION_RISK,
@@ -492,6 +495,8 @@ def proposed_queue_job_for_action(action: ExtractedAction, source: CaptureSemant
         payload = log_site_issue_payload(action, source, payload_fields)
     elif job_type == JOB_LOG_SUPPLY_NEED:
         payload = log_supply_need_payload(action, source, payload_fields)
+    elif job_type == JOB_LOG_EQUIPMENT_REQUEST:
+        payload = log_equipment_request_payload(action, source, payload_fields)
     elif job_type == JOB_APPEND_TO_NOTE:
         payload = append_to_note_payload(action, source, payload_fields)
     else:
@@ -717,6 +722,29 @@ def log_supply_need_payload(action: ExtractedAction, source: CaptureSemanticInpu
     return payload
 
 
+def log_equipment_request_payload(action: ExtractedAction, source: CaptureSemanticInput, payload_fields: dict[str, object]) -> dict[str, object]:
+    payload = {key: value for key, value in payload_fields.items() if key in LOG_EQUIPMENT_REQUEST_ALLOWED_PAYLOAD_FIELDS}
+    site_id = resolved_site_id_for_action(action, source, payload_fields)
+    if site_id:
+        payload["site_id"] = site_id
+    else:
+        payload.pop("site_id", None)
+    if not payload_text(payload, "equipment_name"):
+        payload["equipment_name"] = equipment_name_for_action(action, source, payload_fields)
+    if not payload_text(payload, "requested_by"):
+        payload["requested_by"] = reported_by_value(source, payload_fields)
+    if not payload_text(payload, "source"):
+        payload["source"] = source.source_kind or "capture_semantics"
+    if "related_capture_ids" not in payload and source.capture_id:
+        payload["related_capture_ids"] = [source.capture_id]
+    observed_at = captured_at_value(source, payload_fields, "observed_at")
+    if observed_at and not payload_text(payload, "observed_at"):
+        payload["observed_at"] = observed_at
+    if not payload_text(payload, "notes"):
+        payload["notes"] = action.source_excerpt or action.summary
+    return payload
+
+
 def append_to_note_payload(action: ExtractedAction, source: CaptureSemanticInput, payload_fields: dict[str, object]) -> dict[str, object]:
     note_path = resolved_site_note_path_for_source(source, payload_fields)
     payload: dict[str, object] = {}
@@ -913,6 +941,14 @@ def supply_item_name_for_action(action: ExtractedAction, source: CaptureSemantic
         or action.summary
         or action.source_excerpt
     )
+
+
+def equipment_name_for_action(action: ExtractedAction, source: CaptureSemanticInput, payload_fields: dict[str, object]) -> str:
+    return (
+        payload_text(payload_fields, "equipment_name", "equipment", "item", "item_name")
+        or action.summary
+        or action.source_excerpt
+    ).strip()
 
 
 def supply_item_name_from_text(text: str) -> str:
