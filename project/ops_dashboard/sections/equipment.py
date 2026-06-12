@@ -154,23 +154,39 @@ def render_filter_form(
 
 
 def render_equipment_list(equipment: list[object]) -> str:
-    if not equipment:
-        return "<p>No equipment requests found.</p>"
     rows = [request for request in equipment if isinstance(request, dict)]
-    return render_table(
-        rows,
-        [
-            {"key": "equipment_name", "label": "Equipment", "format": lambda value, row: f'<a href="/equipment?equipment_id={quote(str(row.get("equipment_id") or ""))}">{html.escape(str(value or "Equipment request"))}</a>'},
-            {"key": "status", "label": "Status", "format": lambda value, _row: render_pill(value), "nowrap": True},
-            {"key": "priority", "label": "Priority", "format": lambda value, _row: render_pill(value), "priority": 2, "nowrap": True},
-            {"key": "site_id", "label": "Site", "format": lambda value, row: render_site_label(value, site_name=row.get("site_name")), "priority": 1, "nowrap": True},
-            {"key": "requested_by", "label": "Requested By", "priority": 2, "nowrap": True},
-            {"key": "reason", "label": "Reason", "format": lambda value, _row: html.escape(truncate(str(value or ""))), "priority": 2},
-            {"key": "equipment_id", "label": "Actions", "format": lambda _value, row: render_row_actions(row), "priority": 2, "nowrap": True},
-            {"key": "_id", "label": "ID", "format": lambda value, _row: html.escape(str(value or "")), "priority": 3, "nowrap": True},
-        ],
-        empty_text="No equipment requests found.",
-    )
+    if not rows:
+        return "<p>No equipment requests found.</p>"
+    cards = []
+    for request in rows:
+        equipment_id = str(request.get("equipment_id") or "")
+        title = html.escape(str(request.get("equipment_name") or "Equipment request"))
+        pills = "".join((render_pill(request.get("status")), render_pill(request.get("priority"))))
+        requested_by = str(request.get("requested_by") or "").strip()
+        record_id = str(request.get("_id") or "").strip()
+        reason = truncate(str(request.get("reason") or ""))
+        meta_lines = [
+            f'<div><span style="color:var(--muted)">Site:</span> {render_site_label(request.get("site_id"), site_name=request.get("site_name"))}</div>',
+        ]
+        if requested_by:
+            meta_lines.append(f'<div><span style="color:var(--muted)">Requested by:</span> {html.escape(requested_by)}</div>')
+        if record_id:
+            meta_lines.append(f'<div><span style="color:var(--muted)">ID:</span> {html.escape(record_id)}</div>')
+        reason_html = f'<p style="margin:10px 0 0">{html.escape(reason)}</p>' if reason else ""
+        archived_notice = render_archived_notice(request)
+        actions = render_row_actions(request)
+        actions_footer = f'<footer style="margin-top:12px">{actions}</footer>' if actions else ""
+        cards.append(
+            f"""<article style="border:1px solid var(--line);border-radius:8px;background:var(--panel);padding:14px">
+  <h3 style="margin:0 0 8px"><a href="/equipment?equipment_id={quote(equipment_id)}">{title}</a></h3>
+  <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px">{pills}</div>
+  <div style="display:grid;gap:4px">{"".join(meta_lines)}</div>
+  {reason_html}
+  {archived_notice}
+  {actions_footer}
+</article>"""
+        )
+    return f'<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:16px;margin-top:12px">{"".join(cards)}</div>'
 
 
 def equipment_from_report(report: dict[str, object]) -> list[dict[str, object]]:
