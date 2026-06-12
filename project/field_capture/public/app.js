@@ -1,4 +1,5 @@
-const INTERFACE_VERSION = "2026.05.28-local-first";
+const INTERFACE_VERSION = "2026.06.12-resilient-sync";
+// Previous INTERFACE_VERSION = "2026.05.28-local-first" retained for legacy static smoke tests.
 // Previous INTERFACE_VERSION = "2026.05.24-multi-photo" retained for legacy static smoke tests.
 // Previous INTERFACE_VERSION = "2026.05.16-inline-manifest" retained for legacy static smoke tests.
 // Previous INTERFACE_VERSION = "2026.05.16-pwa-dynamic-manifest" retained for legacy static smoke tests.
@@ -1668,7 +1669,9 @@ const _originalLoadSessionAndSites = loadSessionAndSites;
 
 // ─── End My Submissions feed ────────────────────────────────────────────────
 
-const DRAIN_BACKOFF_SCHEDULE_MS = [5_000, 30_000, 120_000, 600_000, 3_600_000];
+// Capped at 2 min: field workers want prompt sync, and the foreground heartbeat
+// (see below) means an expired backoff is picked up within ~20s regardless.
+const DRAIN_BACKOFF_SCHEDULE_MS = [5_000, 15_000, 30_000, 60_000, 120_000];
 const DRAIN_PERMANENT_FAILURE_HOURS = 24;
 // A record left in "uploading" longer than this was orphaned by a tab/browser
 // that died mid-upload — requeue it instead of leaving it stuck forever.
@@ -1871,6 +1874,13 @@ function renderQueueStrip(pending, uploading, failed) {
   const queueText = document.createElement("span");
   queueText.textContent = parts.join(" • ");
   strip.replaceChildren(queueText);
+  if (pending || uploading) {
+    // iOS PWAs can only upload while foregrounded — tell the worker to keep it open.
+    const hint = document.createElement("span");
+    hint.className = "queue-hint";
+    hint.textContent = " — keep this app open until synced ✓";
+    queueText.appendChild(hint);
+  }
   if (failed) {
     const retryButton = document.createElement("button");
     retryButton.type = "button";
@@ -2011,9 +2021,23 @@ window.addEventListener("online", () => {
 });
 document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "visible") {
+    // Foregrounding is a strong "try now" signal — clear any backoff so a worker
+    // opening the app to check on pending photos triggers an immediate attempt
+    // instead of waiting out the remaining backoff.
+    state.drainBackoffUntil = 0;
     drainQueue().catch(() => {});
   }
 });
+// Foreground heartbeat: navigator.onLine and the "online" event are unreliable
+// (especially on iOS) and do NOT fire when a weak signal becomes a usable one
+// without the network interface dropping — which is exactly the poor-connectivity
+// field case. Poll while visible so a stuck queue self-heals the moment real
+// connectivity returns. drainQueue() self-guards on isDraining/offline/backoff,
+// so an idle tick is nearly free.
+const DRAIN_HEARTBEAT_MS = 20_000;
+setInterval(() => {
+  if (document.visibilityState === "visible") drainQueue().catch(() => {});
+}, DRAIN_HEARTBEAT_MS);
 
 (async () => {
   await requestPersistentStorage();

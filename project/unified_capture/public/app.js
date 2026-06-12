@@ -1,15 +1,17 @@
 (function () {
   "use strict";
 
-  const INTERFACE_VERSION = "2026.06.11-job-first-review";
-  // Previous INTERFACE_VERSION values: "2026.06.08-photo-limit", "2026.06.08-text-and-gating", "2026.06.06-unified-capture" (legacy static smoke tests).
+  const INTERFACE_VERSION = "2026.06.12-resilient-sync";
+  // Previous INTERFACE_VERSION values: "2026.06.11-job-first-review", "2026.06.08-photo-limit", "2026.06.08-text-and-gating", "2026.06.06-unified-capture" (legacy static smoke tests).
   const PIPELINE_VERSION = "unified-capture-intake-v2";
   const DEFAULT_MAX_PHOTOS = 6; // fallback only; the live limit comes from /api/session.max_images
   const TOKEN_KEY = "unifiedCaptureToken";
   const SCREEN_MODE_KEY = "unifiedCaptureScreenMode";
   const RECENT_SITE_KEY = "unifiedCaptureSiteId";
   const SYNC_TAG = "unified-capture-drain";
-  const DRAIN_BACKOFF_SCHEDULE_MS = [5_000, 30_000, 120_000, 600_000, 3_600_000];
+  // Capped at 2 min: field workers want prompt sync, and the foreground heartbeat
+  // (see event wiring below) picks up an expired backoff within ~20s regardless.
+  const DRAIN_BACKOFF_SCHEDULE_MS = [5_000, 15_000, 30_000, 60_000, 120_000];
   const DRAIN_PERMANENT_FAILURE_HOURS = 24;
   const UPLOAD_ORPHAN_RESET_MS = 120_000;
   let token = "";
@@ -1373,6 +1375,13 @@
     const queueText = document.createElement("span");
     queueText.textContent = parts.join(" • ");
     elements.queueStrip.replaceChildren(queueText);
+    if (pending || uploading) {
+      // iOS PWAs can only upload while foregrounded — tell the worker to keep it open.
+      const hint = document.createElement("span");
+      hint.className = "queue-hint";
+      hint.textContent = " — keep this app open until synced ✓";
+      queueText.appendChild(hint);
+    }
     if (failed) {
       const retryButton = document.createElement("button");
       retryButton.type = "button";
@@ -1498,8 +1507,23 @@
     drainQueue().catch(() => {});
   });
   document.addEventListener("visibilitychange", () => {
-    if (document.visibilityState === "visible") drainQueue().catch(() => {});
+    if (document.visibilityState === "visible") {
+      // Foregrounding is a strong "try now" signal — clear any backoff so a worker
+      // opening the app to check on pending photos triggers an immediate attempt.
+      state.drainBackoffUntil = 0;
+      drainQueue().catch(() => {});
+    }
   });
+  // Foreground heartbeat: navigator.onLine and the "online" event are unreliable
+  // (especially on iOS) and do NOT fire when a weak signal becomes a usable one
+  // without the network interface dropping — exactly the poor-connectivity field
+  // case. Poll while visible so a stuck queue self-heals once real connectivity
+  // returns. drainQueue() self-guards on isDraining/offline/backoff, so an idle
+  // tick is nearly free.
+  const DRAIN_HEARTBEAT_MS = 20_000;
+  setInterval(() => {
+    if (document.visibilityState === "visible") drainQueue().catch(() => {});
+  }, DRAIN_HEARTBEAT_MS);
   const darkMedia = preferredDarkMedia();
   const handleSystemThemeChange = () => {
     if (currentScreenMode() === "system") applyScreenMode("system");

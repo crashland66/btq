@@ -191,12 +191,12 @@ def test_swipe_non_array_object_still_json_stringified(swipe_helpers):
 # --------------------------------------------------------------------------- #
 def test_app_js_interface_version_bumped_and_history_preserved():
     src = _APP_JS.read_text(encoding="utf-8")
-    assert 'INTERFACE_VERSION = "2026.06.11-job-first-review"' in src
+    assert 'INTERFACE_VERSION = "2026.06.12-resilient-sync"' in src
     # Old value retained in the history comment (not silently dropped).
-    assert '"2026.06.08-photo-limit"' in src
+    assert '"2026.06.11-job-first-review"' in src
     # The current constant is exactly the new string (no stale active value).
     m = re.search(r'INTERFACE_VERSION\s*=\s*"([^"]+)"', src)
-    assert m and m.group(1) == "2026.06.11-job-first-review"
+    assert m and m.group(1) == "2026.06.12-resilient-sync"
     # Pipeline version is unchanged.
     assert 'PIPELINE_VERSION = "unified-capture-intake-v2"' in src
 
@@ -204,6 +204,6 @@ def test_app_js_interface_version_bumped_and_history_preserved():
 def test_index_html_interface_version_matches():
     src = _INDEX_HTML.read_text(encoding="utf-8")
     assert (
-        '<span id="interfaceVersion">2026.06.11-job-first-review</span>' in src
+        '<span id="interfaceVersion">2026.06.12-resilient-sync</span>' in src
     )
     assert '<span id="pipelineVersion">unified-capture-intake-v2</span>' in src
