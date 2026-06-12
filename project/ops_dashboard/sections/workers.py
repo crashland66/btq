@@ -18,7 +18,6 @@ from datetime import datetime, timezone
 from event_pipeline import couchdb_config
 from ops_dashboard.common import render_table
 from ops_dashboard.layout import html_page
-from ops_dashboard.sections import sites
 
 STALE_DAYS = 3
 
@@ -35,8 +34,8 @@ def _parse_dt(value: object) -> datetime | None:
 
 
 def _fetch_captures() -> list[dict]:
-    base = sites.couchdb_base_url()
-    headers = {"Accept": "application/json", **sites.auth_headers()}
+    base = couchdb_config.base_url()
+    headers = {"Accept": "application/json", **dict(couchdb_config.from_env().auth_header())}
     database = couchdb_config.field_captures_database()
     timeout = max(couchdb_config.timeout(), 30.0)
     url = f"{base}/{urlparse.quote(database, safe='')}/_all_docs?include_docs=true"
