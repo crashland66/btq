@@ -228,6 +228,55 @@ def isolated_mlx_enabled() -> bool:
     return os.environ.get("BTQ_FIELD_CAPTURE_VISION_ISOLATED", "").strip().lower() in {"1", "true", "yes", "on"}
 
 
+def semantic_mlx_isolated() -> bool:
+    engine_key = os.environ.get("BTQ_FIELD_CAPTURE_SEMANTIC_ENGINE", "local_rule").strip().lower()
+    provider = os.environ.get("BTQ_SEMANTIC_PROVIDER", "mlx").strip().lower()
+    return engine_key == "local_model" and provider == "mlx"
+
+
+def isolated_semantic_subprocess_timeout_seconds(default: float = 240.0) -> float:
+    raw = os.environ.get("BTQ_FIELD_CAPTURE_SEMANTIC_SUBPROCESS_TIMEOUT_SECONDS", "").strip()
+    if raw:
+        try:
+            value = float(raw)
+        except ValueError:
+            value = 0.0
+        if value > 0:
+            return value
+    return default
+
+
+def process_semantics_isolated(runtime_root: Path, *, timeout_seconds: float) -> dict[str, object]:
+    runtime_resolved = runtime_root.expanduser().resolve(strict=False)
+    command = [
+        sys.executable,
+        "-m",
+        "field_capture.semantic_child",
+        "--runtime-root",
+        str(runtime_resolved),
+        "--json",
+    ]
+    result = subprocess.run(
+        command,
+        cwd=Path(__file__).resolve().parents[1],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=timeout_seconds,
+        check=False,
+    )
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or f"semantic subprocess exited {result.returncode}").strip()
+        raise RuntimeError(detail)
+    try:
+        loaded = json.loads(result.stdout or "{}")
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"semantic subprocess returned invalid JSON: {(result.stdout or '').strip()}") from exc
+    if not isinstance(loaded, dict):
+        raise RuntimeError("semantic subprocess returned non-object JSON")
+    return loaded
+
+
 def process_mlx_photo_assets_isolated(
     intake_dir: Path,
     upload_dir: Path,
@@ -693,33 +742,50 @@ def run_cycle(
         steps.append(step_result("transcribe_field_audio", "skipped", error="disabled"))
 
     if run_semantics:
-        try:
-            semantics_logger = audio_semantics.configure_logger(audio_semantics.default_log_path(runtime_resolved))
-            counts = audio_semantics.process_semantics(
-                audio_semantics.default_transcript_dir(runtime_resolved),
-                audio_semantics.default_semantic_dir(runtime_resolved),
-                semantic_engine_factory(),
-                runtime_root=runtime_resolved,
-                logger=semantics_logger,
-            )
-            steps.append(step_result("process_field_audio_semantics", "completed", counts))
-        except Exception as exc:  # noqa: BLE001
-            cycle["ok"] = False
-            steps.append(step_result("process_field_audio_semantics", "failed", error=str(exc)))
-            logger.exception("field-capture audio semantic processing failed")
-        try:
-            text_counts = process_note_only_text_semantics(
-                audio_transcription.default_intake_dir(runtime_resolved),
-                action_candidates.default_text_semantic_dir(runtime_resolved),
-                runtime_root=runtime_resolved,
-                engine=text_semantic_engine_factory() if text_semantic_engine_factory is not None else None,
-            )
-            if any(int(text_counts.get(key, 0)) for key in ("discovered", "completed", "failed", "skipped")):
-                steps.append(step_result("process_field_text_semantics", "completed", text_counts))
-        except Exception as exc:  # noqa: BLE001
-            cycle["ok"] = False
-            steps.append(step_result("process_field_text_semantics", "failed", error=str(exc)))
-            logger.exception("field-capture text semantic processing failed")
+        if semantic_mlx_isolated():
+            timeout_seconds = isolated_semantic_subprocess_timeout_seconds()
+            try:
+                logger.info("field-capture isolated semantic subprocess starting timeout_seconds=%s", timeout_seconds)
+                counts = process_semantics_isolated(runtime_resolved, timeout_seconds=timeout_seconds)
+                logger.info("field-capture isolated semantic subprocess completed counts=%s", counts)
+                steps.append(step_result("process_semantics_isolated", "completed", counts))
+            except subprocess.TimeoutExpired:
+                cycle["ok"] = False
+                error = f"semantic subprocess timed out after {timeout_seconds:g} seconds"
+                steps.append(step_result("process_semantics_isolated", "failed", error=error))
+                logger.warning("field-capture isolated semantic subprocess timed out timeout_seconds=%s", timeout_seconds)
+            except Exception as exc:  # noqa: BLE001
+                cycle["ok"] = False
+                steps.append(step_result("process_semantics_isolated", "failed", error=str(exc)))
+                logger.exception("field-capture isolated semantic subprocess failed")
+        else:
+            try:
+                semantics_logger = audio_semantics.configure_logger(audio_semantics.default_log_path(runtime_resolved))
+                counts = audio_semantics.process_semantics(
+                    audio_semantics.default_transcript_dir(runtime_resolved),
+                    audio_semantics.default_semantic_dir(runtime_resolved),
+                    semantic_engine_factory(),
+                    runtime_root=runtime_resolved,
+                    logger=semantics_logger,
+                )
+                steps.append(step_result("process_field_audio_semantics", "completed", counts))
+            except Exception as exc:  # noqa: BLE001
+                cycle["ok"] = False
+                steps.append(step_result("process_field_audio_semantics", "failed", error=str(exc)))
+                logger.exception("field-capture audio semantic processing failed")
+            try:
+                text_counts = process_note_only_text_semantics(
+                    audio_transcription.default_intake_dir(runtime_resolved),
+                    action_candidates.default_text_semantic_dir(runtime_resolved),
+                    runtime_root=runtime_resolved,
+                    engine=text_semantic_engine_factory() if text_semantic_engine_factory is not None else None,
+                )
+                if any(int(text_counts.get(key, 0)) for key in ("discovered", "completed", "failed", "skipped")):
+                    steps.append(step_result("process_field_text_semantics", "completed", text_counts))
+            except Exception as exc:  # noqa: BLE001
+                cycle["ok"] = False
+                steps.append(step_result("process_field_text_semantics", "failed", error=str(exc)))
+                logger.exception("field-capture text semantic processing failed")
     else:
         steps.append(step_result("process_field_audio_semantics", "skipped", error="disabled"))
 
