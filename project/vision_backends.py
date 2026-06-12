@@ -4,6 +4,7 @@ import base64
 import ipaddress
 import json
 import logging
+import os
 import re
 import tempfile
 from pathlib import Path
@@ -34,6 +35,10 @@ _MLX_TEXT_PLACEHOLDER_PNG_B64 = (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _semantic_text_temperature() -> float:
+    return max(float(os.environ.get("BTQ_FIELD_CAPTURE_SEMANTIC_TEMPERATURE", "0.0") or 0.0), 0.0)
 
 
 class VisionModelTimeoutError(RuntimeError):
@@ -314,6 +319,7 @@ class MlxTextClient:
             ) from exc
         self.model = model
         self.max_tokens = max_tokens
+        self.temperature = _semantic_text_temperature()
         logger.info("mlx-vlm text: loading model %s", model)
         self._model, self._processor = load(model, use_fast=False)
         self._config = load_config(model)
@@ -354,6 +360,7 @@ class MlxTextClient:
             formatted,
             [str(image_path)],
             max_tokens=self.max_tokens,
+            temperature=self.temperature,
         ):
             text += getattr(response, "text", str(response))
             candidate = extract_json_from_model_output(text)
