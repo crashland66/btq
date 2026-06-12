@@ -134,8 +134,6 @@ def _discover_site_supplies_couchdb(
     selector: dict[str, object] = {"type": "supply_need"}
     if archived_only:
         selector["archived"] = True
-    elif not include_archived:
-        selector["archived"] = {"$ne": True}
     if site_id is not None:
         selector["site_id"] = str(site_id)
     payload = {"selector": selector, "limit": 100000}

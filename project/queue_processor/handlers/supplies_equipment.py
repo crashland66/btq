@@ -172,6 +172,7 @@ def _build_supply_need_entity_doc(payload: dict, job: QueueJob, site_ctx: SiteCo
         "site_id": site_ctx.site_id,
         "site_name": site_ctx.name,
         "created_at": created_at,
+        "archived": False,
         "btq_job_ids": [job.job_id],
         **{k: v for k, v in payload.items() if k not in {"site_id"}},
     }
@@ -185,6 +186,7 @@ def _build_equipment_request_entity_doc(payload: dict, job: QueueJob, site_ctx: 
         "site_id": site_ctx.site_id,
         "site_name": site_ctx.name,
         "created_at": created_at,
+        "archived": False,
         "btq_job_ids": [job.job_id],
         **{k: v for k, v in payload.items() if k not in {"site_id"}},
     }
