@@ -106,6 +106,86 @@ MOVEMENT_TERMS = (
     "for next week",
 )
 ROUTINE_SUPPLY_NEED_TERMS = ("low", "out of", "running low", "restock", "need more", "reorder")
+COMPLETION_SIGNAL_TERMS = (
+    "pulled",
+    "swept",
+    "mopped",
+    "emptied",
+    "restocked",
+    "vacuumed",
+    "dusted",
+    "wiped",
+    "cleaned",
+    "scrubbed",
+    "done",
+    "complete",
+    "completed",
+    "finished",
+    "all good",
+    "no issues",
+    "qa",
+    "trash pull",
+    "qa trash pull",
+)
+REQUEST_PROBLEM_TERMS = (
+    "need",
+    "needs",
+    "needed",
+    "low",
+    "out of",
+    "out",
+    "order",
+    "reorder",
+    "restock",
+    "broken",
+    "repair",
+    "replace",
+    "leak",
+    "clog",
+    "damage",
+    "damaged",
+    "safety",
+    "issue",
+    "problem",
+    "missing",
+    "lost",
+    "stolen",
+    "no-show",
+    "no show",
+    "late",
+    "lockout",
+    "locked out",
+    "key",
+    "code",
+    'mess',
+    'messy',
+    'dirty',
+    'filthy',
+    'stain',
+    'stained',
+    'spill',
+    'spilled',
+    'spilling',
+    'overflow',
+    'overflowing',
+    'smell',
+    'smells',
+    'smelly',
+    'odor',
+    'complaint',
+    'complained',
+    'complain',
+    'jammed',
+    'stuck',
+    'clogged',
+    'redo',
+    'not clean',
+    'still dirty',
+    "wasn't",
+    "isn't",
+    "didn't",
+    "won't",
+)
 ATTENDANCE_TERMS = ("late", "attendance", "no-show", "no show", "call off", "called off", "callout", "did not respond", "no response")
 RETENTION_TERMS = ("retention", "quit", "quitting", "termination review", "replacement coverage", "may need replacement", "walk out")
 REPLACE_INTENT_TERMS = (
@@ -325,11 +405,18 @@ def _build_semantic_prompt(capture: CaptureSemanticInput | FieldAudioTranscript)
         "lost/stolen/missing -> log_site_issue. attendance late/no-show -> log_personnel_event "
         "(ADD flag_retention_risk if replace/fire intent). access/lockout/key/code -> "
         "flag_access_constraint.\n\n"
+        "Completion reports: if a fact describes routine work ALREADY DONE (e.g. trash pulled, "
+        "QA trash pull, swept, mopped, emptied, restocked, vacuumed, dusted, wiped, cleaned, scrubbed, "
+        "\"done\", \"complete\", \"finished\") and is NOT a new request or problem, emit NO action for "
+        "it. If the entire note is only completion/acknowledgement reports, return "
+        '{"extracted_actions": []}.\n\n'
         "Context: " + json.dumps(ctx) + "\nNote: " + source.source_text + "\n"
     )
 
 
 def extracted_actions_from_model_payload(raw: object, source: CaptureSemanticInput) -> list[ExtractedAction]:
+    if note_is_completion_report(source.source_text):
+        return []
     if isinstance(raw, dict) and isinstance(raw.get("extracted_actions"), list):
         raw_actions = raw["extracted_actions"]
     else:
@@ -344,6 +431,9 @@ def extracted_actions_from_model_payload(raw: object, source: CaptureSemanticInp
         try:
             action = validate_extracted_action(payload)
         except (TypeError, ValueError):
+            continue
+        excerpt = action.source_excerpt or source.source_text
+        if note_is_completion_report(excerpt):
             continue
         actions.append(action_with_valid_proposed_queue_job(action, source))
     actions = supply_category_actions(actions, source)
@@ -1081,13 +1171,22 @@ def _contains_term(haystack: str, term: str) -> bool:
     return re.search(rf"\b{re.escape(normalized)}\b", haystack) is not None
 
 
+def note_is_completion_report(text: str) -> bool:
+    haystack = _norm(text)
+    if not haystack:
+        return False
+    has_completion_signal = any(_contains_term(haystack, term) for term in COMPLETION_SIGNAL_TERMS)
+    has_request_problem_signal = any(_contains_term(haystack, term) for term in REQUEST_PROBLEM_TERMS)
+    return has_completion_signal and not has_request_problem_signal
+
+
 def _normalized_target_type(value: object) -> str:
     raw = str(value or "").strip().lower()
     return raw if raw in {"employee", "site", "general"} else "general"
 
 
 def _rule_extracted_actions(source: CaptureSemanticInput, cleaned: str, issue_type: str, actions: list[str]) -> list[ExtractedAction]:
-    if is_unclear_or_test_audio(cleaned) or not cleaned.strip():
+    if is_unclear_or_test_audio(cleaned) or note_is_completion_report(cleaned) or not cleaned.strip():
         return []
     lowered = cleaned.lower()
     raw_actions: list[dict[str, object]] = []
