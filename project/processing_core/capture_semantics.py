@@ -397,7 +397,7 @@ def _build_semantic_prompt(capture: CaptureSemanticInput | FieldAudioTranscript)
         '  "source_excerpt": exact note span,\n'
         '  "payload_fields": object with ONLY the named real-world items, never lead-in words '
         '("a few things","a new"). For log_supply_need set item_name to the supply items only '
-        '(e.g. "vacuum, lint brushes"). For log_equipment_request set equipment_name. For '
+        '(e.g. "vacuum, lint brushes"); exclude any commentary or speech AFTER the items. For log_equipment_request set equipment_name. For '
         'log_site_issue set summary.\n'
         '  "evidence_terms": [keywords]\n}\n\n'
         "Routing: supply low/out/order/restock -> log_supply_need. equipment broken/repair/replace "
@@ -886,7 +886,7 @@ def supply_need_action_payload(
     base: ExtractedAction | None = None,
 ) -> dict[str, object]:
     item_name = supply_item_name_from_text(cleaned)
-    summary = f"Log supply need: {item_name}."
+    summary = f"Supply request: {item_name}."
     return {
         "action_key": "log_supply_need",
         "candidate_type": candidate_type,
@@ -932,8 +932,51 @@ def supply_item_name_from_text(text: str) -> str:
     return cleaned
 
 
+def _supply_boundary_prefix_is_preamble(text: str) -> bool:
+    return bool(
+        re.match(
+            r"^(?:to\s+)?(?:order|reorder|get|bring|need(?:s|ed)?|low on|running low on|out of)\s+"
+            r"(?:(?:a|an|the|some|several|few|a few|couple of|a couple of)\s+)?"
+            r"(?:things|items|stuff|products)\s*$",
+            text,
+            flags=re.IGNORECASE,
+        )
+        or re.match(
+            r"^(?:(?:a|an|the|some|several|few|a few|couple of|a couple of)\s+)?"
+            r"(?:things|items|stuff|products)\s*$",
+            text,
+            flags=re.IGNORECASE,
+        )
+    )
+
+
+def _truncate_supply_sentence_tail(text: str) -> str:
+    match = re.search(r"[.;]\s+(?=\S*\w)", text)
+    if not match:
+        return text
+    prefix = text[: match.start()].strip(" ,")
+    suffix = text[match.end() :].strip(" ,")
+    if prefix and not _supply_boundary_prefix_is_preamble(prefix):
+        return prefix
+    return suffix or prefix or text
+
+
+def _strip_supply_commentary_tail(text: str) -> str:
+    patterns = (
+        r"(?P<items>.+?)\s*(?:,|\s)\b(?:so|then|but|because|i|we|you|that|which|here|please)\b.+$",
+        r"(?P<items>.+?)\s*(?:,|\s)\b(?:and|also)\s+"
+        r"(?=(?:so|then|but|because|i|we|you|that|which|here|please|would|want|like|need|needs|needed|can|could|should|will|just)\b).+$",
+    )
+    for pattern in patterns:
+        match = re.match(pattern, text, flags=re.IGNORECASE)
+        if match and match.group("items").strip(" ,"):
+            return match.group("items").strip(" ,")
+    return text
+
+
 def clean_supply_item_phrase(text: str) -> str:
-    cleaned = collapse_whitespace(text)
+    cleaned = re.sub(r"\s*\n+\s*", ". ", text.strip())
+    cleaned = collapse_whitespace(cleaned)
     cleaned = cleaned.rstrip(".!?;:")
     prior = cleaned
     cleaned = re.sub(r"^(?:please\s+)?(?:we\s+|we're\s+|we are\s+|i\s+|i'm\s+|i am\s+)?", "", cleaned, flags=re.IGNORECASE)
@@ -950,6 +993,8 @@ def clean_supply_item_phrase(text: str) -> str:
     )
     if preamble_stripped.strip():
         cleaned = preamble_stripped
+    cleaned = _truncate_supply_sentence_tail(cleaned)
+    cleaned = _strip_supply_commentary_tail(cleaned)
     article_stripped = re.sub(r"^(?:(?:a|an|the|some|a new|an new|new)\s+)+", "", cleaned, flags=re.IGNORECASE)
     if article_stripped.strip():
         cleaned = article_stripped
