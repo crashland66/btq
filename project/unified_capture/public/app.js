@@ -1,8 +1,8 @@
 (function () {
   "use strict";
 
-  const INTERFACE_VERSION = "2026.06.12-blob-persist";
-  // Previous INTERFACE_VERSION values: "2026.06.12-resilient-sync", "2026.06.11-job-first-review", "2026.06.08-photo-limit", "2026.06.08-text-and-gating", "2026.06.06-unified-capture" (legacy static smoke tests).
+  const INTERFACE_VERSION = "2026.06.12-offline";
+  // Previous INTERFACE_VERSION values: "2026.06.12-blob-persist", "2026.06.12-resilient-sync", "2026.06.11-job-first-review", "2026.06.08-photo-limit", "2026.06.08-text-and-gating", "2026.06.06-unified-capture" (legacy static smoke tests).
   const PIPELINE_VERSION = "unified-capture-intake-v2";
   const DEFAULT_MAX_PHOTOS = 6; // fallback only; the live limit comes from /api/session.max_images
   const TOKEN_KEY = "unifiedCaptureToken";
@@ -396,6 +396,59 @@
     if (categories.length === 1) elements.categoryInput.selectedIndex = 1;
   }
 
+  function setOfflineBanner(show) {
+    const el = typeof document !== "undefined" && document.getElementById ? document.getElementById("offlineBanner") : null;
+    if (el) el.hidden = !show;
+  }
+
+  // Persist the session (sites/categories/max_images) so the form can be enabled
+  // offline. Same __meta__ row pattern as the SW token (stashTokenForServiceWorker).
+  async function cacheSession(session) {
+    if (!window.fieldCaptureDb?.isSupported() || !session) return;
+    try {
+      await window.fieldCaptureDb.putCapture({
+        capture_id: "__session__",
+        status: "__meta__",
+        value: session,
+        createdAt: localIsoTimestamp(),
+      });
+    } catch (_e) {
+      /* offline fallback simply won't be available */
+    }
+  }
+
+  async function loadCachedSession() {
+    if (!window.fieldCaptureDb?.isSupported()) return null;
+    try {
+      const row = await window.fieldCaptureDb.getCapture("__session__");
+      return row?.value || null;
+    } catch (_e) {
+      return null;
+    }
+  }
+
+  function applySession(session, fromCache) {
+    state.session = session;
+    state.maxPhotos = Number(session.max_images) || DEFAULT_MAX_PHOTOS;
+    elements.tokenPastePanel.hidden = true;
+    elements.tokenPasteError.hidden = true;
+    renderSites(session.sites || []);
+    const enabled = Boolean(session.can_submit && (session.sites || []).length);
+    setFormEnabled(enabled);
+    if (!fromCache) {
+      setStatus(enabled ? readyStatusText(session) : "This token cannot submit captures.", enabled ? "" : "warning");
+    }
+    return enabled;
+  }
+
+  async function applyCachedSessionIfAvailable() {
+    const cached = await loadCachedSession();
+    if (!cached) return false;
+    applySession(cached, true);
+    setOfflineBanner(true);
+    return true;
+  }
+
   async function loadSession() {
     if (!token) {
       showTokenPasteUI("Paste your access token to enable capture.");
@@ -407,28 +460,30 @@
         cache: "no-store",
       });
       if (!response.ok) {
-        state.session = null;
-        setFormEnabled(false);
         if (response.status === 401) {
+          // Definitive rejection — never fall back to a cached session.
+          state.session = null;
+          setFormEnabled(false);
           clearPersistedToken();
           showTokenPasteUI("Token is invalid, expired, or revoked.");
-        } else {
-          setStatus("Session unavailable. Capture is disabled.", "error");
+          return;
         }
+        // Server reachable but erroring — prefer a cached session if we have one.
+        if (await applyCachedSessionIfAvailable()) return;
+        state.session = null;
+        setFormEnabled(false);
+        setStatus("Session unavailable. Capture is disabled.", "error");
         return;
       }
       const session = await response.json();
-      state.session = session;
-      state.maxPhotos = Number(session.max_images) || DEFAULT_MAX_PHOTOS;
-      elements.tokenPastePanel.hidden = true;
-      elements.tokenPasteError.hidden = true;
       await stashTokenForServiceWorker(token);
-      renderSites(session.sites || []);
-      const enabled = Boolean(session.can_submit && (session.sites || []).length);
-      setFormEnabled(enabled);
-      setStatus(enabled ? readyStatusText(session) : "This token cannot submit captures.", enabled ? "" : "warning");
+      await cacheSession(session);
+      setOfflineBanner(false);
+      applySession(session, false);
       refreshMySubmissionsBadge().catch(() => {});
     } catch (_error) {
+      // Network failure / offline — run on the last-known site list if we have it.
+      if (await applyCachedSessionIfAvailable()) return;
       state.session = null;
       setFormEnabled(false);
       setStatus("Could not verify session. Capture is disabled.", "error");
@@ -1435,7 +1490,7 @@
   async function registerServiceWorker() {
     if (!("serviceWorker" in navigator)) return null;
     try {
-      return await navigator.serviceWorker.register("/sw.js?v=20260606-01");
+      return await navigator.serviceWorker.register("/sw.js?v=" + INTERFACE_VERSION);
     } catch (_error) {
       return null;
     }
@@ -1518,9 +1573,12 @@
     loadSession();
   });
   window.addEventListener("online", () => {
+    setOfflineBanner(false);
     state.drainBackoffUntil = 0;
     drainQueue().catch(() => {});
+    if (token) loadSession().catch(() => {});
   });
+  window.addEventListener("offline", () => setOfflineBanner(true));
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "visible") {
       // Foregrounding is a strong "try now" signal — clear any backoff so a worker
@@ -1556,5 +1614,6 @@
   requestPersistentStorage();
   requeueFailedCaptures().then(() => refreshPendingCount()).then(() => drainQueue()).catch(() => {});
   registerServiceWorker();
+  setOfflineBanner(!navigator.onLine);
   if (bootstrapToken()) loadSession();
 })();

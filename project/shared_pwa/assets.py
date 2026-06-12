@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+import json
+from dataclasses import dataclass, field
 from pathlib import Path
 
 
@@ -24,6 +25,9 @@ class ServiceWorkerConfig:
     )
     sync_tag: str = "field-capture-drain"
     token_key: str = "fieldCaptureToken"
+    # App-shell assets the SW precaches for offline cold-launch. Canonical paths
+    # (no version query); the SW matches with ignoreSearch so `?v=…` URLs hit.
+    shell_assets: tuple[str, ...] = ()
 
 
 SERVICE_WORKERS = {
@@ -31,6 +35,18 @@ SERVICE_WORKERS = {
         product_label="Field-capture",
         api_endpoint="/api/submit",
         success_check="!response.ok",
+        shell_assets=(
+            "/",
+            "/index.html",
+            "/app.js",
+            "/db.js",
+            "/styles.css",
+            "/manifest.webmanifest",
+            "/assets/icon-180.png",
+            "/assets/icon-192.png",
+            "/assets/icon-512.png",
+            "/assets/app-logo.png",
+        ),
     ),
     "voice_memo": ServiceWorkerConfig(
         product_label="Voice-memo",
@@ -47,6 +63,22 @@ SERVICE_WORKERS = {
         ),
         sync_tag="unified-capture-drain",
         token_key="unifiedCaptureToken",
+        shell_assets=(
+            "/",
+            "/index.html",
+            "/app.js",
+            "/inbox.js",
+            "/styles.css",
+            "/static/db.js",
+            "/static/recorder.js",
+            "/manifest.webmanifest",
+            "/assets/icon.svg",
+            "/assets/icon-180.png",
+            "/assets/icon-192.png",
+            "/assets/icon-512.png",
+            "/assets/field-capture-header-light.svg",
+            "/assets/field-capture-header-dark.svg",
+        ),
     ),
 }
 
@@ -75,6 +107,7 @@ def render_service_worker(product: str) -> str:
         "__API_ENDPOINT__": config.api_endpoint,
         "__SUCCESS_CHECK__": config.success_check,
         "__PERMANENT_FAILURE_CHECK__": config.permanent_failure_check,
+        "__SHELL_ASSETS__": json.dumps(list(config.shell_assets)),
     }
     for marker, value in replacements.items():
         template = template.replace(marker, value)

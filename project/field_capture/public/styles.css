@@ -1131,6 +1131,15 @@ textarea:focus {
   background: #eef2f7;
   color: #1e293b;
 }
+.offline-banner {
+  margin: 8px 12px 0;
+  padding: 6px 12px;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  background: #fef3c7;
+  color: #92400e;
+}
 .queue-strip[data-tone="synced"] {
   background: #dcfce7;
   color: #14532d;

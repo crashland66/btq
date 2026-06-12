@@ -92,6 +92,7 @@
       <button id="tokenPasteSave" class="primary-button" type="button">Save token</button>
       <p id="tokenPasteError" class="form-error" role="alert" hidden></p>
     </section>
+    <div id="offlineBanner" class="offline-banner" role="status" aria-live="polite" hidden>📴 Offline — using your saved sites. Captures are saved and will sync when you reconnect.</div>
     <div id="queueStrip" class="queue-strip" role="status" aria-live="polite" hidden></div>
     <div id="staleStrip" class="stale-strip" role="alert" aria-live="assertive" hidden></div>
 
@@ -188,7 +189,7 @@
     </section>
 
     <footer class="app-footer">
-      <div>Interface: <span id="interfaceVersion">2026.06.12-blob-persist</span></div>
+      <div>Interface: <span id="interfaceVersion">2026.06.12-offline</span></div>
       <div>Pipeline: <span id="pipelineVersion">unified-capture-intake-v2</span></div>
     </footer>
   </main>

@@ -1,16 +1,23 @@
 // __PRODUCT_LABEL__ service worker.
 //
-// Sole responsibility: drain the IndexedDB capture queue
-// (field_capture_v1, store "captures") via Background Sync
-// when the device returns online after a Save while the
-// page was closed.
+// Two responsibilities:
+//   1. Drain the IndexedDB capture queue (field_capture_v1, store "captures")
+//      via Background Sync when the device returns online after a Save.
+//   2. Offline shell: precache the app shell and serve it stale-while-revalidate
+//      so the app cold-launches with no network. The shell cache is keyed by
+//      SW_VERSION; bumping SW_VERSION invalidates it on the next activate.
 //
-// Does NOT cache app shell, fetch responses, push, or
-// notify. Adding any of those is out of scope; this SW
-// is intentionally minimal so deploys can ship it without
-// new offline-cache invalidation risk.
+// The fetch handler is deliberately narrow: it ONLY touches same-origin GETs for
+// the shell. Every /api/* request and every non-GET (notably POST /api/submit)
+// passes straight through to the network, untouched.
 
-const SW_VERSION = "2026.06.12-blob-bytes";
+const SW_VERSION = "2026.06.12-offline-shell";
+const SHELL_ASSETS = __SHELL_ASSETS__;
+// Offline shell is opt-in per product: a product with no shell assets (e.g.
+// voice_memo) keeps the original drain-only behavior — no precache, no fetch
+// interception.
+const SHELL_ENABLED = SHELL_ASSETS.length > 0;
+const SHELL_CACHE = "shell-" + SW_VERSION;
 const SYNC_TAG = "__SYNC_TAG__";
 const DB_NAME = "field_capture_v1";
 const DB_VERSION = 1;
@@ -26,18 +33,80 @@ const UPLOAD_ORPHAN_RESET_MS = 120_000;
 const TOKEN_KEY = "__TOKEN_KEY__";
 
 self.addEventListener("install", (event) => {
-  // Activate immediately so the new SW can drain on first install.
-  event.waitUntil(self.skipWaiting());
+  // Precache the app shell, then activate immediately. A single failed asset
+  // must not brick the install (the app still works online), so swallow errors.
+  event.waitUntil(
+    (async () => {
+      if (SHELL_ENABLED) {
+        try {
+          const cache = await caches.open(SHELL_CACHE);
+          await cache.addAll(SHELL_ASSETS);
+        } catch (_e) {
+          /* best-effort precache */
+        }
+      }
+      await self.skipWaiting();
+    })(),
+  );
 });
 
 self.addEventListener("activate", (event) => {
-  event.waitUntil(self.clients.claim());
+  event.waitUntil(
+    (async () => {
+      if (SHELL_ENABLED) {
+        // Drop stale shell caches from prior SW_VERSIONs.
+        const names = await caches.keys();
+        await Promise.all(
+          names.filter((name) => name.startsWith("shell-") && name !== SHELL_CACHE).map((name) => caches.delete(name)),
+        );
+      }
+      await self.clients.claim();
+    })(),
+  );
 });
 
 self.addEventListener("sync", (event) => {
   if (event.tag !== SYNC_TAG) return;
   event.waitUntil(drainQueue());
 });
+
+// Offline shell. Narrow by design: same-origin GETs only; /api/* and every
+// non-GET pass through untouched so uploads/auth are never intercepted.
+self.addEventListener("fetch", (event) => {
+  if (!SHELL_ENABLED) return;
+  const request = event.request;
+  if (request.method !== "GET") return;
+  const url = new URL(request.url);
+  if (url.origin !== self.location.origin) return;
+  if (url.pathname.startsWith("/api/")) return;
+  if (url.pathname === "/sw.js") return;
+
+  // Navigations resolve to the cached app shell when offline.
+  if (request.mode === "navigate") {
+    event.respondWith(staleWhileRevalidate(request, "/index.html"));
+    return;
+  }
+  event.respondWith(staleWhileRevalidate(request, null));
+});
+
+// Serve from cache immediately, refresh the cache from the network in the
+// background (so the next launch is current), and fall back to the network when
+// nothing is cached. `ignoreSearch` lets version-queried URLs (e.g. app.js?v=…)
+// match the canonical precached path.
+async function staleWhileRevalidate(request, navFallbackPath) {
+  const cache = await caches.open(SHELL_CACHE);
+  const matchKey = navFallbackPath || request;
+  const cached = await cache.match(matchKey, { ignoreSearch: true });
+  const network = fetch(request)
+    .then((response) => {
+      if (response && response.ok && response.type === "basic") {
+        cache.put(navFallbackPath || request, response.clone()).catch(() => {});
+      }
+      return response;
+    })
+    .catch(() => null);
+  return cached || (await network) || Response.error();
+}
 
 // --- IDB helpers (duplicated minimally from db.js because the SW
 // loads as its own script and cannot import the page module). ---

@@ -1012,12 +1012,19 @@ textarea:focus {
 
 .queue-strip,
 .stale-strip,
+.offline-banner,
 .form-error {
   white-space: pre-wrap;
   border-radius: var(--radius);
   padding: 10px 12px;
   font-size: 14px;
   font-weight: 700;
+}
+
+.offline-banner {
+  border: 1px solid rgba(169, 98, 24, 0.28);
+  background: rgba(169, 98, 24, 0.08);
+  color: var(--warning);
 }
 
 .queue-strip[data-tone="synced"] {

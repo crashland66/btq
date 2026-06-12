@@ -1,4 +1,5 @@
-const INTERFACE_VERSION = "2026.06.12-blob-persist";
+const INTERFACE_VERSION = "2026.06.12-offline";
+// Previous INTERFACE_VERSION = "2026.06.12-blob-persist" retained for legacy static smoke tests.
 // Previous INTERFACE_VERSION = "2026.06.12-resilient-sync" retained for legacy static smoke tests.
 // Previous INTERFACE_VERSION = "2026.05.28-local-first" retained for legacy static smoke tests.
 // Previous INTERFACE_VERSION = "2026.05.24-multi-photo" retained for legacy static smoke tests.
@@ -464,6 +465,63 @@ function renderSites(sites, prospects = []) {
   updateSelectedSiteDetails();
 }
 
+function setOfflineBanner(show) {
+  const el = typeof document !== "undefined" && document.getElementById ? document.getElementById("offlineBanner") : null;
+  if (el) el.hidden = !show;
+}
+
+// Persist the session (sites/prospects/can_submit) so the form can be enabled
+// offline. Same __meta__ row pattern as the SW token (stashTokenForServiceWorker).
+async function cacheSession(session) {
+  if (!window.fieldCaptureDb?.isSupported() || !session) return;
+  try {
+    await window.fieldCaptureDb.putCapture({
+      capture_id: "__session__",
+      status: "__meta__",
+      value: session,
+      createdAt: localIsoTimestamp(),
+    });
+  } catch (_e) {
+    /* offline fallback simply won't be available */
+  }
+}
+
+async function loadCachedSession() {
+  if (!window.fieldCaptureDb?.isSupported()) return null;
+  try {
+    const row = await window.fieldCaptureDb.getCapture("__session__");
+    return row?.value || null;
+  } catch (_e) {
+    return null;
+  }
+}
+
+function applySession(session, fromCache) {
+  state.session = session;
+  renderSites(session.sites || [], session.prospects || []);
+  const enabled = Boolean(session.token?.can_submit && (session.sites?.length || session.prospects?.length));
+  setFormEnabled(enabled);
+  if (!fromCache) {
+    setStatus(
+      enabled
+        ? readyMessageForSession(session)
+        : session.sites?.length || session.prospects?.length
+          ? "This link can view assigned sites but cannot submit captures"
+          : "No assigned sites",
+      enabled ? "" : "warning",
+    );
+  }
+  return enabled;
+}
+
+async function applyCachedSessionIfAvailable() {
+  const cached = await loadCachedSession();
+  if (!cached) return false;
+  applySession(cached, true);
+  setOfflineBanner(true);
+  return true;
+}
+
 async function loadSessionAndSites() {
   if (!cachedToken) {
     setFormEnabled(false);
@@ -481,21 +539,27 @@ async function loadSessionAndSites() {
     });
     if (!response.ok) {
       if (response.status === 401) {
+        // Definitive rejection — never fall back to a cached session.
         clearStoredToken();
         showTokenPasteUI();
+        setFormEnabled(false);
+        setStatus("Token is invalid, expired, or revoked", "error");
+        return;
       }
+      // Server reachable but erroring — prefer a cached session if we have one.
+      if (await applyCachedSessionIfAvailable()) return;
       setFormEnabled(false);
-      setStatus("Token is invalid, expired, or revoked", "error");
+      setStatus("Session unavailable. Capture is disabled.", "error");
       return;
     }
     const session = await response.json();
-    state.session = session;
     stashTokenForServiceWorker(cachedToken);
-    renderSites(session.sites || [], session.prospects || []);
-    const enabled = Boolean(session.token?.can_submit && (session.sites?.length || session.prospects?.length));
-    setFormEnabled(enabled);
-    setStatus(enabled ? readyMessageForSession(session) : session.sites?.length || session.prospects?.length ? "This link can view assigned sites but cannot submit captures" : "No assigned sites", enabled ? "" : "warning");
+    await cacheSession(session);
+    setOfflineBanner(false);
+    applySession(session, false);
   } catch (error) {
+    // Network failure / offline — run on the last-known site list if we have it.
+    if (await applyCachedSessionIfAvailable()) return;
     setFormEnabled(false);
     setStatus("Could not verify token", "error");
   }
@@ -1984,7 +2048,7 @@ async function showInstallGate() {
 async function registerServiceWorker() {
   if (!("serviceWorker" in navigator)) return null;
   try {
-    const reg = await navigator.serviceWorker.register("/sw.js?v=20260528-01");
+    const reg = await navigator.serviceWorker.register("/sw.js?v=" + INTERFACE_VERSION);
     return reg;
   } catch (_e) {
     return null;
@@ -2032,9 +2096,12 @@ elements.queueStrip?.addEventListener("click", (event) => {
   }
 });
 window.addEventListener("online", () => {
+  setOfflineBanner(false);
   state.drainBackoffUntil = 0;
   drainQueue().catch(() => {});
+  if (cachedToken) loadSessionAndSites().catch(() => {});
 });
+window.addEventListener("offline", () => setOfflineBanner(true));
 document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "visible") {
     // Foregrounding is a strong "try now" signal — clear any backoff so a worker
@@ -2076,6 +2143,7 @@ updateSelectedSiteDetails();
 renderPhotos();
 renderAudio();
 setFormEnabled(false);
+setOfflineBanner(!navigator.onLine);
 if (bootstrapToken()) {
   loadSessionAndSites();
   // Refresh badge independently — non-blocking, silent on failure

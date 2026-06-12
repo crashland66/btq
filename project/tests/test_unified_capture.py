@@ -873,8 +873,12 @@ class SingleRecordPerCaptureTests(_AssetServingMixin, unittest.TestCase):
         # One capture_id minted and reused for the record + fields.
         self.assertIn("const captureId =", app)
         self.assertRegex(app, r"capture_id:\s*captureId")
-        # Record carries BOTH media kinds structurally.
-        self.assertRegex(app, r"\bphotos:\s*state\.photos\.map")
+        # Record carries BOTH media kinds structurally. Photo/audio bytes are
+        # persisted as ArrayBuffers (read at submit time) rather than Blob
+        # objects, because iOS WebKit invalidates Blobs stored in IndexedDB.
+        self.assertRegex(app, r"\bphotos:\s*await Promise\.all\(")
+        self.assertIn("state.photos.map", app)
+        self.assertIn("bytes: await photo.blob.arrayBuffer()", app)
         self.assertRegex(app, r"\baudio:\s*state\.audio")
 
 
@@ -1113,23 +1117,35 @@ class RenderedServiceWorkerByteIdentityTests(unittest.TestCase):
     the rendered behavior of the two untouched products.
     """
 
-    def test_field_capture_sw_byte_identical_to_arc_base(self) -> None:
-        current = render_service_worker("field_capture")
-        baseline = _render_build_b("field_capture")
-        self.assertEqual(
-            current,
-            baseline,
-            "field_capture rendered service worker changed vs arc base (REGRESSION)",
-        )
+    # NOTE: the original byte-identity-vs-arc-base guards (field_capture +
+    # voice_memo SWs must render byte-identical to commit c3cab43) have been
+    # retired. The shared template has since intentionally evolved TWICE for all
+    # products: (1) `partBlob` — rebuild upload Blobs from persisted ArrayBuffer
+    # bytes (iOS IndexedDB blob-invalidation fix); (2) the opt-in offline shell
+    # (precache + stale-while-revalidate). Byte-identity with the pre-arc snapshot
+    # can no longer hold. The behavior-level invariants those guards protected are
+    # still covered below and by test_default_permanent_failure_check_* /
+    # UnifiedCapture404RetryableTests. We additionally assert the offline shell is
+    # opt-in: ENABLED for field_capture, DISABLED for voice_memo.
 
-    def test_voice_memo_sw_byte_identical_to_arc_base(self) -> None:
-        current = render_service_worker("voice_memo")
-        baseline = _render_build_b("voice_memo")
-        self.assertEqual(
-            current,
-            baseline,
-            "voice_memo rendered service worker changed vs arc base (REGRESSION)",
-        )
+    def test_field_capture_sw_renders_clean_and_offline_enabled(self) -> None:
+        sw = render_service_worker("field_capture")
+        self.assertNotRegex(sw, r"__[A-Z_]+__", "unsubstituted marker in rendered SW")
+        # Drain core intact (default sync tag) + upload rebuilds from bytes.
+        self.assertIn("field-capture-drain", sw)
+        self.assertIn("function partBlob(", sw)
+        # Offline shell is ON for field_capture (non-empty precache list).
+        self.assertIn('"/app.js"', sw)
+        self.assertIn("SHELL_ENABLED", sw)
+        self.assertNotIn("const SHELL_ASSETS = []", sw)
+
+    def test_voice_memo_sw_renders_clean_and_offline_disabled(self) -> None:
+        sw = render_service_worker("voice_memo")
+        self.assertNotRegex(sw, r"__[A-Z_]+__", "unsubstituted marker in rendered SW")
+        self.assertIn("/api/upload", sw)
+        self.assertIn("function partBlob(", sw)
+        # Offline shell is OFF for voice_memo (no precache list → SHELL_ENABLED false).
+        self.assertIn("const SHELL_ASSETS = []", sw)
 
     def test_default_permanent_failure_check_matches_arc_base_hardcoded_rule(self) -> None:
         # The parameterization default must be character-identical to the rule
@@ -2821,7 +2837,9 @@ async function drive() {
     for (let i = 0; i < 8; i++) await new Promise((r) => setTimeout(r, 0));
     const rec = captured.find((r) => r && r.fields && r.fields.note !== undefined);
     out.captureNote = rec ? rec.fields.note : null;
-    out.saved = captured.filter((r) => r && r.capture_id !== '__token__').length;
+    // Exclude meta rows: __token__ (SW token mirror) and __session__ (offline
+    // session cache) are both putCapture'd but are not capture records.
+    out.saved = captured.filter((r) => r && r.capture_id !== '__token__' && r.capture_id !== '__session__').length;
   }
 
   process.stdout.write(JSON.stringify(out));
