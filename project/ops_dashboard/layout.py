@@ -19,7 +19,7 @@ NAV_ITEMS = (
 )
 
 ADMIN_SECTIONS = frozenset({
-    "health", "sites", "employees", "tokens", "system", "photos", "audio", "batch_images",
+    "health", "sites", "employees", "tokens", "system", "photos", "audio", "batch_images", "workers",
 })
 
 

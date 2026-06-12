@@ -20,7 +20,7 @@ from field_capture.site_viewer import UnsafeMediaPath, resolve_media_request
 from ops_dashboard.common import SectionContext
 from ops_dashboard.layout import html_page
 from ops_dashboard.post_routes import dispatch_post_route
-from ops_dashboard.sections import admin, audio, batch_images, candidates, captures, drafts, employee_detail, employees, equipment, failed, field_photos, health, health_pipeline, help as help_section, home, inbox, issues, photos, prospect_detail, site_detail, sites, supplies, swipe, system, tokens
+from ops_dashboard.sections import admin, audio, batch_images, candidates, captures, drafts, employee_detail, employees, equipment, failed, field_photos, health, health_pipeline, help as help_section, home, inbox, issues, photos, prospect_detail, site_detail, sites, supplies, swipe, system, tokens, workers
 from shared_pwa.assets import serve_static_asset
 
 # Cap concurrent request workers. stdlib ThreadingHTTPServer spawns an
@@ -65,6 +65,7 @@ SECTION_ROUTES = {
     "/failed": failed, "/captures": captures, "/audio": audio, "/batch-images": batch_images,
     "/photos": photos, "/field-photos": field_photos, "/sites": sites, "/sites/new": sites,
     "/employees": employees, "/tokens": tokens, "/tokens/new": tokens, "/tokens/set-raw": tokens,
+    "/workers": workers,
     "/system": system, "/help": help_section,
 }
 
