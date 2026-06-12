@@ -314,11 +314,18 @@ def render_row_actions(request: dict[str, object]) -> str:
     equipment_id = str(request.get("equipment_id") or "")
     if is_archived(request):
         return render_restore_form(equipment_id)
-    links = [
-        f'<a href="{html.escape(str(config["confirm_route"]))}?equipment_id={quote(equipment_id)}">{html.escape(str(config["label"]))}</a>'
+    forms = [
+        f"""<form method="post" action="{html.escape(str(config["post_route"]))}" style="display:inline">
+        <input type="hidden" name="equipment_id" value="{html.escape(equipment_id)}">
+        <input type="hidden" name="actor" value="{html.escape(default_actor())}">
+        <input type="hidden" name="confirm" value="1">
+        <button type="submit">{html.escape(str(config["label"]))}</button>
+      </form>"""
         for _name, config in valid_transitions(request.get("status"))
     ]
-    return " ".join(links)
+    if not forms:
+        return ""
+    return f'<span style="display:inline-flex;flex-wrap:wrap;gap:8px">{"".join(forms)}</span>'
 
 
 def is_archived(request: dict[str, object]) -> bool:
