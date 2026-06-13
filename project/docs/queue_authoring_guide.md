@@ -352,6 +352,73 @@ person_id: per_01JV8W7T6K8F9ABCD1234
 
 The `person_id` is the canonical identity anchor. The `name` is presentation and may stop matching the person's record if names change later.
 
+## 2a. `set_employee_id`
+
+Use when:
+
+- an existing person needs a late-arriving eHub or source-system employee ID
+  attached to the canonical employee record
+- the person can be resolved by person ID, current employee ID, or unique name
+- the update is limited to `employee_id` and the narrow late-arriving scalar
+  fields listed below
+
+Do not use when:
+
+- the person does not already exist; use `add_person`
+- the request is a general active/inactive status change; use
+  `set_entity_status`
+- the request needs structured edits such as contact, assignments,
+  additional jobs, or arbitrary person fields
+- the target person cannot be resolved uniquely
+
+### Required payload fields
+
+- `person`: non-empty resolver string
+- `employee_id`: numeric string or non-negative integer
+
+### Optional payload fields used by runtime
+
+- `employment_type`: string
+- `hire_date`: string
+- `status`: string
+- `source`: string provenance label
+- `metadata`: object with `source`
+
+### Optional top-level fields
+
+- `idempotency_key`: string, strongly recommended for replay safety
+
+Use a stable source-system key when available, for example `ehub-9213`.
+
+### Runtime behavior notes
+
+- the writer resolves `person` to an existing canonical `employee` document
+- the writer updates only `employee_id`, `employment_type`, `hire_date`, and
+  `status` when those fields are present
+- identity fields such as `_id`, `type`, `person_id`, `created_at`, and prior
+  `btq_job_ids` are preserved
+- if no person matches, multiple people match, or the `employee_id` is already
+  claimed by a different person, the job fails safely without writing
+- reprocessing the same job is idempotent via the `btq_job_ids` marker
+
+### Valid example
+
+```json
+{
+  "job_id": "2026-06-12T18-30-00Z__set-bobby-pack-ehub-id",
+  "job_type": "set_employee_id",
+  "idempotency_key": "ehub-9213",
+  "payload": {
+    "person": "Bobby Pack",
+    "employee_id": "9213",
+    "employment_type": "full_time",
+    "hire_date": "2026-06-12",
+    "status": "active",
+    "source": "ehub_email"
+  }
+}
+```
+
 ## 3. `trigger_recruiting`
 
 Use when:

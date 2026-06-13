@@ -36,6 +36,7 @@ JOB_REMOVE_FROM_SCHEDULE = "remove_from_schedule"
 JOB_FLAG_ACCESS_CONSTRAINT = "flag_access_constraint"
 JOB_FLAG_RETENTION_RISK = "flag_retention_risk"
 JOB_ADD_PERSON = "add_person"
+JOB_SET_EMPLOYEE_ID = "set_employee_id"
 JOB_RECORD_UNKNOWN_CAPTURE = "record_unknown_capture"
 JOB_RECLASSIFY_UNKNOWN = "reclassify_unknown"
 JOB_VISIT_CREATE = "visit_create"
@@ -117,6 +118,7 @@ ALLOWED_JOB_TYPES = {
     JOB_FLAG_ACCESS_CONSTRAINT,
     JOB_FLAG_RETENTION_RISK,
     JOB_ADD_PERSON,
+    JOB_SET_EMPLOYEE_ID,
     JOB_RECORD_UNKNOWN_CAPTURE,
     JOB_RECLASSIFY_UNKNOWN,
     JOB_VISIT_CREATE,
@@ -172,6 +174,7 @@ JOB_SCHEMAS = {
     JOB_FLAG_ACCESS_CONSTRAINT: ["site", "details"],
     JOB_FLAG_RETENTION_RISK: ["employee", "site", "details"],
     JOB_ADD_PERSON: ["name", "role"],
+    JOB_SET_EMPLOYEE_ID: ["person", "employee_id"],
     JOB_RECORD_UNKNOWN_CAPTURE: ["path", "content", "timestamp", "audio_file"],
     JOB_RECLASSIFY_UNKNOWN: ["path"],
     JOB_VISIT_CREATE: ["site", "confidence", "source", "evidence"],
@@ -222,6 +225,15 @@ ADD_PERSON_ALLOWED_PAYLOAD_FIELDS = {
 ADD_PERSON_ASSIGNMENT_FIELDS = {"job", "account", "location", "shift"}
 ADD_PERSON_CONTACT_FIELDS = {"phone", "email"}
 ADD_PERSON_METADATA_FIELDS = {"source"}
+SET_EMPLOYEE_ID_ALLOWED_PAYLOAD_FIELDS = {
+    "person",
+    "employee_id",
+    "employment_type",
+    "hire_date",
+    "status",
+    "source",
+    "metadata",
+}
 LOG_SITE_ISSUE_ALLOWED_PAYLOAD_FIELDS = {
     "site_id",
     "title",
@@ -587,6 +599,32 @@ def _validate_add_person_payload(payload: dict) -> bool:
     return True
 
 
+def _validate_set_employee_id_payload(payload: dict) -> bool:
+    if set(payload) - SET_EMPLOYEE_ID_ALLOWED_PAYLOAD_FIELDS:
+        return False
+    if not _is_non_empty_string(payload.get("person")):
+        return False
+    employee_id = payload.get("employee_id")
+    if employee_id is None:
+        return False
+    if isinstance(employee_id, str) and not employee_id.strip():
+        return False
+    if not _is_valid_employee_id(employee_id):
+        return False
+    for field in ("employment_type", "hire_date", "status", "source"):
+        value = payload.get(field)
+        if value is not None and not _is_non_empty_string(value):
+            return False
+    metadata = payload.get("metadata")
+    if metadata is not None:
+        if not isinstance(metadata, dict) or set(metadata) - ADD_PERSON_METADATA_FIELDS:
+            return False
+        source = metadata.get("source")
+        if source is not None and not _is_non_empty_string(source):
+            return False
+    return True
+
+
 def _is_string_list(value: object) -> bool:
     if value is None:
         return True
@@ -932,6 +970,9 @@ def validate_job(job: dict) -> bool:
                 return False
     if job_type == JOB_ADD_PERSON:
         if not _validate_add_person_payload(payload):
+            return False
+    if job_type == JOB_SET_EMPLOYEE_ID:
+        if not _validate_set_employee_id_payload(payload):
             return False
     if job_type == JOB_VISIT_CREATE:
         confidence = payload.get("confidence")

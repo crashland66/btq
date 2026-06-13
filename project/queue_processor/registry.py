@@ -13,10 +13,10 @@ from queue_spec import (
     JOB_MARK_SUPPLY_DELIVERED, JOB_MARK_SUPPLY_NO_ACTION_NEEDED, JOB_MARK_SUPPLY_ORDERED,
     JOB_MARK_SUPPLY_STOCKED, JOB_PARSE_SUPPLY_EMAIL, JOB_PERSONAL_JOURNAL_ENTRY, JOB_PHOTO_CAPTURE,
     JOB_PROMOTE_PROSPECT, JOB_RECORD_UNKNOWN_CAPTURE, JOB_RECLASSIFY_UNKNOWN, JOB_REMOVE_FROM_SCHEDULE, JOB_RETARGET_CAPTURE,
-    JOB_SET_ENTITY_STATUS, JOB_TRIGGER_RECRUITING, JOB_UPDATE_SITE_EQUIPMENT, JOB_VISIT_CREATE,
+    JOB_SET_EMPLOYEE_ID, JOB_SET_ENTITY_STATUS, JOB_TRIGGER_RECRUITING, JOB_UPDATE_SITE_EQUIPMENT, JOB_VISIT_CREATE,
     JOB_VOICE_MEMO_NOTE,
 )
-from queue_processor.handlers import misc, people, site_flags_notes, supplies_equipment, supplies_equipment_transitions, unknowns, visits
+from queue_processor.handlers import employee_updates, misc, people, site_flags_notes, supplies_equipment, supplies_equipment_transitions, unknowns, visits
 from queue_processor.handlers._shared import QueueJob, QueueProcessorError, RunContext
 
 JobHandler = Callable[[Path, QueueJob, RunContext, Path], None]
@@ -24,6 +24,7 @@ JobHandler = Callable[[Path, QueueJob, RunContext, Path], None]
 JOB_HANDLERS: dict[str, JobHandler] = {
     JOB_APPEND_TO_NOTE: site_flags_notes.process_append_to_note_job,
     JOB_ADD_PERSON: people.process_add_person_job,
+    JOB_SET_EMPLOYEE_ID: employee_updates.process_set_employee_id_job,
     JOB_PERSONAL_JOURNAL_ENTRY: misc.process_personal_journal_entry_job,
     JOB_FLAG_ACCESS_CONSTRAINT: site_flags_notes.process_flag_access_constraint_job,
     JOB_TRIGGER_RECRUITING: people.process_trigger_recruiting_job,

@@ -52,6 +52,7 @@ KNOWN_JOB_SUMMARY_TYPES = {
     "log_equipment_request",
     "log_personnel_event",
     "set_entity_status",
+    "set_employee_id",
     "update_site_equipment",
     "mark_supply_ordered",
     "mark_supply_delivered",
@@ -829,6 +830,11 @@ def render_job_summary(job_type: object, payload: object) -> str:
     if job_type_text == "add_person":
         suffix = _join_summary_parts(html.escape(_clean_display_part(body.get("name"))), f"({html.escape(_clean_display_part(body.get('role')))})" if _clean_display_part(body.get("role")) else "")
         return _summary_with_suffix("Add", suffix)
+    if job_type_text == "set_employee_id":
+        person = html.escape(_clean_display_part(body.get("person")))
+        emp = html.escape(_clean_display_part(body.get("employee_id")))
+        suffix = _join_summary_parts(person, f"(employee_id {emp})" if emp else "")
+        return _summary_with_suffix("Set employee ID for", suffix)
     if job_type_text == "trigger_recruiting":
         suffix = _join_summary_parts(_site_summary(body), f"({html.escape(_clean_display_part(body.get('priority')))})" if _clean_display_part(body.get("priority")) else "")
         return _summary_with_suffix("Trigger recruiting at", suffix)
