@@ -1,0 +1,142 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from pathlib import Path
+
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+PROJECT_ROOT = REPO_ROOT / "project"
+sys.path.insert(0, str(PROJECT_ROOT))
+
+from event_pipeline.capture_author import (  # type: ignore  # noqa: E402
+    CaptureAuthorError,
+    SOURCE_KINDS,
+    author_text_capture,
+)
+from event_pipeline.couchdb_queue_reader import (  # type: ignore  # noqa: E402
+    CouchDBQueueReaderError,
+    DEFAULT_CONFIG_PATH,
+    load_reader_config,
+)
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        description="Author a text-only field_capture into btq_field_captures.",
+    )
+    parser.add_argument("--site", required=True, help="Registered site name or site_id.")
+    parser.add_argument(
+        "--source-kind",
+        required=True,
+        choices=sorted(SOURCE_KINDS),
+        help="Source channel for provenance.",
+    )
+    parser.add_argument("--source-ref", required=True, help="Stable source id/ref.")
+    text_group = parser.add_mutually_exclusive_group()
+    text_group.add_argument("--text", help="Capture text.")
+    text_group.add_argument("--file", type=Path, help="Read capture text from a file.")
+    parser.add_argument("--person-id", default="", help="Optional person id.")
+    parser.add_argument("--person-name", default="", help="Optional person name.")
+    parser.add_argument("--captured-at", help="ISO timestamp for the source capture.")
+    parser.add_argument("--dry-run", action="store_true", help="Build and print; do not write.")
+    parser.add_argument("--yes", action="store_true", help="Write without interactive confirmation.")
+    parser.add_argument(
+        "--config",
+        type=Path,
+        default=DEFAULT_CONFIG_PATH,
+        help="Path to BTQ CouchDB config JSON.",
+    )
+    args = parser.parse_args(argv)
+
+    text = read_text(args, parser)
+    try:
+        preview = author_text_capture(
+            text=text,
+            site=args.site,
+            source_kind=args.source_kind,
+            source_ref=args.source_ref,
+            person_id=args.person_id,
+            person_name=args.person_name,
+            captured_at=args.captured_at,
+            dry_run=True,
+        )
+    except CaptureAuthorError as exc:
+        print(f"btq-capture-text: {exc}", file=sys.stderr)
+        return 1
+
+    print_preview(preview)
+    if args.dry_run:
+        print(json.dumps({"dry_run": True, "doc": preview}, indent=2, sort_keys=True))
+        return 0
+
+    if not args.yes:
+        if not sys.stdin.isatty():
+            print(
+                "btq-capture-text: refusing to write without --yes when stdin is not interactive",
+                file=sys.stderr,
+            )
+            return 1
+        answer = input("Write this capture to btq_field_captures? [y/N] ").strip().lower()
+        if answer not in {"y", "yes"}:
+            print("cancelled")
+            return 0
+
+    try:
+        config = load_reader_config(args.config).couchdb
+        result = author_text_capture(
+            text=text,
+            site=args.site,
+            source_kind=args.source_kind,
+            source_ref=args.source_ref,
+            person_id=args.person_id,
+            person_name=args.person_name,
+            captured_at=args.captured_at,
+            dry_run=False,
+            config=config,
+        )
+    except CouchDBQueueReaderError as exc:
+        print(f"btq-capture-text: {exc.message}", file=sys.stderr)
+        return 1
+    except CaptureAuthorError as exc:
+        print(f"btq-capture-text: {exc}", file=sys.stderr)
+        return 1
+
+    if result.get("skipped") == "duplicate":
+        print(json.dumps({"status": "skipped-duplicate", **result}, indent=2, sort_keys=True))
+    else:
+        print(json.dumps({"status": "written", "result": result}, indent=2, sort_keys=True))
+    return 0
+
+
+def read_text(args: argparse.Namespace, parser: argparse.ArgumentParser) -> str:
+    if args.text is not None:
+        text = args.text
+    elif args.file is not None:
+        try:
+            text = args.file.read_text(encoding="utf-8")
+        except OSError as exc:
+            parser.error(f"cannot read --file {args.file}: {exc}")
+    elif sys.stdin.isatty():
+        parser.error("provide --text, --file, or pipe text on stdin")
+    else:
+        text = sys.stdin.read()
+    if not text.strip():
+        parser.error("capture text is empty")
+    return text
+
+
+def print_preview(doc: dict[str, object]) -> None:
+    note = str(doc.get("note") or "")
+    preview = " ".join(note.split())
+    if len(preview) > 140:
+        preview = f"{preview[:137]}..."
+    print(f"capture_id: {doc.get('capture_id', '')}")
+    print(f"site_id: {doc.get('site_id', '')}")
+    print(f"note: {preview}")
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
