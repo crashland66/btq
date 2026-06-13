@@ -1614,7 +1614,6 @@ def run_server(
     print(f"Field Capture listening on http://{host}:{port}")
     print(f"field-capture ingress: couchdb (db={couchdb_database})")
     print(f"Token database: {db_path.expanduser()}")
-    print(f"Vault root: {vault_root.expanduser()}")
     print(f"Upload dir: {upload_dir.expanduser()}")
     server.serve_forever()
     return 0
