@@ -2006,6 +2006,75 @@ def test_review_maintenance_status_human_output_omits_paths_by_default(tmp_path:
     assert str(candidate_path) not in output
 
 
+def test_review_dashboard_reports_pending_candidates_limits_preview_and_suggests_review(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str], couchdb_review) -> None:
+    runtime_root = tmp_path / "runtime"
+    candidate_dir = runtime_root / "reviews" / "action_candidates" / "field_capture"
+    vault_root = tmp_path / "vault"
+    vault_root.mkdir()
+    sentinel = vault_root / "sentinel.md"
+    sentinel.write_text("do not touch\n", encoding="utf-8")
+    semantic_path = write_semantic_artifact(runtime_root / "field_capture" / "audio_semantics")
+    first = review_candidate(STATUS_PENDING_REVIEW, semantic_path, "First pending.")
+    second = review_candidate(STATUS_PENDING_REVIEW, semantic_path, "Second pending.")
+    write_action_candidate_review(candidate_dir, first)
+    write_action_candidate_review(candidate_dir, second)
+    before_candidates = {path: path.read_text(encoding="utf-8") for path in sorted(candidate_dir.glob("*.json"))}
+
+    assert btq.run(["review-dashboard", "--channel", "field_capture", "--runtime-root", str(runtime_root), "--limit", "1", "--json"]) == 0
+    report = json.loads(capsys.readouterr().out)
+
+    assert report["channel"] == "field_capture"
+    assert report["candidate_summary"]["pending_review"] == 2
+    assert len(report["candidate_preview"]) == 1
+    assert report["candidate_preview"][0]["candidate_id"] == min(str(first["candidate_id"]), str(second["candidate_id"]))
+    assert report["draft_preview"] == []
+    assert report["suggested_next_command"] == "Review pending job_draft records at /swipe or /candidates on the ops dashboard."
+    assert {path: path.read_text(encoding="utf-8") for path in sorted(candidate_dir.glob("*.json"))} == before_candidates
+    assert not (runtime_root / "reviews" / "approved_job_drafts").exists()
+    assert not (runtime_root / "reviews" / "staging").exists()
+    assert not (runtime_root / "queue").exists()
+    assert not (runtime_root / "processed").exists()
+    assert not (runtime_root / "failed").exists()
+    assert sentinel.read_text(encoding="utf-8") == "do not touch\n"
+
+
+def test_review_dashboard_suggests_pipeline_emit_when_semantics_exist_without_candidates(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    runtime_root = tmp_path / "runtime"
+    write_semantic_artifact(runtime_root / "field_capture" / "audio_semantics")
+
+    assert btq.run(["review-dashboard", "--channel", "field_capture", "--runtime-root", str(runtime_root), "--json"]) == 0
+    report = json.loads(capsys.readouterr().out)
+
+    assert report["review_status"]["counts"]["semantic_with_action_candidates"] == 1
+    assert report["candidate_summary"]["pending_review"] == 0
+    assert report["suggested_next_command"] == "./scripts/btq watch-field-capture-pipeline --once --json"
+    assert not (runtime_root / "reviews" / "action_candidates").exists()
+
+
+def test_review_dashboard_reports_approved_candidate_without_draft_and_suggests_review(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str], couchdb_review) -> None:
+    runtime_root = tmp_path / "runtime"
+    candidate_dir = runtime_root / "reviews" / "action_candidates" / "field_capture"
+    candidate = approved_candidate_payload()
+    write_action_candidate_review(candidate_dir, candidate)
+
+    assert btq.run(["review-dashboard", "--channel", "field_capture", "--runtime-root", str(runtime_root), "--json"]) == 0
+    report = json.loads(capsys.readouterr().out)
+
+    assert report["candidate_summary"]["approved"] == 1
+    assert report["maintenance"]["finding_count"] >= 1
+    assert report["maintenance"]["orphan_or_lineage_issue_count"] >= 1
+    assert report["suggested_next_command"] == "Review pending job_draft records at /swipe or /candidates on the ops dashboard."
+    assert not (runtime_root / "reviews" / "approved_job_drafts").exists()
+    assert not (runtime_root / "queue").exists()
+
+
 def test_review_dashboard_reports_not_staged_draft_and_suggests_staging_dry_run(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
