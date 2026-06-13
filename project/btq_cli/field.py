@@ -3,7 +3,6 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from field_capture import action_candidates as field_action_candidates
 from field_capture import approved_job_drafts as field_approved_job_drafts
 from field_capture import audio_semantics as field_audio_semantics
 from field_capture import audio_transcription as field_audio_transcription
@@ -76,31 +75,6 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
     pilot_audit_parser.add_argument("--output-json")
     pilot_audit_parser.add_argument("--json", action="store_true")
     pilot_audit_parser.set_defaults(func=handle_audit_field_capture_pilot)
-    collect_candidates_parser = subparsers.add_parser("collect-action-candidates", help="Collect review candidates from semantic artifacts.")
-    collect_candidates_parser.add_argument("--channel", choices=["field_capture"], default="field_capture")
-    collect_candidates_parser.add_argument("--runtime-root")
-    collect_candidates_parser.add_argument("--semantic-dir")
-    collect_candidates_parser.add_argument("--candidate-dir")
-    collect_candidates_parser.add_argument("--dry-run", action="store_true")
-    collect_candidates_parser.add_argument("--json", action="store_true")
-    collect_candidates_parser.set_defaults(func=handle_collect_action_candidates)
-    list_candidates_parser = subparsers.add_parser("list-action-candidates", help="List review candidates for operator approval.")
-    list_candidates_parser.add_argument("--channel", choices=["field_capture"], default="field_capture")
-    list_candidates_parser.add_argument("--runtime-root")
-    list_candidates_parser.add_argument("--candidate-dir")
-    list_candidates_parser.add_argument("--status", choices=["pending_review", "approved", "rejected", "failed"])
-    list_candidates_parser.add_argument("--limit", type=int)
-    list_candidates_parser.add_argument("--include-source", action="store_true")
-    list_candidates_parser.add_argument("--json", action="store_true")
-    list_candidates_parser.set_defaults(func=handle_list_action_candidates)
-    generate_drafts_parser = subparsers.add_parser("generate-approved-drafts", help="Generate approved queue-job drafts from approved candidates.")
-    generate_drafts_parser.add_argument("--channel", choices=["field_capture"], default="field_capture")
-    generate_drafts_parser.add_argument("--runtime-root")
-    generate_drafts_parser.add_argument("--candidate-dir")
-    generate_drafts_parser.add_argument("--draft-dir")
-    generate_drafts_parser.add_argument("--dry-run", action="store_true")
-    generate_drafts_parser.add_argument("--json", action="store_true")
-    generate_drafts_parser.set_defaults(func=handle_generate_approved_drafts)
     list_drafts_parser = subparsers.add_parser("list-approved-drafts", help="List approved review drafts before staging.")
     list_drafts_parser.add_argument("--channel", choices=["field_capture"], default="field_capture")
     list_drafts_parser.add_argument("--runtime-root")
@@ -115,16 +89,6 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
     list_drafts_parser.add_argument("--include-source", action="store_true")
     list_drafts_parser.add_argument("--json", action="store_true")
     list_drafts_parser.set_defaults(func=handle_list_approved_drafts)
-    review_candidate_parser = subparsers.add_parser("review-candidate", help="Approve or reject one review candidate.")
-    review_candidate_parser.add_argument("--channel", choices=["field_capture"], default="field_capture")
-    review_candidate_parser.add_argument("--runtime-root")
-    review_candidate_parser.add_argument("--candidate-dir")
-    review_candidate_parser.add_argument("--candidate-id", required=True)
-    review_candidate_parser.add_argument("--status", choices=["approved", "rejected"], required=True)
-    review_candidate_parser.add_argument("--reviewer", required=True)
-    review_candidate_parser.add_argument("--rationale", required=True)
-    review_candidate_parser.add_argument("--json", action="store_true")
-    review_candidate_parser.set_defaults(func=handle_review_candidate)
     mark_client_informed_parser = subparsers.add_parser("mark-client-informed", help="Mark an approved field-capture candidate as client informed.")
     mark_client_informed_parser.add_argument("--channel", choices=["field_capture"], default="field_capture")
     mark_client_informed_parser.add_argument("--runtime-root")
@@ -348,51 +312,6 @@ def handle_audit_field_capture_pilot(args: argparse.Namespace) -> int:
     return field_pilot_audit.run(audit_args)
 
 
-def handle_collect_action_candidates(args: argparse.Namespace) -> int:
-    if args.channel != "field_capture":
-        raise SystemExit(f"Unsupported channel: {args.channel}")
-    collect_args: list[str] = []
-    for name in ("runtime_root", "semantic_dir", "candidate_dir"):
-        value = getattr(args, name)
-        if value is not None:
-            collect_args.extend([f"--{name.replace('_', '-')}", str(value)])
-    if args.dry_run:
-        collect_args.append("--dry-run")
-    if args.json:
-        collect_args.append("--json")
-    return field_action_candidates.run(collect_args)
-
-
-def handle_list_action_candidates(args: argparse.Namespace) -> int:
-    if args.channel != "field_capture":
-        raise SystemExit(f"Unsupported channel: {args.channel}")
-    list_args: list[str] = []
-    for name in ("runtime_root", "candidate_dir", "status", "limit"):
-        value = getattr(args, name)
-        if value is not None:
-            list_args.extend([f"--{name.replace('_', '-')}", str(value)])
-    if args.include_source:
-        list_args.append("--include-source")
-    if args.json:
-        list_args.append("--json")
-    return field_action_candidates.run_list(list_args)
-
-
-def handle_generate_approved_drafts(args: argparse.Namespace) -> int:
-    if args.channel != "field_capture":
-        raise SystemExit(f"Unsupported channel: {args.channel}")
-    draft_args: list[str] = []
-    for name in ("runtime_root", "candidate_dir", "draft_dir"):
-        value = getattr(args, name)
-        if value is not None:
-            draft_args.extend([f"--{name.replace('_', '-')}", str(value)])
-    if args.dry_run:
-        draft_args.append("--dry-run")
-    if args.json:
-        draft_args.append("--json")
-    return field_approved_job_drafts.run(draft_args)
-
-
 def handle_list_approved_drafts(args: argparse.Namespace) -> int:
     if args.channel != "field_capture":
         raise SystemExit(f"Unsupported channel: {args.channel}")
@@ -408,19 +327,6 @@ def handle_list_approved_drafts(args: argparse.Namespace) -> int:
     if args.json:
         list_args.append("--json")
     return field_approved_job_drafts.run_list(list_args)
-
-
-def handle_review_candidate(args: argparse.Namespace) -> int:
-    if args.channel != "field_capture":
-        raise SystemExit(f"Unsupported channel: {args.channel}")
-    review_candidate_args: list[str] = []
-    for name in ("runtime_root", "candidate_dir", "candidate_id", "status", "reviewer", "rationale"):
-        value = getattr(args, name)
-        if value is not None:
-            review_candidate_args.extend([f"--{name.replace('_', '-')}", str(value)])
-    if args.json:
-        review_candidate_args.append("--json")
-    return field_action_candidates.run_review(review_candidate_args)
 
 
 def handle_mark_client_informed(args: argparse.Namespace) -> int:

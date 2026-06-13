@@ -1,15 +1,12 @@
 from __future__ import annotations
 from event_pipeline.site_registry_data import load_brand_keywords
 
-import argparse
 import hashlib
-import json
 import logging
 import os
 from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterable, Iterator, Sequence
+from typing import Any, Iterable, Iterator
 
 from config import get_config
 from event_pipeline import couchdb_config
@@ -36,7 +33,6 @@ from processing_core.extracted_actions import (
     ExtractedAction,
     validated_extracted_actions,
 )
-from processing_core.results import result_counts
 from processing_core.status import STATUS_COMPLETE
 from queue_spec import normalize_vault_relative_path as _normalize_vault_relative_path
 from queue_spec import validate_job
@@ -778,88 +774,6 @@ def plan_candidates_from_semantic(
     return results
 
 
-def collect_action_candidates(
-    semantic_dirs: Sequence[Path] | Path,
-    candidate_dir: Path,
-    *,
-    runtime_root: Path | None = None,
-) -> dict[str, int]:
-    counts = result_counts("discovered", "skipped", "completed", "failed")
-    couch_written = 0
-    dirs = (semantic_dirs,) if isinstance(semantic_dirs, Path) else tuple(semantic_dirs)
-    candidate_root = candidate_dir.expanduser().resolve(strict=False)
-    if runtime_root is not None:
-        runtime_resolved = runtime_root.expanduser().resolve(strict=False)
-        resolve_within_root(candidate_root, runtime_resolved)
-
-    for semantic_root_arg in dirs:
-        semantic_root = semantic_root_arg.expanduser().resolve(strict=False)
-        if runtime_root is not None:
-            resolve_within_root(semantic_root, runtime_resolved)
-        for semantic_path, semantic_payload in iter_semantic_artifacts(semantic_root):
-            if semantic_payload.get("type") not in ACCEPTED_SEMANTIC_TYPES or semantic_payload.get("status") != STATUS_COMPLETE:
-                counts["skipped"] += 1
-                continue
-            payloads = payloads_from_semantic(semantic_path, semantic_payload)
-            if not payloads:
-                counts["skipped"] += 1
-                continue
-            counts["discovered"] += len(payloads)
-            for payload in payloads:
-                couch_result = write_candidate_to_couchdb_required_when_configured(payload)
-                if couch_result is True:
-                    couch_written += 1
-                if couch_result is False:
-                    counts["skipped"] += 1
-                elif payload.get("status") == "failed":
-                    counts["failed"] += 1
-                else:
-                    counts["completed"] += 1
-    if couch_written:
-        LOGGER.info("field action candidates CouchDB: written=%s", couch_written)
-    return counts
-
-
-def collect_action_candidates_report(
-    semantic_dirs: Sequence[Path] | Path,
-    candidate_dir: Path,
-    *,
-    runtime_root: Path | None = None,
-    dry_run: bool = False,
-) -> dict[str, object]:
-    counts = result_counts("discovered", "skipped", "completed", "failed")
-    results: list[dict[str, object]] = []
-    dirs = (semantic_dirs,) if isinstance(semantic_dirs, Path) else tuple(semantic_dirs)
-    candidate_root = candidate_dir.expanduser().resolve(strict=False)
-    if runtime_root is not None:
-        runtime_resolved = runtime_root.expanduser().resolve(strict=False)
-        resolve_within_root(candidate_root, runtime_resolved)
-
-    for semantic_root_arg in dirs:
-        semantic_root = semantic_root_arg.expanduser().resolve(strict=False)
-        if runtime_root is not None:
-            resolve_within_root(semantic_root, runtime_resolved)
-        for semantic_path, semantic_payload in iter_semantic_artifacts(semantic_root):
-            planned = plan_candidates_from_semantic(semantic_path, semantic_payload, candidate_root)
-            results.extend(planned)
-            if semantic_payload.get("type") not in ACCEPTED_SEMANTIC_TYPES or semantic_payload.get("status") != STATUS_COMPLETE:
-                counts["skipped"] += 1
-                continue
-            candidate_results = [result for result in planned if result.get("candidate") is not None]
-            if not candidate_results:
-                counts["skipped"] += 1
-                continue
-            counts["discovered"] += len(candidate_results)
-            for result in candidate_results:
-                if result["status"] == CANDIDATE_PLAN_WOULD_CREATE:
-                    counts["completed"] += 1
-                elif result["status"] == CANDIDATE_PLAN_FAILED:
-                    counts["failed"] += 1
-                else:
-                    counts["skipped"] += 1
-    return {"dry_run": dry_run, "counts": counts, "results": results}
-
-
 def find_candidate_artifacts(candidate_dir: Path, candidate_id: str) -> list[tuple[Path, dict[str, object]]]:
     root = candidate_dir.expanduser().resolve(strict=False)
     matches: list[tuple[Path, dict[str, object]]] = []
@@ -1072,152 +986,3 @@ def review_candidate(
         "reviewer": reviewer,
         "changed": True,
     }
-
-
-def build_parser() -> argparse.ArgumentParser:
-    config = get_config()
-    parser = argparse.ArgumentParser(description="Collect field-capture semantic action candidates for review.")
-    parser.add_argument("--runtime-root", type=Path, default=config.runtime_root)
-    parser.add_argument("--semantic-dir", type=Path)
-    parser.add_argument("--candidate-dir", type=Path)
-    parser.add_argument("--dry-run", action="store_true")
-    parser.add_argument("--json", action="store_true")
-    return parser
-
-
-def build_review_parser() -> argparse.ArgumentParser:
-    config = get_config()
-    parser = argparse.ArgumentParser(description="Approve or reject one field-capture action candidate.")
-    parser.add_argument("--runtime-root", type=Path, default=config.runtime_root)
-    parser.add_argument("--candidate-dir", type=Path)
-    parser.add_argument("--candidate-id", required=True)
-    parser.add_argument("--status", choices=sorted(REVIEWABLE_STATUSES), required=True)
-    parser.add_argument("--reviewer", required=True)
-    parser.add_argument("--rationale", required=True)
-    parser.add_argument("--json", action="store_true")
-    return parser
-
-
-def build_list_parser() -> argparse.ArgumentParser:
-    config = get_config()
-    parser = argparse.ArgumentParser(description="List field-capture action candidates for operator review.")
-    parser.add_argument("--runtime-root", type=Path, default=config.runtime_root)
-    parser.add_argument("--candidate-dir", type=Path)
-    parser.add_argument("--status", choices=LISTABLE_STATUSES)
-    parser.add_argument("--limit", type=int)
-    parser.add_argument("--include-source", action="store_true")
-    parser.add_argument("--json", action="store_true")
-    return parser
-
-
-def run(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
-    runtime_root = args.runtime_root.expanduser()
-    semantic_target = args.semantic_dir.expanduser() if args.semantic_dir is not None else default_semantic_dirs(runtime_root)
-    if args.dry_run:
-        candidate_dir = args.candidate_dir.expanduser() if args.candidate_dir is not None else default_candidate_dir(runtime_root)
-        report = collect_action_candidates_report(semantic_target, candidate_dir, runtime_root=runtime_root, dry_run=True)
-        counts = report["counts"]
-    else:
-        from field_capture import job_draft_emission
-
-        report = None
-        counts = job_draft_emission.collect_job_drafts(semantic_target, runtime_root=runtime_root)
-    if args.json:
-        print(json.dumps(report if args.dry_run else counts, indent=2, sort_keys=True))
-    else:
-        if args.dry_run:
-            print(
-                "field action candidates dry-run: "
-                f"discovered={counts['discovered']} skipped={counts['skipped']} "
-                f"completed={counts['completed']} failed={counts['failed']}"
-            )
-            for result in report["results"]:
-                print(f"- {result['candidate_id']} {result['status']}: {result['reason']}")
-        else:
-            print(
-                "field job drafts: "
-                f"discovered={counts['discovered']} emitted={counts['emitted']} "
-                f"skipped={counts['skipped']} existing={counts.get('existing', 0)}"
-            )
-    return 0
-
-
-def run_list(argv: list[str] | None = None) -> int:
-    args = build_list_parser().parse_args(argv)
-    runtime_root = args.runtime_root.expanduser()
-    candidate_dir = args.candidate_dir.expanduser() if args.candidate_dir is not None else default_candidate_dir(runtime_root)
-    report = list_action_candidates_report(
-        candidate_dir,
-        status=args.status,
-        limit=args.limit,
-        include_source=args.include_source,
-        runtime_root=runtime_root,
-    )
-    if args.json:
-        print(json.dumps(report, indent=2, sort_keys=True))
-    else:
-        counts = report["counts"]
-        print(
-            "field action candidates: "
-            f"total={counts['total']} pending_review={counts.get('pending_review', 0)} "
-            f"approved={counts.get('approved', 0)} rejected={counts.get('rejected', 0)} "
-            f"failed={counts.get('failed', 0)}"
-        )
-        for item in report["candidates"]:
-            print(
-                f"- {item['candidate_id']} [{item['status']}] "
-                f"{item['summary']} "
-                f"(confidence={item['confidence']}; artifact={item['artifact_path']})"
-            )
-            if item["rationale"]:
-                print(f"  rationale: {item['rationale']}")
-            if item["reviewer"] or item["reviewed_at"]:
-                print(f"  reviewed: {item['reviewer']} {item['reviewed_at']}".rstrip())
-            if item["source_context_preview"]:
-                print(f"  context: {item['source_context_preview']}")
-            if args.include_source:
-                if item.get("source_text"):
-                    print(f"  source_text: {item['source_text']}")
-                if item.get("source_context"):
-                    print(f"  source_context: {item['source_context']}")
-    return 0
-
-
-def run_review(argv: list[str] | None = None) -> int:
-    args = build_review_parser().parse_args(argv)
-    runtime_root = args.runtime_root.expanduser()
-    candidate_dir = args.candidate_dir.expanduser() if args.candidate_dir is not None else default_candidate_dir(runtime_root)
-    try:
-        result = review_candidate(
-            candidate_dir,
-            candidate_id=args.candidate_id,
-            status=args.status,
-            reviewer=args.reviewer,
-            rationale=args.rationale,
-            runtime_root=runtime_root,
-        )
-    except CandidateReviewError as exc:
-        result = {"error": str(exc), "candidate_id": args.candidate_id, "changed": False}
-        if args.json:
-            print(json.dumps(result, indent=2, sort_keys=True))
-        else:
-            print(f"field candidate review failed: {exc}")
-        return 1
-    if args.json:
-        print(json.dumps(result, indent=2, sort_keys=True))
-    else:
-        print(
-            "field candidate review: "
-            f"candidate_id={result['candidate_id']} prior_status={result['prior_status']} "
-            f"status={result['status']} reviewer={result['reviewer']} changed={result['changed']}"
-        )
-    return 0
-
-
-def main() -> int:
-    return run()
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

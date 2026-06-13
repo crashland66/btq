@@ -71,15 +71,16 @@ def _note_only_doc(note: str, capture_id: str = "cap-textonly-e2e-0001") -> dict
 # --------------------------------------------------------------------------- #
 
 
-def test_note_only_capture_flows_to_action_candidate_e2e(tmp_path: Path) -> None:
-    """A note-only capture -> text semantic summary -> a real action candidate.
+def test_note_only_capture_flows_to_job_draft_e2e(tmp_path: Path, couchdb_job_drafts) -> None:
+    """A note-only capture -> text semantic summary -> a real job_draft.
 
     Drives the REAL pipeline functions (no source scraping for the behavioral
-    assertion). Faithful CouchDB double: collect_action_candidates_report runs
-    with CouchDB UNCONFIGURED, so the candidate is built and reported as
-    ``would_create`` (the candidate payload + candidate_id are real; only the
-    persist step is config-gated). A note-only submit that yields NO candidate
-    is a FAIL -- this asserts a candidate IS produced.
+    assertion). Prompt 370 retired the action-candidate collector; the live
+    downstream emission is now ``job_draft_emission.collect_job_drafts``, which
+    writes job_draft docs via the configured CouchDB writer. The
+    ``couchdb_job_drafts`` double makes the store CONFIGURED and captures the
+    emitted drafts in-memory. A note-only submit that yields NO job_draft is a
+    FAIL -- this asserts a draft IS produced.
     """
     # Defensive: ensure the shared brand-keyword cache is in a clean, valid
     # state (other tests load throwaway brand files into a module-level cache).
@@ -127,26 +128,23 @@ def test_note_only_capture_flows_to_action_candidate_e2e(tmp_path: Path) -> None
     assert artifact["source_text"] == note
     assert artifact.get("issue_detected") is True
 
-    # 3) Candidate collection produces a real action candidate from the note.
-    cand_dir = fc.default_candidate_dir(tmp_path)
-    report = fc.collect_action_candidates_report(
-        fc.default_semantic_dirs(tmp_path), cand_dir, runtime_root=tmp_path
-    )
-    rc = report["counts"]
-    assert rc["discovered"] >= 1, rc
-    assert rc["completed"] >= 1, rc
-    assert rc["failed"] == 0, rc
+    # 3) Job-draft emission produces a real job_draft from the note (the live
+    #    downstream path that replaced the retired action-candidate collector).
+    from field_capture import job_draft_emission
 
-    produced = [
-        r for r in report["results"]
-        if r.get("candidate") is not None and r.get("candidate_id")
-    ]
-    assert produced, f"note-only capture produced NO candidate: {report}"
-    cand = produced[0]
-    assert cand["candidate_id"].startswith("ac_"), cand
-    assert cand["status"] == "would_create", cand
-    # The candidate traces back to the text semantic artifact we wrote.
-    assert cand["semantic_path"] == str(sem_path)
+    counts = job_draft_emission.collect_job_drafts(
+        fc.default_semantic_dirs(tmp_path), runtime_root=tmp_path
+    )
+    assert counts["discovered"] >= 1, counts
+    assert counts["emitted"] >= 1, counts
+
+    drafts = list(couchdb_job_drafts.drafts.values())
+    assert drafts, f"note-only capture produced NO job_draft: {counts}"
+    draft = drafts[0]
+    assert str(draft["draft_id"]), draft
+    assert draft["type"] == "job_draft", draft
+    # The draft traces back to the capture we imported.
+    assert draft.get("source_capture_id") == doc["capture_id"], draft
 
 
 def test_blank_note_only_capture_imports_but_yields_no_candidate(tmp_path: Path) -> None:

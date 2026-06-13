@@ -36,7 +36,12 @@ from event_pipeline.couchdb_candidate_writer import (
     AlreadyDecided,
     build_action_candidate_document,
 )
-from field_capture import action_candidate_staging_watcher as _watcher
+# NOTE (prompt 370): the action-candidate STAGING WATCHER and the
+# ``collect_action_candidates`` collector were retired with the dead LEGACY
+# action-candidate review path. This double KEEPS its still-live surface (the
+# CouchDB candidate readers + the approve/reject/edit/client-informed/resolve
+# review-mutation path, all of which production still exposes) and drops only the
+# retired staging-watcher / collector wiring.
 
 
 class FakeCouchReview:
@@ -220,43 +225,6 @@ class FakeCouchReview:
         metadata = source_detail.get("channel_metadata")
         return dict(metadata) if isinstance(metadata, dict) else {}
 
-    def run_watcher(self, runtime_root: Path, *, stub_stage: bool = True):
-        """Run one watcher pass. By default the actual filesystem staging is
-        replaced by a counting spy (recorded in ``stage_calls``) and the
-        candidate-materialization is stubbed, so the test depends only on the
-        watcher's idempotency, not on the draft/queue plumbing (which has its own
-        gate tests)."""
-        import logging
-
-        cfg = couchdb_config.from_env()
-        db = couchdb_config.field_captures_database()
-        logger = logging.getLogger("test.308b.watcher")
-        import unittest.mock as _mock
-
-        ctx = []
-        if stub_stage:
-            def fake_stage(_rt, cid):
-                self.stage_calls.append(cid)
-                return f"draft_ids=draft_{cid} staged=1"
-
-            ctx.append(_mock.patch.object(_watcher, "stage_candidate_job_after_approval", fake_stage))
-            ctx.append(
-                _mock.patch.object(
-                    _watcher,
-                    "materialize_candidate_for_existing_staging",
-                    lambda doc, rt: Path(rt) / "candidate.json",
-                )
-            )
-        for c in ctx:
-            c.start()
-        try:
-            return _watcher.process_pass(
-                config=cfg, db=db, runtime_root=Path(runtime_root), logger=logger
-            )
-        finally:
-            for c in ctx:
-                c.stop()
-
 
 @pytest.fixture
 def couchdb_review(monkeypatch):
@@ -280,11 +248,11 @@ def couchdb_review(monkeypatch):
     monkeypatch.setattr(_writer, "upsert_action_candidate", lambda config, db, candidate: fake.upsert(candidate))
     monkeypatch.setattr(_pc_fc, "upsert_action_candidate", lambda config, db, candidate: fake.upsert(candidate), raising=False)
     monkeypatch.setattr(_writer, "_put_document", fake.put_document)
-    # The watcher and the candidate LISTING reader (list_action_candidates) each
-    # have their own _request_json (`_find`). Patch BOTH onto the in-memory store
+    # The candidate LISTING reader (list_action_candidates) resolves its `_find`
+    # through the writer module's _request_json. Patch it onto the in-memory store
     # so reader surfaces (swipe/dashboard/inbox/site-status/retarget) resolve
     # seeded candidates through the real CouchDB read path -- not an empty list.
-    monkeypatch.setattr(_watcher, "_request_json", fake.request_json)
+    # (prompt 370: the retired staging-watcher had its own _request_json; gone.)
     monkeypatch.setattr(_writer, "_request_json", fake.request_json)
 
     cfg = couchdb_config.CouchDBConfig("http://fake-review", "u", "p", 1.0, 1000)
@@ -320,29 +288,10 @@ def couchdb_review(monkeypatch):
             continue
         if current is _orig_write:
             monkeypatch.setattr(_mod, "write_action_candidate_review", _mirroring_write, raising=False)
-    # 308c: the collector writes candidates to CouchDB and NO LONGER writes the
-    # filesystem artifact. Legacy collector/CLI tests assert candidate content
-    # via the filesystem review dir. Wrap collect_action_candidates so the REAL
-    # collector runs (genuinely writing to the double + computing counts/dedup),
-    # then project the canonical CouchDB docs back to the filesystem review dir
-    # the test passed in -- FS strictly downstream of CouchDB (no projected file
-    # unless the candidate reached CouchDB first).
-    _orig_collect = _pc_fc.collect_action_candidates
-
-    def _collect_then_project(semantic_dirs, candidate_dir, *args, **kwargs):
-        before = set(fake.docs)
-        counts = _orig_collect(semantic_dirs, candidate_dir, *args, **kwargs)
-        # Project ONLY the candidates this collect call wrote into CouchDB, so a
-        # test that runs the collector multiple times against DIFFERENT candidate
-        # dirs does not have the accumulated store dumped into each dir (the
-        # double persists across calls within one test). FS stays strictly
-        # downstream of -- and scoped to -- the candidates this call produced.
-        new_ids = set(fake.docs) - before
-        try:
-            fake.project_to_fs(candidate_dir, only_ids=new_ids)
-        except Exception:
-            pass
-        return counts
-
-    monkeypatch.setattr(_pc_fc, "collect_action_candidates", _collect_then_project)
+    # NOTE (prompt 370): the ``collect_action_candidates`` collector was retired
+    # with the dead LEGACY action-candidate path. The collector-wrap that used to
+    # live here is gone; tests that exercised candidate EMISSION now drive the
+    # live ``job_draft`` path via the ``couchdb_job_drafts`` double instead. This
+    # double's remaining surface (CouchDB candidate readers + the still-live
+    # review-mutation handlers) is unaffected.
     return fake

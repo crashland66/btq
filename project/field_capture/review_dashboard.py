@@ -11,6 +11,15 @@ from field_capture.review_maintenance import review_maintenance_status_report
 from field_capture.review_status import review_status_report
 
 
+# The active review pipeline is job_draft-based: the field-capture pipeline emits
+# CouchDB `job_draft` records that operators triage at /swipe or /candidates, then
+# `./scripts/job-draft-queue-watch` materializes approvals into the queue. The
+# action-candidate CLI (collect/list/generate) is retired (prompt 370), so these
+# suggestions point at the live surfaces instead.
+EMIT_JOB_DRAFTS_COMMAND = "./scripts/btq watch-field-capture-pipeline --once --json"
+REVIEW_JOB_DRAFTS_GUIDANCE = "Review pending job_draft records at /swipe or /candidates on the ops dashboard."
+
+
 def default_runtime_root() -> Path:
     return get_config().runtime_root
 
@@ -61,11 +70,11 @@ def suggested_next_command(
     draft_states = queue_state_counts(draft_report.get("drafts", []))
 
     if int(candidate_counts.get("total", 0)) == 0 and int(status_counts.get("semantic_with_action_candidates", 0)) > 0:
-        return "./scripts/btq collect-action-candidates --channel field_capture --dry-run"
+        return EMIT_JOB_DRAFTS_COMMAND
     if int(candidate_counts.get("pending_review", 0)) > 0:
-        return "./scripts/btq list-action-candidates --channel field_capture --status pending_review"
+        return REVIEW_JOB_DRAFTS_GUIDANCE
     if int(maintenance_counts.get("approved_candidates_without_draft", 0)) > 0:
-        return "./scripts/btq generate-approved-drafts --channel field_capture --dry-run"
+        return REVIEW_JOB_DRAFTS_GUIDANCE
     if int(draft_states.get("not_staged", 0)) > 0 or int(maintenance_counts.get("approved_drafts_without_staging_status", 0)) > 0:
         return "./scripts/btq stage-approved-drafts --channel field_capture --dry-run"
     if int(maintenance_counts.get("candidates_failed", 0)) > 0 or int(maintenance_counts.get("drafts_failed", 0)) > 0 or len(maintenance_report.get("findings", [])) > 0:

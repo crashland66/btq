@@ -1448,69 +1448,11 @@ def test_field_capture_review_archive_excludes_candidate_from_counts_and_restore
     assert restored["counts"]["rejected"] == 1
 
 
-def test_field_capture_review_resubmit_stages_valid_rejected_candidate(tmp_path: Path, couchdb_review) -> None:
-    runtime_root = tmp_path / "runtime"
-    candidate_dir = runtime_root / "reviews" / "action_candidates" / "field_capture"
-    candidate = action_candidate_payload(
-        candidate_type="field_capture_follow_up",
-        summary="Staffing risk at site 7050",
-    )
-    candidate["approval_metadata"] = {
-        "proposed_queue_job": {
-            "job_type": "append_to_note",
-            "payload": {
-                "path": "Accounts/7050.md",
-                "content": "Staffing risk: Bruce no-showed.",
-                "destination": "site_note",
-            },
-        }
-    }
-    candidate["status"] = "rejected"
-    write_action_candidate_review(candidate_dir, candidate)
-    couchdb_review.seed_from_fs(runtime_root)
-    candidate_id = str(candidate["candidate_id"])
-    rev = couchdb_review.docs[f"action_candidate_{candidate_id}"]["_rev"]
-
-    status_code, _content_type, _body = request_text(
-        "POST",
-        "/field-capture/review/resubmit",
-        runtime_root,
-        urlencode({"candidate_id": candidate_id, "_rev": rev, "reviewer": "Jordan"}),
-    )
-
-    assert status_code == HTTPStatus.SEE_OTHER
-    assert couchdb_review.status_of(candidate_id) == "approved"
-    assert len(list((runtime_root / "queue").glob("*.json"))) == 1
-    history = couchdb_review.docs[f"action_candidate_{candidate_id}"]["review_history"]
-    assert history[-1]["reason"] == "resubmit"
-    assert history[-1]["prior_status"] == "rejected"
-
-
-def test_field_capture_review_resubmit_invalid_failed_candidate_flashes_without_staging(tmp_path: Path, couchdb_review) -> None:
-    runtime_root = tmp_path / "runtime"
-    candidate_dir = runtime_root / "reviews" / "action_candidates" / "field_capture"
-    candidate = action_candidate_payload(
-        candidate_type="field_capture_follow_up",
-        summary="Broken payload",
-    )
-    candidate["approval_metadata"] = {"proposed_queue_job": {"job_type": "append_to_note", "payload": {}}}
-    candidate["status"] = "failed"
-    write_action_candidate_review(candidate_dir, candidate)
-    couchdb_review.seed_from_fs(runtime_root)
-    candidate_id = str(candidate["candidate_id"])
-    rev = couchdb_review.docs[f"action_candidate_{candidate_id}"]["_rev"]
-
-    status_code, _content_type, _body, headers = ops_app.route_response_with_headers(
-        "POST",
-        "/field-capture/review/resubmit",
-        runtime_root,
-        urlencode({"candidate_id": candidate_id, "_rev": rev, "reviewer": "Jordan"}).encode("utf-8"),
-    )
-
-    assert status_code == HTTPStatus.SEE_OTHER
-    assert "the+proposed+job+isn%27t+valid+yet" in headers["Location"]
-    assert couchdb_review.status_of(candidate_id) == "failed"
-    assert not (runtime_root / "queue").exists()
+# prompt 370: the candidate Fix & resubmit handlers and the
+# /field-capture/review/{fix,resubmit} routes were retired with the dead LEGACY
+# action-candidate review path. Their dashboard tests are removed. The still-live
+# review-mutation handlers (approve/reject/edit/archive/client-informed/resolve)
+# remain covered elsewhere in this module.
 
 
 def test_patch_action_candidate_fields_deep_merges_channel_metadata_and_rejects_disallowed_keys(
@@ -1594,104 +1536,6 @@ def test_candidate_card_failed_with_proposed_error_shows_fix_form_and_site_dropd
     assert 'name="_rev"' in body
     assert 'name="status"' not in body
     assert 'name="provenance"' not in body
-
-
-def test_field_capture_review_fix_valid_payload_resubmits_candidate(tmp_path: Path, monkeypatch, couchdb_review) -> None:
-    monkeypatch.setattr(
-        approved_job_drafts,
-        "SITES",
-        [{"site_id": "fix-site", "canonical": "Fix Site", "note_path": "Accounts/fix-site.md"}],
-    )
-    runtime_root = tmp_path / "runtime"
-    candidate_dir = runtime_root / "reviews" / "action_candidates" / "field_capture"
-    candidate = action_candidate_payload(
-        candidate_type="field_capture_follow_up",
-        summary="Broken site payload",
-        source_text="Please add this to the site note.",
-        channel_metadata={"site_id": "missing-site", "area": "Lobby", "upload_id": "cap-1"},
-        status="failed",
-    )
-    write_action_candidate_review(candidate_dir, candidate)
-    couchdb_review.seed_from_fs(runtime_root)
-    candidate_id = str(candidate["candidate_id"])
-    rev = couchdb_review.docs[f"action_candidate_{candidate_id}"]["_rev"]
-
-    status_code, _content_type, _body = request_text(
-        "POST",
-        "/field-capture/review/fix",
-        runtime_root,
-        urlencode(
-            {
-                "candidate_id": candidate_id,
-                "_rev": rev,
-                "reviewer": "Jordan",
-                "site_id": "fix-site",
-                "area": "Lobby",
-                "summary": "Fixed site payload",
-                "visit_proposed_present": "1",
-            }
-        ),
-    )
-
-    assert status_code == HTTPStatus.SEE_OTHER
-    assert couchdb_review.status_of(candidate_id) == "approved"
-    assert len(list((runtime_root / "queue").glob("*.json"))) == 1
-    doc = couchdb_review.docs[f"action_candidate_{candidate_id}"]
-    assert doc["source_detail"]["channel_metadata"]["site_id"] == "fix-site"
-    assert doc["summary"] == "Fixed site payload"
-    history = doc["review_history"]
-    assert history[-1]["reason"] == "fix_resubmit"
-    assert history[-1]["prior_status"] == "failed"
-
-
-def test_field_capture_review_fix_still_invalid_saves_patch_without_staging(
-    tmp_path: Path,
-    monkeypatch,
-    couchdb_review,
-) -> None:
-    monkeypatch.setattr(
-        approved_job_drafts,
-        "SITES",
-        [{"site_id": "fix-site", "canonical": "Fix Site", "note_path": "Accounts/fix-site.md"}],
-    )
-    runtime_root = tmp_path / "runtime"
-    candidate_dir = runtime_root / "reviews" / "action_candidates" / "field_capture"
-    candidate = action_candidate_payload(
-        candidate_type="field_capture_follow_up",
-        summary="Still broken site payload",
-        source_text="Please add this to the site note.",
-        channel_metadata={"site_id": "missing-site", "area": "Lobby", "upload_id": "cap-1"},
-        status="failed",
-    )
-    write_action_candidate_review(candidate_dir, candidate)
-    couchdb_review.seed_from_fs(runtime_root)
-    candidate_id = str(candidate["candidate_id"])
-    rev = couchdb_review.docs[f"action_candidate_{candidate_id}"]["_rev"]
-
-    status_code, _content_type, _body, headers = ops_app.route_response_with_headers(
-        "POST",
-        "/field-capture/review/fix",
-        runtime_root,
-        urlencode(
-            {
-                "candidate_id": candidate_id,
-                "_rev": rev,
-                "reviewer": "Jordan",
-                "site_id": "still-missing",
-                "area": "Lobby",
-                "summary": "Saved but still invalid",
-                "visit_proposed_present": "1",
-            }
-        ).encode("utf-8"),
-    )
-
-    assert status_code == HTTPStatus.SEE_OTHER
-    assert "could+not+resolve+site+note+path" in headers["Location"]
-    assert couchdb_review.status_of(candidate_id) == "failed"
-    doc = couchdb_review.docs[f"action_candidate_{candidate_id}"]
-    assert doc["source_detail"]["channel_metadata"]["site_id"] == "still-missing"
-    assert doc["summary"] == "Saved but still invalid"
-    assert not (runtime_root / "queue").exists()
 
 
 def test_open_issue_post_redirects_to_inbox(tmp_path: Path, couchdb_job_draft_review) -> None:

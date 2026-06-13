@@ -7,10 +7,11 @@ import pytest
 
 from event_pipeline.couchdb_registry import CouchDBRegistryError
 from field_capture import action_candidates
+from field_capture import job_draft_emission
 from field_capture import approved_job_drafts as field_approved_job_drafts
 from field_capture import draft_staging as field_draft_staging
 from field_capture.text_semantics import run_text_semantic_pipeline
-from processing_core.action_candidates import STATUS_APPROVED
+from processing_core.action_candidates import STATUS_APPROVED, write_action_candidate_review
 import processing_core.capture_semantics as capture_semantics
 from processing_core.capture_semantics import (
     CaptureSemanticInput,
@@ -420,14 +421,17 @@ def test_proposed_job_builder_bug_records_generic_reason(monkeypatch: pytest.Mon
     assert result.proposed_queue_job_error == "builder_error:RuntimeError"
 
 
-def test_serialized_candidate_includes_proposed_job_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, couchdb_review) -> None:
+def test_serialized_candidate_includes_proposed_job_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, couchdb_job_drafts) -> None:
+    # prompt 370: the action-candidate collector is retired; the live downstream
+    # emission is job_draft_emission.collect_job_drafts. The load-bearing fact is
+    # unchanged -- a proposed job whose target can't be resolved still carries a
+    # validation error, and a job-less action emits no draft.
     def unavailable(_site_name: str) -> str | None:
         raise CouchDBRegistryError("registry unavailable")
 
     monkeypatch.setattr(capture_semantics, "resolve_site_id", unavailable)
     runtime_root = tmp_path / "runtime"
     semantic_dir = runtime_root / "field_capture" / "semantics"
-    candidate_dir = runtime_root / "reviews" / "action_candidates" / "field_capture"
     engine = LocalModelCaptureEngine(
         FakeModelClient(
             [
@@ -462,15 +466,22 @@ def test_serialized_candidate_includes_proposed_job_error(tmp_path: Path, monkey
     )
     write_json_object(semantic_dir / "typed-proposed-error.json", artifact)
 
-    counts = action_candidates.collect_action_candidates(semantic_dir, candidate_dir)
-    candidates = [json.loads(path.read_text(encoding="utf-8")) for path in sorted(candidate_dir.glob("*.json"))]
-    error_candidate = next(candidate for candidate in candidates if candidate["channel_metadata"]["action_key"] == "supply_equipment_loss")
-    clean_candidate = next(candidate for candidate in candidates if candidate["channel_metadata"]["action_key"] == "supply_review")
+    # The LIVE semantic pipeline records the proposed-job error on the structured
+    # action: a log_site_issue job whose target can't be resolved (registry
+    # unavailable) carries proposed_queue_job_error=site_registry_unavailable and
+    # no proposed_queue_job; the job-less supply_review action carries neither.
+    actions = artifact["extracted_actions"]
+    error_action = next(a for a in actions if a["action_key"] == "supply_equipment_loss")
+    clean_action = next(a for a in actions if a["action_key"] == "supply_review")
+    assert error_action["proposed_queue_job_error"] == "site_registry_unavailable"
+    assert error_action.get("proposed_queue_job") is None
+    assert not clean_action.get("proposed_queue_job_error")
 
-    assert counts == {"discovered": 2, "skipped": 0, "completed": 2, "failed": 0}
-    assert error_candidate["channel_metadata"]["proposed_queue_job_error"] == "site_registry_unavailable"
-    assert not error_candidate.get("approval_metadata")  # 308c: empty dict survives CouchDB round-trip; no proposed job
-    assert "proposed_queue_job_error" not in clean_candidate["channel_metadata"]
+    # And the live downstream emission (job_draft) skips the action whose target
+    # could not be resolved -- no usable job, so no draft is written.
+    counts = job_draft_emission.collect_job_drafts(semantic_dir, runtime_root=runtime_root)
+    assert counts["emitted"] == 0, counts
+    assert not couchdb_job_drafts.drafts
 
 
 def test_successful_proposed_job_has_no_error() -> None:
@@ -517,9 +528,13 @@ def test_semantic_prompt_routes_equipment_loss() -> None:
     assert "exactly one JSON array" not in prompt
 
 
-def test_text_artifact_collects_multiple_structured_candidates(tmp_path: Path, couchdb_review) -> None:
+def test_text_artifact_collects_multiple_structured_candidates(tmp_path: Path) -> None:
+    # prompt 370: the action-candidate collector is retired. The load-bearing
+    # live behavior here is the semantic pipeline fanning ONE note out to TWO
+    # structured actions and resolving each to its own distinct target -- assert
+    # that directly on the semantic artifact (the collector's per-target
+    # candidate fan-out was downstream of exactly this).
     semantic_dir = tmp_path / "field_capture" / "semantics"
-    candidate_dir = tmp_path / "reviews" / "action_candidates" / "field_capture"
     engine = LocalModelCaptureEngine(
         FakeModelClient(
             [
@@ -555,13 +570,15 @@ def test_text_artifact_collects_multiple_structured_candidates(tmp_path: Path, c
     )
     write_json_object(semantic_dir / "typed-multi.json", artifact)
 
-    first = action_candidates.collect_action_candidates(semantic_dir, candidate_dir)
-    second = action_candidates.collect_action_candidates(semantic_dir, candidate_dir)
-    candidates = [json.loads(path.read_text(encoding="utf-8")) for path in sorted(candidate_dir.glob("*.json"))]
-
-    assert first == {"discovered": 2, "skipped": 0, "completed": 2, "failed": 0}
-    assert second == {"discovered": 2, "skipped": 2, "completed": 0, "failed": 0}
-    assert {candidate["channel_metadata"]["target_label"] for candidate in candidates} == {"Bruce Keller", "Summit Wire"}
+    actions = artifact["extracted_actions"]
+    assert len(actions) == 2
+    by_key = {a["action_key"]: a for a in actions}
+    # Each action resolves to its own distinct target (employee vs site).
+    assert by_key["personnel_attendance_no_response"]["target_type"] == "employee"
+    assert by_key["personnel_attendance_no_response"]["target_label"] == "Bruce Keller"
+    assert by_key["supply_equipment_shrinkage"]["target_type"] == "site"
+    assert by_key["supply_equipment_shrinkage"]["target_label"] == "Summit Wire"
+    assert {a["target_label"] for a in actions} == {"Bruce Keller", "Summit Wire"}
 
 
 def operator_action(job_type: str) -> dict[str, object]:
@@ -637,16 +654,21 @@ def stage_single_structured_action(tmp_path: Path, raw_action: dict[str, object]
         selected_employees=[{"id": "emp-bruce", "name": "Bruce Keller"}],
         engine=engine,
     )
-    write_json_object(semantic_dir / "typed-operator-action.json", artifact)
+    semantic_path = semantic_dir / "typed-operator-action.json"
+    write_json_object(semantic_path, artifact)
 
-    assert action_candidates.collect_action_candidates(semantic_dir, candidate_dir) == {
-        "discovered": 1,
-        "skipped": 0,
-        "completed": 1,
-        "failed": 0,
-    }
-    [candidate_path] = sorted(candidate_dir.glob("*.json"))
-    candidate = json.loads(candidate_path.read_text(encoding="utf-8"))
+    # prompt 370: the action-candidate collector is retired. Build the single
+    # candidate review doc from the live semantic artifact via the KEPT planner
+    # helper (plan_candidates_from_semantic + write_action_candidate_review),
+    # then drive the still-live approve -> create-drafts -> stage -> queue path.
+    # Read the artifact back from disk (as the live pipeline does via
+    # iter_semantic_artifacts) so list/tuple fields normalize before validation.
+    semantic_payload = json.loads(semantic_path.read_text(encoding="utf-8"))
+    plans = action_candidates.plan_candidates_from_semantic(semantic_path, semantic_payload, candidate_dir)
+    produced = [p for p in plans if p.get("candidate")]
+    assert len(produced) == 1, produced
+    candidate = produced[0]["candidate"]
+    candidate_path = write_action_candidate_review(candidate_dir, candidate)
     proposed = candidate["approval_metadata"]["proposed_queue_job"]
     assert validate_job(proposed)
 
@@ -682,6 +704,10 @@ def test_operator_structured_actions_stage_valid_queue_jobs_end_to_end(tmp_path:
 
 
 def test_structured_action_builder_fails_soft_without_required_target(tmp_path: Path, couchdb_review) -> None:
+    # prompt 370: the action-candidate collector is retired. The load-bearing
+    # live behavior is the structured-action builder failing SOFT when a required
+    # target is missing -- a candidate is still planned (pending_review) but with
+    # NO proposed queue job. Assert via the KEPT planner helper.
     semantic_dir = tmp_path / "runtime" / "field_capture" / "semantics"
     candidate_dir = tmp_path / "runtime" / "reviews" / "action_candidates" / "field_capture"
     engine = LocalModelCaptureEngine(
@@ -708,15 +734,19 @@ def test_structured_action_builder_fails_soft_without_required_target(tmp_path: 
         captured_at="2026-06-04T12:00:00-04:00",
         engine=engine,
     )
-    write_json_object(semantic_dir / "typed-unresolved.json", artifact)
+    semantic_path = semantic_dir / "typed-unresolved.json"
+    write_json_object(semantic_path, artifact)
 
-    counts = action_candidates.collect_action_candidates(semantic_dir, candidate_dir)
-    [candidate_path] = sorted(candidate_dir.glob("*.json"))
-    candidate = json.loads(candidate_path.read_text(encoding="utf-8"))
+    # Read back from disk (as the live pipeline does) so list fields normalize.
+    semantic_payload = json.loads(semantic_path.read_text(encoding="utf-8"))
+    plans = action_candidates.plan_candidates_from_semantic(semantic_path, semantic_payload, candidate_dir)
+    produced = [p for p in plans if p.get("candidate")]
+    assert len(produced) == 1, produced
+    candidate = produced[0]["candidate"]
 
-    assert counts == {"discovered": 1, "skipped": 0, "completed": 1, "failed": 0}
+    # Fails soft: a candidate IS planned for review, but with no buildable job.
     assert candidate["status"] == "pending_review"
-    assert not candidate.get("approval_metadata")  # 308c: empty dict survives CouchDB round-trip; no proposed job
+    assert not candidate.get("approval_metadata")
 
 
 def test_model_payload_fields_are_honored_for_valid_personnel_payload() -> None:

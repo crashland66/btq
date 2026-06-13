@@ -1,15 +1,12 @@
 from __future__ import annotations
 
-import json
-import sys
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 import queue_spec
-from field_capture import action_candidates, approved_job_drafts
-from field_capture.text_semantics import run_text_semantic_pipeline
+from field_capture import action_candidates
 
 
 @pytest.fixture
@@ -134,84 +131,12 @@ def semantic_payload(*, semantic_type: str, status: str = "complete") -> dict[st
     }
 
 
-def write_semantic_artifact(path: Path, payload: dict[str, object]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
-
-
-def test_collect_action_candidates_walks_audio_text_and_voice_dirs(tmp_path: Path, couchdb_review) -> None:
-    audio_dir = tmp_path / "field_capture" / "audio_semantics"
-    text_dir = tmp_path / "field_capture" / "semantics"
-    voice_dir = tmp_path / "voice_memo" / "semantics"
-    candidate_dir = tmp_path / "reviews" / "action_candidates" / "field_capture"
-    write_semantic_artifact(audio_dir / "audio.json", semantic_payload(semantic_type="field_audio_semantic_summary"))
-    write_semantic_artifact(text_dir / "text.json", semantic_payload(semantic_type="field_text_semantic_summary"))
-    write_semantic_artifact(voice_dir / "voice.json", semantic_payload(semantic_type="voice_memo_semantic_summary"))
-
-    counts = action_candidates.collect_action_candidates([audio_dir, text_dir, voice_dir], candidate_dir)
-
-    assert counts == {"discovered": 3, "skipped": 0, "completed": 3, "failed": 0}
-    candidates = sorted(candidate_dir.glob("*.json"))
-    assert len(candidates) == 3
-    semantic_paths = {
-        json.loads(candidate.read_text(encoding="utf-8"))["provenance"]["semantic_artifact_path"]
-        for candidate in candidates
-    }
-    assert semantic_paths == {
-        str((audio_dir / "audio.json").resolve(strict=False)),
-        str((text_dir / "text.json").resolve(strict=False)),
-        str((voice_dir / "voice.json").resolve(strict=False)),
-    }
-
-
-def test_collect_action_candidates_accepts_scalar_path_for_back_compat(tmp_path: Path, couchdb_review) -> None:
-    semantic_dir = tmp_path / "field_capture" / "audio_semantics"
-    candidate_dir = tmp_path / "reviews" / "action_candidates" / "field_capture"
-    write_semantic_artifact(semantic_dir / "audio.json", semantic_payload(semantic_type="field_audio_semantic_summary"))
-
-    counts = action_candidates.collect_action_candidates(semantic_dir, candidate_dir)
-
-    assert counts == {"discovered": 1, "skipped": 0, "completed": 1, "failed": 0}
-    candidates = sorted(candidate_dir.glob("*.json"))
-    assert len(candidates) == 1
-    payload = json.loads(candidates[0].read_text(encoding="utf-8"))
-    assert payload["provenance"]["semantic_artifact_path"] == str((semantic_dir / "audio.json").resolve(strict=False))
-
-
 def test_default_semantic_dirs_returns_audio_then_text_then_voice_in_order(tmp_path: Path) -> None:
     assert action_candidates.default_semantic_dirs(tmp_path) == (
         tmp_path / "field_capture" / "audio_semantics",
         tmp_path / "field_capture" / "semantics",
         tmp_path / "voice_memo" / "semantics",
     )
-
-
-def test_collect_action_candidates_handles_missing_text_semantics_dir(tmp_path: Path, couchdb_review) -> None:
-    audio_dir = tmp_path / "field_capture" / "audio_semantics"
-    text_dir = tmp_path / "field_capture" / "semantics"
-    candidate_dir = tmp_path / "reviews" / "action_candidates" / "field_capture"
-    write_semantic_artifact(audio_dir / "audio.json", semantic_payload(semantic_type="field_audio_semantic_summary"))
-
-    counts = action_candidates.collect_action_candidates([audio_dir, text_dir], candidate_dir)
-
-    assert not text_dir.exists()
-    assert counts == {"discovered": 1, "skipped": 0, "completed": 1, "failed": 0}
-    assert len(sorted(candidate_dir.glob("*.json"))) == 1
-
-
-def test_collect_action_candidates_interim_text_semantic_legacy_strings_still_emit_candidate(tmp_path: Path, couchdb_review) -> None:
-    semantic_dir = tmp_path / "field_capture" / "semantics"
-    candidate_dir = tmp_path / "reviews" / "action_candidates" / "field_capture"
-    artifact = run_text_semantic_pipeline("soap is low", site_id="7050", upload_id="typed-note-interim")
-    write_semantic_artifact(semantic_dir / "typed-note-interim.json", artifact)
-
-    counts = action_candidates.collect_action_candidates(semantic_dir, candidate_dir)
-    [candidate_path] = sorted(candidate_dir.glob("*.json"))
-    candidate = json.loads(candidate_path.read_text(encoding="utf-8"))
-
-    assert counts == {"discovered": 1, "skipped": 0, "completed": 1, "failed": 0}
-    assert candidate["summary"] == "Review supply/order follow-up."
-    assert candidate["status"] == "pending_review"
 
 
 def test_plan_candidates_from_semantic_accepts_text_semantic(tmp_path: Path) -> None:
@@ -232,174 +157,6 @@ def test_plan_candidates_from_semantic_accepts_audio_semantic(tmp_path: Path) ->
     )
 
     assert results[0]["status"] == action_candidates.CANDIDATE_PLAN_WOULD_CREATE
-
-
-def structured_semantic_payload(*, extracted_actions: list[dict[str, object]]) -> dict[str, object]:
-    payload = semantic_payload(semantic_type="field_text_semantic_summary")
-    payload.update(
-        {
-            "upload_id": "typed-note-254",
-            "source_kind": "typed_note",
-            "cleaned_internal_note": "Bruce Keller was late. Summit Wire is missing supplies.",
-            "operational_summary": "Typed note contains personnel and supply follow-up.",
-            "action_candidates": [],
-            "employees": [{"id": "emp-damon", "name": "Damon Wrong"}],
-            "extracted_actions": extracted_actions,
-        }
-    )
-    return payload
-
-
-def personnel_action(**overrides: object) -> dict[str, object]:
-    action: dict[str, object] = {
-        "action_key": "attendance:bruce-keller:late",
-        "candidate_type": "personnel_attendance",
-        "job_type": "log_personnel_event",
-        "target_type": "employee",
-        "target_id": "emp-bruce-keller",
-        "target_label": "Bruce Keller",
-        "summary": "Review Bruce Keller attendance note.",
-        "rationale": "Typed note says Bruce Keller was late.",
-        "confidence": "high",
-        "payload_fields": {"event_type": "attendance"},
-        "source_excerpt": "Bruce Keller was late.",
-        "evidence_terms": ["late", "Bruce Keller"],
-    }
-    action.update(overrides)
-    return action
-
-
-def supply_action(**overrides: object) -> dict[str, object]:
-    action: dict[str, object] = {
-        "action_key": "supply-shrinkage:summit-wire:paper-products",
-        "candidate_type": "supply_equipment_shrinkage",
-        "target_type": "site",
-        "target_id": "7050",
-        "target_label": "Summit Wire",
-        "summary": "Review Summit Wire supply or equipment shrinkage.",
-        "rationale": "Typed note reports missing supply inventory.",
-        "confidence": "medium",
-        "source_excerpt": "Summit Wire is missing supplies.",
-        "evidence_terms": ["Summit Wire", "missing supplies"],
-    }
-    action.update(overrides)
-    return action
-
-
-def test_collect_action_candidates_fans_out_structured_actions_with_per_action_targets(tmp_path: Path, couchdb_review) -> None:
-    semantic_dir = tmp_path / "field_capture" / "semantics"
-    candidate_dir = tmp_path / "reviews" / "action_candidates" / "field_capture"
-    semantic_path = semantic_dir / "typed-note-254.json"
-    write_semantic_artifact(
-        semantic_path,
-        structured_semantic_payload(extracted_actions=[personnel_action(), supply_action()]),
-    )
-
-    first_counts = action_candidates.collect_action_candidates(semantic_dir, candidate_dir)
-    first_candidates = [json.loads(path.read_text(encoding="utf-8")) for path in sorted(candidate_dir.glob("*.json"))]
-    first_ids = {candidate["candidate_id"] for candidate in first_candidates}
-    second_counts = action_candidates.collect_action_candidates(semantic_dir, candidate_dir)
-    second_candidates = [json.loads(path.read_text(encoding="utf-8")) for path in sorted(candidate_dir.glob("*.json"))]
-
-    assert first_counts == {"discovered": 2, "skipped": 0, "completed": 2, "failed": 0}
-    assert second_counts == {"discovered": 2, "skipped": 2, "completed": 0, "failed": 0}
-    assert len(second_candidates) == 2
-    assert {candidate["candidate_id"] for candidate in second_candidates} == first_ids
-
-    personnel = next(candidate for candidate in first_candidates if candidate["candidate_type"] == "personnel_attendance")
-    assert personnel["channel_metadata"]["target_type"] == "employee"
-    assert personnel["channel_metadata"]["target_id"] == "emp-bruce-keller"
-    assert personnel["channel_metadata"]["target_label"] == "Bruce Keller"
-    assert personnel["channel_metadata"]["target_label"] != "Damon Wrong"
-
-    supply = next(candidate for candidate in first_candidates if candidate["candidate_type"] == "supply_equipment_shrinkage")
-    assert supply["status"] == "pending_review"
-    assert supply["channel_metadata"]["target_type"] == "site"
-    assert supply["channel_metadata"]["target_label"] == "Summit Wire"
-    # 308c: the CouchDB round-trip materializes an empty approval_metadata dict
-    # where the FS-original omitted the key; the load-bearing fact is that the
-    # candidate carries NO proposed queue job.
-    assert not supply.get("approval_metadata")
-
-
-def test_collect_action_candidates_does_not_collapse_same_type_same_target_structured_actions(tmp_path: Path, couchdb_review) -> None:
-    semantic_dir = tmp_path / "field_capture" / "semantics"
-    candidate_dir = tmp_path / "reviews" / "action_candidates" / "field_capture"
-    write_semantic_artifact(
-        semantic_dir / "typed-note-254.json",
-        structured_semantic_payload(
-            extracted_actions=[
-                personnel_action(
-                    action_key="attendance:bruce-keller:late",
-                    source_excerpt="Bruce Keller was late.",
-                    summary="Review Bruce Keller lateness.",
-                ),
-                personnel_action(
-                    action_key="attendance:bruce-keller:left-early",
-                    source_excerpt="Bruce Keller left early.",
-                    summary="Review Bruce Keller leaving early.",
-                ),
-            ]
-        ),
-    )
-
-    counts = action_candidates.collect_action_candidates(semantic_dir, candidate_dir)
-    candidates = [json.loads(path.read_text(encoding="utf-8")) for path in sorted(candidate_dir.glob("*.json"))]
-
-    assert counts == {"discovered": 2, "skipped": 0, "completed": 2, "failed": 0}
-    assert len(candidates) == 2
-    assert len({candidate["candidate_id"] for candidate in candidates}) == 2
-    assert {candidate["channel_metadata"]["target_id"] for candidate in candidates} == {"emp-bruce-keller"}
-
-
-def test_collect_action_candidates_carries_only_valid_structured_proposed_queue_jobs(tmp_path: Path, couchdb_review) -> None:
-    semantic_dir = tmp_path / "field_capture" / "semantics"
-    candidate_dir = tmp_path / "reviews" / "action_candidates" / "field_capture"
-    valid_job = {
-        "job_type": "log_personnel_event",
-        "payload": {
-            "employee": "Bruce Keller",
-            "event_type": "attendance",
-            "summary": "Bruce Keller was late for the Summit Wire opening.",
-            "occurred_at": "2026-06-03T09:00:00-04:00",
-            "reported_by": "Jordan",
-        },
-    }
-    invalid_job = {
-        "job_type": "log_personnel_event",
-        "payload": {
-            "employee": "Bruce Keller",
-            "event_type": "not-a-valid-event-type",
-        },
-    }
-    write_semantic_artifact(
-        semantic_dir / "typed-note-254.json",
-        structured_semantic_payload(
-            extracted_actions=[
-                personnel_action(action_key="attendance:bruce-keller:valid", proposed_queue_job=valid_job),
-                personnel_action(
-                    action_key="attendance:bruce-keller:invalid",
-                    source_excerpt="Bruce Keller had an invalid structured job.",
-                    summary="Review invalid structured job.",
-                    proposed_queue_job=invalid_job,
-                ),
-            ]
-        ),
-    )
-
-    counts = action_candidates.collect_action_candidates(semantic_dir, candidate_dir)
-    candidates = [json.loads(path.read_text(encoding="utf-8")) for path in sorted(candidate_dir.glob("*.json"))]
-
-    assert counts == {"discovered": 2, "skipped": 0, "completed": 2, "failed": 0}
-    with_job = next(candidate for candidate in candidates if candidate["channel_metadata"]["action_key"] == "attendance:bruce-keller:valid")
-    assert with_job["approval_metadata"]["proposed_queue_job"] == valid_job
-    assert approved_job_drafts.proposed_queue_job(with_job) == ("log_personnel_event", valid_job["payload"], "")
-
-    without_job = next(candidate for candidate in candidates if candidate["channel_metadata"]["action_key"] == "attendance:bruce-keller:invalid")
-    assert without_job["status"] == "pending_review"
-    # 308c: empty approval_metadata dict survives the CouchDB round-trip; the
-    # load-bearing fact is no usable proposed queue job is carried.
-    assert not without_job.get("approval_metadata")
 
 
 def test_plan_candidates_from_semantic_rejects_unknown_semantic_type(tmp_path: Path) -> None:

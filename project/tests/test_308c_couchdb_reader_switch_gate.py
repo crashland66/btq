@@ -159,12 +159,15 @@ def test_existing_candidate_skips_write_and_is_not_upserted(tmp_path, couchdb_re
 
 
 # --------------------------------------------------------------------------- #
-# GATE 3: end-to-end migrated loop -- CouchDB candidate -> listing(pending) ->
-# approve via apply_candidate_review -> watcher stages EXACTLY ONE job.
+# GATE 3: migrated review loop -- CouchDB candidate -> listing(pending) ->
+# approve via apply_candidate_review (the still-live CouchDB review path).
+#
+# prompt 370: the action-candidate STAGING WATCHER was retired with the dead
+# LEGACY action-candidate path, so the "watcher stages exactly one job" tail is
+# gone. The live review-mutation path (listing + apply_candidate_review approve)
+# is KEPT and still asserted end-to-end here.
 # --------------------------------------------------------------------------- #
-def test_end_to_end_one_job(tmp_path, couchdb_review):
-    from processing_core.artifacts import read_json_object
-
+def test_end_to_end_approve(tmp_path, couchdb_review):
     cid = couchdb_review.seed_doc(_candidate("e2e"))
     db = couchdb_config.field_captures_database()
     cfg = couchdb_config.from_env()
@@ -173,16 +176,10 @@ def test_end_to_end_one_job(tmp_path, couchdb_review):
     listed = fc.couchdb_candidate_payloads(status="pending_review")
     assert cid in [p["candidate_id"] for _path, p in listed]
 
-    # Approve via the shared review fn.
+    # Approve via the shared review fn -> status flips to approved in CouchDB.
     result = fc.apply_candidate_review(cfg, db, cid, "approve", "Greg", rationale="ok")
     assert result.error is None and result.status == "approved"
     assert couchdb_review.status_of(cid) == "approved"
-
-    # Watcher stages exactly one job.
-    couchdb_review.run_watcher(tmp_path, stub_stage=False)
-    staged = list((tmp_path / "queue").glob("*.json"))
-    assert len(staged) == 1
-    assert read_json_object(staged[0])["job_type"] == "append_to_note"
 
 
 # --------------------------------------------------------------------------- #

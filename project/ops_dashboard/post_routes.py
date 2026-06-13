@@ -25,10 +25,6 @@ def dispatch_post_route(
         return candidates.handle_archive(ctx, body)
     if route_path == "/field-capture/review/unarchive":
         return candidates.handle_unarchive(ctx, body)
-    if route_path == "/field-capture/review/resubmit":
-        return candidates.handle_resubmit(ctx, body)
-    if route_path == "/field-capture/review/fix":
-        return candidates.handle_fix(ctx, body)
     if route_path == "/field-capture/review/client-informed":
         return candidates.handle_client_informed(ctx, body)
     if route_path == "/field-capture/review/resolve":
