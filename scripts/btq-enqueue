@@ -31,6 +31,7 @@ from __future__ import annotations
 import argparse
 import base64
 import datetime as dt
+import hashlib
 import json
 import os
 import re
@@ -80,17 +81,19 @@ def derive_job_id(job: dict) -> str:
     now = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H-%M-%SZ")
     job_type = job.get("job_type", "unknown")
     payload = job.get("payload") or {}
+    payload_for_hash = payload if isinstance(payload, dict) else {}
+    h = hashlib.sha256(json.dumps(payload_for_hash, sort_keys=True, default=str).encode()).hexdigest()[:8]
     # Pick a distinctive slug from the payload where possible.
     candidates = [
-        payload.get("slug"),
-        payload.get("title"),
-        payload.get("path"),
-        payload.get("site_id"),
-        payload.get("person_id"),
+        payload_for_hash.get("slug"),
+        payload_for_hash.get("title"),
+        payload_for_hash.get("path"),
+        payload_for_hash.get("site_id"),
+        payload_for_hash.get("person_id"),
         job_type,
     ]
     slug_source = next((c for c in candidates if isinstance(c, str) and c), job_type)
-    return f"{now}__{slugify(slug_source)}"
+    return f"{now}__{slugify(slug_source)}__{h}"
 
 
 def build_doc(job: dict, *, created_by: str) -> dict:

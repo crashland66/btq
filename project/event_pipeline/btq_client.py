@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
 import json
 import re
 import urllib.error
@@ -132,16 +133,18 @@ def derive_job_id(job: dict[str, Any]) -> str:
     now = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H-%M-%SZ")
     job_type = job.get("job_type", "unknown")
     payload = job.get("payload") or {}
+    payload_for_hash = payload if isinstance(payload, dict) else {}
+    h = hashlib.sha256(json.dumps(payload_for_hash, sort_keys=True, default=str).encode()).hexdigest()[:8]
     candidates = [
-        payload.get("slug") if isinstance(payload, dict) else None,
-        payload.get("title") if isinstance(payload, dict) else None,
-        payload.get("path") if isinstance(payload, dict) else None,
-        payload.get("site_id") if isinstance(payload, dict) else None,
-        payload.get("person_id") if isinstance(payload, dict) else None,
+        payload_for_hash.get("slug"),
+        payload_for_hash.get("title"),
+        payload_for_hash.get("path"),
+        payload_for_hash.get("site_id"),
+        payload_for_hash.get("person_id"),
         job_type,
     ]
     slug_source = next((c for c in candidates if isinstance(c, str) and c), job_type)
-    return f"{now}__{slugify(slug_source)}"
+    return f"{now}__{slugify(slug_source)}__{h}"
 
 
 def build_queue_doc(job: dict[str, Any], created_by: str = "greg") -> dict[str, Any]:
