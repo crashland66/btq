@@ -141,7 +141,17 @@ if [ "${run_python}" = "1" ]; then
 	# 401 EVERY login while health still looks green. Fail the deploy here instead
 	# of letting a worker discover it. See memory: field_capture_couch_creds.
 	echo "Verifying CouchDB-backed auth wiring..."
-	if ! sudo systemctl cat "${SERVICE_NAME}" | grep -q '/etc/gregstoltz/field-capture.env'; then
+	# `systemctl cat` can briefly fail to render a freshly-installed unit right
+	# after a restart, which previously false-alarmed this gate. Retry it.
+	unit_loads_creds=0
+	for attempt in 1 2 3 4 5; do
+		if sudo systemctl cat "${SERVICE_NAME}" 2>/dev/null | grep -q '/etc/gregstoltz/field-capture.env'; then
+			unit_loads_creds=1
+			break
+		fi
+		sleep 1
+	done
+	if [ "${unit_loads_creds}" != "1" ]; then
 		echo "ERROR: ${SERVICE_NAME} does not load /etc/gregstoltz/field-capture.env — CouchDB auth will fail." >&2
 		exit 1
 	fi
@@ -149,12 +159,36 @@ if [ "${run_python}" = "1" ]; then
 		echo "ERROR: /etc/gregstoltz/field-capture.env is missing — CouchDB-backed auth cannot work." >&2
 		exit 1
 	fi
-	couch_user="$(sudo bash -c 'set -a; . /etc/gregstoltz/field-capture.env; set +a; curl -s -u "${BTQ_COUCHDB_USER}:${BTQ_COUCHDB_PASSWORD}" "${BTQ_COUCHDB_URL:-http://127.0.0.1:5984}/_session"' | python3 -c "import sys, json; print((json.load(sys.stdin).get('userCtx') or {}).get('name') or '')" 2>/dev/null || true)"
-	if [ -z "${couch_user}" ]; then
-		echo "ERROR: field-capture CouchDB credentials do not authenticate — worker logins will 401 (person lookup)." >&2
-		exit 1
+	if [ -n "${FIELD_CAPTURE_HEALTH_TOKEN:-}" ]; then
+		# Gold standard: a real token -> /api/session 200 proves the whole chain
+		# (service loaded creds -> CouchDB reachable -> person resolves), and is
+		# immune to systemctl-render flakiness. Set FIELD_CAPTURE_HEALTH_TOKEN in
+		# the deploy env to enable it.
+		auth_code=""
+		for attempt in 1 2 3 4 5; do
+			auth_code="$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer ${FIELD_CAPTURE_HEALTH_TOKEN}" -H "Accept: application/json" http://127.0.0.1:8080/api/session)"
+			[ "${auth_code}" = "200" ] && break
+			sleep 1
+		done
+		if [ "${auth_code}" != "200" ]; then
+			echo "ERROR: health token did not authenticate end-to-end (last HTTP ${auth_code}) — worker logins would fail." >&2
+			exit 1
+		fi
+		echo "End-to-end auth OK (health token -> /api/session 200)."
+	else
+		# Fallback: confirm the configured CouchDB creds actually authenticate.
+		couch_user=""
+		for attempt in 1 2 3; do
+			couch_user="$(sudo bash -c 'set -a; . /etc/gregstoltz/field-capture.env; set +a; curl -s -u "${BTQ_COUCHDB_USER}:${BTQ_COUCHDB_PASSWORD}" "${BTQ_COUCHDB_URL:-http://127.0.0.1:5984}/_session"' | python3 -c "import sys, json; print((json.load(sys.stdin).get('userCtx') or {}).get('name') or '')" 2>/dev/null || true)"
+			[ -n "${couch_user}" ] && break
+			sleep 1
+		done
+		if [ -z "${couch_user}" ]; then
+			echo "ERROR: field-capture CouchDB credentials do not authenticate — worker logins will 401 (person lookup)." >&2
+			exit 1
+		fi
+		echo "CouchDB auth OK (user=${couch_user})."
 	fi
-	echo "CouchDB auth OK (user=${couch_user})."
 fi
 
 echo "Field-capture deploy phase complete."
