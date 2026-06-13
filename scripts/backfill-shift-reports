@@ -60,6 +60,13 @@ def default_journal_dir() -> Path:
 
 def build_job(date_text: str, content: str) -> dict[str, Any]:
     return {
+        # Explicit, date-unique, deterministic job_id. Without it the shared
+        # derive_job_id falls back to "{timestamp}__record-shift-report" (this
+        # payload has no slug/title/path/site_id/person_id), so a batch enqueued
+        # within the same second collides on _id and all-but-one are dropped as
+        # false 409s. A date-keyed id makes each date distinct AND makes re-runs
+        # truly idempotent (same date -> same _id -> real 409).
+        "job_id": f"record-shift-report-{date_text}",
         "job_type": JOB_RECORD_SHIFT_REPORT,
         "payload": {
             "date": date_text,
