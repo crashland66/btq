@@ -19,10 +19,53 @@ from pathlib import Path
 
 import pytest
 
+import config as config_module
 import site_equipment
 import site_issues
 import site_supplies
 from vault_markdown import frontmatter_list, read_typed_markdown_note
+
+
+def _resolve_vault_root(vault_root: Path | None) -> Path | None:
+    """Vault path for the markdown-backed stub.
+
+    Production ``discover_site_*`` is CouchDB-only and no longer takes a
+    ``vault_root`` argument, so its callers pass nothing. Tests still seed entity
+    data as markdown under a temp vault. When a caller (legacy test) passes a
+    path explicitly we honour it; otherwise we fall back to the global config's
+    ``vault_dir`` (which file-backed tests point at their temp vault).
+    """
+    if vault_root is not None:
+        return vault_root
+    # File-backed tests seed a temp vault and point a config seam at it. Some
+    # patch the global ``config.get_config``; the ops-dashboard ones patch
+    # ``ops_dashboard.app.get_config`` (the seam the app builds ctx from). The
+    # unpatched seam returns the committed example config, whose vault_dir is a
+    # non-existent path — so prefer whichever candidate actually has an
+    # ``Accounts`` directory (the test's temp vault), then any non-None one.
+    candidates: list[Path] = []
+    for getter in (config_module.get_config, _app_get_config()):
+        if getter is None:
+            continue
+        try:
+            vault_dir = getattr(getter(), "vault_dir", None)
+        except Exception:  # noqa: BLE001 — missing/broken config seam → try next
+            continue
+        if vault_dir is not None:
+            candidates.append(Path(vault_dir))
+    for candidate in candidates:
+        if (candidate.expanduser() / "Accounts").exists():
+            return candidate
+    return candidates[0] if candidates else None
+
+
+def _app_get_config():
+    """Return ``ops_dashboard.app.get_config`` if importable, else ``None``."""
+    try:
+        import ops_dashboard.app as app_module
+    except Exception:  # noqa: BLE001 — app module unavailable in some test contexts
+        return None
+    return getattr(app_module, "get_config", None)
 
 
 def _frontmatter_doc(path: Path, type_name: str) -> dict | None:
@@ -56,8 +99,8 @@ def _docs(vault_root: Path | None, subdir: str, type_name: str) -> list[dict]:
 
 
 def install(monkeypatch: pytest.MonkeyPatch) -> None:
-    def discover_supplies(vault_root, *, site_id=None, status=None, include_archived=False, archived_only=False):
-        docs = _docs(vault_root, "Supplies", "supply_need")
+    def discover_supplies(vault_root=None, *, site_id=None, status=None, include_archived=False, archived_only=False):
+        docs = _docs(_resolve_vault_root(vault_root), "Supplies", "supply_need")
         supplies = []
         for doc in docs:
             supply = site_supplies._supply_from_couch_doc(doc)
@@ -73,8 +116,8 @@ def install(monkeypatch: pytest.MonkeyPatch) -> None:
         supplies.sort(key=lambda item: (site_supplies.status_sort(item.status), site_supplies.urgency_sort(item.urgency), item.site_id, item.created_at, item.supply_id))
         return {"supplies": supplies, "warnings": [], "counts": site_supplies.supply_counts(supplies, include_archived=include_archived or archived_only)}
 
-    def discover_equipment(vault_root, *, site_id=None, status=None, include_archived=False, archived_only=False):
-        docs = _docs(vault_root, "Equipment", "equipment_request")
+    def discover_equipment(vault_root=None, *, site_id=None, status=None, include_archived=False, archived_only=False):
+        docs = _docs(_resolve_vault_root(vault_root), "Equipment", "equipment_request")
         equipment = []
         for doc in docs:
             request = site_equipment._equipment_from_couch_doc(doc)
@@ -90,8 +133,8 @@ def install(monkeypatch: pytest.MonkeyPatch) -> None:
         equipment.sort(key=lambda item: (site_equipment.status_sort(item.status), site_equipment.priority_sort(item.priority), item.site_id, item.created_at, item.equipment_id))
         return {"equipment": equipment, "warnings": [], "counts": site_equipment.equipment_counts(equipment, include_archived=include_archived or archived_only)}
 
-    def discover_issues(vault_root, *, site_id=None, include_archived=False, archived_only=False):
-        docs = _docs(vault_root, "Issues", "site_issue")
+    def discover_issues(vault_root=None, *, site_id=None, include_archived=False, archived_only=False):
+        docs = _docs(_resolve_vault_root(vault_root), "Issues", "site_issue")
         issues = []
         for doc in docs:
             issue = site_issues._site_issue_from_couch_doc(doc)

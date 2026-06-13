@@ -74,12 +74,11 @@ def render_field_capture_equipment(ctx: object) -> str:
 
 def render_field_capture_equipment_body(ctx: object, *, embedded: bool = False) -> str:
     query = getattr(ctx, "query", {})
-    config = ctx.config
     site_id = query_value(query, "site_id") or None
     status = query_value(query, "status") or None
     sort = query_value(query, "sort")
     archived = query_value(query, "archived") == "1"
-    report = discover_site_equipment(config.vault_dir, site_id=site_id, status=status, include_archived=archived, archived_only=archived)
+    report = discover_site_equipment(site_id=site_id, status=status, include_archived=archived, archived_only=archived)
     exported = sort_equipment(equipment_from_report(report), sort)
     title = f"Archived {build_title(site_id, status)}" if archived else build_title(site_id, status)
     action = "/" if embedded else "/equipment"
@@ -213,8 +212,8 @@ def sort_equipment(equipment: list[dict[str, object]], sort: str) -> list[dict[s
     return equipment
 
 
-def find_equipment(vault_root: Path, equipment_id: str) -> dict[str, object] | None:
-    report = discover_site_equipment(vault_root, include_archived=True)
+def find_equipment(equipment_id: str) -> dict[str, object] | None:
+    report = discover_site_equipment(include_archived=True)
     for request in equipment_from_report(report):
         if str(request.get("equipment_id") or "") == equipment_id:
             return request
@@ -222,9 +221,8 @@ def find_equipment(vault_root: Path, equipment_id: str) -> dict[str, object] | N
 
 
 def render_equipment_detail(ctx: object, equipment_id: str) -> str:
-    config = ctx.config
     query = getattr(ctx, "query", {})
-    request = find_equipment(config.vault_dir, equipment_id)
+    request = find_equipment(equipment_id)
     flash = render_flash(query)
     if request is None:
         content = f'<section class="error">Equipment request not found: {html.escape(equipment_id)}</section>'
@@ -368,10 +366,9 @@ def render_restore_form(equipment_id: str) -> str:
 
 
 def render_equipment_mark_confirm(ctx: object, transition_name: str) -> str:
-    config = ctx.config
     query = getattr(ctx, "query", {})
     equipment_id = first_query_value(query, "equipment_id").strip()
-    request = find_equipment(config.vault_dir, equipment_id)
+    request = find_equipment(equipment_id)
     transition = EQUIPMENT_TRANSITIONS.get(transition_name)
     if request is None or transition is None:
         content = f'<section class="error">Equipment transition not found: {html.escape(equipment_id)}</section>'

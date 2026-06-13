@@ -78,7 +78,7 @@ def patch_couch(monkeypatch: pytest.MonkeyPatch, docs: list[dict[str, object]]) 
 def test_discover_site_supplies_returns_empty_when_no_docs(monkeypatch: pytest.MonkeyPatch) -> None:
     patch_couch(monkeypatch, [])
 
-    report = discover_site_supplies(None)
+    report = discover_site_supplies()
 
     assert report["supplies"] == []
     assert report["counts"]["total"] == 0
@@ -87,7 +87,7 @@ def test_discover_site_supplies_returns_empty_when_no_docs(monkeypatch: pytest.M
 def test_discover_site_supplies_maps_couch_doc(monkeypatch: pytest.MonkeyPatch) -> None:
     patch_couch(monkeypatch, [supply_doc()])
 
-    report = discover_site_supplies(None)
+    report = discover_site_supplies()
     [supply] = report["supplies"]
 
     assert supply.supply_id == "sup_cleaner"
@@ -114,7 +114,7 @@ def test_discover_site_supplies_filters_by_site_id(monkeypatch: pytest.MonkeyPat
         ],
     )
 
-    report = discover_site_supplies(None, site_id="7060")
+    report = discover_site_supplies(site_id="7060")
 
     assert [supply.supply_id for supply in report["supplies"]] == ["sup_7060"]
 
@@ -128,7 +128,7 @@ def test_discover_site_supplies_filters_by_status(monkeypatch: pytest.MonkeyPatc
         ],
     )
 
-    report = discover_site_supplies(None, status="ordered")
+    report = discover_site_supplies(status="ordered")
 
     assert [supply.supply_id for supply in report["supplies"]] == ["sup_ordered"]
 
@@ -142,7 +142,7 @@ def test_discover_site_supplies_counts_by_status(monkeypatch: pytest.MonkeyPatch
         ],
     )
 
-    report = discover_site_supplies(None)
+    report = discover_site_supplies()
 
     assert report["counts"]["by_status"] == {"open": 1, "ordered": 1}
 
@@ -156,7 +156,7 @@ def test_discover_site_supplies_counts_by_urgency(monkeypatch: pytest.MonkeyPatc
         ],
     )
 
-    report = discover_site_supplies(None)
+    report = discover_site_supplies()
 
     assert report["counts"]["by_urgency"] == {"critical": 1, "high": 1}
 
@@ -170,8 +170,8 @@ def test_discover_site_supplies_excludes_archived_by_default_and_can_list_archiv
         ],
     )
 
-    default_report = discover_site_supplies(None)
-    archived_report = discover_site_supplies(None, include_archived=True, archived_only=True)
+    default_report = discover_site_supplies()
+    archived_report = discover_site_supplies(include_archived=True, archived_only=True)
 
     assert [supply.supply_id for supply in default_report["supplies"]] == ["sup_open"]
     assert default_report["counts"]["total"] == 1
@@ -182,7 +182,7 @@ def test_discover_site_supplies_excludes_archived_by_default_and_can_list_archiv
 def test_discover_site_supplies_skips_non_supply_need_type(monkeypatch: pytest.MonkeyPatch) -> None:
     patch_couch(monkeypatch, [{"_id": "note", "type": "site_issue", "site_id": "1337"}])
 
-    report = discover_site_supplies(None)
+    report = discover_site_supplies()
 
     assert report["supplies"] == []
     assert report["warnings"] == []
@@ -190,7 +190,7 @@ def test_discover_site_supplies_skips_non_supply_need_type(monkeypatch: pytest.M
 
 def test_supply_as_export_includes_id_when_requested(monkeypatch: pytest.MonkeyPatch) -> None:
     patch_couch(monkeypatch, [supply_doc()])
-    [supply] = discover_site_supplies(None)["supplies"]
+    [supply] = discover_site_supplies()["supplies"]
 
     exported = supply_as_export(supply, include_path=True)
 

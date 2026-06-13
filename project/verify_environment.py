@@ -68,7 +68,9 @@ def check_ffmpeg() -> CheckResult:
     return CheckResult("ffmpeg", True, ffmpeg_path)
 
 
-def check_directory(label: str, path: Path) -> CheckResult:
+def check_directory(label: str, path: Path | None) -> CheckResult:
+    if path is None:
+        return CheckResult(label, True, "not configured (optional)")
     expanded = path.expanduser()
     if not expanded.exists():
         return CheckResult(label, False, f"missing: {format_path(expanded)}")

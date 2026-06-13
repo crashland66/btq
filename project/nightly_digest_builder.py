@@ -48,7 +48,7 @@ STATUS_CLAIM_PATTERN = re.compile(r"\b(presumed|likely|possibly)?\s*resigned\b",
 
 @dataclass(frozen=True)
 class DigestPaths:
-    vault_root: Path
+    vault_root: Path | None
     local_root: Path
     runtime_root: Path
     logs_dir: Path
@@ -427,7 +427,26 @@ def structured_event_candidates(events: list[dict], target_date: str) -> tuple[l
     return candidates, excluded
 
 
-def summarize_unknowns(journal_path: Path) -> list[dict]:
+def summarize_unknowns(journal_path: Path, target_date: str | None = None) -> list[dict]:
+    """Unresolved unknown captures for the date, from CouchDB when configured.
+
+    Reads ``type: unknown_capture`` docs from ``btq_vault`` (canonical) and maps
+    them onto the same dict keys the Markdown regex produces. The per-date
+    ``Journal/<date>-unknown.md`` file is a dev/CI fallback only (used when
+    ``BTQ_COUCHDB_URL`` is unset, e.g. by the digest unit tests).
+    """
+    import os
+
+    if target_date is None:
+        # The file stem is "<date>-unknown"; recover the date for the couch query.
+        stem = journal_path.stem
+        target_date = stem[:-len("-unknown")] if stem.endswith("-unknown") else stem
+    if os.environ.get("BTQ_COUCHDB_URL", "").strip():
+        return _summarize_unknowns_couchdb(target_date)
+    return _summarize_unknowns_filesystem(journal_path)
+
+
+def _summarize_unknowns_filesystem(journal_path: Path) -> list[dict]:
     if not journal_path.exists():
         return []
     text = journal_path.read_text(encoding="utf-8")
@@ -436,6 +455,57 @@ def summarize_unknowns(journal_path: Path) -> list[dict]:
         entry = {key: value.strip() for key, value in match.groupdict().items()}
         if entry["status"] == "unresolved":
             entries.append(entry)
+    return entries
+
+
+def _summarize_unknowns_couchdb(target_date: str) -> list[dict]:
+    """Map canonical ``unknown_capture`` docs to the regex-shaped digest dicts.
+
+    Canonical docs carry no ``date`` field — they're keyed by ``timestamp``
+    (``YYYY-MM-DDT...``), so we select by ``type`` and filter on the date
+    prefix. Doc fields map: ``original_transcript`` -> ``original``,
+    ``normalized_transcript`` -> ``normalized``; ``timestamp``/``audio_file``/
+    ``status``/``retry_count``/``last_attempted``/``notes`` pass through. Only
+    ``status == "unresolved"`` docs are surfaced (matching the file path).
+    """
+    import json
+    from urllib import parse as urllib_parse, request as urllib_request
+
+    from event_pipeline import couchdb_config
+
+    cfg = couchdb_config.from_env()
+    db_name = couchdb_config.vault_database()
+    url = f"{cfg.base_url.rstrip('/')}/{urllib_parse.quote(db_name, safe='')}/_find"
+    payload = {"selector": {"type": "unknown_capture"}, "limit": 100000}
+    headers = {"Content-Type": "application/json", "Accept": "application/json"}
+    headers.update(cfg.auth_header())
+    req = urllib_request.Request(url, data=json.dumps(payload).encode("utf-8"), headers=headers, method="POST")
+    try:
+        with urllib_request.urlopen(req, timeout=cfg.timeout) as resp:
+            response = json.loads(resp.read().decode("utf-8"))
+    except Exception:  # noqa: BLE001 — digest degrades to no unknowns rather than crashing
+        return []
+    entries: list[dict] = []
+    for doc in response.get("docs", []):
+        timestamp = str(doc.get("timestamp") or "")
+        if timestamp[:10] != target_date:
+            continue
+        if str(doc.get("status") or "").strip() != "unresolved":
+            continue
+        retry_count = doc.get("retry_count")
+        last_attempted = doc.get("last_attempted")
+        entries.append(
+            {
+                "timestamp": timestamp,
+                "audio_file": str(doc.get("audio_file") or "").strip(),
+                "status": "unresolved",
+                "retry_count": "" if retry_count is None else str(retry_count),
+                "last_attempted": "null" if last_attempted is None else str(last_attempted),
+                "original": str(doc.get("original_transcript") or "").strip(),
+                "normalized": str(doc.get("normalized_transcript") or "").strip(),
+                "notes": str(doc.get("notes") or "").strip(),
+            }
+        )
     return entries
 
 
@@ -934,15 +1004,21 @@ def normalized_digest_for_hash(text: str) -> str:
 
 
 def build_digest(target_date: str, paths: DigestPaths) -> str:
-    journal_path = paths.vault_root / "Journal" / f"{target_date}.md"
-    report_path = paths.vault_root / "Journal" / f"{target_date}-shift-report.md"
-    state_path = paths.vault_root / "state.md"
+    # vault_root is now optional (config.vault_dir may be None once the Markdown
+    # projection is retired and CouchDB is the only source). The file readers
+    # below are all CouchDB-first and degrade to empty when a path is missing, so
+    # substitute a non-existent placeholder root for path construction / the
+    # source_journal/source_state metadata when no vault is configured.
+    vault_root = paths.vault_root if paths.vault_root is not None else Path("/nonexistent-vault")
+    journal_path = vault_root / "Journal" / f"{target_date}.md"
+    report_path = vault_root / "Journal" / f"{target_date}-shift-report.md"
+    state_path = vault_root / "state.md"
     valid_events = event_files_for_date(paths.local_root / "events_valid", target_date)
     failed_events = event_files_for_date(paths.local_root / "events_failed", target_date)
     processed_jobs = job_files_for_mtime(paths.runtime_root / "processed", target_date)
     failed_jobs = job_files_for_mtime(paths.runtime_root / "failed", target_date)
-    unknown_entries = summarize_unknowns(paths.vault_root / "Journal" / f"{target_date}-unknown.md")
-    visit_gaps = collect_visit_gaps(paths.vault_root, target_date)
+    unknown_entries = summarize_unknowns(vault_root / "Journal" / f"{target_date}-unknown.md", target_date)
+    visit_gaps = collect_visit_gaps(vault_root, target_date)
     status_claims = collect_status_claims(journal_path, "journal") + collect_status_claims(report_path, "report")
 
     journal_event_candidates, journal_excluded = journal_candidates(journal_path, target_date)
@@ -1006,16 +1082,25 @@ def build_digest(target_date: str, paths: DigestPaths) -> str:
     )
 
 
-def output_path_for_date(vault_root: Path, target_date: str, explicit_output: Path | None) -> Path:
+def output_path_for_date(vault_root: Path | None, target_date: str, explicit_output: Path | None) -> Path:
     if explicit_output is not None:
         return explicit_output.expanduser()
+    if vault_root is None:
+        raise SystemExit(
+            "No --output given and no vault_dir is configured; pass --output to "
+            "choose where the digest is written."
+        )
     return vault_root / "Journal" / f"{target_date}-digest.md"
 
 
 def run(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
+    # --vault-root defaults to config.vault_dir, which is now optional (None once
+    # the Markdown projection is retired). Keep it None when unset; build_digest
+    # is CouchDB-first and tolerates a missing vault.
+    vault_root = args.vault_root.expanduser() if args.vault_root is not None else None
     paths = DigestPaths(
-        vault_root=args.vault_root.expanduser(),
+        vault_root=vault_root,
         local_root=args.local_root.expanduser(),
         runtime_root=args.runtime_root.expanduser(),
         logs_dir=args.logs_dir.expanduser(),

@@ -30,8 +30,8 @@ class PipelineConfig:
     runtime_root: Path
     project_runtime_root: Path
     project_runtime_dry_root: Path
-    vault_dir: Path
-    personal_vault_dir: Path
+    vault_dir: Path | None
+    personal_vault_dir: Path | None
     docs_dir: Path
     logs_dir: Path
     queue_processor_logs_dir: Path
@@ -76,6 +76,19 @@ def _path_from(raw: dict[str, object], key: str, base_dir: Path) -> Path:
     return Path(_resolve_template(value, base_dir)).expanduser()
 
 
+def _optional_path_from(raw: dict[str, object], key: str, base_dir: Path) -> Path | None:
+    """Like ``_path_from`` but returns ``None`` when the key is absent.
+
+    The Obsidian projection has been retired (CouchDB ``btq_vault`` is canonical),
+    so ``vault_dir``/``personal_vault_dir`` are now optional. Config files that
+    still carry these keys keep loading; ones that omit them also load. A present
+    key must still be a non-empty string (catches typos / empty values).
+    """
+    if key not in raw:
+        return None
+    return _path_from(raw, key, base_dir)
+
+
 def _string_from(raw: dict[str, object], key: str) -> str:
     value = raw.get(key)
     if not isinstance(value, str) or not value.strip():
@@ -117,8 +130,8 @@ def load_config(config_path: Path | None = None) -> PipelineConfig:
         runtime_root=_path_from(raw, "runtime_root", base_dir),
         project_runtime_root=_path_from(raw, "project_runtime_root", base_dir),
         project_runtime_dry_root=_path_from(raw, "project_runtime_dry_root", base_dir),
-        vault_dir=_path_from(raw, "vault_dir", base_dir),
-        personal_vault_dir=_path_from(raw, "personal_vault_dir", base_dir),
+        vault_dir=_optional_path_from(raw, "vault_dir", base_dir),
+        personal_vault_dir=_optional_path_from(raw, "personal_vault_dir", base_dir),
         docs_dir=_path_from(raw, "docs_dir", base_dir),
         logs_dir=_path_from(raw, "logs_dir", base_dir),
         queue_processor_logs_dir=_path_from(raw, "queue_processor_logs_dir", base_dir),

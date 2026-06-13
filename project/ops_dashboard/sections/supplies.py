@@ -65,12 +65,11 @@ def render_field_capture_supplies(ctx: object) -> str:
 
 def render_field_capture_supplies_body(ctx: object, *, embedded: bool = False) -> str:
     query = getattr(ctx, "query", {})
-    config = ctx.config
     site_id = query_value(query, "site_id") or None
     status = query_value(query, "status") or None
     sort = query_value(query, "sort")
     archived = query_value(query, "archived") == "1"
-    report = discover_site_supplies(config.vault_dir, site_id=site_id, status=status, include_archived=archived, archived_only=archived)
+    report = discover_site_supplies(site_id=site_id, status=status, include_archived=archived, archived_only=archived)
     exported = sort_supplies(supplies_from_report(report), sort)
     title = f"Archived {build_title(site_id, status)}" if archived else build_title(site_id, status)
     action = "/" if embedded else "/supplies"
@@ -207,8 +206,8 @@ def sort_supplies(supplies: list[dict[str, object]], sort: str) -> list[dict[str
     return supplies
 
 
-def find_supply(vault_root: Path, supply_id: str) -> dict[str, object] | None:
-    report = discover_site_supplies(vault_root, include_archived=True)
+def find_supply(supply_id: str) -> dict[str, object] | None:
+    report = discover_site_supplies(include_archived=True)
     for supply in supplies_from_report(report):
         if str(supply.get("supply_id") or "") == supply_id:
             return supply
@@ -216,9 +215,8 @@ def find_supply(vault_root: Path, supply_id: str) -> dict[str, object] | None:
 
 
 def render_supply_detail(ctx: object, supply_id: str) -> str:
-    config = ctx.config
     query = getattr(ctx, "query", {})
-    supply = find_supply(config.vault_dir, supply_id)
+    supply = find_supply(supply_id)
     flash = render_flash(query)
     if supply is None:
         content = f'<section class="error">Supply not found: {html.escape(supply_id)}</section>'
@@ -350,10 +348,9 @@ def render_restore_form(supply_id: str) -> str:
 
 
 def render_supply_mark_confirm(ctx: object, transition_name: str) -> str:
-    config = ctx.config
     query = getattr(ctx, "query", {})
     supply_id = first_query_value(query, "supply_id").strip()
-    supply = find_supply(config.vault_dir, supply_id)
+    supply = find_supply(supply_id)
     transition = SUPPLY_TRANSITIONS.get(transition_name)
     if supply is None or transition is None:
         content = f'<section class="error">Supply transition not found: {html.escape(supply_id)}</section>'

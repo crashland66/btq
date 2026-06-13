@@ -333,7 +333,7 @@ def build_status(ctx: object, *, log_lines: int = DEFAULT_LOG_LINES) -> dict[str
     }
     review_dashboard = review_dashboard_report(runtime_root=runtime_resolved)
     maintenance = review_maintenance_status_report(runtime_root=runtime_resolved)
-    site_issue_report = discover_site_issues(config.vault_dir)
+    site_issue_report = discover_site_issues()
     site_issues = site_issue_report.get("issues") if isinstance(site_issue_report.get("issues"), list) else []
     logs = {
         "field_capture_pipeline_watch": tail_lines(paths["logs"] / "field_capture_pipeline_watch.log", log_lines),

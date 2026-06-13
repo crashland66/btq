@@ -344,7 +344,6 @@ def build_site_status_export(
     transcript_dir: Path | None = None,
     photo_vision_dir: Path | None = None,
     notification_dir: Path | None = None,
-    vault_root: Path | None = None,
     include_issues: bool = False,
 ) -> dict[str, object]:
     runtime_resolved = runtime_root.expanduser().resolve(strict=False)
@@ -388,8 +387,7 @@ def build_site_status_export(
     }
     issue_payload: dict[str, object] = {"issues": [], "warnings": [], "counts": {"total": 0, "current": 0}}
     if include_issues:
-        vault_resolved = (vault_root or get_config().vault_dir).expanduser().resolve(strict=False)
-        issue_report = discover_site_issues(vault_resolved, site_id=site_id)
+        issue_report = discover_site_issues(site_id=site_id)
         issues = issue_report.get("issues") if isinstance(issue_report.get("issues"), list) else []
         issue_payload = {
             "issues": [issue_as_export(issue) for issue in issues],
@@ -423,7 +421,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--transcript-dir", type=Path)
     parser.add_argument("--photo-vision-dir", type=Path)
     parser.add_argument("--notification-dir", type=Path)
-    parser.add_argument("--vault-root", type=Path, default=config.vault_dir)
     parser.add_argument("--include-issues", action="store_true")
     parser.add_argument("--output", type=Path)
     parser.add_argument("--json", action="store_true")
@@ -443,7 +440,6 @@ def run(argv: list[str] | None = None) -> int:
         transcript_dir=args.transcript_dir,
         photo_vision_dir=args.photo_vision_dir,
         notification_dir=args.notification_dir,
-        vault_root=args.vault_root,
         include_issues=args.include_issues,
     )
     output_path = args.output or default_export_path(args.site_id, runtime_root)

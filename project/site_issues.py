@@ -44,16 +44,12 @@ class SiteIssue:
 
 
 def discover_site_issues(
-    vault_root: Path,
     *,
     site_id: str | None = None,
     include_archived: bool = False,
     archived_only: bool = False,
 ) -> dict[str, object]:
-    """Return site issues from CouchDB (``btq_vault``, canonical).
-
-    ``vault_root`` is accepted for call-site compatibility but no longer used.
-    """
+    """Return site issues from CouchDB (``btq_vault``, canonical)."""
     return _discover_site_issues_couchdb(site_id=site_id, include_archived=include_archived, archived_only=archived_only)
 
 

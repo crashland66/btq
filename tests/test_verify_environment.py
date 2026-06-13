@@ -72,7 +72,7 @@ def test_queue_backlog_passes_when_recent_processing_exists(tmp_path: Path, monk
 def _build_pipeline_config(root: Path) -> PipelineConfig:
     kwargs: dict[str, object] = {}
     for field in dataclasses.fields(PipelineConfig):
-        if field.type is Path or field.type == "Path":
+        if field.type is Path or field.type in {"Path", "Path | None"}:
             kwargs[field.name] = root
         else:
             kwargs[field.name] = ""

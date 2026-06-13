@@ -876,16 +876,20 @@ def test_export_field_capture_site_status_creates_safe_review_json(tmp_path: Pat
     assert "bearer" not in stdout.lower()
 
 
-def test_site_status_export_includes_requested_site_issues_only(tmp_path: Path) -> None:
+def test_site_status_export_includes_requested_site_issues_only(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     runtime_root = tmp_path / "runtime"
     vault_root = tmp_path / "vault"
     write_site_issue(vault_root, site_id="7050", issue_id="iss_summit", title="Restroom drain backup")
     write_site_issue(vault_root, site_id="7060", issue_id="iss_continental", title="Wall damage")
+    # discover_site_issues is CouchDB-only; the test's markdown-backed couch stub
+    # resolves the vault from the global config seam, so point it at this vault.
+    monkeypatch.setattr("config.get_config", lambda: SimpleNamespace(vault_dir=vault_root, vault_root=vault_root))
 
     payload = site_status_export.build_site_status_export(
         site_id="7050",
         runtime_root=runtime_root,
-        vault_root=vault_root,
         include_issues=True,
         generated_at="2026-05-08T15:00:00+00:00",
     )

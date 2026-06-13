@@ -42,7 +42,6 @@ class SupplyNeed:
 
 
 def discover_site_supplies(
-    vault_root: Path,
     *,
     site_id: str | None = None,
     status: str | None = None,
@@ -51,8 +50,7 @@ def discover_site_supplies(
 ) -> dict[str, object]:
     """Supplies, from CouchDB ``btq_vault`` (canonical).
 
-    Reads ``type: supply_need`` docs from CouchDB. ``vault_root`` is accepted
-    for call-site compatibility but no longer used.
+    Reads ``type: supply_need`` docs from CouchDB.
     """
     return _discover_site_supplies_couchdb(site_id=site_id, status=status, include_archived=include_archived, archived_only=archived_only)
 

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import urllib.request
-from pathlib import Path
 
 import pytest
 
@@ -73,7 +72,7 @@ def test_default_view_shows_missing_archived_and_hides_archived_true(
 ) -> None:
     _install_mock(monkeypatch, [_DOC_MISSING, _DOC_FALSE, _DOC_TRUE])
 
-    result = site_equipment.discover_site_equipment(Path("/tmp/vault"), site_id=None)
+    result = site_equipment.discover_site_equipment(site_id=None)
     ids = _ids(result)
 
     # Load-bearing regression-and-fix assertion: the doc with NO archived field
@@ -89,7 +88,7 @@ def test_include_archived_returns_all_three(monkeypatch: pytest.MonkeyPatch) -> 
     _install_mock(monkeypatch, [_DOC_MISSING, _DOC_FALSE, _DOC_TRUE])
 
     result = site_equipment.discover_site_equipment(
-        Path("/tmp/vault"), site_id=None, include_archived=True
+        site_id=None, include_archived=True
     )
 
     assert _ids(result) == {"missing", "falsey", "truey"}
@@ -99,7 +98,7 @@ def test_archived_only_returns_only_archived_true(monkeypatch: pytest.MonkeyPatc
     _install_mock(monkeypatch, [_DOC_MISSING, _DOC_FALSE, _DOC_TRUE])
 
     result = site_equipment.discover_site_equipment(
-        Path("/tmp/vault"), site_id=None, archived_only=True
+        site_id=None, archived_only=True
     )
 
     assert _ids(result) == {"truey"}
@@ -110,7 +109,7 @@ def test_site_id_filter_excludes_other_sites(monkeypatch: pytest.MonkeyPatch) ->
         monkeypatch, [_DOC_MISSING, _DOC_FALSE, _DOC_TRUE, _DOC_OTHER_SITE]
     )
 
-    result = site_equipment.discover_site_equipment(Path("/tmp/vault"), site_id="S1")
+    result = site_equipment.discover_site_equipment(site_id="S1")
     ids = _ids(result)
 
     assert "othersite" not in ids

@@ -91,7 +91,7 @@ def test_site_issues_discovers_counts_and_exports(monkeypatch: pytest.MonkeyPatc
         ],
     )
 
-    report = discover_site_issues(None)
+    report = discover_site_issues()
     issues = report["issues"]
     counts = report["counts"]
 
@@ -122,7 +122,7 @@ def test_site_issues_filters_by_site(monkeypatch: pytest.MonkeyPatch) -> None:
         ],
     )
 
-    report = discover_site_issues(None, site_id="7060")
+    report = discover_site_issues(site_id="7060")
 
     assert [issue.issue_id for issue in report["issues"]] == ["iss_7060"]
     assert report["counts"]["by_site"] == {"7060": 1}
@@ -137,8 +137,8 @@ def test_site_issues_excludes_archived_by_default_and_can_list_archived(monkeypa
         ],
     )
 
-    default_report = discover_site_issues(None)
-    archived_report = discover_site_issues(None, include_archived=True, archived_only=True)
+    default_report = discover_site_issues()
+    archived_report = discover_site_issues(include_archived=True, archived_only=True)
 
     assert [issue.issue_id for issue in default_report["issues"]] == ["iss_open"]
     assert default_report["counts"]["total"] == 1

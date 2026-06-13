@@ -239,8 +239,8 @@ def uploads_without_candidate_rows(
     return len(missing), rows
 
 
-def open_site_issues_rows(vault_root: Path, limit: int = 5) -> tuple[int, list[dict[str, object]]]:
-    report = discover_site_issues(vault_root)
+def open_site_issues_rows(limit: int = 5) -> tuple[int, list[dict[str, object]]]:
+    report = discover_site_issues()
     issues = report.get("issues") if isinstance(report.get("issues"), list) else []
     open_issues = [issue for issue in issues if getattr(issue, "status", "") == "open"]
     open_issues.sort(
@@ -264,8 +264,8 @@ def open_site_issues_rows(vault_root: Path, limit: int = 5) -> tuple[int, list[d
     return len(open_issues), rows
 
 
-def open_supply_needs_rows(vault_root: Path, limit: int = 5) -> tuple[int, list[dict[str, object]]]:
-    report = discover_site_supplies(vault_root, status="open")
+def open_supply_needs_rows(limit: int = 5) -> tuple[int, list[dict[str, object]]]:
+    report = discover_site_supplies(status="open")
     supplies = report.get("supplies") if isinstance(report.get("supplies"), list) else []
     open_supplies = [supply for supply in supplies if getattr(supply, "status", "") == "open"]
     open_supplies.sort(
@@ -290,8 +290,8 @@ def open_supply_needs_rows(vault_root: Path, limit: int = 5) -> tuple[int, list[
     return len(open_supplies), rows
 
 
-def open_equipment_requests_rows(vault_root: Path, limit: int = 5) -> tuple[int, list[dict[str, object]]]:
-    report = discover_site_equipment(vault_root, status="open")
+def open_equipment_requests_rows(limit: int = 5) -> tuple[int, list[dict[str, object]]]:
+    report = discover_site_equipment(status="open")
     equipment = report.get("equipment") if isinstance(report.get("equipment"), list) else []
     open_equipment = [request for request in equipment if getattr(request, "status", "") == "open"]
     open_equipment.sort(
@@ -332,10 +332,9 @@ def console_cards(ctx: object) -> dict[str, dict[str, object]]:
     cached = getattr(ctx, "_btq_console_cards", None)
     if isinstance(cached, dict):
         return cached
-    vault_root = ctx.config.vault_dir
-    issues_count, issues_rows = open_site_issues_rows(vault_root)
-    supplies_count, supplies_rows = open_supply_needs_rows(vault_root)
-    equipment_count, equipment_rows = open_equipment_requests_rows(vault_root)
+    issues_count, issues_rows = open_site_issues_rows()
+    supplies_count, supplies_rows = open_supply_needs_rows()
+    equipment_count, equipment_rows = open_equipment_requests_rows()
     cards = {
         "issues": {
             "id": "open_site_issues",
@@ -384,7 +383,6 @@ def console_counts(ctx: object) -> dict[str, int]:
 
 def inbox_cards(ctx: object) -> list[dict[str, object]]:
     runtime_resolved = ctx.runtime_root
-    vault_root = ctx.config.vault_dir
     candidate_dir = field_action_candidates.default_candidate_dir(runtime_resolved)
     # Walk the intake and candidate dirs once per render and reuse the results
     # across cards. Each walk is ~thousands of stat() calls on the runtime; the

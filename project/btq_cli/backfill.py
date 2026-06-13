@@ -45,9 +45,23 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
     dedupe_employee_docs_parser.set_defaults(func=handle_dedupe_employee_docs)
 
 
+def _require_vault_root(args: argparse.Namespace) -> Path:
+    """Resolve --vault-root, falling back to config.vault_dir when configured.
+
+    config.vault_dir is now optional (None once the Markdown projection is
+    retired). These backfills read Markdown files from the vault, so a path is
+    mandatory: error clearly instead of crashing on a None fallback.
+    """
+    if args.vault_root is not None:
+        return args.vault_root.expanduser()
+    configured = get_config().vault_dir
+    if configured is not None:
+        return configured
+    raise SystemExit("--vault-root is required: no vault_dir is configured to fall back to.")
+
+
 def handle_backfill_unknown_captures(args: argparse.Namespace) -> int:
-    config = get_config()
-    vault_root = args.vault_root.expanduser() if args.vault_root is not None else config.vault_dir
+    vault_root = _require_vault_root(args)
     store = CouchDBEntityStore.from_env()
     report = backfill_unknown_captures.backfill(store, vault_root, dry_run=bool(args.dry_run))
     if args.json:
@@ -68,7 +82,7 @@ def handle_backfill_unknown_captures(args: argparse.Namespace) -> int:
 
 def handle_backfill_field_capture_employees(args: argparse.Namespace) -> int:
     config = get_config()
-    vault_root = args.vault_root.expanduser() if args.vault_root is not None else config.vault_dir
+    vault_root = _require_vault_root(args)
     store = CouchDBEntityStore.from_env()
     if args.all_people:
         report = field_backfill_employees.backfill_all_people_employees(

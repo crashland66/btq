@@ -156,7 +156,11 @@ def handle_trigger_nightly_digest(args: argparse.Namespace) -> int:
     from nightly_digest_builder import DigestPaths, build_digest, output_path_for_date
 
     cfg = _get_config()
-    vault_root = (args.vault_root or cfg.vault_dir).expanduser()
+    # vault_dir is optional now (None once the Markdown projection is retired).
+    # build_digest / output_path_for_date are CouchDB-first and tolerate None;
+    # only require an explicit --output destination when neither is set.
+    vault_source = args.vault_root or cfg.vault_dir
+    vault_root = vault_source.expanduser() if vault_source is not None else None
     runtime_root = (args.runtime_root or cfg.runtime_root).expanduser()
     target_date = args.date
     digest_text = build_digest(

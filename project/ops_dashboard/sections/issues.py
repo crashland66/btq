@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import html
-from pathlib import Path
 from urllib.parse import quote
 
 from ops_dashboard.common import default_actor, first_query_value, handle_edit_record_fields_post, handle_mark_transition_post, humanize_key, render_back_link, render_issue_list, render_kv, render_record_edit_form, render_status_transition, render_table, slugify_status
@@ -59,11 +58,10 @@ def render_field_capture_issues(request_ctx: object) -> str:
 
 def render_field_capture_issues_body(request_ctx: object, *, embedded: bool = False) -> str:
     query = getattr(request_ctx, "query", {})
-    config = request_ctx.config
     site_id = query_value(query, "site_id") or None
     sort = query_value(query, "sort")
     archived = query_value(query, "archived") == "1"
-    report = discover_site_issues(config.vault_dir, site_id=site_id, include_archived=archived, archived_only=archived)
+    report = discover_site_issues(site_id=site_id, include_archived=archived, archived_only=archived)
     issues = report.get("issues") if isinstance(report.get("issues"), list) else []
     exported = sort_issues([issue_as_export(issue, include_path=True) for issue in issues], sort)
     title = f"Archived {build_title(site_id)}" if archived else build_title(site_id)
@@ -135,8 +133,8 @@ def issues_from_report(report: dict[str, object]) -> list[dict[str, object]]:
     return [issue_as_export(issue, include_path=True) for issue in issues]
 
 
-def find_issue(vault_root: Path, issue_id: str) -> dict[str, object] | None:
-    report = discover_site_issues(vault_root, include_archived=True)
+def find_issue(issue_id: str) -> dict[str, object] | None:
+    report = discover_site_issues(include_archived=True)
     for issue in issues_from_report(report):
         if str(issue.get("issue_id") or "") == issue_id:
             return issue
@@ -144,9 +142,8 @@ def find_issue(vault_root: Path, issue_id: str) -> dict[str, object] | None:
 
 
 def render_issue_detail(ctx: object, issue_id: str) -> str:
-    config = ctx.config
     query = getattr(ctx, "query", {})
-    issue = find_issue(config.vault_dir, issue_id)
+    issue = find_issue(issue_id)
     flash = render_flash(query)
     if issue is None:
         content = f'<section class="error">Issue not found: {html.escape(issue_id)}</section>'
@@ -288,10 +285,9 @@ def render_restore_form(issue_id: str) -> str:
 
 
 def render_issue_mark_confirm(ctx: object, transition_name: str) -> str:
-    config = ctx.config
     query = getattr(ctx, "query", {})
     issue_id = first_query_value(query, "issue_id").strip()
-    issue = find_issue(config.vault_dir, issue_id)
+    issue = find_issue(issue_id)
     transition = ISSUE_TRANSITIONS.get(transition_name)
     if issue is None or transition is None:
         content = f'<section class="error">Issue transition not found: {html.escape(issue_id)}</section>'

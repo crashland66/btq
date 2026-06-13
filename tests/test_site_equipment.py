@@ -79,7 +79,7 @@ def patch_couch(monkeypatch: pytest.MonkeyPatch, docs: list[dict[str, object]]) 
 def test_discover_site_equipment_returns_empty_when_no_docs(monkeypatch: pytest.MonkeyPatch) -> None:
     patch_couch(monkeypatch, [])
 
-    report = discover_site_equipment(None)
+    report = discover_site_equipment()
 
     assert report["equipment"] == []
     assert report["counts"]["total"] == 0
@@ -88,7 +88,7 @@ def test_discover_site_equipment_returns_empty_when_no_docs(monkeypatch: pytest.
 def test_discover_site_equipment_maps_couch_doc(monkeypatch: pytest.MonkeyPatch) -> None:
     patch_couch(monkeypatch, [equipment_doc()])
 
-    report = discover_site_equipment(None)
+    report = discover_site_equipment()
     [request] = report["equipment"]
 
     assert request.equipment_id == "eqr_vacuum"
@@ -116,7 +116,7 @@ def test_discover_site_equipment_filters_by_site_id(monkeypatch: pytest.MonkeyPa
         ],
     )
 
-    report = discover_site_equipment(None, site_id="7060")
+    report = discover_site_equipment(site_id="7060")
 
     assert [request.equipment_id for request in report["equipment"]] == ["eqr_7060"]
 
@@ -130,7 +130,7 @@ def test_discover_site_equipment_filters_by_status(monkeypatch: pytest.MonkeyPat
         ],
     )
 
-    report = discover_site_equipment(None, status="approved")
+    report = discover_site_equipment(status="approved")
 
     assert [request.equipment_id for request in report["equipment"]] == ["eqr_approved"]
 
@@ -144,7 +144,7 @@ def test_discover_site_equipment_counts_by_status(monkeypatch: pytest.MonkeyPatc
         ],
     )
 
-    report = discover_site_equipment(None)
+    report = discover_site_equipment()
 
     assert report["counts"]["by_status"] == {"approved": 1, "open": 1}
 
@@ -158,7 +158,7 @@ def test_discover_site_equipment_counts_by_priority(monkeypatch: pytest.MonkeyPa
         ],
     )
 
-    report = discover_site_equipment(None)
+    report = discover_site_equipment()
 
     assert report["counts"]["by_priority"] == {"high": 1, "urgent": 1}
 
@@ -172,8 +172,8 @@ def test_discover_site_equipment_excludes_archived_by_default_and_can_list_archi
         ],
     )
 
-    default_report = discover_site_equipment(None)
-    archived_report = discover_site_equipment(None, include_archived=True, archived_only=True)
+    default_report = discover_site_equipment()
+    archived_report = discover_site_equipment(include_archived=True, archived_only=True)
 
     assert [request.equipment_id for request in default_report["equipment"]] == ["eqr_open"]
     assert default_report["counts"]["total"] == 1
@@ -184,7 +184,7 @@ def test_discover_site_equipment_excludes_archived_by_default_and_can_list_archi
 def test_discover_site_equipment_skips_non_equipment_request_type(monkeypatch: pytest.MonkeyPatch) -> None:
     patch_couch(monkeypatch, [{"_id": "note", "type": "site_issue", "site_id": "1337"}])
 
-    report = discover_site_equipment(None)
+    report = discover_site_equipment()
 
     assert report["equipment"] == []
     assert report["warnings"] == []
@@ -192,7 +192,7 @@ def test_discover_site_equipment_skips_non_equipment_request_type(monkeypatch: p
 
 def test_equipment_as_export_includes_id_when_requested(monkeypatch: pytest.MonkeyPatch) -> None:
     patch_couch(monkeypatch, [equipment_doc()])
-    [request] = discover_site_equipment(None)["equipment"]
+    [request] = discover_site_equipment()["equipment"]
 
     exported = equipment_as_export(request, include_path=True)
 

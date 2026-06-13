@@ -93,6 +93,7 @@ def test_console_issues_tab_renders_full_list_and_active_state(
     install_console_counts(monkeypatch, {"review": 0, "issues": 11, "supplies": 0, "equipment": 0})
     vault = tmp_path / "vault"
     write_vault_site_issue(vault)
+    monkeypatch.setattr("ops_dashboard.app.get_config", lambda: SimpleNamespace(vault_dir=vault, vault_root=vault))
 
     body = console.render_console(section_ctx(tmp_path / "runtime"))
     ctx = section_ctx(tmp_path / "runtime", vault)
@@ -133,6 +134,7 @@ def test_console_supplies_tab_renders_open_full_list_with_filters_and_actions(
     vault = tmp_path / "vault"
     write_vault_supply_need(vault, supply_id="sup_open", status="open", item_name="BrightWash cleaner")
     write_vault_supply_need(vault, supply_id="sup_ordered", status="ordered", item_name="Mop heads")
+    monkeypatch.setattr("ops_dashboard.app.get_config", lambda: SimpleNamespace(vault_dir=vault, vault_root=vault))
     ctx = section_ctx(tmp_path / "runtime", vault)
     ctx.query = {"tab": ["supplies"]}
 
@@ -163,6 +165,7 @@ def test_console_equipment_tab_renders_open_full_list_with_filters_and_actions(
     vault = tmp_path / "vault"
     write_vault_equipment_request(vault, equipment_id="eqr_open", status="open", equipment_name="vacuum")
     write_vault_equipment_request(vault, equipment_id="eqr_approved", status="approved", equipment_name="floor buffer")
+    monkeypatch.setattr("ops_dashboard.app.get_config", lambda: SimpleNamespace(vault_dir=vault, vault_root=vault))
     ctx = section_ctx(tmp_path / "runtime", vault)
     ctx.query = {"tab": ["equipment"]}
 
@@ -190,6 +193,7 @@ def test_console_state_filters_round_trip_in_tab_urls(monkeypatch: pytest.Monkey
     install_console_counts(monkeypatch, {"review": 0, "issues": 0, "supplies": 2, "equipment": 0})
     vault = tmp_path / "vault"
     write_vault_supply_need(vault, supply_id="sup_7050", site_id="7050", status="ordered", item_name="Mop heads")
+    monkeypatch.setattr("ops_dashboard.app.get_config", lambda: SimpleNamespace(vault_dir=vault, vault_root=vault))
     ctx = section_ctx(tmp_path / "runtime", vault)
     ctx.query = {"tab": ["supplies"], "site_id": ["7050"], "status": ["ordered"], "sort": ["site"]}
 
