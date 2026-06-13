@@ -1,6 +1,6 @@
 # Web Review Demo
 
-This demo walks through the deterministic BTQ skill flow without calling a model or mutating the vault.
+This demo walks through the deterministic BTQ skill flow without calling a model or mutating canonical state.
 
 Run it from the repository root:
 
@@ -26,4 +26,4 @@ Run it from the repository root:
 
 ## Safety
 
-The demo uses the existing skill system only. It does not call external model APIs, does not execute external calls, does not write queue files, and does not mutate the vault.
+The demo uses the existing skill system only. It does not call external model APIs, does not execute external calls, does not write queue files, and does not mutate canonical state.

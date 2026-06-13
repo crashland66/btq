@@ -17,7 +17,8 @@ mutation classes.
 - Data path: `/srv/btq/data`
 - Runtime path: `/srv/btq/runtime`
 - Token DB: `/srv/btq/data/field_capture_tokens.sqlite3`
-- Vault mirror: `/srv/btq/data/vault-readonly`
+- Person/site resolution: CouchDB (`btq_vault` / `btq_sites`) via the service's
+  `BTQ_COUCHDB_*` environment
 - Production user/group: `btq-field:btq-field`
 
 The app should bind only to `127.0.0.1:8080` and serve API/viewer/media routes
@@ -50,7 +51,7 @@ the deploy user should create backups without sudo.
 - Do not delete old backups.
 - Do not touch `/srv/btq/data` during UI-only deploys.
 - Do not print raw tokens or secrets.
-- Stop if vault or token DB paths are unclear.
+- Stop if the CouchDB connection or token DB path is unclear.
 - Change one mutation class at a time: auth data, app code, or service config.
 - Restart only `btq-field-capture.service` for field-capture app deploys.
 
@@ -124,9 +125,7 @@ the deploy user should create backups without sudo.
    install -d -o btq-field -g btq-field -m 0750 /srv/btq/data
    rsync -a --delete /tmp/btq-field-capture-data/ /srv/btq/data/
    chown -R btq-field:btq-field /srv/btq/data
-   chmod 0750 /srv/btq/data /srv/btq/data/vault-readonly
-   find /srv/btq/data/vault-readonly -type d -exec chmod 0750 {} +
-   find /srv/btq/data/vault-readonly -type f -exec chmod 0640 {} +
+   chmod 0750 /srv/btq/data
    chmod 0640 /srv/btq/data/field_capture_tokens.sqlite3
    ```
 
@@ -185,9 +184,12 @@ the deploy user should create backups without sudo.
 
    ```text
    --db /srv/btq/data/field_capture_tokens.sqlite3
-   --vault-root /srv/btq/data/vault-readonly
    serve --host 127.0.0.1 --port 8080
    ```
+
+   Person and site resolution comes from CouchDB; ensure the service
+   environment carries `BTQ_COUCHDB_URL`, `BTQ_COUCHDB_USER`, and
+   `BTQ_COUCHDB_PASSWORD` (the machine-local systemd drop-in).
 
    The unit should also allow SQLite token metadata updates:
 

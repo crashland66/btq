@@ -13,10 +13,7 @@ The current system spreads one day of activity across multiple outputs:
 - processed queue jobs in `<runtime_root>/processed/`
 - failed queue jobs in `<runtime_root>/failed/`
 - canonical CouchDB `btq_vault` entity/evidence changes
-- optional Markdown projections under `Journal/`, `Accounts/.../about.md`,
-  `People/`, and `Visits/`
-- unresolved captures in CouchDB unknown-capture state, with
-  `Journal/YYYY-MM-DD-unknown.md` available as projection output
+- unresolved captures in CouchDB `unknown_capture` state
 
 A nightly digest should gather those artifacts into one operator-facing summary so the nightly process can answer:
 
@@ -44,13 +41,15 @@ These show what the event pipeline believed was a valid operational fact and wha
 
 These show what the runtime actually executed, skipped, or failed.
 
-### Vault outputs
+### Canonical entity outputs
 
-- `Journal/YYYY-MM-DD.md`
-- `Journal/YYYY-MM-DD-unknown.md`
-- `Accounts/<Account>/Locations/<Site>/about.md`
-- `Accounts/<Account>/Locations/<Site>/Visits/YYYY-MM-DD.md`
-- `People/*.md`
+Canonical `btq_vault` documents written or updated that day:
+
+- `journal` entries
+- `unknown_capture` records
+- `location` documents (operational notes, issues, supplies, equipment)
+- `visit` records
+- `employee` documents
 
 These show the final operator-facing state after execution.
 
@@ -117,9 +116,9 @@ Suggested fields per entry:
 - failure reason from log or runtime exception
 - whether the failure was:
   - invalid site
-  - missing target path
+  - missing target entity
   - invalid payload
-  - vault structure mismatch
+  - canonical record/schema mismatch
   - other runtime failure
 
 Purpose:
@@ -129,9 +128,7 @@ Purpose:
 
 ## 5. Unknown Captures Still Open
 
-Summarize unresolved entries from:
-
-- `Journal/YYYY-MM-DD-unknown.md`
+Summarize unresolved `unknown_capture` records.
 
 Suggested fields per entry:
 
@@ -153,8 +150,7 @@ Collect same-day site activity that produced a `visit_gap` block.
 
 Source:
 
-- site `about.md` files written that day
-- `visit_gap` blocks with:
+- `visit_gap` records written that day, with:
   - `type: visit_gap`
   - `site`
   - `date`

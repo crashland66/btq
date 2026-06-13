@@ -1,6 +1,6 @@
 # Skill Library
 
-A BTQ skill is a reusable AI capability stored as plain files: metadata, versioned prompts, notes, and optional fixtures. Skills are deterministic prompt assets. They do not call model APIs, mutate the operational vault, or write runtime state.
+A BTQ skill is a reusable AI capability stored as plain files: metadata, versioned prompts, notes, and optional fixtures. Skills are deterministic prompt assets. They do not call model APIs, mutate canonical operational state, or write runtime state.
 
 Skills are versioned so prompt changes can be reviewed, tested, and selected explicitly. The `current_version` in `skill.json` is the default for normal use, while older versions remain available for comparison or repeatability.
 

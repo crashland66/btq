@@ -16,8 +16,7 @@ Flow:
 `-> action candidates/drafts`  
 `-> approved mutation job`  
 `-> queue_processor / handlers`  
-`-> CouchDB canonical state + evidence`  
-`-> optional Markdown projection/export (btq markdown-export)`
+`-> CouchDB canonical state + evidence`
 
 At runtime, `transcription_pipeline/main.py` coordinates the full flow:
 
@@ -29,7 +28,7 @@ At runtime, `transcription_pipeline/main.py` coordinates the full flow:
 6. Convert valid events into queue job JSON files.
 7. Optionally emit a structured missed-capture `append_to_note` job when nothing was extracted or extraction was partial.
 8. Stage queue jobs atomically into the runtime queue.
-9. Leave runtime queue draining, canonical CouchDB writes, optional Markdown projection, and unknown reclassification to `queue_processor.watch`.
+9. Leave runtime queue draining, canonical CouchDB writes, and unknown reclassification to `queue_processor.watch`.
 10. Move the local audio into completed storage after transcription-side staging succeeds.
 
 ## 2. Entry Point
@@ -274,9 +273,9 @@ Mapping from event types to job types:
 
 Routing rules:
 
-- `site_observation` with a known site routes to that site's `about.md` path from the site registry.
-- `site_observation` with `site == "unknown"` routes to `Journal/YYYY-MM-DD-unknown.md`.
-- `employee_callout`, `incident`, and `interview_note` route to `Journal/YYYY-MM-DD.md`.
+- `site_observation` with a known site routes to that site's `location` document via the site registry.
+- `site_observation` with `site == "unknown"` routes to an `unknown_capture` record.
+- `employee_callout`, `incident`, and `interview_note` route to the dated `journal` entry.
 - onboarding or new-person requests must not route through `append_to_note`; they require `add_person` with enough structured fields or remain unqueued.
 - Action-oriented events map to queue jobs for later interpretation by `queue_processor`.
 
@@ -363,14 +362,14 @@ Validation:
 
 Execution behavior:
 
-- `append_to_note` / unknown-capture handlers record canonical unknown-capture state and evidence, with `*-unknown.md` available as a Markdown projection.
+- `append_to_note` / unknown-capture handlers record canonical unknown-capture state and evidence in `btq_vault`.
 - Site operational jobs such as `flag_access_constraint` and `trigger_recruiting` resolve canonical site targets and write CouchDB `btq_vault` documents through handlers.
 - People and staffing jobs such as `add_person`, `remove_from_schedule`, and `flag_retention_risk` update canonical person/personnel-event documents; duplicate employee ID or normalized name collisions fail safely against CouchDB employee docs.
-- `reclassify_unknown` reuses stored normalized transcript and notes/evidence to produce reviewed queue jobs without treating Markdown as canonical state.
-- `visit_create` writes the canonical visit entity and evidence, with Markdown output only as a projection when enabled.
+- `reclassify_unknown` reuses stored normalized transcript and notes/evidence to produce reviewed queue jobs.
+- `visit_create` writes the canonical visit entity and evidence.
 - `parse_supply_email` parses a source HTML supply email, resolves the site, and persists canonical supply/equipment records.
-- `personal_journal_entry` writes through the personal journal store and may render an optional Markdown projection.
-- `photo_capture` preserves media evidence and writes canonical capture/visit-related state; linked journal Markdown is projection output.
+- `personal_journal_entry` writes through the personal journal store.
+- `photo_capture` preserves media evidence and writes canonical capture/visit-related state, linked from a canonical journal entry.
 
 Unknown reclassification:
 
@@ -404,9 +403,8 @@ Additional processor behavior:
 - Processed job IDs are checked by scanning files already present in `processed/`.
 - Duplicate processed `job_id` values are skipped.
 - Canonical handlers apply idempotency markers before mutating CouchDB state.
-- Markdown projection/export may use atomic file writes, but it is not the canonical mutation step.
 
-## 10. Canonical Write And Projection Behavior
+## 10. Canonical Write Behavior
 
 All canonical operational writes in this pipeline go through `queue_processor` and its handlers.
 
@@ -421,11 +419,7 @@ Current canonical destinations written by queue jobs:
 - CouchDB `btq_vault` documents for sites, people, visits, personnel events, unknown captures, supply/equipment records, and other operational entities.
 - Associated evidence references preserved with the canonical documents.
 
-Markdown behavior:
-
-- Markdown is a human-readable projection/export from CouchDB, not the authoritative store.
-- `btq markdown-export` regenerates the projection when an operator wants Markdown files.
-- Projection paths such as `Accounts/.../about.md`, `Journal/YYYY-MM-DD.md`, and `Journal/YYYY-MM-DD-unknown.md` describe exported views of canonical state.
+CouchDB `btq_vault` is the sole source of truth; there is no Markdown projection.
 
 ## 11. Missed / Unknown Capture
 
@@ -439,8 +433,7 @@ When it happens:
 Behavior:
 
 - The pipeline creates an `append_to_note` / unknown-capture job named `job_missed_<audio-file>.json`.
-- The canonical destination is CouchDB `btq_vault` unknown-capture state with evidence.
-- The optional Markdown projection is a structured `unknown_capture` block with YAML frontmatter under `Journal/YYYY-MM-DD-unknown.md`.
+- The canonical destination is a CouchDB `btq_vault` `unknown_capture` document with evidence.
 
 Current unknown entry format:
 
@@ -536,7 +529,7 @@ Key paths in the current system:
 - runtime failed files: `/Users/operator/btq_runtime/failed`
 - runtime temp files: `/Users/operator/btq_runtime/temp`
 - runtime logs: `/Users/operator/btq_runtime/logs`
-- vault root: `/path/to/vault`
+- canonical store: CouchDB `btq_vault` via `BTQ_COUCHDB_URL`
 
 ## 14. Testing
 

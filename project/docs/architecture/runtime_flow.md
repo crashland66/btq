@@ -59,10 +59,9 @@ When event extraction is empty or partial, `emit_missed_capture_job()` preserves
 the transcript as a reviewable note. If a known site can be resolved from valid
 events or from the transcript text, it creates an `append_to_note` job
 containing a `site_audio_memo` block on that site note. If no site can be
-resolved, it creates an `unknown_capture` block in
-`Journal/YYYY-MM-DD-unknown.md`.
+resolved, it creates a canonical `unknown_capture` record.
 
-When a transcript begins with a personal-journal trigger, extraction is bypassed and a `personal_journal_entry` job is emitted for `personal_vault_dir`.
+When a transcript begins with a personal-journal trigger, extraction is bypassed and a `personal_journal_entry` job is emitted for the separate personal journal store.
 
 ## Queue Transport Ingestion
 
@@ -154,7 +153,6 @@ Mutation handlers use:
 - `has_job_been_applied()` checks against `btq_job_ids`
 - duplicate-content/evidence checks for some append cases
 - CouchDB read-modify-write through `btq_vault` / `canonical_rmw`
-- optional Markdown projection writes after canonical mutation
 - `move_job_file()` for queue archival
 
 There is no transaction across the CouchDB write and queue-file movement. The intended crash-safe behavior is:
@@ -171,9 +169,7 @@ Tests explicitly cover crash-after-write-before-move for append and visit creati
 
 ## Marker Creation
 
-Successful canonical writes add `btq_job_ids` to the target CouchDB document. The marker contains the computed job ID. Markdown projection may also render compatible marker/frontmatter data for human-readable exports.
-
-Legacy Markdown projection handling for files whose existing frontmatter has `type: unknown_capture` may prepend a new outer frontmatter block rather than modifying the unknown-capture block directly. This is pragmatic but structurally awkward because unknown capture projections can contain multiple frontmatter blocks.
+Successful canonical writes add `btq_job_ids` to the target CouchDB document. The marker contains the computed job ID.
 
 ## Retries and Failure States
 

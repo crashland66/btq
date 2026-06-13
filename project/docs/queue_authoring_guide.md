@@ -26,8 +26,8 @@ cat job.json | python3 scripts/btq-enqueue            # PUT into btq_queue
 `btq-enqueue` validates the doc against `queue_spec.py` before writing,
 derives a `job_id` (`<UTC-timestamp>__<slug>`) when one is not supplied, and
 uses the `job_id` as the CouchDB `_id`. The `couchdb_queue_watcher` on the
-runtime host then materializes each pending doc to the vault. Always
-`--dry-run` first.
+runtime host then materializes each pending doc into canonical `btq_vault`
+state. Always `--dry-run` first.
 
 Both authoring surfaces produce the same JSON job contract; only the
 transport differs. The audio pipeline (Whisper transcription) parses voice
@@ -106,7 +106,7 @@ BTDocs-facing mirror:
 
 - `Queue/queue_authoring_guide.md` in the configured BTDocs export directory is the author-facing projection for AI and human setup contexts.
 - The repository copy is canonical. Run `./scripts/btq-export-docs` to update the iCloud BTDocs projection.
-- Do not place queue schema, AI instructions, or bootstrap documents inside the operational vault.
+- Do not place queue schema, AI instructions, or bootstrap documents inside the canonical operational store.
 - Use the exported file's `BTQ_*` metadata header and `BTDocs/export_manifest.json` to detect stale or mismatched AI guidance.
 
 ## Core Authoring Rules
@@ -118,7 +118,7 @@ BTDocs-facing mirror:
 - Do not put `observation` or `observations` fields into queue jobs.
 - Split distinct operational facts into separate jobs.
 - Prefer unresolved capture or reclassification over guessing.
-- Use queue jobs for execution, not direct vault edits.
+- Use queue jobs for execution, not direct edits to canonical state.
 - If the needed action does not map cleanly to a supported job type, keep it as non-executable intent.
 
 Observation boundary:
@@ -158,7 +158,7 @@ Do not use:
   bare site name, and a `site`-keyed type rejects a number (the only
   exceptions are `update_site_equipment` and `photo_capture` above)
 - ad hoc aliases
-- vault paths in place of a site identifier
+- entity references in place of a site identifier
 
 How the runtime resolves it:
 
@@ -176,7 +176,7 @@ Examples:
 - `Peter Nash`
 - `Avery Doe`
 
-The runtime resolves employee names against `People/` notes.
+The runtime resolves employee names against canonical `employee` documents.
 
 ## Contract Model
 
@@ -208,7 +208,7 @@ Top-level field notes:
 
 Use when:
 
-- the runtime already knows the exact vault-relative target path
+- the runtime already knows the exact canonical journal or site target reference
 - the action is a plain note append, not a structured staffing, access, retention, visit, or reclassification action
 
 Do not use when:
@@ -235,9 +235,9 @@ Do not use when:
 
 ### Runtime behavior notes
 
-- `path` must be vault-relative
+- `path` is the canonical journal/site target reference
 - exact duplicate content is skipped
-- if the target is a site `about.md`, the runtime may append `visit_key` metadata or a `visit_gap` block automatically
+- if the target is a site (`location`) record, the runtime may append `visit_key` metadata or a `visit_gap` block automatically
 - if `content` contains a journal observation section such as:
   - `**Observations:**`
   - `- ...`
@@ -268,7 +268,7 @@ Do not use when:
 
 - the name or role is unknown
 - the request is only a note about an existing employee
-- the payload includes or depends on a vault path
+- the payload includes or depends on an explicit storage path
 - the intent is to merge with or mutate an existing person record
 
 ### Required payload fields
@@ -299,16 +299,15 @@ Use a stable source-system key when available, for example `ehub-567`.
 
 ### Runtime behavior notes
 
-- the writer generates the target path internally as `People/<Name>.md`
-- the writer generates a permanent `person_id` internally; it is not derived from the name or filename
+- the writer creates the canonical `employee` document internally
+- the writer generates a permanent `person_id` internally; it is not derived from the name
 - the writer preserves the transitional person assignment model: `job` is the primary work site and `additional_jobs` are secondary work sites
 - when `assignments` are present and no explicit `job` is supplied, the first assignment job becomes `job`; later assignment jobs become `additional_jobs`
-- the job payload must not include `path`, `file`, `folder`, `directory`, or any explicit vault path
+- the job payload must not include `path`, `file`, `folder`, `directory`, or any explicit storage path
 - if an `idempotency_key` has already completed with the same payload, replay is a safe no-op
 - if an `idempotency_key` has already completed with a different payload, the job fails safely
 - failed jobs do not mark an idempotency key as completed
 - before creating an employee, the runtime checks canonical CouchDB employee docs for the same `employee_id` or normalized full name; duplicates fail safely unless the idempotency key already proves a completed replay
-- the Markdown person-file duplicate check remains as projection defense-in-depth, but Markdown is not the authoritative duplicate source
 - the runtime does not merge into or mutate an existing person record
 
 ### Valid example
@@ -344,19 +343,14 @@ Use a stable source-system key when available, for example `ehub-567`.
 }
 ```
 
-Expected output target:
-
-```text
-People/Eric Daniel Dalton.md
-```
-
-Expected identity frontmatter:
+Expected output: a canonical `employee` document in `btq_vault` with identity
+anchor:
 
 ```yaml
 person_id: per_01JV8W7T6K8F9ABCD1234
 ```
 
-The `person_id` is the canonical identity anchor. The filename is presentation and may stop matching the person's name if names change later.
+The `person_id` is the canonical identity anchor. The `name` is presentation and may stop matching the person's record if names change later.
 
 ## 3. `trigger_recruiting`
 
@@ -386,7 +380,7 @@ Do not use when:
 
 - `priority` is required by `queue_spec.py`
 - `priority` does not currently have an enforced enum in `queue_spec.py`
-- the runtime writes this to the resolved site `about.md`
+- the runtime writes this to the resolved `location` document
 - if no `date` is supplied, the runtime uses the current UTC date
 
 ### Valid example
@@ -428,7 +422,7 @@ Do not use when:
 
 ### Runtime behavior notes
 
-- the runtime resolves the employee file from `People/`
+- the runtime resolves the employee from canonical `employee` documents
 - if no `date` is supplied, the runtime uses the current UTC date
 
 ### Valid example
@@ -469,7 +463,7 @@ Do not use when:
 
 ### Runtime behavior notes
 
-- the runtime writes this to the resolved site `about.md`
+- the runtime writes this to the resolved `location` document
 - if no `date` is supplied, the runtime uses the current UTC date
 - `blocking` is currently runtime-tolerated but not enforced or required by `queue_spec.py`
 
@@ -513,7 +507,7 @@ Do not use when:
 
 ### Runtime behavior notes
 
-- the runtime appends this to the resolved employee note
+- the runtime appends this to the resolved `employee` document
 - if no `date` is supplied, the runtime uses the current UTC date
 
 ### Valid example
@@ -553,7 +547,7 @@ Do not use when:
 
 ### Runtime behavior notes
 
-- `path` must be vault-relative
+- `path` is the canonical reference to the unknown-capture record to rescan
 - this does not rerun Whisper
 
 ### Valid example
@@ -572,8 +566,7 @@ Do not use when:
 
 > Producer-emitted, not hand-authored. The transcription pipeline emits this job
 > when a capture cannot be classified into structured events. It writes a canonical
-> `unknown_capture` document (and a `*-unknown.md` Markdown projection). Documented
-> here for contract completeness.
+> `unknown_capture` document. Documented here for contract completeness.
 
 Use when:
 
@@ -587,8 +580,8 @@ Do not use when:
 
 ### Required payload fields
 
-- `path`: string — the `Journal/<date>-unknown.md` projection path (vault-relative)
-- `content`: string — the rendered `unknown_capture` Markdown block (projection)
+- `path`: string — the canonical unknown-capture reference (`Journal/<date>-unknown.md` form)
+- `content`: string — the rendered `unknown_capture` block
 - `timestamp`: string — capture timestamp (ISO-8601)
 - `audio_file`: string — source audio filename
 
@@ -600,10 +593,10 @@ Do not use when:
 ### Runtime behavior notes
 
 - writes a canonical `unknown_capture_<source_unknown_id>` document with
-  `operator` set; the `*-unknown.md` Markdown is a best-effort projection
+  `operator` set
 - canonical dedup is by `btq_job_ids`; re-recording the same capture does not
   reset its status/retry state
-- `append_to_note` no longer accepts `*-unknown.md` paths
+- `append_to_note` no longer accepts `*-unknown.md` references
 
 ### Valid example
 
@@ -650,7 +643,7 @@ Do not use when:
 
 ### Runtime behavior notes
 
-- the runtime writes a visit block under the resolved site `Visits/YYYY-MM-DD.md`
+- the runtime writes a `visit` record for the resolved site and current date
 - duplicate evidence in the same visit file is skipped
 - the visit date is the current UTC date at execution time
 
@@ -673,8 +666,8 @@ Do not use when:
 
 Use when:
 
-- a local field photo should become vault evidence
-- the photo should be saved as an attachment and linked from the daily journal
+- a local field photo should become canonical evidence
+- the photo should be saved as media and linked from the daily journal entry
 - the capture is observational, not a direct structured staffing or scheduling action
 
 Do not use when:
@@ -700,10 +693,10 @@ Each photo object requires:
 
 ### Runtime behavior notes
 
-- the runtime writes attachments to `Journal/Attachments/YYYY-MM-DD/`
-- the runtime appends a linked photo-capture entry to `Journal/YYYY-MM-DD.md`
+- the runtime saves the photo media and links it from a canonical `journal` entry
+- the runtime appends a linked photo-capture entry to the dated `journal` record
 - the journal date is derived from `captured_at`
-- the runtime refuses to overwrite an existing attachment filename
+- the runtime refuses to overwrite an existing media filename
 
 ### Valid example
 
@@ -823,7 +816,7 @@ Do not use when:
 
 Use when:
 
-- a reviewed operational site issue needs a structured vault record
+- a reviewed operational site issue needs a structured canonical record
 - the issue has a clear site, title, reporter, resolution trigger, and summary or observations
 - client communication status must be tracked separately from resolution
 
@@ -862,8 +855,7 @@ Do not use when:
 
 ### Runtime behavior notes
 
-- writes to `Accounts/<Account>/Locations/<Site Directory>/Issues/<issue_id>__<slug>.md`
-- creates the `Issues/` directory when needed
+- writes a canonical `site_issue` document keyed by `issue_id`
 - derives a deterministic `issue_id` from site, title, observed time, source, and first capture reference unless `issue_id` is supplied
 - reprocessing the same job does not duplicate the issue file
 - a later job with the same explicit `issue_id` updates the same issue and preserves `btq_job_ids` history
@@ -945,8 +937,7 @@ Do not use when:
 
 ### Runtime behavior notes
 
-- writes to `Accounts/<Account>/Locations/<Site Directory>/Supplies/<supply_id>__<slug>.md`
-- creates the `Supplies/` directory when needed
+- writes a canonical `supply_need` document keyed by `supply_id`
 - derives a deterministic `supply_id` from site, item, requester, and observed
   time unless `supply_id` is supplied
 - reprocessing the same job does not duplicate the supply file
@@ -1016,8 +1007,7 @@ Do not use when:
 
 ### Runtime behavior notes
 
-- writes to `Accounts/<Account>/Locations/<Site Directory>/Equipment/<equipment_id>__<slug>.md`
-- creates the `Equipment/` directory when needed
+- writes a canonical `equipment_request` document keyed by `equipment_id`
 - derives a deterministic `equipment_id` from site, equipment name, requester,
   and observed time unless `equipment_id` is supplied
 - reprocessing the same job does not duplicate the equipment request file
@@ -1051,8 +1041,8 @@ Use when:
 
 - AC or the operator has confirmed a site's current cleaning equipment during a
   physical site visit
-- the inventory snapshot should be visible in the site's `about.md` operational
-  notes instead of buried in a chronological journal or review section
+- the inventory snapshot should be visible in the site's operational notes
+  instead of buried in a chronological journal or review section
 - the table should replace the prior snapshot for that site
 
 Do not use when:
@@ -1087,11 +1077,11 @@ Each `equipment` item may include:
 
 ### Runtime behavior notes
 
-- edits `Accounts/<Account>/Locations/<Site Directory>/about.md` in place
-- replaces the body of `### Supplies / Equipment` under
-  `## Operational Notes`, creating the subsection if absent
-- requires the site's `## Operational Notes` H2 to already exist; the processor
-  raises if it is missing
+- updates the equipment inventory on the resolved `location` document in place
+- replaces the prior `Supplies / Equipment` snapshot under the location's
+  operational notes, creating the subsection if absent
+- requires the location's operational-notes section to already exist; the
+  processor raises if it is missing
 - reprocessing the same job is idempotent via the `job_id` marker HTML comment
 - a later job with a different `job_id` replaces the table
 
@@ -1137,7 +1127,7 @@ Each `equipment` item may include:
 
 Use when:
 
-- a reviewed personnel/HR event needs a structured vault record
+- a reviewed personnel/HR event needs a structured canonical record
 - the event concerns attendance, performance, accommodation, discipline,
   recognition, or an on-the-job incident
 - the record should be filterable by employee, event type, severity, or status
@@ -1177,21 +1167,20 @@ Do not use when:
 
 ### Runtime behavior notes
 
-- writes to `People/<Last, First>/Events/<event_id>__<slug>.md`
+- writes a canonical `personnel_event` document keyed by `event_id`, linked to
+  the resolved `employee` by `person_id`
 - author `employee` in the **First Last** form per the Identity Rules section
   above (e.g. `"Marcus Tate"`). The runtime normalizes both
-  `"Marcus Tate"` and `"Tate, Marcus"` to the same
-  `Tate, Marcus` directory — so legacy `"Last, First"` strings encountered
-  in existing data still resolve correctly, but new jobs should use the
-  canonical First Last form
+  `"Marcus Tate"` and `"Tate, Marcus"` to the same person — so legacy
+  `"Last, First"` strings encountered in existing data still resolve correctly,
+  but new jobs should use the canonical First Last form
 - normalization happens before `event_id` is hashed, so the two name forms
   produce the same `event_id` — re-authoring the same event from either
-  string updates the same file rather than creating a sibling
-- creates the person event directory when needed without moving or rewriting
-  `People/<Last, First>.md`
+  string updates the same record rather than creating a sibling
+- the employee document is never moved or rewritten by this job
 - derives a deterministic `event_id` from employee, event type, occurrence
   time, and reporter unless `event_id` is supplied
-- reprocessing the same job does not duplicate the event file
+- reprocessing the same job does not duplicate the event record
 - a later job with the same explicit `event_id` updates the same event and
   preserves `created_at`, `event_id`, and `btq_job_ids` history
 
@@ -1249,15 +1238,12 @@ Do not use when:
 
 ### Runtime behavior notes
 
-- site jobs update canonical `location_<site_id>` with boolean `active` and
-  update the location markdown projection frontmatter `active`
-- employee jobs resolve the person note, require `person_id` frontmatter, patch
-  canonical `employee_<person_id>` with string `status`, and update the person
-  markdown projection frontmatter `status`
+- site jobs update canonical `location_<site_id>` with boolean `active`
+- employee jobs resolve the canonical `employee` document, require `person_id`,
+  and patch canonical `employee_<person_id>` with string `status`
 - records are preserved; the job never deletes locations, people, schedules, or
   personnel event history
-- reprocessing the same job is idempotent via the `btq_job_ids` frontmatter
-  marker
+- reprocessing the same job is idempotent via the `btq_job_ids` marker
 
 ### Valid example
 
@@ -1293,7 +1279,7 @@ Do not use when:
   trigger
 - the site is unknown
 - this is an out-of-band employee placement unrelated to any open recruiting;
-  use direct vault edits
+  handle it outside the queue
 
 ### Required payload fields
 
@@ -1313,11 +1299,11 @@ Do not use when:
 
 ### Runtime behavior notes
 
-- the runtime appends a closure entry to the resolved site `about.md` under
-  "## Operational Notes" -> "### Recruiting Closed"
+- the runtime appends a closure entry to the resolved `location` document's
+  recruiting-closed history
 - when `outcome=filled`, the runtime also appends a placement note to the
-  resolved `People/<Last, First>.md` under "## Schedule Changes", symmetric
-  with `remove_from_schedule`
+  resolved `employee` document's schedule-changes history, symmetric with
+  `remove_from_schedule`
 - trigger entries from `trigger_recruiting` are not mutated; the
   recruiting-history section remains append-only and a closure is its own
   appended entry
@@ -1345,7 +1331,7 @@ Do not use when:
 
 These jobs advance an existing supply-need, equipment-request, or site-issue
 canonical document through its status lifecycle. They require the canonical
-document already exists in the vault and the current status matches the valid
+document already exists in `btq_vault` and the current status matches the valid
 source set. Status transitions are idempotent: re-applying the same `job_id` is
 a no-op.
 
@@ -1656,7 +1642,7 @@ Do not author a runtime queue job for:
 - shift-report generation
 - opportunity tracking that has no supported runtime job type
 - planning notes
-- unresolved interpretation that should stay in the vault cognition layer
+- unresolved interpretation that should stay in the cognition/review layer
 
 Those remain non-executable intent unless promoted into the runtime contract.
 

@@ -14,7 +14,6 @@ raw source artifact
 -> deterministic queue processor
 -> queue handlers
 -> CouchDB canonical state + evidence
--> optional Markdown projection/export
 ```
 
 The current voice inbox and field-capture audio paths already follow most of

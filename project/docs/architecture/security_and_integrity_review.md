@@ -16,15 +16,14 @@ Less-trusted inputs:
 - generated queue jobs
 - iCloud ingress files
 - manually authored outbox jobs
-- edited Markdown projection files
 
-The main integrity boundary is `queue_processor.main` plus the registered handlers: they validate job shape, resolve known sites/employees, enforce idempotency, and own canonical CouchDB writes. Markdown output is projection/export, not the authoritative mutation target.
+The main integrity boundary is `queue_processor.main` plus the registered handlers: they validate job shape, resolve known sites/employees, enforce idempotency, and own canonical CouchDB writes. CouchDB `btq_vault` is the authoritative mutation target.
 
 ## Injection Risks
 
-Queue content can include arbitrary markdown-like text. The system preserves it after job validation and may render it into Markdown projections, but it does not sanitize markdown links, embeds, tags, or frontmatter-looking text inside content. This is acceptable for trusted local operators, but it is not safe for untrusted external job authors.
+Queue content can include arbitrary markdown-like text. The system preserves it after job validation, but it does not sanitize markdown links, embeds, tags, or frontmatter-looking text inside content. This is acceptable for trusted local operators, but it is not safe for untrusted external job authors.
 
-Supply email parsing reads HTML from paths under repo parent or vault. It parses content and writes order records/markdown. Malicious or malformed email HTML could produce misleading records even if path containment succeeds.
+Supply email parsing reads HTML from configured ingress paths. It parses content and writes canonical order records. Malicious or malformed email HTML could produce misleading records even if path containment succeeds.
 
 ## Malformed Job Risks
 
@@ -42,7 +41,7 @@ Path containment uses resolved paths and common path checks. This is a solid bas
 
 ## Sync Risks
 
-iCloud ingress is treated carefully. Markdown projection/export can still be sync-managed for human convenience, so conflict copies, delayed propagation, and concurrent edits can make the projection stale or misleading until regenerated. CouchDB remains the canonical store.
+iCloud ingress is treated as transport only. Conflict copies, delayed propagation, and concurrent edits can affect ingress files, so the system claims files into local runtime storage before processing. CouchDB `btq_vault` is the canonical store and is not sync-managed.
 
 ## Operational Tampering
 

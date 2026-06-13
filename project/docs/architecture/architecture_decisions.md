@@ -12,13 +12,13 @@ Alternatives rejected or deferred: SQLite, CouchDB/PouchDB, full event store, ho
 
 Future implication: migration will require extracting structured records from markdown plus preserving human narrative context.
 
-Status (2026-05-20): superseded as direction by ADR-007. CouchDB becomes the source of truth and the vault becomes a generated, read-only projection. The migration is staged and incremental; this decision holds for each slice until that slice is moved. See `adr-007-couchdb-source-of-truth.md`.
+Status: superseded by ADR-007 and now complete. CouchDB `btq_vault` is the sole source of truth; the Obsidian markdown projection has been removed. This entry is retained as the historical decision record. See `adr-007-couchdb-source-of-truth.md`.
 
 ## Deterministic Writer Boundary
 
-Decision: AI/probabilistic stages do not directly mutate the vault.
+Decision: AI/probabilistic stages do not directly mutate canonical state.
 
-Rationale: vault changes should be schema-checked, path-constrained, idempotent, and replayable.
+Rationale: canonical changes should be schema-checked, target-constrained, idempotent, and replayable.
 
 Tradeoffs: more code and queue plumbing; slower feature iteration than free-form agent edits.
 

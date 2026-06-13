@@ -22,12 +22,11 @@ explicitly changes that.
 - Queue watcher service: `btq-queue-watch.service`.
 - Transcription watcher service: `btq-transcription-watch.service`.
 - CouchDB: configured through `BTQ_COUCHDB_URL`, `BTQ_COUCHDB_USER`, and
-  `BTQ_COUCHDB_PASSWORD`.
+  `BTQ_COUCHDB_PASSWORD`. CouchDB `btq_vault` is the canonical operational store.
 - Local Dell CouchDB should exist before watcher cutover. The Dell is a full
   CouchDB peer, not just an Ollama/Whisper appliance: it should carry
   `btq_field_captures`, `btq_people`, `btq_photo_vision`, `btq_queue`,
   `btq_sites`, `btq_vault`, and `btq_voice_memos`.
-- Vault root: `@@BTQ_VAULT_ROOT@@`.
 
 Field-capture SPA deployment remains covered by
 [field-capture-production-deployment.md](/Users/operator/btq/project/field_capture/field-capture-production-deployment.md).
@@ -86,12 +85,11 @@ The account needs:
 - read and execute access to `@@BTQ_PROJECT_ROOT@@`;
 - execute access to `@@BTQ_PYTHON_BIN@@`;
 - read/write access to `@@BTQ_RUNTIME_ROOT@@`;
-- read/write access to `@@BTQ_VAULT_ROOT@@` only for deterministic queue
-  processor mutations;
+- network access to the CouchDB endpoint for canonical `btq_vault` mutations;
 - read access to model cache locations used by Whisper and Ollama.
 
-Do not grant broader write access to unrelated application trees. If the vault
-path is unclear, stop before starting the queue watcher.
+Do not grant broader write access to unrelated application trees. If the CouchDB
+connection is unclear, stop before starting the queue watcher.
 
 ## Environment Variables
 
@@ -109,7 +107,6 @@ Required:
 - `BTQ_COUCHDB_PASSWORD`: CouchDB password. Keep the substituted unit file root
   readable only if credentials are embedded directly.
 - `BTQ_RUNTIME_ROOT`: runtime artifact root.
-- `BTQ_VAULT_ROOT`: operational vault root.
 
 Operator-set placeholders:
 
@@ -237,7 +234,7 @@ writes.
 Keep disk headroom visible before and after cutover:
 
 ```bash
-df -h @@BTQ_RUNTIME_ROOT@@ @@BTQ_VAULT_ROOT@@
+df -h @@BTQ_RUNTIME_ROOT@@
 du -sh @@BTQ_RUNTIME_ROOT@@/uploads @@BTQ_RUNTIME_ROOT@@/completed @@BTQ_RUNTIME_ROOT@@/failed
 ```
 
@@ -302,17 +299,19 @@ stop and inspect the failed artifacts before continuing the cutover.
 
 ## Hard Safety Rules
 
-- Do not deploy or enable Dell services until runtime, vault, and CouchDB paths
-  are explicit.
+- Do not deploy or enable Dell services until runtime root and CouchDB
+  connection are explicit.
 - Do not start both Mac and Dell queue watchers against the same writable queue
   during cutover.
 - Do not print raw CouchDB credentials in shared logs.
-- Do not mutate vault files from raw intake, uploads, images, transcripts, or AI
-  summaries. Only deterministic writer code may mutate canonical state.
+- Do not mutate canonical `btq_vault` state from raw intake, uploads, images,
+  transcripts, or AI summaries. Only deterministic writer code may mutate
+  canonical state.
 - Do not change business logic while fixing server launch or environment
   issues.
 - Do not repair runtime permissions by making the tree world-writable.
-- Stop if model availability, runtime ownership, or vault root is ambiguous.
+- Stop if model availability, runtime ownership, or the CouchDB connection is
+  ambiguous.
 
 ## Install Steps
 
@@ -326,8 +325,8 @@ stop and inspect the failed artifacts before continuing the cutover.
    ```
 
 1. Copy or mirror the repo to the Dell source location. Do not copy runtime
-   artifacts, vault contents, local virtualenvs, caches, or `.git` internals
-   unless the operator has explicitly chosen that transfer method.
+   artifacts, local virtualenvs, caches, or `.git` internals unless the operator
+   has explicitly chosen that transfer method.
 
 1. Create the service user and runtime directories using the commands above.
 
@@ -347,7 +346,6 @@ stop and inspect the failed artifacts before continuing the cutover.
      -e 's|@@BTQ_SERVICE_USER@@|btq|g' \
      -e 's|@@BTQ_SERVICE_GROUP@@|btq|g' \
      -e 's|@@BTQ_RUNTIME_ROOT@@|/srv/btq/runtime|g' \
-     -e 's|@@BTQ_VAULT_ROOT@@|/srv/btq/vault|g' \
      -e 's|@@BTQ_LOG_DIR@@|/srv/btq/runtime/logs|g' \
      -e 's|@@BTQ_PATH@@|/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin|g' \
      -e 's|@@BTQ_COUCHDB_URL@@|http://127.0.0.1:5984|g' \

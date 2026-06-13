@@ -6,7 +6,7 @@ The core architectural philosophy is a strict mutation boundary:
 
 - AI or probabilistic components may generate transcripts, inferred events, or candidate jobs.
 - Deterministic Python code validates jobs and performs canonical writes through the queue processor and handlers.
-- Canonical writes target CouchDB `btq_vault`; Markdown projection/export is opt-in and downstream of canonical state.
+- Canonical writes target CouchDB `btq_vault`, which is the sole source of truth.
 
 This separation is the system's most important strength. It gives BTQ a reviewable queue contract, deterministic write handlers, replay behavior, and an audit trail through queue files, processed files, failed files, per-run logs, CouchDB evidence, and applied `btq_job_ids` markers.
 
@@ -27,9 +27,7 @@ Major risks:
 - No global transaction spans CouchDB mutation plus queue-file movement.
 - Processed-job history is a directory scan, not a durable index.
 - Multiple queue processors could race because no global processing lock is enforced.
-- Markdown projection/frontmatter parsing remains intentionally narrow where projection compatibility is needed.
 - Queue schemas validate required fields but permit many optional or semantically weak fields.
-- Optional Markdown export/projection can drift from CouchDB until regenerated.
 - Event extraction is heuristic and incomplete; confidence is not a formal probabilistic guarantee.
 - Site routing depends on configured CouchDB site registry access, with static fallback only when CouchDB is not configured.
 

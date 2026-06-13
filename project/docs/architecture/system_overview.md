@@ -12,7 +12,6 @@ field-capture PWA / voice-memo PWA / voice transcription
   -> approved mutation job
   -> queue processor / handlers
   -> CouchDB canonical state + evidence
-  -> optional Markdown projection/export (`btq markdown-export`)
   -> processed or failed queue archive
 ```
 
@@ -87,16 +86,12 @@ repo/local/                         local generated artifacts
 
 CouchDB
   btq_vault                         canonical operational entities + evidence
+                                    (locations, people, visits, journals,
+                                     issues, supplies, equipment, unknowns)
   btq_field_captures                field-capture ingress documents
   btq_voice_memos                   voice-memo ingress documents
 
-vault/                              optional Markdown projection/export
-  Accounts/.../Locations/...        site notes, visits, supplies
-  Journal/                          daily journals, unknown captures, digests
-  People/                           employee notes
-
-personal_vault/
-  Journal/                          personal journal entries only
+personal journal store              personal journal entries only
 ```
 
 ## Component Interaction Map
@@ -135,9 +130,6 @@ personal_vault/
        v                                    v
  CouchDB canonical state             processed/failed
       + evidence
-        |
-        v
- optional Markdown projection/export
 ```
 
 ## AI Interaction Boundaries

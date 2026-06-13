@@ -54,7 +54,7 @@ Logging:
 
 Notes:
 
-- The transcription watcher stages queue jobs only; the queue watcher is responsible for draining runtime queue jobs and writing the vault.
+- The transcription watcher stages queue jobs only; the queue watcher is responsible for draining runtime queue jobs and writing canonical `btq_vault` state.
 - If transcription-side processing fails after claim, the local audio is moved to failed storage for manual inspection.
 - Legacy `<audio>.<ext>.processed` sidecars are treated as skip markers and archived with the matching audio so stale markers are not left in the inbox.
 - The background `launchd` job includes the configured `ffmpeg_path_prefix` plus the standard macOS shell path.

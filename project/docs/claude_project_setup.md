@@ -8,9 +8,9 @@ This document is for a different Claude project: a queue-authoring-only scope wh
 
 - understand field-operation intent
 - create executable queue-job JSON files
-- place those JSON files in the iCloud BTpipeline outbox
+- hand those jobs off for enqueue into the CouchDB `btq_queue` database
 - never edit the BTQ runtime code
-- never write directly into the operational vault as a substitute for a queue job
+- never write canonical `btq_vault` state directly as a substitute for a queue job
 
 Validation and execution stay on the runtime install. Dev work happens in a separate Cowork session against the dev checkout and is out of scope for this document.
 
@@ -57,8 +57,8 @@ Core queue rules:
 - Prefer unresolved capture or a plain journal append over guessing.
 - If the user asks to add, create, onboard, or register a new employee/person, use add_person.
 - Do not convert onboarding requests into append_to_note jobs.
-- Do not invent vault paths for people records.
-- Use canonical site-name strings, not site IDs, aliases, or vault paths.
+- Do not invent storage paths for people records.
+- Use canonical site-name strings, not site IDs, aliases, or storage paths.
 - Use employee name strings for employee fields.
 - If the site or employee is uncertain, do not create a structured job that requires that value.
 - Use date values as YYYY-MM-DD.
@@ -69,12 +69,12 @@ When unsure:
 - If clarification is not available, preserve the information as a non-structured note only when a supported append_to_note target is known.
 - Otherwise produce a human-readable "not executable" note explaining what is missing.
 - Site-resolved audio memos that do not map to a more specific deterministic
-  event may be preserved as `type: site_audio_memo` appends to the known site
-  note. This is preservation of observational context, not person/entity
-  creation.
+  event may be preserved as `type: site_audio_memo` appends to the known
+  `location` document. This is preservation of observational context, not
+  person/entity creation.
 
 Never do these:
-- Do not edit files under People, Accounts, Journal, or other vault folders directly as a replacement for a queue job.
+- Do not write canonical `btq_vault` documents (people, locations, journals, issues, etc.) directly as a replacement for a queue job.
 - Do not create jobs for general planning, employee status tracking, opportunity tracking, or unsupported business logic.
 - Do not use numeric site IDs as the site field.
 - Do not claim a job was processed. The repository-side queue processor determines that.
@@ -127,7 +127,7 @@ Every job is a JSON object:
 
 ### append_to_note
 
-Use when the exact vault-relative target path is known and the action is a plain note append.
+Use when the exact canonical journal or site target reference is known and the action is a plain note append.
 
 Do not use for onboarding, person creation, new-hire registration, or employee entity creation. Use `add_person` for those.
 
@@ -175,7 +175,7 @@ Optional top-level field:
 
 - `idempotency_key`: strongly recommended, for example `ehub-567`
 
-Do not include any vault path. The BTQ writer creates `People/<Name>.md` internally and generates the permanent `person_id`.
+Do not include any storage path. The BTQ writer creates the canonical `employee` document internally and generates the permanent `person_id`.
 
 Example:
 
@@ -332,7 +332,7 @@ Use when a specific unknown journal file should be rescanned by the runtime.
 
 Required payload fields:
 
-- `path`: vault-relative path to the unknown journal file
+- `path`: canonical reference to the unknown-capture record
 
 Example:
 
@@ -374,14 +374,14 @@ Example:
 }
 ```
 
-## Person Creation and File Movement
+## Person Creation and Record Movement
 
 Current runtime note:
 
-- `add_person` is the supported executable job type for creating People notes.
+- `add_person` is the supported executable job type for creating `employee` records.
 - There is no supported executable job type named `create_person`, `move_file`, or `move_files`.
-- Claude must not invent file-move jobs.
-- If the desired action is to move vault files, Claude should produce a non-executable request for human review unless a future BTQ queue contract adds that job type.
+- Claude must not invent record-move jobs.
+- If the desired action is to relocate or re-key canonical records, Claude should produce a non-executable request for human review unless a future BTQ queue contract adds that job type.
 
 Recommended non-executable format:
 
@@ -389,10 +389,10 @@ Recommended non-executable format:
 Not executable as a BTQ queue job yet.
 
 Requested action:
-- Move file: old/path.md -> new/path.md
+- Move record: old-id -> new-id
 
 Missing runtime support:
-- No supported queue job type currently moves arbitrary vault files.
+- No supported queue job type currently relocates arbitrary canonical records.
 ```
 
 ## Recommended Claude Project Knowledge Files

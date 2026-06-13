@@ -6,9 +6,9 @@ It assumes:
 
 - the repository is configured through [config.json](/Users/operator/btq/config.json)
 - Python dependencies are installed from [pyproject.toml](/Users/operator/btq/pyproject.toml)
-- the Obsidian vault matches the documented expectations in [vault_schema.md](/Users/operator/btq/project/docs/vault_schema.md)
+- CouchDB is reachable and provisioned with the canonical entity types documented in [vault_schema.md](/Users/operator/btq/project/docs/vault_schema.md)
 
-If the vault does not match the expected structure, some jobs will fail even when the pipeline itself is healthy.
+If the canonical `btq_vault` seed records (locations, employees) are missing, some jobs will fail even when the pipeline itself is healthy.
 
 ## A. Daily Operation
 
@@ -27,8 +27,6 @@ Configured paths can be inspected with:
 ```bash
 project/.venv/bin/python -m config get audio_inbox_dir
 project/.venv/bin/python -m config get audio_archive_dir
-project/.venv/bin/python -m config get vault_dir
-project/.venv/bin/python -m config get personal_vault_dir
 ```
 
 ### Run a single pass
@@ -256,8 +254,7 @@ offline, the VPS still accrues captures under `/srv/btq/runtime/uploads` with
 matching `photo_capture` metadata under `/srv/btq/runtime/queue`. The Mac can
 pull, transcribe, process semantics, collect candidates, and review later.
 Review/approval, draft generation, queue staging, and canonical CouchDB
-mutation remain manager-owned. Markdown is projection/export, not the
-authoritative mutation step.
+mutation remain manager-owned. CouchDB `btq_vault` is the authoritative store.
 
 Field-capture audio has a review path between semantic cleanup and queue
 processing:
@@ -564,11 +561,8 @@ site-viewer export can surface the Client Informed badge in the internal
 `/site/<site_id>` viewer.
 
 Structured operational issues can be written through the deterministic queue job
-type `log_site_issue`. The job creates or updates:
-
-```text
-Accounts/<Account>/Locations/<Site Directory>/Issues/<issue_id>__<slug>.md
-```
+type `log_site_issue`. The job creates or updates a canonical `site_issue`
+document in `btq_vault`, keyed by `issue_id`.
 
 Use `log_site_issue` when a reviewed field capture or daily log item should
 become first-class issue state. Required contract fields include `site_id`,
@@ -580,8 +574,8 @@ the issue by itself.
 Open/current site issues are visible in the ops dashboard and the read-only
 `/field-capture/issues` page. Supply needs and equipment requests are visible in
 the read-only `/supplies` and `/equipment` browse views. Status changes and
-resolution should be handled by Obsidian frontmatter edits or future
-deterministic queue jobs, not by dashboard display code.
+resolution should be handled by deterministic queue jobs, not by dashboard
+display code.
 
 Backlog schema gaps surfaced by field-capture review:
 
@@ -706,7 +700,7 @@ The collection dry-run reads completed semantic artifacts, builds candidate
 payloads with the same deterministic IDs as real collection, computes review
 artifact paths, detects equivalent existing candidates, and reports
 `would_create`, `skipped`, or `failed` results. It does not write pending or
-failed candidate artifacts, queue files, or vault files.
+failed candidate artifacts, queue files, or canonical state.
 
 Generate approved drafts from already-approved candidates:
 
@@ -753,13 +747,13 @@ The draft-generation dry-run skips non-approved candidates, maps approved
 candidates through the same draft builder as real generation, detects an
 equivalent existing draft by deterministic draft path, and reports
 `would_create`, `skipped`, or `failed` results. It does not write approved or
-failed draft artifacts, queue files, or vault files.
+failed draft artifacts, queue files, or canonical state.
 
 Default field-capture drafts append internal-safe, provenance-preserving notes
 with available capture timestamp, site ID, area, candidate summary, reviewed
 context, capture/audio IDs, and semantic/transcript artifact paths. Draft
 generation does not mutate canonical state. Staging is still explicit through
-`stage-approved-drafts`, and the queue processor remains the only vault writer.
+`stage-approved-drafts`, and the queue processor remains the only canonical writer.
 
 Approve or reject exactly one candidate:
 
@@ -792,7 +786,7 @@ The staging dry-run validates proposed queue jobs, computes deterministic queue
 filenames and job IDs, checks duplicate evidence in `<runtime_root>/queue`,
 `<runtime_root>/processed`, `<runtime_root>/failed`, and the processed index,
 and reports whether each approved draft would stage, skip, or fail. It does not
-write `<runtime_root>/queue` files, staging status artifacts, or vault files.
+write `<runtime_root>/queue` files, staging status artifacts, or canonical state.
 
 Approval rules:
 
@@ -908,7 +902,7 @@ Safety boundaries:
 - `stage-approved-drafts` does not run the queue processor
 - semantic cleanup, candidate review, draft generation, and staging do not
   mutate canonical state
-- the queue processor remains the only vault writer
+- the queue processor remains the only canonical writer
 
 ## Local Ops Dashboard
 
@@ -939,12 +933,10 @@ http://127.0.0.1:8765/
   uploads, action candidates, and drafts
 - `/field-capture/issues` renders structured site issues, detail/source views,
   and queue-job-driven status transition forms
-- `/supplies` renders a read-only list of supply-need records parsed from
-  `Accounts/*/Locations/*/Supplies/*.md`. Filters by `?site_id=<id>` and
-  `?status=<open|ordered|...>`
-- `/equipment` renders a read-only list of equipment-request records parsed
-  from `Accounts/*/Locations/*/Equipment/*.md`. Filters by `?site_id=<id>` and
-  `?status=<open|approved|...>`
+- `/supplies` renders a read-only list of canonical `supply_need` records from
+  `btq_vault`. Filters by `?site_id=<id>` and `?status=<open|ordered|...>`
+- `/equipment` renders a read-only list of canonical `equipment_request` records
+  from `btq_vault`. Filters by `?site_id=<id>` and `?status=<open|approved|...>`
 - `/drafts` renders approved candidates that need draft generation and approved
   drafts that can be previewed or staged into the queue
 - `/drafts/stage-preview` renders the dry-run queue jobs for one approved draft
@@ -983,7 +975,7 @@ recent log warnings/errors. The Inbox is the default operator landing page.
 - `/drafts/generate` mutates one approved-draft artifact
 - `/drafts/stage` mutates one queue file and one staging-status artifact
 - `/supplies/mark-ordered` stages a `mark_supply_ordered` queue job; the queue
-  processor advances the matching `Supplies/<id>__*.md` file from `open` to
+  processor advances the matching canonical `supply_need` record from `open` to
   `ordered`
 - `/supplies/mark-delivered` stages a `mark_supply_delivered` queue job;
   `ordered` to `delivered`
@@ -1036,8 +1028,8 @@ Every POST appends one JSON line to:
 - Every POST writes exactly one audit-log line at
   `<runtime_root>/logs/admin_audit.log`.
 - Raw token values are never logged.
-- The dashboard does not write to the vault; the queue processor remains the
-  only vault writer.
+- The dashboard does not write canonical state; the queue processor remains the
+  only canonical writer.
 - The dashboard does not invoke the queue processor.
 - The dashboard does not invoke transcription, semantic cleanup, or
   photo-vision runs. Vision retries write an intent file consumed by the
@@ -1157,25 +1149,13 @@ This is a successor to `_string()`'s defensive rendering (per
 `ai-methodology:projects/btq/108_string_coercion_hardening/`). The renderer
 suppresses the symptom; this script fixes the underlying data.
 
-### Where Markdown projections land
+### Where canonical writes land
 
-Canonical queue writes land in CouchDB `btq_vault`. When Markdown projection is
-enabled or regenerated, projected site files land at:
-
-- `Accounts/<Account>/Locations/<Site>/about.md`
-
-Projected visit anchors:
-
-- `Accounts/<Account>/Locations/<Site>/Visits/YYYY-MM-DD.md`
-
-Projected journal files:
-
-- `Journal/YYYY-MM-DD.md`
-- `Journal/YYYY-MM-DD-unknown.md`
-
-Employee writes:
-
-- `People/*.md`
+Canonical queue writes land in the CouchDB `btq_vault` database as typed
+documents: `location` updates (issues, supplies, equipment, recruiting state),
+`visit` and `visit_gap` records, `journal` and `unknown_capture` entries, and
+`employee` documents. There is no markdown projection; CouchDB is the sole
+source of truth.
 
 ### Personal journal mode
 
@@ -1185,9 +1165,7 @@ To keep a voice memo separate from operational memory, begin the memo with one o
 - `this is a personal journal`
 - `personal note`
 
-The transcription pipeline strips that trigger from the stored body, preserves the raw transcript path plus source audio filename and timestamp, and stages a `personal_journal_entry` job. The queue watcher writes it under `personal_vault_dir`, separate from the operational vault:
-
-- `Journal/YYYY-MM-DD.md`
+The transcription pipeline strips that trigger from the stored body, preserves the raw transcript path plus source audio filename and timestamp, and stages a `personal_journal_entry` job. The queue watcher writes it to the separate personal journal store, isolated from operational state.
 
 Personal journal jobs do not run through operational event extraction and do not feed shift reports, account journals, staffing events, unknown captures, or nightly ops digest. This first pass is separation only; it does not perform semantic analysis, tagging, summaries, mood analysis, or personal insight generation.
 
@@ -1209,12 +1187,11 @@ The active registry currently provides:
 
 - canonical site name
 - string `site_id`
-- canonical `note_path`
 - alias list used by transcript site resolution
 
 Runtime consequence:
 
-- a site note can already exist in the vault, but runtime event routing will not use it unless the site is also present in the active registry
+- a `location` document can already exist in `btq_vault`, but runtime event routing will not use it unless the site is also present in the active registry
 - if CouchDB is configured but unavailable, runtime site routing fails closed
   and logs `CouchDB site registry unavailable; failing closed`; do not edit
   `sites.py` as an operational workaround
@@ -1223,10 +1200,9 @@ Runtime consequence:
 
 A site is only fully routable when all of these are true:
 
-1. the vault contains a structurally valid site `about.md`
+1. a valid canonical `location` document exists for the site
 2. the site appears in the active runtime registry
 3. transcript text can resolve to that canonical site through the registry aliases or matching logic
-4. the canonical site maps back to a valid `note_path`
 
 ### Nightly refresh behavior
 
@@ -1235,28 +1211,28 @@ I did not find a checked-in nightly site-refresh implementation in this reposito
 That means this repository shows:
 
 - the runtime registry consumer
-- the vault-side site validation logic in the queue processor
+- the queue-processor side site validation logic
 
-It does not show code that rebuilds the active CouchDB registry from the vault
-on a schedule. Site seed/migration code writes CouchDB documents with IDs like
-`site_<site_id>`, for example `site_7050`, including aliases, note path, and
-optional vision context.
+It does not show code that rebuilds the active `btq_sites` registry on a
+schedule. Site seed/migration code writes CouchDB documents with IDs like
+`site_<site_id>`, for example `site_7050`, including aliases and optional vision
+context.
 
-If your deployed environment has a nightly process that inspects the vault and refreshes the registry, treat that as an external operational step not represented in the current checked-in code.
+If your deployed environment has a nightly process that refreshes the registry, treat that as an external operational step not represented in the current checked-in code.
 
 ### Transition state for new sites
 
-A newly created site note can be in one of these states:
+A newly created site can be in one of these states:
 
-1. present in vault but structurally invalid
-2. structurally valid in vault but absent from the active runtime registry
+1. canonical `location` document present but structurally invalid
+2. structurally valid `location` document but absent from the active runtime registry
 3. present in the active runtime registry but not yet resolved by spoken aliases
 4. fully routable
 
 The most common transition problem is state 2:
 
-- the vault note exists
-- the frontmatter is good enough
+- the `location` document exists
+- its fields are good enough
 - but runtime processing still treats the site as `unknown` because the active registry has not been refreshed yet
 
 ## C. Handling Failures
@@ -1279,7 +1255,7 @@ Typical causes:
 
 - missing `ffmpeg`
 - missing Python dependency
-- inbox/archive/vault path misconfiguration
+- inbox/archive path misconfiguration or unreachable CouchDB
 - audio file still changing and not yet considered stable
 
 ### If no events are generated
@@ -1295,7 +1271,7 @@ Important current behavior:
 - no valid events is not always an error
 - the pipeline may instead create an `unknown_capture`
 - partial extraction can also create an unknown capture alongside valid events
-- if the site exists in the vault but is not yet in the active runtime registry, extraction may still resolve the site as `unknown`
+- if a `location` document exists but the site is not yet in the active runtime registry, extraction may still resolve the site as `unknown`
 
 ### If queue jobs are not processed
 
@@ -1326,45 +1302,45 @@ movement, and skips unknown reclassification by default. It does not stage
 `<pipeline_dir>/outbox/*.json`, does not process watcher working/nightly
 triggers, and does not touch iCloud transport backlog. Use `--no-skip-unknowns`
 only when you intentionally want the processor to scan and reclassify
-`Journal/*-unknown.md` entries after the queue pass.
+unresolved `unknown_capture` records after the queue pass.
 
 Typical causes:
 
 - invalid queue payload rejected by `queue_spec.py`
-- missing or malformed site `about.md`
-- missing `People/` employee file for employee-targeted jobs
+- missing or malformed `location` document
+- missing `employee` document for employee-targeted jobs
 - duplicate job ID already processed
 - queue watcher not running
-- site exists in vault but is not present in the active runtime registry
+- a `location` document exists but the site is not present in the active runtime registry
 
 ### If a valid new site is still not routing
 
 Check in this order:
 
-1. confirm the vault note path matches the expected `Accounts/<Account>/Locations/<Site>/about.md` shape
-2. confirm the site note frontmatter includes `type: location` and either `job` or `site_id`
-3. check whether the site exists in [event_pipeline/sites.py](/Users/operator/btq/project/event_pipeline/sites.py)
+1. confirm a canonical `location` document exists for the site
+2. confirm the `location` document carries `type: location` and either `job` or `site_id`
+3. check whether the site exists in the active `btq_sites` registry (or [event_pipeline/sites.py](/Users/operator/btq/project/event_pipeline/sites.py) in local/dev fallback)
 4. confirm the spoken or typed site reference matches a canonical name or alias in that registry
-5. if your environment uses an external nightly registry refresh, verify that it has actually run and updated the runtime registry used by the current process
+5. if your environment uses an external registry refresh, verify that it has actually run and updated the runtime registry used by the current process
 
 Important distinction:
 
-- a structurally valid vault note is not the same thing as a currently routable site
-- the queue processor can validate site IDs from the vault, but event routing still depends on the active runtime registry
+- a structurally valid `location` document is not the same thing as a currently routable site
+- the queue processor can validate site IDs from the canonical store, but event routing still depends on the active runtime registry
 
 ### Troubleshooting stale registry behavior
 
 Symptoms of stale registry behavior:
 
-- a new site note exists in the vault
+- a new `location` document exists
 - queue-processor validation finds other existing sites correctly
 - transcript events for the new site still route to `unknown`
-- `site_observation` falls back to `Journal/YYYY-MM-DD-unknown.md` instead of a site `about.md`
+- `site_observation` falls back to an `unknown_capture` record instead of a `location` document
 
 What the repository can confirm:
 
 - whether the site is present in the checked-in runtime registry
-- whether the vault note is structurally valid enough for queue-processor side validation
+- whether the `location` document is structurally valid enough for queue-processor side validation
 
 What this repository cannot confirm from code:
 
@@ -1399,11 +1375,8 @@ Unknown is not the same as failure.
 
 ### How they are stored
 
-Unknown captures are appended to:
-
-- `Journal/YYYY-MM-DD-unknown.md`
-
-Each capture is stored as a structured markdown block with frontmatter:
+Unknown captures are stored as canonical `unknown_capture` documents in
+`btq_vault`. Each record carries:
 
 - `type: unknown_capture`
 - `timestamp`
@@ -1412,11 +1385,11 @@ Each capture is stored as a structured markdown block with frontmatter:
 - `retry_count`
 - `last_attempted`
 
-The body keeps:
+The record body keeps:
 
 - original transcript
 - normalized transcript
-- notes section for human review
+- notes for human review
 
 ### How they are reprocessed or resolved
 
@@ -1424,7 +1397,7 @@ The queue processor scans unresolved unknowns after the normal queue pass.
 
 It will attempt reclassification when:
 
-- the file was edited after the original capture timestamp
+- the record was updated after the original capture timestamp
 - the notes/body now contain a resolvable site alias
 - the notes/body contain `#site:`
 - retry backoff allows another attempt
@@ -1491,18 +1464,18 @@ Current idempotency protections:
 Practical rule:
 
 - rerunning the pipeline is usually safe when the source file and queue files are unchanged
-- editing vault files manually can affect unknown reclassification eligibility and visit-gap behavior
+- editing canonical documents directly can affect unknown reclassification eligibility and visit-gap behavior
 
 ### When to be careful
 
 Be careful when:
 
-- manually editing site `about.md` frontmatter
-- renaming site directories without updating the site registry
-- editing `Journal/*-unknown.md` in ways that break frontmatter structure
+- manually editing `location` document fields
+- renaming or re-keying sites without updating the site registry
+- editing `unknown_capture` records in ways that break their structure
 - deleting `processed/` queue files or local completed/failed runtime files
 
-Those actions can change how the processor resolves paths or whether it thinks work has already been handled.
+Those actions can change how the processor resolves entities or whether it thinks work has already been handled.
 
 ## F. Nightly Digest
 

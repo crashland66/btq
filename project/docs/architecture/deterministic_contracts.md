@@ -18,7 +18,7 @@ For a fixed code version and fixed input files:
 - New capture flows write observational manifests under `<runtime_root>/manifests/<capture_id>.json`.
 - Reprocessing an already marked job should not duplicate most supported mutations.
 - Failed jobs are moved to `failed/` unless the failure also prevents the move.
-- Personal journal jobs write to `personal_vault_dir`, not the operational vault.
+- Personal journal jobs write to the separate personal journal store, not the canonical operational store.
 - Replay execution requires explicit `--approve`; dangerous replay requires `--force-dangerous-replay`.
 - Epistemic metadata is preserved when provided or deterministically classified from explicit patterns.
 
@@ -29,7 +29,6 @@ For a fixed code version and fixed input files:
 - Correct site resolution for all spoken variants.
 - Exactly-once queue processing across crashes or machines.
 - Global transactional atomicity across CouchDB write and queue-file movement.
-- Always-current Markdown projection/export files.
 - Durable queue ordering beyond filename sort.
 - Safe behavior for arbitrary YAML frontmatter.
 - Recovery from manually edited or corrupted `processed/` history when neither the processed index nor target markers remain useful.
@@ -86,7 +85,7 @@ Epistemic state separates observations, human reports, inferences, assumptions, 
 
 `btq_job_ids` means "this computed job payload was applied to this canonical target or intentionally treated as applied." It is not a cryptographic proof that all intended side effects occurred. It also does not record handler version, timestamp, actor, or previous content hash.
 
-Markdown projection marker compatibility depends on the custom frontmatter parser in `queue_processor/idempotency.py`. The parser supports simple scalar keys and simple two-space-indented list items, and tolerates ignored continuation lines in writer-created person assignment blocks. It is not a full YAML parser.
+Marker parsing depends on the custom frontmatter parser in `queue_processor/idempotency.py`. The parser supports simple scalar keys and simple two-space-indented list items, and tolerates ignored continuation lines in writer-created person assignment blocks. It is not a full YAML parser.
 
 ## Queue Ordering Assumptions
 

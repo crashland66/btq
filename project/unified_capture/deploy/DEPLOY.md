@@ -11,24 +11,23 @@ apps. It does not retire or modify `photos.example.com` or
 - Systemd service: `btq-unified-capture.service`
 - Loopback API: `127.0.0.1:8081`
 - Token DB: `/srv/btq/data/field_capture_tokens.sqlite3`
-- Vault replica: `/srv/btq/data/vault-readonly`
+- Person/site resolution: CouchDB (`btq_vault` / `btq_sites`) via `BTQ_COUCHDB_*`
 - Upload root: `/srv/btq/runtime/uploads`
 - Optional service environment: `/etc/btq/unified-capture.env`
 
-The unified app uses the same token database, vault replica, and upload root as
-field capture. Worker tokens and the existing post-upload pipeline continue to
+The unified app uses the same token database, CouchDB connection, and upload root
+as field capture. Worker tokens and the existing post-upload pipeline continue to
 operate on the same data.
 
 ## Edge Prerequisites
 
-The VPS edge must have `fcuser` available and the post-244 canonical replica in
-place, matching the field-capture edge assumptions. Do not expose the hostname
-until `/srv/btq/data/vault-readonly` is current enough for token authorization
-and site lookup.
+The VPS edge must have `fcuser` available and reachable CouchDB, matching the
+field-capture edge assumptions. Do not expose the hostname until CouchDB is
+reachable for token authorization and site lookup.
 
 The service runs as user/group `btq-field` — the same identity as the field
-capture app — so it shares the token DB, vault replica, and upload root with no
-ownership changes or new user provisioning. (The unified app is interchangeable
+capture app — so it shares the token DB, CouchDB connection, and upload root with
+no ownership changes or new user provisioning. (The unified app is interchangeable
 with field capture by design; running it as `btq-field` keeps shared-data
 permissions identical and avoids a separate service account.)
 

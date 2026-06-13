@@ -6,6 +6,12 @@ Accepted as architectural direction (2026-05-20). Implementation is staged and
 incremental — see Migration Path. No code in the queue processor's write path
 changes until the schema work in this ADR is done.
 
+Status: complete — the Obsidian markdown projection has been removed; CouchDB is
+sole source of truth. The Migration Path and "generated read-only projection"
+discussion below are retained as the historical decision record; the projection
+end state described in Option B was reached and then the projection itself was
+retired.
+
 ## Context
 
 The operational vault — markdown files in an iCloud-synced Obsidian directory —

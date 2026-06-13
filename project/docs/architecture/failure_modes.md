@@ -34,11 +34,11 @@ Remaining risk: corruption in `processed_index.jsonl` is a critical health condi
 
 ## iCloud Sync Conflicts
 
-Impact: duplicated files, conflict copies, stale reads, `EDEADLK`, or last-writer-wins vault divergence.
+Impact: duplicated files, conflict copies, stale reads, or `EDEADLK` on the iCloud transport directories.
 
-Current mitigation: iCloud is used as transport only for inbox/outbox/working; runtime root is forced local; `safe_move()` handles `EDEADLK`.
+Current mitigation: iCloud is used as transport only for inbox/outbox/working; runtime root is forced local; `safe_move()` handles `EDEADLK`. Canonical operational state lives in CouchDB `btq_vault`, not on an iCloud-synced filesystem, so canonical mutation no longer depends on cloud-sync behavior.
 
-Remaining risk: operational and personal vaults themselves are configured under iCloud/Obsidian paths. Vault mutation still depends on cloud-sync behavior.
+Remaining risk: the personal journal store and iCloud transport directories still depend on cloud-sync behavior for ingress/transport.
 
 ## Duplicate Job Processing
 

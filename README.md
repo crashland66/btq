@@ -4,19 +4,18 @@ Deterministic field-operations pipeline for turning recorded voice notes and fie
 
 Current end-to-end flow:
 
-`audio -> transcription -> event extraction -> queue -> canonical write (CouchDB) [+ optional Markdown projection]`
+`audio -> transcription -> event extraction -> queue -> canonical write (CouchDB)`
 
-This repository is local-first in its processing model (Whisper, deterministic extraction, and the queue processor all run locally), with **CouchDB as the canonical operational data store** for both ingress and entity state. The Obsidian vault is a human-readable projection of that data — journals, digests, visit notes, and approved summaries — not the authoritative store (decided 2026-05-31; the legacy Markdown dual-write defaults off in production and is being removed). Field/voice captures arrive via the capture SPAs into CouchDB and replicate to the processing node; the macOS-oriented watcher setup remains the current pilot deployment shape.
+This repository is local-first in its processing model (Whisper, deterministic extraction, and the queue processor all run locally), with **CouchDB as the canonical operational data store** for both ingress and entity state. Canonical operational entities — journals, visit notes, site issues, supplies, equipment, people, and approved summaries — live as typed documents in the `btq_vault` CouchDB database; CouchDB is the sole source of truth. Field/voice captures arrive via the capture SPAs into CouchDB and replicate to the processing node; the macOS-oriented watcher setup remains the current pilot deployment shape.
 
 Development workflow, prompts, and execution history live in the sister repository [`ai-methodology`](https://github.com/your-org/ai-methodology) under `projects/btq/`.
 
 ## Purpose
 
-BTQ ingests field audio notes and captures, transcribes audio with Whisper, normalizes domain language, extracts deterministic operational events, converts those events into validated queue jobs, and writes approved updates to the canonical CouchDB store through a single writer boundary (with an optional, off-by-default human-readable Markdown projection into an Obsidian vault).
+BTQ ingests field audio notes and captures, transcribes audio with Whisper, normalizes domain language, extracts deterministic operational events, converts those events into validated queue jobs, and writes approved updates to the canonical CouchDB store through a single writer boundary.
 
 Author entry point:
 
-- Start with `SYSTEM_CONTEXT.md` in the configured vault root for session orientation and authoring rules.
 - Repo-side authoring reference: [project/docs/queue_authoring_guide.md](project/docs/queue_authoring_guide.md)
 
 It is useful when you want:
@@ -37,7 +36,7 @@ The implemented runtime path is:
    - `<audio>.<ext>.whisper.corrections.json`
    - event artifacts under `events_raw/`, `events_enriched/`, `events_valid/`, and `events_failed/`
 4. `event_to_queue` converts validated events into queue-spec job JSON files.
-5. `queue_processor` validates each job against `project/queue_spec.py`, executes supported jobs, and performs the only canonical writes in the system — to the CouchDB `btq_vault` store (with an optional Markdown projection into the Obsidian vault, off by default in production).
+5. `queue_processor` validates each job against `project/queue_spec.py`, executes supported jobs, and performs the only canonical writes in the system — to the CouchDB `btq_vault` store.
 
 Practical stage boundaries:
 
@@ -50,7 +49,7 @@ Practical stage boundaries:
 - Queue validation contract:
   `validate_job(job)` in `project/queue_spec.py`
 - Canonical writer boundary:
-  `project/queue_processor/main.py` only (writes to CouchDB `btq_vault`; Markdown projection is optional and off by default)
+  `project/queue_processor/main.py` only (writes to CouchDB `btq_vault`)
 
 Observation boundary:
 
@@ -61,7 +60,7 @@ Observation boundary:
 
 ### Queue Executor
 
-The guarded queue executor can preview or execute queue-shaped jobs produced by the skill bridge. It is not part of the normal vault writer path and it does not execute external calls.
+The guarded queue executor can preview or execute queue-shaped jobs produced by the skill bridge. It is not part of the normal canonical writer path and it does not execute external calls.
 
 Modes:
 
@@ -89,7 +88,7 @@ Skill bridge usage:
   --mode auto-safe
 ```
 
-Every executor decision is logged to `runtime/logs/queue_executor.log` with timestamp, mode, job, and result. Human approval is still required for restricted operations, and no queue files, canonical writes, or Markdown projection changes are produced by this bridge.
+Every executor decision is logged to `runtime/logs/queue_executor.log` with timestamp, mode, job, and result. Human approval is still required for restricted operations, and no queue files or canonical writes are produced by this bridge.
 
 ### Action Validation
 
@@ -127,7 +126,7 @@ Personal journal boundary:
 
 - A voice memo that begins with `personal journal`, `this is a personal journal`, or `personal note` is routed as personal-only.
 - The trigger phrase is stripped from the stored body, while the raw transcript path, timestamp, and source audio filename are preserved in the queued job.
-- Personal entries are staged as `personal_journal_entry` jobs and written by the queue watcher to `Journal/YYYY-MM-DD.md` inside `personal_vault_dir`.
+- Personal entries are staged as `personal_journal_entry` jobs and written by the queue watcher to the separate personal journal store, isolated from operational state.
 - Personal entries do not enter operational extraction, account journals, staffing events, shift reports, unknown captures, or nightly ops digest.
 - This first pass performs separation only. It does not add semantic analysis, pattern extraction, mood analysis, tagging, summaries, or personal insight generation.
 
@@ -193,7 +192,7 @@ Current platform assumptions:
 - macOS
 - iCloud Drive paths for ingress/drop locations only
 - local non-iCloud runtime storage for all claimed and processed files
-- an Obsidian vault on the local filesystem
+- a reachable CouchDB instance for canonical operational state
 - `launchd` for background watchers
 
 Apple Silicon note:
@@ -201,7 +200,7 @@ Apple Silicon note:
 - The checked-in manifest lists `torch`, but the correct wheel/build can still vary by platform.
 - If a default `pip install` fails on a fresh macOS machine, treat `torch` as the first dependency to verify against the local Python and hardware combination.
 
-If you want this to run on another machine, update `config.json` and, if needed, override `base_dir` with an environment variable.
+If you want this to run on another machine, update `config.json`, set the CouchDB connection variables, and, if needed, override `base_dir` with an environment variable.
 
 ## Setup
 
@@ -212,7 +211,7 @@ Fresh-machine bootstrap:
 3. Install the repository dependencies and the test extra from the root manifest.
 4. Ensure `ffmpeg` is installed and available on `PATH`.
 5. Review and update `config.json`.
-6. Point the configured iCloud ingress, local runtime, and vault paths at real directories.
+6. Point the configured iCloud ingress and local runtime paths at real directories, and set the CouchDB connection (`BTQ_COUCHDB_URL`, `BTQ_COUCHDB_USER`, `BTQ_COUCHDB_PASSWORD`).
 7. Run the environment verifier before the first pipeline pass.
 
 From the repository root:
@@ -235,7 +234,7 @@ What this install does here:
 What it does not do:
 
 - it does not make this a polished distributable package
-- it does not remove the need for a vault, iCloud ingress directory, local runtime directory, or `ffmpeg`
+- it does not remove the need for CouchDB, an iCloud ingress directory, a local runtime directory, or `ffmpeg`
 - it does not resolve machine-specific `torch` wheel issues for you
 
 Before the first real run:
@@ -256,8 +255,6 @@ The markdown lint gate is strict for `project/field_capture` deployment docs.
 It also scans `project/docs`, but intentionally ignores line length and duplicate
 heading checks there because the legacy architecture docs contain long narrative
 paragraphs and the queue authoring guide repeats field headings by job type.
-Vault example notes under `project/docs/examples/vault` are excluded because
-they intentionally start with frontmatter.
 
 Lint first-party Python:
 
@@ -290,8 +287,6 @@ Current config keys:
 - `runtime_root`
 - `project_runtime_root`
 - `project_runtime_dry_root`
-- `vault_dir`
-- `personal_vault_dir`
 - `logs_dir`
 - `queue_processor_logs_dir`
 - `transcription_log_path`
@@ -317,8 +312,6 @@ Minimal example:
   "runtime_root": "/path/to/local-runtime",
   "project_runtime_root": "/path/to/local-runtime",
   "project_runtime_dry_root": "/path/to/local-runtime/dry-runs",
-  "vault_dir": "/path/to/bt-vault",
-  "personal_vault_dir": "/path/to/personal-vault",
   "whisper_model": "large-v3",
   "ffmpeg_path_prefix": "/opt/homebrew/bin:/usr/local/bin"
 }
@@ -361,45 +354,41 @@ If set, it overrides `base_dir` from `config.json` and re-resolves all derived `
 
 Startup validation:
 
-- `transcription_pipeline.main` fails clearly if the configured audio inbox or vault directory does not exist, and creates local archive/runtime directories as needed.
-- `queue_processor.main` and `queue_processor.watch` fail clearly if the configured project root or vault directory does not exist.
+- `transcription_pipeline.main` fails clearly if the configured audio inbox does not exist, and creates local archive/runtime directories as needed.
+- `queue_processor.main` and `queue_processor.watch` fail clearly if the configured project root does not exist or CouchDB is not reachable.
 - `queue_processor.main` refuses runtime roots inside `pipeline_dir` or another iCloud-managed path.
 
-## Vault Structure
+## Canonical Entity Store
 
-The pipeline assumes a specific Obsidian vault shape. The code does not fully validate that schema up front, so an incorrect vault layout can break routing, site resolution, employee lookups, visit linking, or queue processing.
-
-Key expectations:
-
-- site notes live under `Accounts/<Account>/Locations/<Site>/about.md`
-- daily journal notes live under `Journal/YYYY-MM-DD.md`
-- unresolved captures live under `Journal/YYYY-MM-DD-unknown.md`
-- employee-targeted jobs resolve files under `People/`
-
-These paths describe the Obsidian vault projection. The canonical store is
-CouchDB (`btq_vault`); the vault layout below applies when the Markdown
-projection is enabled.
+Canonical operational state lives as typed documents in the `btq_vault` CouchDB
+database — `location`, `account`, `employee`, `visit`, `site_issue`,
+`supply_need`, `equipment_request`, `personnel_event`, `journal`,
+`unknown_capture`, `shift_report`, and related types. CouchDB is the sole source
+of truth; there is no Obsidian markdown projection.
 
 Important current coupling:
 
-- runtime site routing uses the currently loaded site registry in [project/event_pipeline/sites.py](project/event_pipeline/sites.py)
-- site `about.md` files are expected to contain valid location frontmatter
-- visit files are written under `Visits/YYYY-MM-DD.md` beside each site `about.md`
+- runtime site routing uses the active site registry — the `btq_sites` CouchDB
+  database when `BTQ_COUCHDB_URL` is set, falling back to
+  [project/event_pipeline/sites.py](project/event_pipeline/sites.py) in
+  local/dev when CouchDB is not configured
+- `location` documents must carry valid enough fields for site validation
+- visit and visit-gap records are written against each resolved site
 
 Site-routing lifecycle:
 
-- a site note can be structurally valid in the vault and still not be routable yet
-- runtime event routing only uses the registry entries currently present in `project/event_pipeline/sites.py`
-- the checked-in repository does not contain a nightly registry-refresh implementation
-- if your operational environment has an external nightly refresh that updates the registry from the vault, new vault sites will not become routable until that refresh has completed and the runtime is using the refreshed registry
+- a `location` document can exist and still not be routable yet
+- runtime event routing only uses the entries currently present in the active
+  registry
+- the checked-in repository does not contain a nightly registry-refresh
+  implementation
+- if your operational environment runs an external registry refresh, new sites
+  will not become routable until that refresh has completed and the runtime is
+  using the refreshed registry
 
-Read this before changing vault folder names or frontmatter conventions:
+Read this for the canonical entity schema and write targets:
 
 - [project/docs/vault_schema.md](project/docs/vault_schema.md)
-
-Concrete checked-in examples:
-
-- [project/docs/examples/vault/](project/docs/examples/vault)
 
 ## Environment Verification
 
@@ -414,7 +403,7 @@ Practical checks:
 - the Python version is at least 3.9
 - `torch` and `whisper` import successfully from `project/.venv`
 - `ffmpeg` is on `PATH`
-- the configured inbox, archive, operational vault, and personal vault paths exist on disk
+- the configured inbox and archive paths exist on disk
 - `base_dir` and `project_dir` point at the checkout you intend to run
 - runtime queue backlog count, oldest queued job age, and recent queue watcher or processing activity
 
@@ -426,8 +415,6 @@ If you want to inspect individual configured paths directly:
 project/.venv/bin/python -m config get base_dir
 project/.venv/bin/python -m config get audio_inbox_dir
 project/.venv/bin/python -m config get audio_archive_dir
-project/.venv/bin/python -m config get vault_dir
-project/.venv/bin/python -m config get personal_vault_dir
 ```
 
 (The `outbox_dir` and `working_dir` config keys were removed when the iCloud
@@ -516,10 +503,10 @@ To run the queue processor directly against the local runtime queue:
 
 What these do today:
 
-- `scripts/btq-run` runs `queue_processor.main` against the configured vault and runtime roots (real canonical writes).
+- `scripts/btq-run` runs `queue_processor.main` against the configured runtime root and CouchDB (real canonical writes).
 - `scripts/btq-dry` runs `queue_processor.main --dry-run` into `<project_runtime_dry_root>/<timestamp>/`.
 
-Both resolve repository-relative paths from their own location and read vault/runtime paths from `config.json`.
+Both resolve repository-relative paths from their own location and read runtime paths from `config.json`.
 
 ## Background Watchers
 
@@ -573,12 +560,12 @@ Recommended order on a fresh machine:
 
 ## Exporting BTDocs
 
-Operational vault data and AI/bootstrap/configuration documents are separate.
+Canonical operational data and AI/bootstrap/configuration documents are separate.
 
-- The operational vault stores mutable operational truth only.
+- The `btq_vault` CouchDB database stores mutable operational truth only.
 - Repository files are the source of truth for AI instructions, queue authoring docs, architecture notes, bootstrap docs, and setup guidance.
 - `~/Library/Mobile Documents/com~apple~CloudDocs/BTDocs/` is an exported iCloud projection from the repository.
-- Do not place AI/bootstrap/configuration documents inside the operational vault.
+- Do not place AI/bootstrap/configuration documents inside the canonical operational store.
 
 Export docs:
 
@@ -611,19 +598,19 @@ One realistic minimal flow supported today:
 3. The transcription pipeline transcribes it into `*.whisper.txt`.
 4. The event pipeline produces one or more validated event JSON files.
 5. `event_to_queue` writes queue jobs that match `project/queue_spec.py`.
-6. `queue_processor` validates those jobs and writes the canonical entity to CouchDB `btq_vault` (projected, when enabled, to one of):
-   - a site note in `Accounts/.../about.md`
-   - a daily journal note in `Journal/YYYY-MM-DD.md`
-   - an unresolved capture in `Journal/YYYY-MM-DD-unknown.md`
-   - a new person note in `People/<Name>.md`
-   - photo attachments in `Journal/Attachments/YYYY-MM-DD/` plus linked journal entries
+6. `queue_processor` validates those jobs and writes the canonical entity to CouchDB `btq_vault` as one of:
+   - a `location` update (operational notes, issues, supplies, equipment)
+   - a `journal` entry
+   - an `unknown_capture` record
+   - a new `employee` document
+   - a `photo_capture` journal entry with saved photo media
 
 Example outcomes that exist in the current code:
 
-- `access_constraint` -> site `about.md`
-- `staffing_risk` -> recruiting trigger note in site `about.md`
-- explicit new-employee/person creation request -> `add_person` writer-created `People/<Name>.md`
-- `photo_capture` -> daily journal append with saved photo attachments
+- `access_constraint` -> `location` document update
+- `staffing_risk` -> recruiting trigger on the `location` document
+- explicit new-employee/person creation request -> `add_person` writer-created `employee` document
+- `photo_capture` -> journal entry with saved photo media
 - unresolved or partial extraction -> structured `unknown_capture`
 
 ## Design Principles / Invariants
@@ -635,9 +622,9 @@ These are implementation truths in the current codebase:
 - Single job contract:
   `project/queue_spec.py` is the only supported queue job contract.
 - Single writer boundary:
-  canonical writes happen only in `project/queue_processor/main.py` — to the CouchDB `btq_vault` store. The Markdown projection into the Obsidian vault is optional and off by default in production; CouchDB is the canonical store.
+  canonical writes happen only in `project/queue_processor/main.py` — to the CouchDB `btq_vault` store, which is the source of truth.
 - Entity creation boundary:
-  `append_to_note` must not be used for onboarding or entity creation. New people must use `add_person`; the writer generates the `People/<Name>.md` path and permanent `person_id`.
+  `append_to_note` must not be used for onboarding or entity creation. New people must use `add_person`; the writer generates the canonical `employee` document and permanent `person_id`.
 - Additive processing:
   transcription, event artifacts, and queue jobs are persisted as intermediate files.
 - Idempotency:
@@ -651,9 +638,9 @@ These are implementation truths in the current codebase:
 - The root `pyproject.toml` is intentionally minimal and only covers the dependencies the active code imports directly.
 - There is still no lockfile or pinned environment export for reproducible installs across machines.
 - The queue watcher and transcription watcher are macOS `launchd` oriented.
-- The vault shape is assumed to match the current Obsidian layout and account/location note conventions.
+- Canonical entity shapes are assumed to match the current `btq_vault` document conventions.
 - Site resolution is alias-based and finite.
-- The pipeline is more portable than before, but not yet fully environment-agnostic because directory structure and vault conventions are still assumed by code.
+- The pipeline is more portable than before, but not yet fully environment-agnostic because directory structure and CouchDB conventions are still assumed by code.
 
 ## Deeper Documentation
 
@@ -661,7 +648,7 @@ These are implementation truths in the current codebase:
   [project/docs/pipeline.md](project/docs/pipeline.md)
 - Nightly review artifact shape:
   [project/docs/nightly_digest.md](project/docs/nightly_digest.md)
-- Vault structure and write targets:
+- Canonical entity schema and write targets:
   [project/docs/vault_schema.md](project/docs/vault_schema.md)
 - Operator runbook:
   [project/docs/runbook.md](project/docs/runbook.md)
@@ -681,4 +668,4 @@ Default output path:
 ## Documentation TODOs
 
 - Continue removing machine-specific assumptions from deeper docs and supporting scripts.
-- Add more explicit examples of real vault seed files for new operators.
+- Add more explicit examples of real `btq_vault` seed documents for new operators.
