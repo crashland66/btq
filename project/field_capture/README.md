@@ -130,11 +130,11 @@ Production topology for the pilot:
 - The VPS capture app accepts uploads and stores field-capture media/metadata
   even if the Mac is offline.
 - The Mac remains the processing and review authority. It can later pull from
-  the VPS, transcribe/process audio, collect candidates, and present them for
-  review.
-- Review, approval/rejection, draft generation, queue staging, and vault
-  mutation remain manager-owned. The queue processor remains the only vault
-  writer.
+  the VPS, transcribe/process audio, emit `job_draft` records, and present them
+  for review.
+- Review, approval/rejection, `job_draft` materialization, queue processing, and
+  vault mutation remain manager-owned. The queue processor remains the only
+  vault writer.
 
 ## Audio Capture Local Testing
 
@@ -444,8 +444,8 @@ Then copy `/tmp/btq-field-capture-export/<capture_id>/` to the Mac and run
 
 The Mac non-executable field-capture intake path is
 `<runtime_root>/field_capture/intake/`. The Mac executable mutation queue
-remains `<runtime_root>/queue/`. Only approved draft staging writes executable
-jobs into `<runtime_root>/queue/`.
+remains `<runtime_root>/queue/`. Only active `job_draft` materialization writes
+executable jobs into `<runtime_root>/queue/`.
 
 ## Photo Vision Sidecars
 
@@ -479,8 +479,8 @@ This is descriptive enrichment only. The raw image is evidence; the vision
 sidecar is interpretation. Vision can help reviewers identify visible contents
 and visible conditions when photos lack voice notes, but it does not judge work
 quality, assign visual quality ratings, select best photos, approve/reject
-candidates, generate drafts, stage queue jobs, publish to clients, call the
-queue processor, or mutate the vault. Human review remains authoritative.
+`job_draft` records, materialize queue jobs, publish to clients, call the queue
+processor, or mutate the vault. Human review remains authoritative.
 
 The local ops dashboard displays existing sidecars as advisory context only. Its
 status view reports photo vision sidecar counts, completed/failed/skipped
@@ -495,10 +495,10 @@ route can resolve the photo under the configured upload directory; otherwise
 it only notes that the image path is available locally. No thumbnails or other image
 derivatives are generated in this stage, and previews are for operator
 comparison only, not client-facing publishing. The field-capture review page
-separately matches sidecars to candidate captures by
-capture id when candidates exist. Dashboard and review routes do not run vision,
-call Ollama, create sidecars, score/rank/judge photos, create candidates, stage
-queue jobs, invoke processors, publish to clients, or mutate the vault.
+separately matches sidecars to `job_draft` records by capture id when drafts
+exist. Dashboard and review routes do not run vision, call Ollama, create
+sidecars, score/rank/judge photos, emit `job_draft` records, materialize queue
+jobs, invoke processors, publish to clients, or mutate the vault.
 
 Completed sidecars are sanitized before writing. If model output drifts into
 judgment language, the writer neutralizes common phrasing into visible facts and
@@ -599,14 +599,14 @@ to summarize real field-capture behavior without processing anything:
 ```
 
 The audit reads only local Mac runtime data: imported intake metadata, uploaded
-media references, existing photo vision sidecars, review artifacts, and queue
+media references, existing photo vision sidecars, review records, and queue
 state. It reports capture/media totals, submitter counts, area and phase
 breakdowns, photo-only and large-batch behavior signals, photo vision
 completed/failed/missing counts, metadata integrity issues, and current review
 state. It does not pull from the VPS, run vision, run transcription, process
-semantics, create candidates, approve/reject candidates, generate drafts, stage
-queue jobs, invoke the queue processor, mutate the vault, delete files, or
-publish client-facing content.
+semantics, emit `job_draft` records, approve/reject drafts, materialize queue
+jobs, invoke the queue processor, mutate the vault, delete files, or publish
+client-facing content.
 
 Submitter breakdowns use safe person metadata from intake records when
 available. Raw bearer tokens are never included; older records without safe
@@ -776,14 +776,16 @@ mutations and no client-facing reports.
 
 ## Audio Review Pipeline
 
-Field-capture audio review now has an explicit artifact chain after semantic
-cleanup:
+Field-capture audio review now uses CouchDB `job_draft` documents after
+semantic cleanup:
 
 ```text
 field_audio_semantic_summary
--> action_candidate_review
--> approved_queue_job_draft
--> approved_draft_staging_result
+-> field_capture.pipeline_watcher
+-> job_draft_emission.collect_job_drafts
+-> CouchDB type: job_draft
+-> review in /swipe or /candidates
+-> scripts/job-draft-queue-watch
 -> runtime queue job
 -> processed or failed queue artifact
 ```
@@ -792,12 +794,8 @@ Artifact locations:
 
 - semantic artifacts:
   `<runtime_root>/field_capture/audio_semantics/`
-- action candidates:
-  `<runtime_root>/reviews/action_candidates/field_capture/`
-- approved queue-job drafts:
-  `<runtime_root>/reviews/approved_job_drafts/field_capture/`
-- staging status:
-  `<runtime_root>/reviews/staging/field_capture/`
+- active review records:
+  CouchDB `type: job_draft` documents in the field-captures database
 - staged queue jobs:
   `<runtime_root>/queue/`
 - queue processor archives:
@@ -807,12 +805,14 @@ Meanings:
 
 - A semantic artifact is an interpretation of a completed transcript. It is
   review-needed and does not mutate the vault.
-- An action candidate is a proposed next step from a semantic artifact. It
-  defaults to `pending_review` and is not executable.
-- An approved job draft is a reviewed proposal for a queue job. It is still a
-  review artifact, not a staged queue file.
-- A staging status records whether an approved draft was staged, skipped, or
-  failed validation.
+- A `job_draft` is the active proposed queue job stored in CouchDB. It defaults
+  to `review_status: pending_approval` and is not executable until reviewed and
+  materialized.
+- `/swipe` and `/candidates` are the active friendly review surfaces. They
+  approve, reject, or edit `job_draft` records in CouchDB; they do not write
+  runtime queue files.
+- `scripts/job-draft-queue-watch` materializes approved, unmaterialized
+  `job_draft` records into `<runtime_root>/queue/` after queue-spec validation.
 - A runtime queue job is ready for the existing deterministic queue processor.
   It still does not mutate the vault until that processor runs.
 - Processed and failed queue artifacts are written later by the queue
@@ -822,43 +822,38 @@ Meanings:
   operational state is `processed`; the old failed archive remains visible as
   historical failure evidence instead of an unresolved failure.
 
-Inspect the current review state:
-
-```bash
-./scripts/btq review-dashboard --channel field_capture
-./scripts/btq review-dashboard --channel field_capture --json
-./scripts/btq review-dashboard --channel field_capture --stale-days 14 --limit 5
-./scripts/btq review-status --channel field_capture
-./scripts/btq review-status --channel field_capture --json
-```
-
-The CLI dashboard is read-only. It combines the most useful review workflow state:
-candidate counts and pending previews, approved draft counts and queue-state
-previews, maintenance finding counts, review disk usage, and a suggested next
-operator command. It does not collect candidates, approve or reject candidates,
-generate drafts, stage queue jobs, clean artifacts, invoke the queue processor,
-or mutate the vault. Use the detailed commands below for inspection and action.
-Failure counts distinguish unresolved failures from replayed historical
-failures so archived failed queue files do not imply a successfully replayed job
-is still currently failed.
-
-The local ops dashboard also includes a human review page:
+Inspect the active review state:
 
 ```bash
 ./scripts/btq ops-dashboard
-# open http://127.0.0.1:8765/field-capture/review
+# open http://127.0.0.1:8765/swipe
+# open http://127.0.0.1:8765/candidates
 ```
 
-`GET /field-capture/review` renders pending, approved, rejected, or failed
-candidate cards with source context, provenance, and any existing local photo
+`/swipe` is the fast card-based approval surface for pending `job_draft`
+records. `/candidates` is the table/detail surface for the same CouchDB-backed
+records, with capture grouping, proposed queue payloads, and read-only
+transcript/semantic/photo-vision context. Review actions update CouchDB
+`job_draft` review fields only. Queue materialization remains a separate
+operator step through `./scripts/job-draft-queue-watch`.
+
+The local ops dashboard also includes the human review pages:
+
+```bash
+./scripts/btq ops-dashboard
+# open http://127.0.0.1:8765/swipe
+# open http://127.0.0.1:8765/candidates
+```
+
+`/field-capture/review` remains a legacy alias for `/candidates`. The active
+pages render pending, approved, or rejected `job_draft` records with source
+context, provenance, proposed queue payloads, and any existing local photo
 vision sidecars for the same capture. Vision is shown only as advisory visual
-context; the original image remains the evidence. `POST
-/field-capture/review/approve` and `POST /field-capture/review/reject` update
-exactly one `pending_review` candidate by calling the same review helper as
-`review-candidate`. These routes only mutate candidate review artifacts. They
-do not generate drafts, stage queue jobs, invoke processors, sync VPS captures,
-or mutate the vault. Use this dashboard only over localhost, Tailscale, or
-another trusted private path.
+context; the original image remains the evidence. Review routes update
+`job_draft.review_status`, reviewer metadata, or an editable pending payload in
+CouchDB. They do not materialize queue jobs, invoke processors, sync VPS
+captures, or mutate the vault. Use this dashboard only over localhost,
+Tailscale, or another trusted private path.
 
 The ops dashboard also has `/batch-images` for importing WhatsApp fallback
 photos as normal field captures. It is a client of field-capture `POST
@@ -880,11 +875,11 @@ Automate the Mac intake-to-review path:
 
 One watcher cycle transcribes at most one pending audio file from local
 field-capture intake, processes completed transcripts into semantic artifacts,
-describes at most one not-yet-terminal photo with local Ollama vision, and
-collects action candidates for human review. It loads the
-Whisper transcriber only for the transcription pass and invokes photo vision as
-a serial sidecar-only pass, so slow local processing can chew through backlog
-without competing workers. The default backend is
+describes at most one not-yet-terminal photo with local vision, and calls
+`job_draft_emission.collect_job_drafts` to emit CouchDB `job_draft` records for
+human review. It loads the Whisper transcriber only for the transcription pass
+and invokes photo vision as a serial sidecar-only pass, so slow local processing
+can chew through backlog without competing workers. The default backend is
 `BTQ_FIELD_CAPTURE_VISION_BACKEND` or `mlx`, the default vision model is
 `BTQ_FIELD_CAPTURE_VISION_MODEL` or `mlx-community/Qwen2.5-VL-7B-Instruct-4bit`,
 the Ollama endpoint (when that backend is selected) is
@@ -904,10 +899,10 @@ field-vision precondition is missing, if the parent watcher has already warmed a
 MLX client, or if the child times out, the cycle records `process_cat_vision` as
 skipped/failed and continues; do not re-enable the old cat vision LaunchAgent.
 
-The watcher does not approve or reject candidates, generate approved drafts,
-stage queue jobs, invoke the queue processor, delete local or remote files,
-clean up VPS uploads, publish client-facing content, call cloud vision APIs, or
-mutate the vault. Candidate review remains a human UI/CLI step owned by Jordan.
+The watcher does not approve or reject `job_draft` records, materialize queue
+jobs, invoke the queue processor, delete local or remote files, clean up VPS
+uploads, publish client-facing content, call cloud vision APIs, or mutate the
+vault. `job_draft` review remains a human UI step owned by Jordan.
 
 Export reviewed site-viewer status for the VPS viewer:
 
@@ -1011,7 +1006,27 @@ tail -f /Users/operator/btq_runtime/logs/field-capture-pipeline-watcher.err.log
 
 Ollama should run separately, for example through the Homebrew Ollama service,
 so the watcher can reach `http://127.0.0.1:11434`. The LaunchAgent only starts
-the non-vault field-capture watcher and stops at candidate collection.
+the non-vault field-capture watcher and stops after `job_draft` emission.
+
+Materialize approved `job_draft` records into the local runtime queue:
+
+```bash
+./scripts/job-draft-queue-watch --once --json
+./scripts/job-draft-queue-watch --poll-seconds 5 --json
+```
+
+The watcher reads approved, unmaterialized CouchDB `job_draft` documents,
+validates each proposed queue job, writes a queue JSON file under
+`<runtime_root>/queue/`, and marks `queue_materialized_at` on the source draft.
+Use `--dry-run --once --json` to inspect what would be written. It does not run
+the queue processor and does not mutate the vault.
+
+### Legacy (pre-job_draft) Review Flow — Migration Only
+
+The following action-candidate, approved-draft, and staging material is retained
+for migration and recovery of old runtime artifacts. It is not the active review
+pipeline. New field-capture review should use CouchDB `job_draft` records,
+`/swipe` or `/candidates`, and `./scripts/job-draft-queue-watch`.
 
 Inspect review artifact maintenance status:
 
@@ -1030,7 +1045,7 @@ timestamps. `stale` means the item may need human attention; it does not mean
 the item is wrong or safe to delete. No retention, deletion, archiving, repair,
 approval, rejection, or restaging is implemented here.
 
-Collect candidates from completed semantic artifacts:
+Collect legacy candidates from completed semantic artifacts:
 
 ```bash
 ./scripts/btq collect-action-candidates --channel field_capture
@@ -1215,48 +1230,50 @@ Safety boundaries:
 - dry-run support is currently implemented for candidate collection, draft
   generation, and staging; candidate review remains an explicit write command
 
-Current operator workflow:
+Legacy migration workflow:
 
-1. Preferred: run `./scripts/btq watch-field-capture-pipeline --poll-seconds
-   60` on the Mac to automate VPS pull through local processing, one-photo
-   vision sidecars, and candidate collection.
-2. If running manually and the upload landed on the VPS, export the single capture bundle and import
+1. Historical only: this flow predates CouchDB `job_draft` review and should be
+   used only for migration or recovery of old runtime artifacts.
+2. Preferred active flow: run `./scripts/btq watch-field-capture-pipeline
+   --poll-seconds 60` on the Mac to automate VPS pull through local processing,
+   one-photo vision sidecars, and `job_draft` emission.
+3. If running manually and the upload landed on the VPS, export the single capture bundle and import
    it with `./scripts/btq pull-field-capture --capture-id <capture_id>
    --bundle-path <bundle> --dry-run`, then run the same command without
    `--dry-run`.
-3. Run `./scripts/btq transcribe-field-audio --json --limit 1`.
-4. Run semantic cleanup with `./scripts/btq process-field-audio-semantics
+4. Run `./scripts/btq transcribe-field-audio --json --limit 1`.
+5. Run semantic cleanup with `./scripts/btq process-field-audio-semantics
    --json`.
-5. Start with `./scripts/btq review-dashboard --channel field_capture` to see
+6. Start with `./scripts/btq review-dashboard --channel field_capture` to see
    what needs attention and the suggested next command.
-6. Inspect detailed review state with `./scripts/btq review-status --channel
+7. Inspect detailed review state with `./scripts/btq review-status --channel
    field_capture`.
-7. Preview candidate collection with `./scripts/btq collect-action-candidates
+8. Preview candidate collection with `./scripts/btq collect-action-candidates
    --channel field_capture --dry-run`.
-8. Collect review candidates with `./scripts/btq collect-action-candidates
+9. Collect review candidates with `./scripts/btq collect-action-candidates
    --channel field_capture`.
-9. List pending candidates with `./scripts/btq list-action-candidates
+10. List pending candidates with `./scripts/btq list-action-candidates
    --channel field_capture --status pending_review`.
-10. Show full candidate detail with `./scripts/btq show-review-item --channel
+11. Show full candidate detail with `./scripts/btq show-review-item --channel
    field_capture --candidate-id <ac_...>` if more detail is needed.
-11. Approve or reject one candidate with `./scripts/btq review-candidate
+12. Approve or reject one candidate with `./scripts/btq review-candidate
    --channel field_capture --candidate-id <ac_...> --status approved
    --reviewer "Jordan" --rationale "..."`. No bulk approval command exists.
-12. Preview approved draft generation with `./scripts/btq
+13. Preview approved draft generation with `./scripts/btq
    generate-approved-drafts --channel field_capture --dry-run`.
-13. Generate approved draft artifacts with `./scripts/btq
+14. Generate approved draft artifacts with `./scripts/btq
    generate-approved-drafts --channel field_capture`.
-14. List approved drafts with `./scripts/btq list-approved-drafts --channel
+15. List approved drafts with `./scripts/btq list-approved-drafts --channel
    field_capture`.
-15. Show full draft detail with `./scripts/btq show-review-item --channel
+16. Show full draft detail with `./scripts/btq show-review-item --channel
    field_capture --draft-id <ajd_...>` if more detail is needed.
-16. Preview staging with `./scripts/btq stage-approved-drafts --channel
+17. Preview staging with `./scripts/btq stage-approved-drafts --channel
    field_capture --dry-run`.
-17. Stage approved drafts with `./scripts/btq stage-approved-drafts --channel
+18. Stage approved drafts with `./scripts/btq stage-approved-drafts --channel
    field_capture`.
-18. Inspect status again. Clean staged lineage should show queued staged jobs
+19. Inspect status again. Clean staged lineage should show queued staged jobs
    and no unexpected lineage gaps.
-19. Later, run the existing queue watcher or queue processor deliberately.
+20. Later, run the existing queue watcher or queue processor deliberately.
 
 Troubleshooting:
 

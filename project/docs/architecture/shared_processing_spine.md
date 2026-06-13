@@ -8,9 +8,9 @@ raw source artifact
 -> local processing
 -> raw derived artifact
 -> semantic layer
--> action candidates
--> approved queue-job drafts
--> deliberate queue staging
+-> CouchDB job_draft
+-> human review in /swipe or /candidates
+-> job-draft-queue-watch materialization
 -> deterministic queue processor
 -> queue handlers
 -> CouchDB canonical state + evidence
@@ -24,13 +24,15 @@ hashing. Voice-inbox transcript metadata and event-pipeline JSON sidecars use
 the same low-level artifact helpers where their shapes already matched.
 `processing_core.semantic_transform` can also run a caller-provided semantic
 engine against an already-discovered transcript object and wrap the outcome in a
-semantic artifact payload. `processing_core.action_candidates` now provides a
-small review-record envelope for proposed next steps.
-`processing_core.approved_job_drafts` provides a draft envelope for approved
-candidate-to-queue-job proposals. `processing_core.draft_staging` provides the
-deliberate transition from approved draft artifacts into `<runtime_root>/queue/`.
-Discovery, routing, extraction, action selection, approval decisions, and
-mutation remain channel-owned.
+semantic artifact payload. The active field-capture review path emits CouchDB
+`job_draft` documents through
+`field_capture.job_draft_emission.collect_job_drafts`; approval happens through
+`/swipe` or `/candidates`, and `scripts/job-draft-queue-watch` materializes
+approved drafts into `<runtime_root>/queue/`. The older
+`processing_core.action_candidates`, `processing_core.approved_job_drafts`, and
+`processing_core.draft_staging` helpers are retained for legacy/migration
+artifacts only. Discovery, routing, extraction, action selection, approval
+decisions, and mutation remain channel-owned.
 
 ## Current Boundaries
 
@@ -43,15 +45,13 @@ mutation remain channel-owned.
   not directly mutate canonical operational state.
 - Semantic cleanup is an interpretation layer. It should preserve provenance to
   raw transcripts and write review-needed artifacts.
-- Action candidates are proposed work, not writes. Only approved queue jobs may
-  cross the deterministic writer boundary.
-- Candidate review artifacts are local runtime records. They do not approve
-  anything and do not execute mutation.
-- Approved job drafts are still local review artifacts. They are not staged into
-  `<runtime_root>/queue/` and are not executable until a later explicit staging
-  step.
-- Deliberate staging writes queue files only after draft status and
-  `queue_spec` validation pass. It does not run the queue processor.
+- Active review proposals are CouchDB `job_draft` documents. They are proposed
+  queue jobs, not canonical writes.
+- `/swipe` and `/candidates` update `job_draft.review_status` and reviewer
+  metadata. They do not write runtime queue files and do not execute mutation.
+- `scripts/job-draft-queue-watch` is the active materialization step. It reads
+  approved, unmaterialized `job_draft` documents, validates the queue payload,
+  writes `<runtime_root>/queue/`, and marks the draft materialized.
 - Canonical mutation belongs to queue processing and handlers and must remain
   deterministic. Markdown is projection/export, not the writer boundary.
 
@@ -69,9 +69,9 @@ The shared viewer is site-scoped at `https://photos.example.com/site/7050`.
 It returns a friendly empty state for a known site with zero captures, then
 shows submitted media as the VPS receives it. This viewer is still evidence
 visibility, not approval or publishing. The downstream Mac path pulls VPS
-captures into local intake, then transcribes, processes semantics, collects
-review candidates, and leaves approval, draft generation, staging, and vault
-mutation under deliberate manager control.
+captures into local intake, then transcribes, processes semantics, emits
+CouchDB `job_draft` documents, and leaves approval, queue materialization, and
+vault mutation under deliberate manager control.
 
 ## Shared Core
 
@@ -86,9 +86,10 @@ cross-channel helper concepts:
 - `transcripts.py` for generic transcript artifact payload envelopes
 - `semantics.py` for generic semantic artifact payload envelopes
 - `semantic_transform.py` for payload-level semantic transformation outcomes
-- `action_candidates.py` for review-only action-candidate payloads
-- `approved_job_drafts.py` for approved draft payloads that are not staged
-- `draft_staging.py` for validated staging from approved drafts to queue files
+- `action_candidates.py` for legacy review-only action-candidate payloads
+- `approved_job_drafts.py` for legacy approved draft payloads that are not staged
+- `draft_staging.py` for legacy validated staging from approved drafts to queue
+  files
 
 This should not become a framework or orchestration engine. Channel modules can
 continue to own discovery and channel-specific metadata while sharing artifact
@@ -103,54 +104,93 @@ shape, provenance, status, and writer helpers.
    onto shared helpers where the shape already matched.
 4. Done: add a payload-level semantic transformation helper that can operate on
    completed transcript data supplied by any intake channel.
-5. Done: add an action-candidate review artifact layer that records proposed
-   next steps without approval, queue-job generation, or canonical mutation.
-6. Done: convert explicitly approved candidates into approved queue-job draft
-   artifacts without staging, execution, or canonical mutation.
-7. Done: stage selected approved drafts into `<runtime_root>/queue/` only after
-   validation and duplicate checks, without executing the queue processor.
-8. Done: add read-only review/status observability across semantic artifacts,
-   candidates, drafts, staging status, queue files, processed/failed files, and
-   the processed index.
+5. Legacy done: add an action-candidate review artifact layer that records
+   proposed next steps without approval, queue-job generation, or canonical
+   mutation.
+6. Legacy done: convert explicitly approved candidates into approved queue-job
+   draft artifacts without staging, execution, or canonical mutation.
+7. Legacy done: stage selected approved drafts into `<runtime_root>/queue/` only
+   after validation and duplicate checks, without executing the queue processor.
+8. Legacy done: add read-only review/status observability across semantic
+   artifacts, candidates, drafts, staging status, queue files, processed/failed
+   files, and the processed index.
 9. Done: add deterministic fixture coverage for the field-capture semantic to
    candidate to approved draft to staged queue path.
 10. Done: add operator-facing documentation and runbook coverage for the
    field-capture review pipeline.
-11. Done: expose operator CLI commands for collecting action candidates and
-   generating approved drafts without adding automatic approval.
-12. Done: expose one-candidate-at-a-time manual approval/rejection ergonomics
-   without generating drafts or staging jobs.
-13. Done: add command-level smoke coverage for the full field-capture review
-   workflow up to deliberate queue staging.
-14. Done: add dry-run planning for approved draft staging so operators can
+11. Legacy done: expose operator CLI commands for collecting action candidates
+   and generating approved drafts without adding automatic approval.
+12. Legacy done: expose one-candidate-at-a-time manual approval/rejection
+   ergonomics without generating drafts or staging jobs.
+13. Legacy done: add command-level smoke coverage for the full field-capture
+   review workflow up to deliberate queue staging.
+14. Legacy done: add dry-run planning for approved draft staging so operators can
     validate queue-spec compatibility, deterministic queue filenames, job IDs,
     and duplicate evidence without writing queue or staging artifacts.
-15. Done: add dry-run planning for approved job draft generation so operators
+15. Legacy done: add dry-run planning for approved job draft generation so operators
     can preview approved candidate to draft mapping without writing approved or
     failed draft artifacts.
-16. Done: add dry-run planning for field-capture action candidate collection so
-    operators can preview semantic artifact to candidate mapping without
-    writing pending or failed candidate artifacts.
-17. Done: add a read-only field-capture action candidate listing command so
+16. Legacy done: add dry-run planning for field-capture action candidate
+    collection so operators can preview semantic artifact to candidate mapping
+    without writing pending or failed candidate artifacts.
+17. Legacy done: add a read-only field-capture action candidate listing command so
     operators can inspect candidate IDs, summaries, status, source previews,
     and review metadata before approving or rejecting one candidate.
-18. Done: add a read-only field-capture approved draft listing command so
+18. Legacy done: add a read-only field-capture approved draft listing command so
     operators can inspect draft IDs, candidate provenance, proposed queue job
     previews, and staging/queue state before deliberate staging.
-19. Done: add a read-only detail command for one field-capture review item by
-    candidate ID or draft ID.
-20. Done: add read-only maintenance/status visibility for accumulated
+19. Legacy done: add a read-only detail command for one field-capture review
+    item by candidate ID or draft ID.
+20. Legacy done: add read-only maintenance/status visibility for accumulated
     field-capture review artifacts before any cleanup or archive strategy.
-21. Done: add a read-only review dashboard that summarizes existing review
+21. Legacy done: add a read-only review dashboard that summarizes existing review
     state and suggests the next operator command without taking action.
 22. Done: add an explicit non-destructive export/import bridge for moving one
     VPS field-capture upload bundle into the Mac runtime.
 23. Done: add a local read-only Mac ops dashboard for runtime and review
     visibility.
-24. Later, process staged queue files through the existing deterministic writer
+24. Done: emit active CouchDB `job_draft` documents from semantic artifacts with
+   `field_capture.job_draft_emission.collect_job_drafts`.
+25. Done: review active `job_draft` documents through `/swipe` and `/candidates`.
+26. Done: materialize approved `job_draft` documents with
+   `scripts/job-draft-queue-watch`.
+27. Later, process staged queue files through the existing deterministic writer
    boundary.
 
-## Stage 5 Candidate Review Artifacts
+## Active Job Draft Review Flow
+
+The active field-capture review stage is CouchDB-backed:
+
+```text
+field_capture.pipeline_watcher
+-> job_draft_emission.collect_job_drafts
+-> CouchDB type: job_draft
+-> /swipe or /candidates review
+-> scripts/job-draft-queue-watch
+-> <runtime_root>/queue/
+```
+
+`collect_job_drafts` reads completed semantic artifacts and writes stable
+`job_draft` documents through `couchdb_job_draft_writer.JOB_DRAFT_TYPE`. New
+drafts default to `review_status: pending_approval`. The review surfaces
+approve, reject, or edit those CouchDB records; they do not write queue files
+and do not mutate canonical state.
+
+`scripts/job-draft-queue-watch` reads approved, unmaterialized `job_draft`
+documents, validates each proposed queue job with `queue_spec.validate_job()`,
+writes a queue JSON file under `<runtime_root>/queue/`, and marks
+`queue_materialized_at` on the source draft. It is a materializer, not the
+canonical writer; canonical mutation still happens only when the deterministic
+queue processor handles the queue file.
+
+## Legacy (pre-job_draft) Review Flow — Migration Only
+
+The sections below describe the older action-candidate, approved-draft, and
+staging artifact chain. They are retained for migration, historical audit, and
+recovery of old runtime artifacts. They are no longer the active field-capture
+operator review path.
+
+## Legacy Stage 5 Candidate Review Artifacts
 
 Stage 5 creates inspectable local artifacts under channel-owned review
 directories such as:
@@ -171,7 +211,7 @@ review prompt, not a mutation request. Later work may add an explicit approval
 step that converts selected candidates into queue jobs through the existing
 deterministic writer boundary.
 
-## Stage 6 Approved Job Drafts
+## Legacy Stage 6 Approved Job Drafts
 
 Stage 6 adds another review-only artifact directory:
 
@@ -196,7 +236,7 @@ payload as inspectable JSON, but those fields remain draft data only. Stage 6
 does not write `<runtime_root>/queue/`, does not call the queue processor, and
 does not mutate vault state.
 
-## Stage 7 Deliberate Queue Staging
+## Legacy Stage 7 Deliberate Queue Staging
 
 Stage 7 is the explicit handoff from review artifacts to the existing queue
 transport. It reads approved draft artifacts and writes validated queue jobs
@@ -228,7 +268,7 @@ Stage 7 does not call the queue processor and does not mutate vault state.
 Vault mutation still only happens later, when the deterministic queue processor
 handles staged queue files.
 
-## Stage 8 Review Status
+## Legacy Stage 8 Review Status
 
 Stage 8 adds a read-only operator report:
 
@@ -255,7 +295,7 @@ Stage 8 is observational only. It does not generate candidates, create drafts,
 stage queue files, call the queue processor, repair artifacts, or mutate vault
 state.
 
-## Stage 9 Fixture Coverage
+## Legacy Stage 9 Fixture Coverage
 
 Stage 9 adds deterministic test coverage for the field-capture review path up
 to deliberate queue staging. The fixture creates a completed semantic artifact,
@@ -270,7 +310,7 @@ metadata preserves semantic/candidate/draft provenance, that the executable
 queue payload remains unchanged from the approved draft, and that no queue
 processor invocation or canonical mutation occurs.
 
-## Stage 10 Operator Documentation
+## Legacy Stage 10 Operator Documentation
 
 Stage 10 documents the field-capture review workflow in the field-capture README
 and operator runbook. The docs describe artifact meanings and locations,
@@ -284,7 +324,7 @@ explicit; there is no production approval UI, automatic approval, or bulk
 approval command. Vault mutation still only happens later through the
 deterministic queue processor.
 
-## Stage 11 Operator Commands
+## Legacy Stage 11 Operator Commands
 
 Stage 11 exposes the helper-backed review steps as operator commands:
 
@@ -308,7 +348,7 @@ For `field_capture`, approved candidates default to append-to-associated-site
 note drafts when site context can be resolved; missing site context fails
 closed.
 
-## Stage 12 Candidate Review Command
+## Legacy Stage 12 Candidate Review Command
 
 Stage 12 adds explicit one-candidate review ergonomics:
 
@@ -326,7 +366,7 @@ duplicated, failed, malformed, or not an action-candidate review artifact.
 This command does not generate approved drafts, stage queue jobs, call the queue
 processor, approve multiple candidates, or mutate canonical state.
 
-## Stage 13 Command Smoke Test
+## Legacy Stage 13 Command Smoke Test
 
 Stage 13 adds command-level test coverage for the operator workflow using the
 same `btq` CLI dispatch layer:
@@ -345,7 +385,7 @@ staged queue metadata provenance, unchanged executable payload, no processed or
 failed queue processor artifacts, no queue processor invocation, and no vault
 mutation.
 
-## Stage 14 Staging Dry Run
+## Legacy Stage 14 Staging Dry Run
 
 Stage 14 adds `stage-approved-drafts --dry-run` for field-capture approved
 draft staging. The command reads the same approved draft artifacts as real
@@ -359,7 +399,7 @@ not write `<runtime_root>/queue/` files, staging status artifacts, review
 artifacts, or vault files, and it does not invoke the queue processor. Real
 staging remains a separate explicit command without `--dry-run`.
 
-## Stage 15 Draft-Generation Dry Run
+## Legacy Stage 15 Draft-Generation Dry Run
 
 Stage 15 adds `generate-approved-drafts --dry-run` for field-capture approved
 draft generation. The command reads action-candidate review artifacts, skips
@@ -372,7 +412,7 @@ ID and path. It does not write approved draft artifacts, failed draft artifacts,
 queue files, staging status artifacts, or vault files, and it does not invoke
 the queue processor. Approval remains explicit and one candidate at a time.
 
-## Stage 16 Candidate-Collection Dry Run
+## Legacy Stage 16 Candidate-Collection Dry Run
 
 Stage 16 adds `collect-action-candidates --dry-run` for field-capture candidate
 collection. The command reads completed semantic artifacts, builds candidate
@@ -385,7 +425,7 @@ candidate path. It does not write pending candidate artifacts, failed candidate
 artifacts, approved drafts, queue files, or vault files, and it does not invoke
 the queue processor.
 
-## Stage 17 Candidate Listing
+## Legacy Stage 17 Candidate Listing
 
 Stage 17 adds `list-action-candidates` as a read-only operator command for
 field-capture review. It reads candidate review artifacts and reports
@@ -398,7 +438,7 @@ The command only reads review artifacts. It does not approve candidates,
 generate drafts, stage queue jobs, invoke the queue processor, or mutate the
 vault.
 
-## Stage 18 Approved Draft Listing
+## Legacy Stage 18 Approved Draft Listing
 
 Stage 18 adds `list-approved-drafts` as a read-only operator command for
 field-capture staging review. It reads approved job draft artifacts and reports
@@ -411,7 +451,7 @@ inclusion, and source/provenance inclusion. It only reads review and runtime
 evidence; it does not generate drafts, write staging artifacts, stage queue
 jobs, invoke the queue processor, or mutate canonical state.
 
-## Stage 19 Review Item Detail
+## Legacy Stage 19 Review Item Detail
 
 Stage 19 adds `show-review-item` as a read-only detail command for one
 field-capture review artifact. Operators can inspect a candidate by
@@ -426,7 +466,7 @@ The command requires exactly one ID and fails closed when the target is missing
 or duplicated. It does not approve candidates, generate drafts, stage queue
 jobs, invoke the queue processor, or mutate canonical state.
 
-## Stage 20 Maintenance Visibility
+## Legacy Stage 20 Maintenance Visibility
 
 Stage 20 adds `review-maintenance-status` as a read-only report for
 field-capture review artifact accumulation. It counts candidates, drafts, and
@@ -440,7 +480,7 @@ disk usage, and oldest/newest artifact timestamps.
 is wrong or safe to delete. This stage does not delete, archive, repair,
 approve, reject, restage, invoke the queue processor, or mutate canonical state.
 
-## Stage 21 Review Dashboard
+## Legacy Stage 21 Review Dashboard
 
 Stage 21 adds `review-dashboard` as a read-only operator summary for the
 field-capture review workflow:
@@ -502,7 +542,7 @@ without writing.
 Imported `photo_capture` metadata is not an executable canonical mutation job and
 must not be written to the Mac general `<runtime_root>/queue/`. That queue
 remains reserved for validated executable mutation jobs, including the jobs
-produced later by explicit approved-draft staging.
+produced later by active `job_draft` materialization.
 
 Stage 22 originally kept this as a local bundle import boundary. The current
 operator bridge also includes a direct VPS pull command:
@@ -523,12 +563,12 @@ is not treated as the Mac executable mutation queue. It supports `--dry-run`,
 
 The direct puller deliberately imports remote metadata into the Mac
 non-executable intake path, `<runtime_root>/field_capture/intake/`. The Mac
-executable mutation queue remains `<runtime_root>/queue/`, and only approved
-draft staging writes executable jobs there. `<runtime_root>/queue/` is not
-field-capture intake. `<runtime_root>/field_capture/intake/` is not executable
-mutation work. The bridge does not run transcription, semantic processing,
-candidate collection, queue staging, queue processing, cleanup, remote
-deletion, or canonical mutation.
+executable mutation queue remains `<runtime_root>/queue/`, and only active
+`job_draft` materialization writes executable jobs there. `<runtime_root>/queue/`
+is not field-capture intake. `<runtime_root>/field_capture/intake/` is not
+executable mutation work. The bridge does not run transcription, semantic
+processing, `job_draft` emission, queue materialization, queue processing,
+cleanup, remote deletion, or canonical mutation.
 
 ## Stage 23 Local Ops Dashboard
 
@@ -545,16 +585,16 @@ Dashboard URLs).
 
 The dashboard exposes `GET /`, `GET /api/status`, and `GET /healthz`. It shows
 runtime health, field-capture uploads and intake records, transcript and
-semantic artifact counts, review-dashboard state, maintenance findings, and
-recent log warning/error lines.
+semantic artifact counts, active `job_draft` review state, maintenance findings,
+and recent log warning/error lines.
 
-This is visibility only. V1 has no POST mutation routes, no approval controls,
-no draft generation, no queue staging, no queue processor invocation, no remote
-VPS sync/export operation, and no canonical mutation. It should bind to localhost by
-default; Tailscale access should use a trusted private bind or tunnel, not a
-public interface.
+This dashboard should bind to localhost by default; Tailscale access should use
+a trusted private bind or tunnel, not a public interface. Its active review POST
+routes update CouchDB `job_draft` review state only. Queue materialization,
+queue processing, remote VPS sync/export operation, and canonical mutation
+remain separate.
 
-## Stage 30 Field-Capture Review UI
+## Stage 30 Field-Capture Job Draft Review UI
 
 Stage 30 adds a narrow human review surface to the local ops dashboard:
 
@@ -564,17 +604,18 @@ POST /field-capture/review/approve
 POST /field-capture/review/reject
 ```
 
-The page renders field-capture action candidates as readable cards with status,
-site/capture metadata, summary, context, review history, and source artifact
-paths. The POST routes require `candidate_id`, `reviewer`, and `rationale`, and
-only approve or reject exactly one `pending_review` candidate. They call the
-same candidate review helper used by `review-candidate`.
+The page now renders CouchDB `job_draft` records as readable cards with status,
+site/capture metadata, summary, proposed queue-job payload, context, review
+history, and source artifact paths. The POST routes require a draft identifier
+and reviewer metadata, and only approve or reject pending `job_draft` documents.
+`/swipe` is the fast card surface; `/candidates` and the legacy
+`/field-capture/review` alias show the table/detail surface.
 
-These routes mutate candidate review artifacts only. They do not generate
-approved drafts, stage queue jobs, invoke the queue processor, run
-transcription or semantic processing, sync VPS captures, delete/repair
-artifacts, or mutate canonical state. The dashboard remains for localhost, Tailscale,
-or another trusted private path only.
+These routes mutate CouchDB `job_draft` review fields only. They do not
+materialize queue jobs, invoke the queue processor, run transcription or
+semantic processing, sync VPS captures, delete/repair artifacts, or mutate
+canonical state. The dashboard remains for localhost, Tailscale, or another
+trusted private path only.
 
 ## Stage 31 Field-Capture Pipeline Watcher
 
@@ -587,28 +628,29 @@ Stage 31 adds a Mac-side watcher command for the non-vault intake path:
 
 One cycle runs the safe intake-to-review stages in order: VPS pull, local field
 audio transcription, local semantic processing, local photo vision sidecar
-generation, and action candidate collection. Transcription is limited to one
+generation, and CouchDB `job_draft` emission through
+`job_draft_emission.collect_job_drafts`. Transcription is limited to one
 not-yet-terminal audio asset per cycle by default, and photo vision is limited
 to one not-yet-terminal image asset per cycle by default. The watcher creates
-the transcriber only for the transcription pass and invokes the local Ollama
-vision client as a serial sidecar-only pass, so slow Mac processing can chew
-through backlog without parallel workers.
+the transcriber only for the transcription pass and invokes the local vision
+client as a serial sidecar-only pass, so slow Mac processing can chew through
+backlog without parallel workers.
 
 The watcher is idempotent through the existing stage boundaries: already
 imported captures, terminal transcripts, terminal semantic artifacts, terminal
-photo vision sidecars, and existing action candidates are skipped by their
-owning stage. Failure in one stage is reported in the cycle summary and logged;
-photo vision failures remain failed sidecars or failed cycle steps and can be
-retried later with explicit `describe-field-photos --replace-failed` commands.
-The watcher does not advance to approval, draft generation, staging, or queue
-processing.
+photo vision sidecars, and existing CouchDB `job_draft` records are skipped by
+their owning stage. Failure in one stage is reported in the cycle summary and
+logged; photo vision failures remain failed sidecars or failed cycle steps and
+can be retried later with explicit `describe-field-photos --replace-failed`
+commands. The watcher does not advance to approval, queue materialization, or
+queue processing.
 
-The watcher never approves or rejects candidates, never generates approved
-drafts, never stages queue jobs, never invokes the queue processor, never
-deletes local or remote files, never cleans VPS uploads, never calls cloud
-vision APIs, never publishes client-facing content, and never mutates the vault.
-Candidate review remains a human UI/CLI step, and draft generation, staging,
-and deterministic vault writing remain deliberate later steps.
+The watcher never approves or rejects `job_draft` records, never materializes
+queue jobs, never invokes the queue processor, never deletes local or remote
+files, never cleans VPS uploads, never calls cloud vision APIs, never publishes
+client-facing content, and never mutates the vault. `job_draft` review remains
+a human UI step, and deterministic vault writing remains a deliberate later
+queue-processor step.
 
 ## Stage 37 Photo Vision Sidecars
 
@@ -638,9 +680,9 @@ resolves media under `<runtime_root>/uploads`, skips existing terminal sidecars,
 and writes only photo vision sidecars. Dry-run reports what would be created and
 writes nothing. It supports filtering by capture id, site id, date, and limit.
 
-This layer is intentionally outside the mutation path. It does not create review
-candidates, approve or reject candidates, generate approved drafts, stage queue
-jobs, invoke the queue processor, publish to clients, or mutate canonical state. It
-does not score cleanliness, rank employees, judge work quality, or select best
-photos. The local vision model describes what appears visible, using cautious
-language, and human review remains authoritative.
+This layer is intentionally outside the mutation path. It does not emit
+`job_draft` records, approve or reject drafts, materialize queue jobs, invoke
+the queue processor, publish to clients, or mutate canonical state. It does not
+score cleanliness, rank employees, judge work quality, or select best photos.
+The local vision model describes what appears visible, using cautious language,
+and human review remains authoritative.
