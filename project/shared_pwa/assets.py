@@ -45,7 +45,7 @@ SERVICE_WORKERS = {
             "/assets/icon-180.png",
             "/assets/icon-192.png",
             "/assets/icon-512.png",
-            "/assets/app-logo.png",
+            "/assets/field-capture-header-light.svg",
         ),
     ),
     "voice_memo": ServiceWorkerConfig(

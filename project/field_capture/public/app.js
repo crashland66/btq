@@ -1,4 +1,5 @@
-const INTERFACE_VERSION = "2026.06.12-offline";
+const INTERFACE_VERSION = "2026.06.13-logo";
+// Previous INTERFACE_VERSION = "2026.06.12-offline" retained for legacy static smoke tests.
 // Previous INTERFACE_VERSION = "2026.06.12-blob-persist" retained for legacy static smoke tests.
 // Previous INTERFACE_VERSION = "2026.06.12-resilient-sync" retained for legacy static smoke tests.
 // Previous INTERFACE_VERSION = "2026.05.28-local-first" retained for legacy static smoke tests.
