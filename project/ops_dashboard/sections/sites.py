@@ -178,8 +178,16 @@ VISION_CONTEXT_FIELDS: tuple[tuple[str, str], ...] = (
 
 
 def vision_context_dict(value: object) -> dict[str, Any]:
-    """Normalize a stored vision_context value to a dict (legacy strings → {})."""
-    return dict(value) if isinstance(value, dict) else {}
+    """Normalize a stored vision_context value to a dict.
+
+    A legacy free-text string is preserved as the ``summary`` field so it stays
+    visible/editable in the discrete-field form and is never silently dropped on
+    save (the canonical shape is a dict; older docs may hold a bare string)."""
+    if isinstance(value, dict):
+        return dict(value)
+    if isinstance(value, str) and value.strip():
+        return {"summary": value.strip()}
+    return {}
 
 
 def reconstruct_vision_context(form: dict[str, list[str]], existing: object) -> dict[str, Any]:

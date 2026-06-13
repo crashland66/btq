@@ -271,10 +271,10 @@ def test_site_save_audit_log_summarizes_long_vision_context(monkeypatch: pytest.
     monkeypatch.setattr(sites, "load_site", lambda site_id: site_doc(site_id))
     monkeypatch.setattr(sites, "request_json", lambda _method, _path, _payload=None: (201, {"ok": True}))
 
-    route_response("POST", "/sites/save", tmp_path / "runtime", valid_body(vision_context="x" * 300))
+    route_response("POST", "/sites/save", tmp_path / "runtime", valid_body(vision_context_summary="x" * 300))
     payload = json.loads((tmp_path / "runtime" / "logs" / "admin_audit.log").read_text(encoding="utf-8"))
 
-    assert len(payload["payload"]["vision_context"]) == 200
+    assert len(payload["payload"]["vision_context_summary"]) == 200
 
 
 def test_site_new_form_renders_empty_fields(tmp_path: Path) -> None:
