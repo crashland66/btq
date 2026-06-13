@@ -1,0 +1,214 @@
+#!/usr/bin/env python3
+"""Backfill journal Day Record sections into the canonical queue.
+
+Reads Obsidian journal files named YYYY-MM-DD.md, extracts the ``## Day Record``
+section, and enqueues record_day_record jobs through event_pipeline.btq_client.
+The script never writes journal files or canonical records directly.
+"""
+
+from __future__ import annotations
+
+import argparse
+import datetime as dt
+import sys
+from pathlib import Path
+from typing import Any
+
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+PROJECT_ROOT = REPO_ROOT / "project"
+sys.path.insert(0, str(PROJECT_ROOT))
+
+from config import get_config  # type: ignore  # noqa: E402
+from event_pipeline.btq_client import (  # type: ignore  # noqa: E402
+    BTQClientError,
+    diagnose_job,
+    enqueue,
+)
+from event_pipeline.couchdb_queue_reader import (  # type: ignore  # noqa: E402
+    CouchDBQueueReaderError,
+    load_reader_config,
+)
+from queue_spec import JOB_RECORD_DAY_RECORD  # type: ignore  # noqa: E402
+
+
+DEFAULT_START = "2026-05-27"
+DEFAULT_END = "2026-06-12"
+
+
+def parse_date(value: str) -> dt.date:
+    try:
+        return dt.date.fromisoformat(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"invalid date {value!r}; expected YYYY-MM-DD") from exc
+
+
+def date_range(start: dt.date, end: dt.date) -> list[dt.date]:
+    if start > end:
+        raise ValueError(f"--start {start.isoformat()} must be on or before --end {end.isoformat()}")
+    days = (end - start).days
+    return [start + dt.timedelta(days=offset) for offset in range(days + 1)]
+
+
+def default_journal_dir() -> Path:
+    vault_dir = get_config().vault_dir
+    if vault_dir is None:
+        raise SystemExit("backfill-day-records: config vault_dir is not set; pass --journal-dir")
+    return vault_dir / "B&T" / "Journal"
+
+
+def extract_day_record(content: str) -> str | None:
+    lines = content.splitlines(keepends=True)
+    start_index: int | None = None
+
+    for index, line in enumerate(lines):
+        if line.startswith("## Day Record"):
+            start_index = index
+            break
+
+    if start_index is None:
+        return None
+
+    end_index = len(lines)
+    for index in range(start_index + 1, len(lines)):
+        if lines[index].startswith("## "):
+            end_index = index
+            break
+
+    section = "".join(lines[start_index:end_index]).strip()
+    body = "".join(lines[start_index + 1:end_index]).strip()
+    # A heading with no body is an empty Day Record — skip it (don't enqueue a
+    # job whose content is just "## Day Record").
+    if not body:
+        return None
+    return section if section else None
+
+
+def build_job(date_text: str, content: str) -> dict[str, Any]:
+    return {
+        # Explicit, date-unique, deterministic job_id. Without it the shared
+        # derive_job_id falls back to "{timestamp}__record-day-record" (this
+        # payload has no slug/title/path/site_id/person_id), so a batch enqueued
+        # within the same second collides on _id and all-but-one are dropped as
+        # false 409s. A date-keyed id makes each date distinct AND makes re-runs
+        # truly idempotent (same date -> same _id -> real 409).
+        "job_id": f"record-day-record-{date_text}",
+        "job_type": JOB_RECORD_DAY_RECORD,
+        "payload": {
+            "date": date_text,
+            "content": content,
+        },
+        "idempotency_key": f"day-record-{date_text}",
+    }
+
+
+def collect_jobs(journal_dir: Path, dates: list[dt.date]) -> tuple[list[tuple[str, Path, dict[str, Any]]], list[str]]:
+    jobs: list[tuple[str, Path, dict[str, Any]]] = []
+    skipped: list[str] = []
+    for day in dates:
+        date_text = day.isoformat()
+        journal_path = journal_dir / f"{date_text}.md"
+        if not journal_path.exists():
+            print(f"{date_text}: skip (no file)")
+            skipped.append(date_text)
+            continue
+        if not journal_path.is_file():
+            print(f"{date_text}: skip (not a file): {journal_path}", file=sys.stderr)
+            skipped.append(date_text)
+            continue
+        content = journal_path.read_text(encoding="utf-8")
+        section = extract_day_record(content)
+        if section is None:
+            print(f"{date_text}: skip (no Day Record section)")
+            skipped.append(date_text)
+            continue
+        job = build_job(date_text, section)
+        reasons = diagnose_job(job)
+        if reasons:
+            joined = "; ".join(reasons)
+            raise BTQClientError("invalid_job", f"{date_text}: job failed validation: {joined}")
+        jobs.append((date_text, journal_path, job))
+    return jobs, skipped
+
+
+def confirm_enqueue(jobs: list[tuple[str, Path, dict[str, Any]]]) -> bool:
+    if not sys.stdin.isatty():
+        return False
+    dates = ", ".join(date_text for date_text, _, _ in jobs)
+    print(f"Plan: enqueue {len(jobs)} record_day_record job(s): {dates}")
+    answer = input("Write pending queue docs to btq_queue? Type yes to continue: ")
+    return answer == "yes"
+
+
+def add_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--start", type=parse_date, default=parse_date(DEFAULT_START), help=f"Start date, inclusive. Default: {DEFAULT_START}")
+    parser.add_argument("--end", type=parse_date, default=parse_date(DEFAULT_END), help=f"End date, inclusive. Default: {DEFAULT_END}")
+    parser.add_argument("--journal-dir", type=Path, help="Directory containing YYYY-MM-DD.md journal files.")
+    parser.add_argument("--dry-run", action="store_true", help="Validate and print the plan without enqueuing.")
+    parser.add_argument("--yes", action="store_true", help="Skip interactive confirmation before writing pending queue docs.")
+    parser.add_argument("--created-by", default="greg", help="created_by marker for pending queue docs. Default: greg")
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = add_parser()
+    args = parser.parse_args(argv)
+
+    try:
+        dates = date_range(args.start, args.end)
+        journal_dir = args.journal_dir.expanduser() if args.journal_dir is not None else default_journal_dir()
+        jobs, skipped = collect_jobs(journal_dir, dates)
+    except (OSError, ValueError, BTQClientError) as exc:
+        print(f"backfill-day-records: {exc}", file=sys.stderr)
+        return 2
+
+    if args.dry_run:
+        for date_text, _, job in jobs:
+            content = job["payload"]["content"]
+            byte_length = len(content.encode("utf-8"))
+            print(f"{date_text}: dry-run record_day_record ({byte_length} bytes)")
+        print(f"Summary: enqueued=0 skipped={len(skipped)} failed=0")
+        return 0
+
+    if not jobs:
+        print(f"Summary: enqueued=0 skipped={len(skipped)} failed=0")
+        return 0
+
+    print(f"Journal dir: {journal_dir}")
+    print("Dates to enqueue:")
+    for date_text, _, job in jobs:
+        byte_length = len(job["payload"]["content"].encode("utf-8"))
+        print(f"  {date_text} ({byte_length} bytes)")
+
+    if not args.yes and not confirm_enqueue(jobs):
+        print("backfill-day-records: cancelled", file=sys.stderr)
+        return 1
+
+    enqueued = 0
+    failed = 0
+    try:
+        load_reader_config()
+    except CouchDBQueueReaderError as exc:
+        print(f"backfill-day-records: {exc.message}", file=sys.stderr)
+        return 1
+
+    for date_text, _, job in jobs:
+        try:
+            result = enqueue(job, created_by=args.created_by, dry_run=False)
+        except BTQClientError as exc:
+            failed += 1
+            print(f"{date_text}: failed ({exc.code}): {exc.message}", file=sys.stderr)
+            continue
+        if result.get("duplicate") or result.get("status") == 409:
+            print(f"{date_text}: already enqueued")
+        else:
+            print(f"{date_text}: enqueued")
+        enqueued += 1
+
+    print(f"Summary: enqueued={enqueued} skipped={len(skipped)} failed={failed}")
+    return 1 if failed else 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
