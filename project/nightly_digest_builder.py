@@ -199,8 +199,46 @@ def is_uncertain_status_line(line: str) -> bool:
     return "presumed resigned" in lowered or "likely resigned" in lowered or "possibly resigned" in lowered
 
 
+def vault_doc_markdown(doc_type: str, target_date: str) -> str | None:
+    """Markdown ``content`` for an entity type on a date, from CouchDB (canonical).
+
+    Returns ``None`` when CouchDB is not configured so callers fall back to the
+    Markdown projection (dev/CI only); returns "" on query failure.
+    """
+    import os
+
+    if not os.environ.get("BTQ_COUCHDB_URL", "").strip():
+        return None
+    import json
+    from urllib import parse as urllib_parse, request as urllib_request
+
+    from event_pipeline import couchdb_config
+
+    cfg = couchdb_config.from_env()
+    db_name = couchdb_config.vault_database()
+    url = f"{cfg.base_url.rstrip('/')}/{urllib_parse.quote(db_name, safe='')}/_find"
+    payload = {"selector": {"type": doc_type, "date": target_date}, "limit": 100000}
+    headers = {"Content-Type": "application/json", "Accept": "application/json"}
+    headers.update(cfg.auth_header())
+    req = urllib_request.Request(url, data=json.dumps(payload).encode("utf-8"), headers=headers, method="POST")
+    try:
+        with urllib_request.urlopen(req, timeout=cfg.timeout) as resp:
+            response = json.loads(resp.read().decode("utf-8"))
+    except Exception:  # noqa: BLE001 — digest degrades to empty rather than crashing
+        return ""
+    parts = [
+        str(doc.get("content") or "")
+        for doc in response.get("docs", [])
+        if str(doc.get("date") or "").strip() == target_date
+    ]
+    return "\n\n".join(part for part in parts if part)
+
+
 def markdown_candidates(path: Path, source: str, target_date: str, sort_group: int) -> tuple[list[EventCandidate], list[ExcludedCandidate]]:
-    text = strip_frontmatter(load_text(path))
+    return candidates_from_text(strip_frontmatter(load_text(path)), source, target_date, sort_group, path.name)
+
+
+def candidates_from_text(text: str, source: str, target_date: str, sort_group: int, reference_name: str) -> tuple[list[EventCandidate], list[ExcludedCandidate]]:
     candidates: list[EventCandidate] = []
     excluded: list[ExcludedCandidate] = []
     sequence = 0
@@ -235,7 +273,7 @@ def markdown_candidates(path: Path, source: str, target_date: str, sort_group: i
                     sort_value=f"{sequence:06d}",
                     sequence=sequence,
                     text=fragment,
-                    reference=f"{path.name}:L{line_number}",
+                    reference=f"{reference_name}:L{line_number}",
                     raw_text=stripped,
                     timestamp=timestamp,
                 )
@@ -245,10 +283,16 @@ def markdown_candidates(path: Path, source: str, target_date: str, sort_group: i
 
 
 def journal_candidates(journal_path: Path, target_date: str) -> tuple[list[EventCandidate], list[ExcludedCandidate]]:
+    md = vault_doc_markdown("journal", target_date)
+    if md is not None:
+        return candidates_from_text(strip_frontmatter(md), "journal", target_date, 0, f"journal_{target_date}")
     return markdown_candidates(journal_path, "journal", target_date, 0)
 
 
 def report_candidates(report_path: Path, target_date: str) -> tuple[list[EventCandidate], list[ExcludedCandidate]]:
+    md = vault_doc_markdown("shift_report", target_date)
+    if md is not None:
+        return candidates_from_text(strip_frontmatter(md), "report", target_date, 1, f"shift_report_{target_date}")
     return markdown_candidates(report_path, "report", target_date, 1)
 
 
