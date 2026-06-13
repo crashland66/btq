@@ -165,33 +165,38 @@ def vision_context_summary(value: object) -> str:
     return str(value or "")[:80]
 
 
-def vision_context_text(value: object) -> str:
-    """Render vision_context for the editable textarea.
+# Canonical sub-fields of a site's vision_context object (consumed by
+# field_capture.photo_vision.site_vision_context_for). Rendered as discrete
+# form fields and reconstructed into JSON on save. "summary" is free text;
+# the rest are short single-line values.
+VISION_CONTEXT_FIELDS: tuple[tuple[str, str], ...] = (
+    ("label", "Label"),
+    ("environment", "Environment"),
+    ("summary", "Summary"),
+    ("context_id", "Context ID"),
+)
 
-    A structured object is pretty-printed as JSON so it stays human-editable;
-    a legacy string value is shown verbatim so the operator can convert it.
+
+def vision_context_dict(value: object) -> dict[str, Any]:
+    """Normalize a stored vision_context value to a dict (legacy strings → {})."""
+    return dict(value) if isinstance(value, dict) else {}
+
+
+def reconstruct_vision_context(form: dict[str, list[str]], existing: object) -> dict[str, Any]:
+    """Rebuild the vision_context JSON object from the discrete form fields.
+
+    Starts from any existing object so unknown/extra keys are preserved, then
+    sets each canonical sub-field from its ``vision_context_<key>`` input
+    (dropping blanked ones). Returns a plain dict ready to store as JSON.
     """
-    if isinstance(value, (dict, list)):
-        return json.dumps(value, indent=2, ensure_ascii=False, sort_keys=True)
-    return str(value or "")
-
-
-def parse_vision_context(raw: str) -> dict[str, Any]:
-    """Parse the vision_context textarea into a structured JSON object.
-
-    Empty input yields an empty object. Invalid JSON or a non-object payload
-    raises ValueError so the save handler can re-render the form with a notice.
-    """
-    text = (raw or "").strip()
-    if not text:
-        return {}
-    try:
-        parsed = json.loads(text)
-    except json.JSONDecodeError as exc:
-        raise ValueError(f"vision_context_invalid_json: {exc.msg} (line {exc.lineno}, col {exc.colno})") from exc
-    if not isinstance(parsed, dict):
-        raise ValueError("vision_context_must_be_a_json_object")
-    return parsed
+    result = vision_context_dict(existing)
+    for key, _label in VISION_CONTEXT_FIELDS:
+        value = first_query_value(form, f"vision_context_{key}").strip()
+        if value:
+            result[key] = value
+        else:
+            result.pop(key, None)
+    return result
 
 
 def render_form(ctx: object, doc: dict[str, Any], *, is_new: bool, query: dict[str, list[str]] | None = None, notice: str = "") -> str:
@@ -209,7 +214,20 @@ def render_form(ctx: object, doc: dict[str, Any], *, is_new: bool, query: dict[s
         note_path_field = f'<label>{humanize_key("note_path")} <input name="note_path" required value="{note_path_value}"></label>'
     else:
         note_path_field = f'<input type="hidden" name="note_path" value="{note_path_value}">'
-    vision_context_value = html.escape(vision_context_text(doc.get('vision_context')))
+    vc = vision_context_dict(doc.get('vision_context'))
+    vision_context_rows = []
+    for key, label in VISION_CONTEXT_FIELDS:
+        value = html.escape(str(vc.get(key) or ''))
+        if key == "summary":
+            control = f'<textarea name="vision_context_summary" rows="4">{value}</textarea>'
+        else:
+            control = f'<input name="vision_context_{key}" value="{value}">'
+        vision_context_rows.append(f'<label>{html.escape(label)} {control}</label>')
+    vision_context_fieldset = (
+        '<fieldset class="subform"><legend>Vision context</legend>'
+        '<p class="muted">Structured hints passed to the photo-vision model; stored as JSON.</p>'
+        f'{"".join(vision_context_rows)}</fieldset>'
+    )
     notice_html = f'<section class="notice"><p>{html.escape(notice)}</p></section>' if notice else ""
     visits_html = "" if is_new else render_visits_panel(ctx, site_id)
     body = f"""
@@ -222,7 +240,7 @@ def render_form(ctx: object, doc: dict[str, Any], *, is_new: bool, query: dict[s
         <label><input type="checkbox" name="active" value="1" {'checked' if bool(doc.get('active', True)) else ''}> Active</label>
         <label>{humanize_key("aliases")} <textarea name="aliases">{html.escape(aliases)}</textarea></label>
         {note_path_field}
-        <label>{humanize_key("vision_context")} <span class="muted">— JSON object passed to the photo-vision model (keys: label, environment, summary)</span> <textarea name="vision_context" rows="8" class="code-input" spellcheck="false">{vision_context_value}</textarea></label>
+        {vision_context_fieldset}
         <label>{humanize_key("capture_guidance")} <textarea name="capture_guidance">{html.escape(str(doc.get('capture_guidance') or ''))}</textarea></label>
         <label>{humanize_key("display_categories")} {render_display_categories_editor("display_categories", doc.get('display_categories') if isinstance(doc.get('display_categories'), list) else [])}</label>
         <input type="hidden" name="_rev" value="{html.escape(str(doc.get('_rev') or ''))}">
@@ -305,7 +323,7 @@ def form_doc(form: dict[str, list[str]], *, existing: dict[str, Any] | None = No
     if not note_path:
         raise ValueError("note_path_required")
     categories = parse_display_categories_rows(form, "display_categories")
-    vision_context = parse_vision_context(first_query_value(form, "vision_context"))
+    vision_context = reconstruct_vision_context(form, (existing or {}).get("vision_context"))
     doc = dict(existing or {})
     doc.update(
         {
@@ -338,7 +356,7 @@ def partial_form_doc(form: dict[str, list[str]]) -> dict[str, Any]:
         "active": first_query_value(form, "active") == "1",
         "aliases": [line.strip() for line in first_query_value(form, "aliases").splitlines() if line.strip()],
         "note_path": first_query_value(form, "note_path").strip(),
-        "vision_context": first_query_value(form, "vision_context"),
+        "vision_context": reconstruct_vision_context(form, None),
         "capture_guidance": first_query_value(form, "capture_guidance"),
         "display_categories": submitted_display_categories(form, "display_categories"),
     }
@@ -346,8 +364,8 @@ def partial_form_doc(form: dict[str, list[str]]) -> dict[str, Any]:
 
 def audit_payload(form: dict[str, list[str]]) -> dict[str, object]:
     payload = {key: first_query_value(form, key) for key in form}
-    if "vision_context" in payload:
-        payload["vision_context"] = str(payload["vision_context"])[:200]
+    if "vision_context_summary" in payload:
+        payload["vision_context_summary"] = str(payload["vision_context_summary"])[:200]
     return payload
 
 

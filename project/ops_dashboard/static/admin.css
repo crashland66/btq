@@ -657,13 +657,23 @@ details.raw-json pre { margin-top: 4px; }
 .admin-form textarea,
 .admin-form input { max-width: 860px; }
 
-/* Monospace editor for structured (JSON) fields. */
-.admin-form textarea.code-input {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 0.85rem;
-  line-height: 1.45;
-  white-space: pre;
-  tab-size: 2;
+/* Grouped sub-fields (e.g. the vision_context object) reconstructed into one
+   JSON value on save. Renders in the same stacked-label pattern as the form. */
+.admin-form fieldset.subform {
+  border: 1px solid var(--line, #e1e4e8);
+  border-radius: 8px;
+  padding: 8px 14px 14px;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.admin-form fieldset.subform legend {
+  font-weight: 600;
+  padding: 0 6px;
+}
+.admin-form fieldset.subform > .muted {
+  margin: 0;
 }
 
 /* Aligned label/input grid for entity edit forms (employee/site/prospect). */
