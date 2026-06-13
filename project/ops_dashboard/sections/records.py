@@ -15,6 +15,8 @@ from btq_vault.projector import render_markdown
 
 RECORD_OPERATOR = "op_greg"
 SHIFT_REPORT_TYPE = "shift_report"
+DAY_RECORD_TYPE = "day_record"
+RECORD_TYPES = (SHIFT_REPORT_TYPE, DAY_RECORD_TYPE)
 
 
 def _cdb() -> tuple[str, dict[str, str], str, float]:
@@ -58,14 +60,26 @@ def _shift_report_docs() -> list[dict[str, Any]]:
         return []
 
 
+def _day_record_docs() -> list[dict[str, Any]]:
+    payload = {
+        "selector": {"type": DAY_RECORD_TYPE, "operator": RECORD_OPERATOR},
+        "fields": ["_id", "date", "type"],
+        "limit": 5000,
+    }
+    try:
+        return _find(payload)
+    except Exception:  # noqa: BLE001 - degrade to empty, never break the page
+        return []
+
+
 def _record_rows() -> list[dict[str, object]]:
     rows: list[dict[str, object]] = []
-    for doc in _shift_report_docs():
+    for doc in [*_shift_report_docs(), *_day_record_docs()]:
         doc_id = str(doc.get("_id") or "").strip()
         if not doc_id:
             continue
         record_type = doc.get("type")
-        if record_type != SHIFT_REPORT_TYPE:
+        if record_type not in RECORD_TYPES:
             continue
         rows.append(
             {
@@ -116,7 +130,7 @@ def _load_record(record_id: str) -> dict[str, Any] | None:
     if not docs:
         return None
     doc = docs[0]
-    if doc.get("type") != SHIFT_REPORT_TYPE or doc.get("operator") != RECORD_OPERATOR:
+    if doc.get("type") not in RECORD_TYPES or doc.get("operator") != RECORD_OPERATOR:
         return None
     return doc
 
@@ -139,15 +153,18 @@ def render_detail(ctx: object, record_id: str) -> str:
     date_text = str(doc.get("date") or "").strip()
     type_text = _type_label(doc.get("type"))
     prepared_by = str(doc.get("prepared_by") or "").strip()
-    title = date_text or "Shift Report"
+    title = date_text or type_text or "Record"
     content = str(doc.get("content") or "")
+    prepared_by_row = (
+        f"<dt>Prepared by</dt><dd>{html.escape(prepared_by)}</dd>" if prepared_by else ""
+    )
     body = (
         f"{render_back_link('/records', 'Records')}"
         f"<header><h1>{html.escape(title)}</h1>"
         '<dl class="fields summary-fields">'
         f"<dt>Date</dt><dd>{html.escape(date_text)}</dd>"
         f"<dt>Type</dt><dd>{html.escape(type_text)}</dd>"
-        f"<dt>Prepared by</dt><dd>{html.escape(prepared_by)}</dd>"
+        f"{prepared_by_row}"
         "</dl></header>"
         f"{render_markdown(content)}"
     )

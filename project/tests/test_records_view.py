@@ -154,9 +154,14 @@ def test_list_selector_pins_type_and_operator(monkeypatch: pytest.MonkeyPatch, t
 
     list_selectors = [s for s in selectors if "_id" not in s]
     assert list_selectors, "the list path must issue a _find query"
+    # 365: the combined list now sources both operational record types; each query
+    # still pins operator=op_greg and an operational type (journal stays excluded).
+    queried_types = set()
     for sel in list_selectors:
-        assert sel.get("type") == "shift_report"
         assert sel.get("operator") == "op_greg"
+        assert sel.get("type") in {"shift_report", "day_record"}
+        queried_types.add(sel.get("type"))
+    assert queried_types == {"shift_report", "day_record"}
 
 
 def test_journal_docs_never_appear_in_list(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
