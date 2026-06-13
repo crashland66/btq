@@ -479,6 +479,64 @@ Use a stable date-keyed value when available, for example
 }
 ```
 
+## 2c. `record_day_record`
+
+Use when:
+
+- an operational day record should land in canonical `btq_vault`
+- the day-record date is known and the Markdown content is ready for
+  deterministic capture
+
+Do not use when:
+
+- the entry is a shift report; use `record_shift_report`
+- the entry is a personal, non-operational journal note; use
+  `personal_journal_entry`
+- the record should only be preserved as raw evidence without a canonical
+  day-record document
+- you are trying to mutate downstream projections or reader behavior directly
+
+### Required payload fields
+
+- `date`: `YYYY-MM-DD`
+- `content`: non-empty Markdown string
+
+### Optional payload fields
+
+- `source`: string provenance label
+
+### Optional top-level fields
+
+- `idempotency_key`: string, strongly recommended for replay safety
+
+Use a stable date-keyed value when available, for example
+`day-record-2026-06-12`.
+
+### Runtime behavior notes
+
+- upserts the canonical `day_record` document in `btq_vault`
+- the document id is keyed by date: `day_record_YYYY_MM_DD`
+- the writer sets `date`, `operator`, and `content`
+- `operator` is resolved by the handler, not supplied by the job payload
+- reprocessing the same job is idempotent via the `btq_job_ids` marker
+- a new job for the same date updates the same canonical document instead of
+  creating a duplicate
+
+### Valid example
+
+```json
+{
+  "job_id": "2026-06-12T23-05-00Z__record-day-record",
+  "job_type": "record_day_record",
+  "idempotency_key": "day-record-2026-06-12",
+  "payload": {
+    "date": "2026-06-12",
+    "source": "closeday",
+    "content": "## Day Record — 2026-06-12\n\nOperational day notes."
+  }
+}
+```
+
 ## 3. `trigger_recruiting`
 
 Use when:

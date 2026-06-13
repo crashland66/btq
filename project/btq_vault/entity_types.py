@@ -5,7 +5,7 @@ from __future__ import annotations
 # design_btq_vault.json. Must be kept in sync.
 CANONICAL_ENTITY_TYPES: frozenset[str] = frozenset({
     "account", "location", "employee", "visit", "visit_gap", "opportunity",
-    "shift_report", "journal", "unknown_capture", "personnel_event",
+    "shift_report", "day_record", "journal", "unknown_capture", "personnel_event",
     "prospect", "site_issue", "supply_need", "monthly_summary",
     "equipment_request", "supply_order", "plan", "inventory", "note", "operator",
 })

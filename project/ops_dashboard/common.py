@@ -45,6 +45,7 @@ KNOWN_JOB_SUMMARY_TYPES = {
     "parse_supply_email",
     "personal_journal_entry",
     "record_shift_report",
+    "record_day_record",
     "photo_capture",
     "promote_prospect",
     "retarget_capture",
@@ -868,6 +869,8 @@ def render_job_summary(job_type: object, payload: object) -> str:
         prepared_by = html.escape(_clean_display_part(body.get("prepared_by")))
         suffix = _join_summary_parts(date, f"by {prepared_by}" if prepared_by else "")
         return _summary_with_suffix("Record shift report", suffix)
+    if job_type_text == "record_day_record":
+        return _summary_with_suffix("Record day record", html.escape(_clean_display_part(body.get("date"))))
     if job_type_text == "photo_capture":
         category = html.escape(_clean_display_part(body.get("qc_category")))
         suffix = _join_summary_parts(_site_summary(body), f"({category})" if category else "")
