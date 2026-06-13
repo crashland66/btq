@@ -198,7 +198,7 @@ def render_list(ctx: object) -> str:
       <button type="submit">Filter</button>
     </form>
     """
-    body = f"<header><h1>Captures</h1><p class=\"muted\">Read-only capture browse. Coming in prompt sections for sites/tokens/system remain separate.</p></header><div class=\"content-with-rail\"><aside class=\"filter-rail\"><section><h2>Filters</h2>{filters}</section></aside><section><h2>Recent captures</h2>{table}</section></div>"
+    body = f"<header><h1>Captures</h1><p class=\"muted\">Read-only browse of recent field captures.</p></header><div class=\"content-with-rail\"><aside class=\"filter-rail\"><section><h2>Filters</h2>{filters}</section></aside><section><h2>Recent captures</h2>{table}</section></div>"
     return html_page("Captures", body, active_section="captures")
 
 
@@ -298,6 +298,22 @@ def render_photo_preview(record: dict[str, object]) -> str:
     return '<p class="muted">No safe image preview available.</p>'
 
 
+def _without_empty_values(values: dict[str, object]) -> dict[str, object]:
+    return {
+        key: value
+        for key, value in values.items()
+        if value is not None and (not isinstance(value, str) or bool(value.strip()))
+    }
+
+
+def _vision_status_label(value: object) -> object:
+    return "Awaiting analysis." if str(value or "").strip().lower() == "missing" else value
+
+
+def _vision_description_label(value: object) -> object:
+    return "Awaiting analysis." if str(value or "").strip() == "No vision description yet." else value
+
+
 def render_photo_card(record: dict[str, object]) -> str:
     error = record.get("error") if isinstance(record.get("error"), dict) else {}
     failure = ""
@@ -310,27 +326,29 @@ def render_photo_card(record: dict[str, object]) -> str:
             }
         )
     details = render_kv(
-        {
-            "photo_asset_id": record.get("photo_asset_id", ""),
-            "submitter": record.get("submitter_name", UNKNOWN_SUBMITTER),
-            "submitter_id": record.get("submitter_id", ""),
-            "submitted_area": record.get("submitted_area", ""),
-            "submitted_phase": record.get("submitted_phase", ""),
-            "captured_at": record.get("captured_at", ""),
-            "image_media_url": safe_media_url(record.get("image_media_url")) or "",
-            "site_context": record.get("site_context_summary", ""),
-            "vision_status": record.get("status", ""),
-            "area_guess": record.get("area_guess", ""),
-            "description": record.get("description", ""),
-            "visible_objects": ", ".join(string_list(record.get("visible_objects"))),
-            "possible_conditions": ", ".join(string_list(record.get("possible_conditions"))),
-            "possible_issues": ", ".join(string_list(record.get("possible_issues"))),
-            "warnings": ", ".join(significant_warnings(record.get("warnings"))),
-            "model_name": record.get("model_name", ""),
-            "confidence": record.get("confidence", ""),
-        }
+        _without_empty_values(
+            {
+                "photo_asset_id": record.get("photo_asset_id", ""),
+                "submitter": record.get("submitter_name", UNKNOWN_SUBMITTER),
+                "submitter_id": record.get("submitter_id", ""),
+                "submitted_area": record.get("submitted_area", ""),
+                "submitted_phase": record.get("submitted_phase", ""),
+                "captured_at": record.get("captured_at", ""),
+                "image_media_url": safe_media_url(record.get("image_media_url")) or "",
+                "site_context": record.get("site_context_summary", ""),
+                "vision_status": _vision_status_label(record.get("status", "")),
+                "area_guess": record.get("area_guess", ""),
+                "description": _vision_description_label(record.get("description", "")),
+                "visible_objects": ", ".join(string_list(record.get("visible_objects"))),
+                "possible_conditions": ", ".join(string_list(record.get("possible_conditions"))),
+                "possible_issues": ", ".join(string_list(record.get("possible_issues"))),
+                "warnings": ", ".join(significant_warnings(record.get("warnings"))),
+                "model_name": record.get("model_name", ""),
+                "confidence": record.get("confidence", ""),
+            }
+        )
     )
-    title = str(record.get("area_guess") or record.get("status") or record.get("photo_asset_id") or "Photo")
+    title = str(record.get("area_guess") or "").strip() or "Photo"
     return f"""
     <article>
       <h3>{html.escape(title)}</h3>

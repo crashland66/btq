@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import html
+import os
 import subprocess
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as pkg_version
@@ -46,10 +47,16 @@ def _dashboard_version() -> str:
 _VERSION = _dashboard_version()
 
 
+def _demo_mode() -> bool:
+    return os.environ.get("BTQ_DASHBOARD_DEMO", "").strip().lower() in {"1", "true", "yes", "on"}
+
+
 def nav_html(active_section: str) -> str:
     effective_section = "admin" if active_section in ADMIN_SECTIONS else active_section
     links = []
     for section, label, href, glyph in NAV_ITEMS:
+        if section == "admin" and _demo_mode():
+            continue
         current = ' aria-current="page"' if section == effective_section else ""
         links.append(
             f'<a href="{html.escape(href)}" title="{html.escape(label)}"{current}>'
@@ -97,7 +104,7 @@ def html_page(title: str, body: str, *, active_section: str, refresh: bool = Fal
             <span class="theme-glyph nav-glyph" aria-hidden="true">◐</span>
             <span class="nav-label">System</span>
           </button>
-          <span class="nav-label muted" style="font-size:0.75em">{html.escape(_VERSION)}</span>
+          {f'<span class="nav-label muted" style="font-size:0.75em">{html.escape(_VERSION)}</span>' if not _demo_mode() else ''}
         </div>
       </nav>
       <main class="admin-content">

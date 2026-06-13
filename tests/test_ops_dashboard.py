@@ -1306,8 +1306,10 @@ def test_capture_detail_renders_missing_sidecar_inline(tmp_path: Path) -> None:
     status_code, _content_type, body = request_text("GET", "/captures?capture_id=cap-photo-2026-05-03T18-25-20-04-00", runtime_root)
 
     assert status_code == HTTPStatus.OK
-    assert "No vision description yet." in body
-    assert "missing" in body
+    # 363: a not-yet-analyzed sidecar renders inline as "Awaiting analysis."
+    # (no longer the raw "No vision description yet." / "missing" status copy).
+    assert "Awaiting analysis." in body
+    assert "No vision description yet." not in body
 
 
 def test_capture_detail_unknown_submitter_fallback(tmp_path: Path) -> None:

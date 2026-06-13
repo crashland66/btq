@@ -208,7 +208,6 @@ def render_body(request_ctx: object, *, payload: dict[str, object] | None = None
         bootstrap.replace("&", "\\u0026").replace("<", "\\u003c").replace(">", "\\u003e")
     )
     needs_approval = int(counts.get("pending_approval", 0))
-    rejected = int(counts.get("rejected", 0))
 
     return f"""
     <header class="swipe-header">
@@ -216,7 +215,6 @@ def render_body(request_ctx: object, *, payload: dict[str, object] | None = None
       <p class="muted">One proposed job at a time. Decide whether it is true enough to commit.</p>
       <div class="swipe-queues" role="status">
         <a class="swipe-queue" data-queue="approval" href="/field-capture/review?status=pending_approval" aria-label="{needs_approval} drafts need approval"><strong>{needs_approval}</strong> needs approval</a>
-        <a class="swipe-queue" data-queue="rejected" href="/field-capture/review?status=rejected" aria-label="{rejected} rejected drafts"><strong>{rejected}</strong> rejected</a>
       </div>
     </header>
 
@@ -228,10 +226,7 @@ def render_body(request_ctx: object, *, payload: dict[str, object] | None = None
 
     <section class="swipe-stage" aria-live="polite">
       <div id="swipe-card-mount"></div>
-      <div id="swipe-empty" class="swipe-empty" hidden>
-        <p class="swipe-empty-mark">✓</p>
-        <p>Nothing waiting for approval.</p>
-      </div>
+      <p id="swipe-empty" class="muted" hidden>✓ Nothing waiting for approval</p>
     </section>
 
     <p class="swipe-help muted">
@@ -459,7 +454,6 @@ window.__btqSwipeInit = function () {
           '<button type="button" class="swipe-btn reject" data-act="reject" title="Reject (R / Left)">Reject</button>' +
           '<button type="button" class="swipe-btn skip" data-act="skip" title="Skip without acting — leaves it pending (S / Down)">Skip</button>' +
           (isMulti ? '' : '<button type="button" class="swipe-btn edit" data-edit="' + esc(editDomId(firstDraft.draft_id || c.draft_id || 'draft', 0)) + '">Edit</button>') +
-          '<button type="button" class="swipe-btn defer" disabled title="Defer is not a draft review action">Defer</button>' +
           '<button type="button" class="swipe-btn approve" data-act="approve"' + approveDisabled +
             ' title="' + esc(approveHint) + '">Approve</button>' +
         '</div>' +

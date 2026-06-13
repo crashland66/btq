@@ -866,6 +866,6 @@ def render(ctx: object) -> str:
             + _group("capture", _render_voice_card({}, []))
             + "</div>"
             + "</div>"
-            + "<p>Site directory unavailable — CouchDB connection failed.</p>"
+            + "<p>Directory temporarily unavailable.</p>"
         )
         return html_page("BTQ", body, active_section="home")

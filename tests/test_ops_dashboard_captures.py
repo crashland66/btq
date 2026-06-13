@@ -145,8 +145,8 @@ def test_capture_detail_handles_capture_with_no_sidecars(tmp_path: Path) -> None
     status, _content_type, body = request_text("GET", "/captures?capture_id=cap_no_sidecar", runtime_root)
 
     assert status == HTTPStatus.OK
-    # Photo card renders inline with a "missing" status when no sidecar exists yet.
-    assert "No vision description yet." in body
+    # Photo card renders inline as "Awaiting analysis." when no sidecar exists yet (363).
+    assert "Awaiting analysis." in body
 
 
 def test_capture_detail_handles_capture_with_no_drafts(tmp_path: Path) -> None:

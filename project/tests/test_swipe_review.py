@@ -68,8 +68,8 @@ def test_swipe_review_counts_are_filter_links(tmp_path):
     # review_status in the draft model).
     assert '<a class="swipe-queue" data-queue="approval" href="/field-capture/review?status=pending_approval"' in body
     assert '<strong>3</strong> needs approval</a>' in body
-    assert '<a class="swipe-queue" data-queue="rejected" href="/field-capture/review?status=rejected"' in body
-    assert '<strong>1</strong> rejected</a>' in body
+    # 363: the "rejected" count chip was removed from the demo-facing header.
+    assert 'data-queue="rejected"' not in body
 
 
 def test_swipe_has_skip_control_that_advances_without_acting(tmp_path):

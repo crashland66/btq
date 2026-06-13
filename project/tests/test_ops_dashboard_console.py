@@ -83,7 +83,7 @@ def test_console_default_landing_renders_review_panel(monkeypatch: pytest.Monkey
     assert 'data-console-tab="review"' in body
     assert "One proposed job at a time" in body
     assert "needs approval" in body
-    assert "Nothing waiting for approval." in body
+    assert "Nothing waiting for approval" in body
     assert "<kbd>U</kbd> mark unknown" in body
 
 

@@ -151,7 +151,7 @@ def render_list(ctx: object, query: dict[str, list[str]]) -> str:
         <button>Apply</button>
       </form>
     """
-    body = f'<header><h1>Sites</h1><p class="muted">Edit one CouchDB site document at a time. Edit CouchDB site documents.</p><p><a class="button" href="/sites/new">New site</a></p></header>{ctx.flash(query)}{error_html}<div class="content-with-rail"><aside class="filter-rail"><section><h2>Filters</h2>{filter_html}</section></aside><section><h2>All sites</h2>{table}</section></div>'
+    body = f'<header><h1>Sites</h1><p class="muted">Edit one site at a time.</p><p><a class="button" href="/sites/new">New site</a></p></header>{ctx.flash(query)}{error_html}<div class="content-with-rail"><aside class="filter-rail"><section><h2>Filters</h2>{filter_html}</section></aside><section><h2>All sites</h2>{table}</section></div>'
     return html_page("Sites", body, active_section="sites")
 
 
@@ -239,7 +239,7 @@ def render_form(ctx: object, doc: dict[str, Any], *, is_new: bool, query: dict[s
     notice_html = f'<section class="notice"><p>{html.escape(notice)}</p></section>' if notice else ""
     visits_html = "" if is_new else render_visits_panel(ctx, site_id)
     body = f"""
-    <header><h1>{'New Site' if is_new else 'Edit Site'}</h1><p class="muted">Single-document CouchDB write. No delete route.</p></header>
+    <header><h1>{'New Site' if is_new else 'Edit Site'}</h1><p class="muted">Saves one site. Sites aren't deleted here.</p></header>
     {ctx.flash(query)}{notice_html}
     <section>
       <form method="post" action="{action}" class="admin-form">
