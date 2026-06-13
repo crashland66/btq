@@ -495,11 +495,12 @@ def record_section(
     *,
     actions_html: str = "",
     value_formatter: Callable[[object], str] = field_value,
+    dl_class: str = "fields",
 ) -> str:
     rows = field_rows(doc, keys, value_formatter=value_formatter)
     if not rows:
         return ""
-    return f'<section><h3>{html.escape(title)}</h3>{actions_html}<dl class="fields">{rows}</dl></section>'
+    return f'<section><h3>{html.escape(title)}</h3>{actions_html}<dl class="{html.escape(dl_class, quote=True)}">{rows}</dl></section>'
 
 
 def other_section(
@@ -509,6 +510,7 @@ def other_section(
     *,
     title: str = "Other",
     value_formatter: Callable[[object], str] = field_value,
+    dl_class: str = "fields",
 ) -> str:
     other_keys = tuple(
         sorted(
@@ -517,7 +519,7 @@ def other_section(
             if key not in ordered_keys and key not in suppressed and has_value(value)
         )
     )
-    return record_section(title, doc, other_keys, value_formatter=value_formatter)
+    return record_section(title, doc, other_keys, value_formatter=value_formatter, dl_class=dl_class)
 
 
 def render_kv_value(value: object) -> str:

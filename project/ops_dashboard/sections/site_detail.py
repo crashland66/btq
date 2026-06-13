@@ -236,7 +236,7 @@ def _summary_section(doc: dict[str, Any], site_id: str, edit_section: str) -> st
     }
     for title, keys in _SUMMARY_GROUPS:
         if title in {"Identity", "Supply Budget"}:
-            section = record_section(title, doc, keys)
+            section = record_section(title, doc, keys, dl_class="fields summary-fields")
             if section:
                 sections.append(section)
             continue
@@ -260,11 +260,12 @@ def _summary_section(doc: dict[str, Any], site_id: str, edit_section: str) -> st
                 doc,
                 keys,
                 actions_html=f'<p class="actions"><a class="button" href="?edit={html.escape(slug, quote=True)}">Edit</a></p>',
+                dl_class="fields summary-fields",
             )
             if section:
                 sections.append(section)
 
-    other = other_section(doc, ordered_keys, _SUPPRESSED)
+    other = other_section(doc, ordered_keys, _SUPPRESSED, dl_class="fields summary-fields")
     if other:
         sections.append(other)
 
@@ -483,7 +484,6 @@ def render(ctx: object, site_id: str) -> str:
                 f"<header><h1>{html.escape(title)}</h1>"
                 '<p class="actions">'
                 f'<a class="button" href="/sites?site_id={escaped_id}">Admin metadata</a>'
-                f'<a class="button" href="/vault/sites/{escaped_id}.html">Vault page</a>'
                 f'<a class="button" href="/field-photos?site_id={escaped_id}">Field Photos for this site</a>'
                 "</p></header>"
             )

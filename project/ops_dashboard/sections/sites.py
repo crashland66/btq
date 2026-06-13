@@ -125,8 +125,7 @@ def render_list(ctx: object, query: dict[str, list[str]]) -> str:
                 "canonical_name": canonical_name(doc),
                 "active": bool(doc.get("active", True)),
                 "alias_count": len(aliases),
-                "note_path": str(doc.get("note_path") or ""),
-                "vision_context": str(doc.get("vision_context") or "")[:80],
+                "vision_context": vision_context_summary(doc.get("vision_context")),
                 "rev": str(doc.get("_rev") or "")[:6],
             }
         )
@@ -137,7 +136,6 @@ def render_list(ctx: object, query: dict[str, list[str]]) -> str:
             {"key": "canonical_name", "label": "Canonical Name"},
             {"key": "active", "label": "Active", "format": lambda value, _row: f'<span class="pill {"success" if bool(value) else "warning"}">{html.escape("Active" if bool(value) else "Inactive")}</span>', "nowrap": True},
             {"key": "alias_count", "label": "Aliases", "priority": 2, "nowrap": True},
-            {"key": "note_path", "label": "Note Path", "priority": 3},
             {"key": "vision_context", "label": "Vision Context", "priority": 3},
             {"key": "rev", "label": "Rev", "format": lambda value, _row: f"<code>{html.escape(str(value))}</code>", "priority": 3, "nowrap": True},
         ],
@@ -157,12 +155,61 @@ def render_list(ctx: object, query: dict[str, list[str]]) -> str:
     return html_page("Sites", body, active_section="sites")
 
 
+def vision_context_summary(value: object) -> str:
+    """One-line preview of a site's structured vision_context for the list table."""
+    if isinstance(value, dict):
+        summary = str(value.get("summary") or value.get("label") or "").strip()
+        if summary:
+            return summary[:80]
+        return ", ".join(str(k) for k in value) [:80]
+    return str(value or "")[:80]
+
+
+def vision_context_text(value: object) -> str:
+    """Render vision_context for the editable textarea.
+
+    A structured object is pretty-printed as JSON so it stays human-editable;
+    a legacy string value is shown verbatim so the operator can convert it.
+    """
+    if isinstance(value, (dict, list)):
+        return json.dumps(value, indent=2, ensure_ascii=False, sort_keys=True)
+    return str(value or "")
+
+
+def parse_vision_context(raw: str) -> dict[str, Any]:
+    """Parse the vision_context textarea into a structured JSON object.
+
+    Empty input yields an empty object. Invalid JSON or a non-object payload
+    raises ValueError so the save handler can re-render the form with a notice.
+    """
+    text = (raw or "").strip()
+    if not text:
+        return {}
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"vision_context_invalid_json: {exc.msg} (line {exc.lineno}, col {exc.colno})") from exc
+    if not isinstance(parsed, dict):
+        raise ValueError("vision_context_must_be_a_json_object")
+    return parsed
+
+
 def render_form(ctx: object, doc: dict[str, Any], *, is_new: bool, query: dict[str, list[str]] | None = None, notice: str = "") -> str:
     query = query or {}
     site_id = site_id_from_doc(doc)
     aliases = "\n".join(str(item) for item in doc.get("aliases", []) if str(item).strip()) if isinstance(doc.get("aliases"), list) else ""
     action = "/sites/new" if is_new else "/sites/save"
     site_field = f'<input name="site_id" required value="{html.escape(site_id)}">' if is_new else f'<p><code>{html.escape(site_id)}</code></p><input type="hidden" name="site_id" value="{html.escape(site_id)}">'
+    note_path_value = html.escape(str(doc.get('note_path') or ''))
+    # note_path is the legacy vault-relative routing path. It still keys capture
+    # routing (resolve_site_note_path), so its value must round-trip — but the
+    # operator shouldn't see or hand-edit a "vault path". New sites still need it
+    # set, so it stays visible there; on edit it rides along as a hidden field.
+    if is_new:
+        note_path_field = f'<label>{humanize_key("note_path")} <input name="note_path" required value="{note_path_value}"></label>'
+    else:
+        note_path_field = f'<input type="hidden" name="note_path" value="{note_path_value}">'
+    vision_context_value = html.escape(vision_context_text(doc.get('vision_context')))
     notice_html = f'<section class="notice"><p>{html.escape(notice)}</p></section>' if notice else ""
     visits_html = "" if is_new else render_visits_panel(ctx, site_id)
     body = f"""
@@ -174,8 +221,8 @@ def render_form(ctx: object, doc: dict[str, Any], *, is_new: bool, query: dict[s
         <label>{humanize_key("site_id")} {site_field}</label>
         <label><input type="checkbox" name="active" value="1" {'checked' if bool(doc.get('active', True)) else ''}> Active</label>
         <label>{humanize_key("aliases")} <textarea name="aliases">{html.escape(aliases)}</textarea></label>
-        <label>{humanize_key("note_path")} <input name="note_path" required value="{html.escape(str(doc.get('note_path') or ''))}"></label>
-        <label>{humanize_key("vision_context")} <textarea name="vision_context">{html.escape(str(doc.get('vision_context') or ''))}</textarea></label>
+        {note_path_field}
+        <label>{humanize_key("vision_context")} <span class="muted">— JSON object passed to the photo-vision model (keys: label, environment, summary)</span> <textarea name="vision_context" rows="8" class="code-input" spellcheck="false">{vision_context_value}</textarea></label>
         <label>{humanize_key("capture_guidance")} <textarea name="capture_guidance">{html.escape(str(doc.get('capture_guidance') or ''))}</textarea></label>
         <label>{humanize_key("display_categories")} {render_display_categories_editor("display_categories", doc.get('display_categories') if isinstance(doc.get('display_categories'), list) else [])}</label>
         <input type="hidden" name="_rev" value="{html.escape(str(doc.get('_rev') or ''))}">
@@ -258,6 +305,7 @@ def form_doc(form: dict[str, list[str]], *, existing: dict[str, Any] | None = No
     if not note_path:
         raise ValueError("note_path_required")
     categories = parse_display_categories_rows(form, "display_categories")
+    vision_context = parse_vision_context(first_query_value(form, "vision_context"))
     doc = dict(existing or {})
     doc.update(
         {
@@ -268,7 +316,7 @@ def form_doc(form: dict[str, list[str]], *, existing: dict[str, Any] | None = No
             "active": first_query_value(form, "active") == "1",
             "aliases": [line.strip() for line in first_query_value(form, "aliases").splitlines() if line.strip()],
             "note_path": note_path,
-            "vision_context": first_query_value(form, "vision_context"),
+            "vision_context": vision_context,
             "capture_guidance": first_query_value(form, "capture_guidance"),
             "display_categories": categories,
         }
