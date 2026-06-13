@@ -222,7 +222,6 @@ class FieldCaptureServer(ThreadingHTTPServer):
         handler_class: type[BaseHTTPRequestHandler],
         *,
         token_store: TokenStore,
-        vault_root: Path,
         upload_dir: Path,
         max_images: int,
         max_upload_bytes: int,
@@ -232,7 +231,6 @@ class FieldCaptureServer(ThreadingHTTPServer):
     ) -> None:
         super().__init__(server_address, handler_class)
         self.token_store = token_store
-        self.vault_root = vault_root.expanduser()
         self.upload_dir = upload_dir.expanduser().resolve(strict=False)
         self.max_images = max_images
         self.max_upload_bytes = max_upload_bytes
@@ -381,7 +379,7 @@ class FieldCaptureHandler(BaseHTTPRequestHandler):
             self.write_json({"error": "missing_token"}, HTTPStatus.UNAUTHORIZED)
             return
         try:
-            session = authorize_token(self.server.token_store, self.server.vault_root, token_value)
+            session = authorize_token(self.server.token_store, token_value)
         except Exception:
             self.write_json({"error": "authorization_failed"}, HTTPStatus.FORBIDDEN)
             return
@@ -447,7 +445,7 @@ class FieldCaptureHandler(BaseHTTPRequestHandler):
             self.write_json({"error": "missing_token"}, HTTPStatus.UNAUTHORIZED)
             return
         try:
-            session = authorize_token(self.server.token_store, self.server.vault_root, token_value)
+            session = authorize_token(self.server.token_store, token_value)
         except Exception:
             self.write_json({"error": "authorization_failed"}, HTTPStatus.FORBIDDEN)
             return
@@ -495,7 +493,7 @@ class FieldCaptureHandler(BaseHTTPRequestHandler):
             self.write_json({"error": "missing_token"}, HTTPStatus.UNAUTHORIZED)
             return None
         try:
-            session = authorize_token(self.server.token_store, self.server.vault_root, token_value)
+            session = authorize_token(self.server.token_store, token_value)
         except Exception:
             self.write_json({"error": "authorization_failed"}, HTTPStatus.FORBIDDEN)
             return None
@@ -710,7 +708,7 @@ class FieldCaptureHandler(BaseHTTPRequestHandler):
             self.write_root_landing_not_found()
             return
         try:
-            session = authorize_token(self.server.token_store, self.server.vault_root, token_value)
+            session = authorize_token(self.server.token_store, token_value)
         except Exception:
             self.write_json({"error": "authorization_failed"}, HTTPStatus.FORBIDDEN)
             return
@@ -1019,7 +1017,7 @@ class FieldCaptureHandler(BaseHTTPRequestHandler):
             self.write_json({"error": "missing_token"}, HTTPStatus.UNAUTHORIZED)
             return
         try:
-            session = authorize_token(self.server.token_store, self.server.vault_root, token_value)
+            session = authorize_token(self.server.token_store, token_value)
         except Exception:
             self.write_json({"error": "authorization_failed"}, HTTPStatus.FORBIDDEN)
             return
@@ -1077,7 +1075,7 @@ class FieldCaptureHandler(BaseHTTPRequestHandler):
                         HTTPStatus.OK,
                     )
                     return
-            attribution = resolve_submission_attribution(session, fields, self.server.vault_root)
+            attribution = resolve_submission_attribution(session, fields)
             job = build_submission_job(fields, photos, audio_files, session, self.server.upload_dir, attribution=attribution)
         except SubmissionError as error:
             self.write_json({"error": error.code, "message": error.message}, error.status)
@@ -1135,7 +1133,7 @@ class FieldCaptureHandler(BaseHTTPRequestHandler):
         if not token_value:
             return None
         try:
-            session = authorize_token(self.server.token_store, self.server.vault_root, token_value)
+            session = authorize_token(self.server.token_store, token_value)
         except Exception:
             return None
         if session is None or not session.record.can_view_site:
@@ -1149,7 +1147,7 @@ class FieldCaptureHandler(BaseHTTPRequestHandler):
         if not token_value or not prospect_id:
             return None
         try:
-            session = authorize_token(self.server.token_store, self.server.vault_root, token_value)
+            session = authorize_token(self.server.token_store, token_value)
         except Exception:
             return None
         if session is None or not session.record.can_view_site or session.record.role != "site_admin":
@@ -1463,7 +1461,7 @@ def can_override_submission_attribution(session: object) -> bool:
     return token_type == "import"
 
 
-def resolve_submission_attribution(session: object, fields: dict[str, str], vault_root: Path) -> SubmissionAttribution:
+def resolve_submission_attribution(session: object, fields: dict[str, str]) -> SubmissionAttribution:
     person = getattr(session, "person")
     person_id = str(getattr(person, "person_id"))
     person_name = str(getattr(person, "canonical_name"))
@@ -1494,7 +1492,7 @@ def build_submission_job(
 ) -> dict[str, object]:
     paths = compute_capture_paths(fields, photos, audio_files, upload_dir)
     job_id = fields.get("job_id", "").strip() or f"{paths.exported_at.replace(':', '-').replace('.', '-')}__photo-capture-{safe_slug(paths.site)}"
-    attribution = attribution or resolve_submission_attribution(session, fields, Path("."))
+    attribution = attribution or resolve_submission_attribution(session, fields)
 
     return {
         "job_id": job_id,
@@ -1532,7 +1530,7 @@ def build_capture_document(
     attribution: SubmissionAttribution | None = None,
 ) -> dict[str, object]:
     paths = compute_capture_paths(fields, photos, audio_files, upload_dir)
-    attribution = attribution or resolve_submission_attribution(session, fields, Path("."))
+    attribution = attribution or resolve_submission_attribution(session, fields)
     domain_fields: dict[str, object] = {
         "site": paths.site,
         "site_id": str(paths.site_id or ""),
@@ -1583,7 +1581,6 @@ def run_server(
     host: str,
     port: int,
     db_path: Path,
-    vault_root: Path,
     upload_dir: Path,
     max_images: int,
     max_upload_bytes: int,
@@ -1607,7 +1604,6 @@ def run_server(
         (host, port),
         FieldCaptureHandler,
         token_store=token_store,
-        vault_root=vault_root,
         upload_dir=upload_dir,
         max_images=max_images,
         max_upload_bytes=max_upload_bytes,
@@ -1734,11 +1730,9 @@ def audit_tokens(args: argparse.Namespace) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    config = get_config()
     parser = argparse.ArgumentParser(description="Run field-capture and manage access tokens.")
     parser.set_defaults(command="serve")
     parser.add_argument("--db", type=Path, default=default_db_path(), help="SQLite token database path.")
-    parser.add_argument("--vault-root", type=Path, default=config.vault_dir, help="Vault root used for people/site authorization.")
     parser.add_argument("--upload-dir", type=Path, default=default_upload_dir(), help="Directory for submitted photo uploads.")
     parser.add_argument("--max-images", type=int, default=6, help="Maximum photos per submission.")
     parser.add_argument("--max-upload-bytes", type=int, default=10 * 1024 * 1024, help="Maximum bytes per uploaded photo.")
@@ -1794,7 +1788,6 @@ def run(argv: list[str] | None = None) -> int:
             args.host,
             args.port,
             args.db,
-            args.vault_root,
             args.upload_dir,
             args.max_images,
             args.max_upload_bytes,

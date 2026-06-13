@@ -16,7 +16,7 @@ EnvironmentFile=-/etc/btq/unified-capture.env
 # CouchDB. Values stay out of version control; this reference must not. Mirrors
 # field-capture. See memory: field_capture_couch_creds.
 EnvironmentFile=-/etc/gregstoltz/unified-capture.env
-ExecStart=/usr/bin/python3 -m unified_capture.server --db /srv/btq/data/field_capture_tokens.sqlite3 --vault-root /srv/btq/data/vault-readonly --upload-dir /srv/btq/runtime/uploads --host 127.0.0.1 --port 8081 --data-dir /srv/btq/data
+ExecStart=/usr/bin/python3 -m unified_capture.server --db /srv/btq/data/field_capture_tokens.sqlite3 --upload-dir /srv/btq/runtime/uploads --host 127.0.0.1 --port 8081 --data-dir /srv/btq/data
 Restart=on-failure
 RestartSec=5
 NoNewPrivileges=true

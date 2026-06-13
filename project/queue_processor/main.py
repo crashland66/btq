@@ -15,7 +15,7 @@ from queue_processor.manifest import record_processed_mutation
 from queue_processor.processor_lock import ProcessorLock, ProcessorLockError
 from queue_processor.registry import JOB_HANDLERS, JobHandler, _handler_for_job_type
 from queue_spec import (
-    VAULT_RELATIVE_PATH_JOB_TYPES, normalize_vault_relative_path, validate_job,
+    validate_job,
     JOB_ADD_PERSON, JOB_APPEND_TO_NOTE, JOB_CLOSE_RECRUITING, JOB_FLAG_ACCESS_CONSTRAINT, JOB_FLAG_RETENTION_RISK,
     JOB_LOG_EQUIPMENT_REQUEST, JOB_LOG_PERSONNEL_EVENT, JOB_LOG_SITE_ISSUE, JOB_LOG_SUPPLY_NEED,
     JOB_MARK_EQUIPMENT_APPROVED, JOB_MARK_EQUIPMENT_DENIED, JOB_MARK_EQUIPMENT_NO_ACTION_NEEDED,
@@ -32,8 +32,6 @@ _NON_QUEUE_JOB_TYPES = frozenset[str]()
 
 DEFAULT_CONFIG = _shared.DEFAULT_CONFIG
 DEFAULT_PROJECT_ROOT = _shared.DEFAULT_PROJECT_ROOT
-DEFAULT_VAULT_ROOT = _shared.DEFAULT_VAULT_ROOT
-DEFAULT_PERSONAL_VAULT_ROOT = _shared.DEFAULT_PERSONAL_VAULT_ROOT
 DEFAULT_RUNTIME_ROOT = _shared.DEFAULT_RUNTIME_ROOT
 DEFAULT_LOGS_ROOT = _shared.DEFAULT_LOGS_ROOT
 QueueProcessorError = _shared.QueueProcessorError
@@ -138,14 +136,6 @@ def load_job_payload(job_path: Path) -> dict:
         raise QueueProcessorError(f"Invalid JSON: {exc.msg}") from exc
     if not isinstance(raw_payload, dict):
         raise QueueProcessorError("Job payload must be a JSON object")
-    job_type = raw_payload.get("job_type")
-    payload = raw_payload.get("payload")
-    if job_type in VAULT_RELATIVE_PATH_JOB_TYPES and isinstance(payload, dict):
-        raw_path = payload.get("path")
-        if isinstance(raw_path, str):
-            normalized = normalize_vault_relative_path(raw_path)
-            if normalized and normalized != raw_path.strip():
-                payload["path"] = normalized
     return raw_payload
 
 def load_job(job_path: Path) -> QueueJob:
@@ -247,127 +237,6 @@ def _archive_job_file(
         )
         raise
 
-def parse_int_list_value(value: str) -> list[int] | None:
-    stripped_value = value.strip()
-    if not stripped_value.startswith("[") or not stripped_value.endswith("]"):
-        return None
-    inner = stripped_value[1:-1].strip()
-    if not inner:
-        return []
-    result: list[int] = []
-    for item in inner.split(","):
-        token = item.strip()
-        if not token:
-            return None
-        try:
-            result.append(int(token))
-        except ValueError:
-            return None
-    return result
-
-def get_frontmatter_raw_value(fields: list[tuple[str, Any]], key: str) -> Any | None:
-    for existing_key, value in fields:
-        if existing_key == key:
-            return value
-    return None
-
-def parse_int_list_frontmatter_value(value: Any) -> list[int] | None:
-    if isinstance(value, list):
-        result: list[int] = []
-        for item in value:
-            try:
-                result.append(int(str(item).strip()))
-            except ValueError:
-                return None
-        return result
-    if isinstance(value, str):
-        return parse_int_list_value(value)
-    return None
-
-def person_site_ids_from_frontmatter_fields(fields: list[tuple[str, Any]]) -> list[int] | None:
-    site_ids: list[int] = []
-    primary_job = _shared.get_frontmatter_value(fields, "job")
-    if primary_job is not None:
-        try:
-            site_ids.append(int(primary_job))
-        except ValueError:
-            return None
-    additional_jobs_value = get_frontmatter_raw_value(fields, "additional_jobs")
-    if additional_jobs_value is not None:
-        additional_jobs = parse_int_list_frontmatter_value(additional_jobs_value)
-        if additional_jobs is None:
-            return None
-        site_ids.extend(additional_jobs)
-    if not site_ids:
-        sites_value = _shared.get_frontmatter_value(fields, "sites")
-        if sites_value is None:
-            return None
-        legacy_sites = parse_int_list_value(sites_value)
-        if legacy_sites is None:
-            return None
-        site_ids.extend(legacy_sites)
-    deduped: list[int] = []
-    for site_id in site_ids:
-        if site_id not in deduped:
-            deduped.append(site_id)
-    return deduped
-
-def load_site_query_records(vault_root: Path) -> list[tuple[int, str, str, str]]:
-    sites_dir = _shared.ensure_within_root(vault_root / "Sites", vault_root, "Sites directory")
-    if not sites_dir.exists():
-        return []
-    records: list[tuple[int, str, str, str]] = []
-    for site_path in sorted(path for path in sites_dir.iterdir() if path.is_file()):
-        try:
-            fields, _body = _shared.parse_frontmatter(site_path.read_text(encoding="utf-8"))
-        except QueueProcessorError:
-            continue
-        site_id_value = _shared.get_frontmatter_value(fields, "site_id")
-        name = _shared.get_frontmatter_value(fields, "name")
-        status = _shared.get_frontmatter_value(fields, "status")
-        status_date = _shared.get_frontmatter_value(fields, "status_date")
-        if site_id_value is None or name is None or status is None or status_date is None:
-            continue
-        try:
-            site_id = int(site_id_value)
-        except ValueError:
-            continue
-        records.append((site_id, name, status, status_date))
-    return records
-
-def load_people_query_records(vault_root: Path) -> list[tuple[str, str, list[int]]]:
-    people_dir = _shared.ensure_within_root(vault_root / "People", vault_root, "People directory")
-    if not people_dir.exists():
-        return []
-    records: list[tuple[str, str, list[int]]] = []
-    for person_path in sorted(path for path in people_dir.iterdir() if path.is_file()):
-        try:
-            fields, _body = _shared.parse_frontmatter(person_path.read_text(encoding="utf-8"))
-        except QueueProcessorError:
-            continue
-        name = _shared.get_frontmatter_value(fields, "name")
-        status = _shared.get_frontmatter_value(fields, "status")
-        site_ids = person_site_ids_from_frontmatter_fields(fields)
-        if name is None or status is None or site_ids is None:
-            continue
-        records.append((name, status, site_ids))
-    return records
-
-def list_critical_sites(context: RunContext) -> None:
-    for site_id, name, status, status_date in load_site_query_records(context.vault_root):
-        if status == "critical":
-            print(f"{site_id} | {name} | {status_date}")
-
-def list_employees_by_site(context: RunContext, site_id: int) -> None:
-    site_records = load_site_query_records(context.vault_root)
-    valid_site_ids = {record_site_id for record_site_id, _name, _status, _status_date in site_records}
-    if site_id not in valid_site_ids:
-        print(f"Unknown site_id: {site_id}")
-        return
-    for employee_name, status, sites in load_people_query_records(context.vault_root):
-        if site_id in sites:
-            print(f"{employee_name} | {status}")
-
 def _canonical_location_hint(value: object) -> str:
     raw = str(value).strip()
     try:
@@ -399,10 +268,8 @@ def _append_to_note_target_hint(payload: dict, context: RunContext) -> str:
             if site_id:
                 return _canonical_location_hint(site_id)
     try:
-        target_path = _shared.ensure_within_root(context.vault_root / raw_path, context.vault_root, "Target path")
-        if _shared.is_site_about_path(target_path):
-            existing_text = target_path.read_text(encoding="utf-8") if target_path.exists() else ""
-            return _shared.canonical_location_doc_id_for_projection(target_path, existing_text)
+        if _shared.is_site_about_path(path):
+            return _shared.canonical_location_doc_id_for_projection(path, "")
     except Exception:
         pass
     return raw_path
@@ -442,7 +309,7 @@ def target_path_hint(job: QueueJob, context: RunContext) -> str:
         if job.job_type == JOB_LOG_EQUIPMENT_REQUEST:
             return _canonical_location_hint(payload["site_id"])
         if job.job_type == JOB_LOG_PERSONNEL_EVENT:
-            return str(people.personnel_event_path(context, payload))
+            return people.personnel_event_doc_id(payload)
         if job.job_type == JOB_SET_ENTITY_STATUS:
             if payload.get("entity_type") == "site":
                 return _canonical_location_hint(payload["entity_id"])
@@ -451,14 +318,11 @@ def target_path_hint(job: QueueJob, context: RunContext) -> str:
         if job.job_type == JOB_UPDATE_SITE_EQUIPMENT:
             return _canonical_location_hint(payload.get("site_id") or payload["site"])
         if job.job_type in {JOB_MARK_SUPPLY_ORDERED, JOB_MARK_SUPPLY_DELIVERED, JOB_MARK_SUPPLY_STOCKED, JOB_MARK_SUPPLY_NO_ACTION_NEEDED}:
-            target_path = supplies_equipment_transitions.locate_supply_file_by_id(context, str(payload["supply_id"]))
-            return str(target_path) if target_path is not None else "unknown"
+            return supplies_equipment_transitions._resolve_supply_doc_id(str(payload["supply_id"]))
         if job.job_type in {JOB_MARK_EQUIPMENT_APPROVED, JOB_MARK_EQUIPMENT_DENIED, JOB_MARK_EQUIPMENT_ORDERED, JOB_MARK_EQUIPMENT_PROVIDED, JOB_MARK_EQUIPMENT_NO_ACTION_NEEDED}:
-            target_path = supplies_equipment_transitions.locate_equipment_file_by_id(context, str(payload["equipment_id"]))
-            return str(target_path) if target_path is not None else "unknown"
+            return supplies_equipment_transitions._resolve_equipment_doc_id(str(payload["equipment_id"]))
         if job.job_type in {JOB_MARK_ISSUE_MONITORING, JOB_MARK_ISSUE_RESOLVED, JOB_MARK_ISSUE_OPEN}:
-            target_path = supplies_equipment_transitions.locate_issue_file_by_id(context, str(payload["issue_id"]))
-            return str(target_path) if target_path is not None else "unknown"
+            return supplies_equipment_transitions._resolve_issue_doc_id(str(payload["issue_id"]))
         if job.job_type == JOB_EDIT_RECORD_FIELDS:
             record_type = str(payload.get("record_type") or "")
             record_id = str(payload.get("record_id") or "")
@@ -563,10 +427,9 @@ def process_job(job_path: Path, context: RunContext, processed_dir: Path, failed
         _shared.structured_log(context, "queue_job_failed", job_id=job_id_for_log, job_type=job_type_for_log, reason=reason, error=error_message)
         _shared.structured_log(context, "runtime_process_failure", job_id=job_id_for_log, job_type=job_type_for_log, source_queue_file=str(job_path), reason=reason, error=error_message)
 
-def process_all(project_root: Path, vault_root: Path, runtime_root: Path, dry_run: bool, *, skip_unknowns: bool = False, personal_vault_root: Path | None = None) -> dict[str, object]:
+def process_all(project_root: Path, runtime_root: Path, dry_run: bool, *, skip_unknowns: bool = False) -> dict[str, object]:
     runtime_root = ensure_local_runtime_root(runtime_root)
-    resolved_personal_vault_root = DEFAULT_PERSONAL_VAULT_ROOT if personal_vault_root is None else personal_vault_root
-    require_directories({"project_root": project_root, "vault_root": vault_root, "personal_vault_root": resolved_personal_vault_root})
+    require_directories({"project_root": project_root})
     logs_root = _shared.ensure_within_root(runtime_root / "logs" / "queue_processor", runtime_root, "queue processor logs directory")
     queue_dir = _shared.ensure_within_root(runtime_root / "queue", runtime_root, "queue directory")
     processed_dir = _shared.ensure_within_root(runtime_root / "processed", runtime_root, "processed queue directory")
@@ -578,12 +441,12 @@ def process_all(project_root: Path, vault_root: Path, runtime_root: Path, dry_ru
     log_path = logs_root / "queue_processor.log"
     _shared.rotate_log_if_large(log_path)
     structured_log_path = _shared.ensure_within_root(runtime_root / "logs" / "queue_processor_events.jsonl", runtime_root, "queue processor structured log path")
-    context = RunContext(project_root=project_root, vault_root=vault_root, personal_vault_root=resolved_personal_vault_root, runtime_root=runtime_root, log_path=log_path, dry_run=dry_run, run_id=run_id, structured_log_path=structured_log_path)
+    context = RunContext(project_root=project_root, runtime_root=runtime_root, log_path=log_path, dry_run=dry_run, run_id=run_id, structured_log_path=structured_log_path)
     mode_label = "DRY RUN" if dry_run else "REAL RUN"
     print("BTQ queue processor")
-    for label, value in (("Mode", mode_label), ("Project root", project_root), ("Vault root", vault_root), ("Runtime root", runtime_root), ("Queue dir", queue_dir), ("Processed dir", processed_dir), ("Failed dir", failed_dir), ("Log file", log_path), ("Skip unknown reclassification", skip_unknowns)):
+    for label, value in (("Mode", mode_label), ("Project root", project_root), ("Runtime root", runtime_root), ("Queue dir", queue_dir), ("Processed dir", processed_dir), ("Failed dir", failed_dir), ("Log file", log_path), ("Skip unknown reclassification", skip_unknowns)):
         print(f"{label}: {value}")
-    for line in (f"mode={mode_label}", f"project_root={project_root}", f"vault_root={vault_root}", f"runtime_root={runtime_root}", f"run_id={run_id}", f"skip_unknowns={skip_unknowns}"):
+    for line in (f"mode={mode_label}", f"project_root={project_root}", f"runtime_root={runtime_root}", f"run_id={run_id}", f"skip_unknowns={skip_unknowns}"):
         _shared.write_log_line(log_path, line)
     report: dict[str, object] = {"discovered": 0, "processed": 0, "failed": 0, "skipped": 0, "queue_before": 0, "queue_after": 0, "failed_paths": [], "unknown_reclassification_jobs_created": 0, "unknown_reclassification_skipped": bool(skip_unknowns), "dry_run": bool(dry_run), "runtime_root": str(runtime_root), "queue_dir": str(queue_dir), "processed_dir": str(processed_dir), "failed_dir": str(failed_dir), "log_path": str(log_path)}
     lock = ProcessorLock(runtime_root)
@@ -631,36 +494,17 @@ def process_all(project_root: Path, vault_root: Path, runtime_root: Path, dry_ru
     return report
 
 def main() -> int:
-    if len(sys.argv) > 1 and sys.argv[1] in {"list-critical-sites", "list-employees-by-site"}:
-        parser = argparse.ArgumentParser(description="Run BTQ read-only vault queries.")
-        parser.add_argument("command", choices=["list-critical-sites", "list-employees-by-site"])
-        parser.add_argument("site_id", nargs="?")
-        args = parser.parse_args()
-        context = RunContext(project_root=DEFAULT_PROJECT_ROOT, vault_root=DEFAULT_VAULT_ROOT, personal_vault_root=DEFAULT_PERSONAL_VAULT_ROOT, runtime_root=DEFAULT_RUNTIME_ROOT, log_path=DEFAULT_LOGS_ROOT / "query.log", dry_run=False, valid_site_ids=set(), site_id_to_opportunities_dir={})
-        if args.command == "list-critical-sites":
-            list_critical_sites(context)
-            return 0
-        if args.site_id is None:
-            parser.error("list-employees-by-site requires a site_id")
-        try:
-            site_id = int(args.site_id)
-        except ValueError:
-            parser.error("site_id must be an integer")
-        list_employees_by_site(context, site_id)
-        return 0
     parser = argparse.ArgumentParser(description="Run the BTQ queue processor.")
     parser.add_argument("--project-root", required=True)
-    parser.add_argument("--vault-root", required=True)
     parser.add_argument("--runtime-root", required=True)
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--skip-unknowns", action="store_true")
     args = parser.parse_args()
     project_root = _shared.ensure_within_root(Path(args.project_root), DEFAULT_PROJECT_ROOT, "Project root")
-    vault_root = _shared.ensure_within_root(Path(args.vault_root), DEFAULT_VAULT_ROOT, "Vault root")
     runtime_root = _shared.ensure_within_any_root(Path(args.runtime_root), [DEFAULT_CONFIG.local_runtime_dir, project_root], "Runtime root")
     runtime_root = ensure_local_runtime_root(runtime_root)
     try:
-        process_all(project_root=project_root, vault_root=vault_root, runtime_root=runtime_root, dry_run=args.dry_run, skip_unknowns=args.skip_unknowns)
+        process_all(project_root=project_root, runtime_root=runtime_root, dry_run=args.dry_run, skip_unknowns=args.skip_unknowns)
     except QueueProcessorError as exc:
         print(str(exc), file=sys.stderr)
         return 1

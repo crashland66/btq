@@ -136,10 +136,6 @@ def derive_person_id_base(payload: dict) -> Optional[str]:
     whole = slugify_issue_component(str(payload.get("name") or "")).replace("-", "_")
     return whole or None
 
-def canonical_person_path(vault_root: Path, name: str) -> Path:
-    people_dir = _shared.ensure_within_root(vault_root / "People", vault_root, "People directory")
-    return _shared.ensure_within_root(people_dir / _shared.person_file_name(name), vault_root, "Person target")
-
 def employee_doc_id_from_person_file(path: Path) -> str:
     stem = path.stem.strip()
     if "," in stem:
@@ -230,29 +226,11 @@ def personnel_event_id(payload: dict) -> str:
     digest = hashlib.sha256(json.dumps(seed, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()[:24]
     return f"evt_{digest}"
 
-def personnel_event_path(context: RunContext, payload: dict) -> Path:
+def personnel_event_doc_id(payload: dict) -> str:
     employee = str(payload.get("employee") or "").strip()
     if not employee:
         raise _shared.QueueProcessorError("Personnel event requires employee")
-    file_name = _shared.person_file_name(employee)
-    person_dir_stem = file_name[:-3] if file_name.endswith(".md") else file_name
-    people_root = _shared.ensure_within_root(context.vault_root / "People", context.vault_root, "People directory")
-    person_dir = _shared.ensure_within_root(people_root / person_dir_stem, context.vault_root, "Personnel directory")
-    events_dir = _shared.ensure_within_root(person_dir / "Events", context.vault_root, "Personnel events directory")
-    event_id = personnel_event_id(payload)
-    if events_dir.exists():
-        matches = sorted(events_dir.glob(f"{event_id}__*.md"))
-        if matches:
-            return _shared.ensure_within_root(matches[0], context.vault_root, "Personnel event target")
-    summary = str(payload.get("summary") or payload.get("event_type") or "personnel event")
-    # Cap the slug at 80 chars so the full filename stays under macOS NAME_MAX
-    # (255 bytes). Personnel-event summaries are free-form and routinely run
-    # to hundreds of chars (the whole narrative of the event), unlike
-    # log_site_issue's `title` or log_supply_need's `item_name`. The
-    # event_id glob above handles re-author across summary changes.
-    slug = slugify_issue_component(summary)[:80].rstrip("-") or "personnel-event"
-    filename = f"{event_id}__{slug}.md"
-    return _shared.ensure_within_root(events_dir / filename, context.vault_root, "Personnel event target")
+    return f"personnel_event_{personnel_event_id(payload)}"
 
 def _build_personnel_event_entity_doc(payload: dict, job: QueueJob, event_id: str) -> dict:
     return {
@@ -345,7 +323,6 @@ def _build_employee_entity_doc(payload: dict, job: QueueJob, person_id: str, cre
 def process_add_person_job(job_path: Path, job: QueueJob, context: RunContext, processed_dir: Path) -> None:
     payload = job.payload
     name = str(payload["name"]).strip()
-    target_path = canonical_person_path(context.vault_root, name)
     processed_destination = processed_dir / job_path.name
     if not context.dry_run and processed_destination.exists():
         raise _shared.QueueProcessorError(f"Destination already exists: {processed_destination}")
@@ -374,8 +351,9 @@ def process_add_person_job(job_path: Path, job: QueueJob, context: RunContext, p
             "canonical couchdb person_id uniqueness check failed "
             f"job_type={job.job_type} job_id={job.job_id}: {exc}"
         ) from exc
+    target_doc_id = f"employee_{person_id}"
     print(f"Job {job.job_id}: validated")
-    print(f"Job {job.job_id}: target {target_path}")
+    print(f"Job {job.job_id}: target {target_doc_id}")
 
     if context.dry_run:
         print(f"Job {job.job_id}: would add person")
@@ -383,10 +361,10 @@ def process_add_person_job(job_path: Path, job: QueueJob, context: RunContext, p
         return
 
     canonical_doc = _shared._canonical_vault_upsert(job, _build_employee_entity_doc(payload, job, person_id, created_date))
-    append_idempotency_record(job_path, job, context, target_path, person_id)
+    append_idempotency_record(job_path, job, context, Path(target_doc_id), person_id)
     _shared.write_mutation_evidence(context, job, canonical_doc, f"employee {person_id}")
     moved_path = _shared.move_job_file(job_path, processed_dir)
-    print(f"Job {job.job_id}: created {target_path}")
+    print(f"Job {job.job_id}: created {target_doc_id}")
     print(f"Job {job.job_id}: moved queue file to {moved_path}")
     _shared.write_log_line(context.log_path, f"job_id={job.job_id} action=add-person status=success error=")
 

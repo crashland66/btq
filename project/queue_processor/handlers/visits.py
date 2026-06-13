@@ -153,12 +153,6 @@ def _string_list(value: object) -> list[str]:
         return []
     return [str(item).strip() for item in value if str(item).strip()]
 
-def atomic_write_bytes(path: Path, data: bytes) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temp_path = path.with_name(f".{path.name}.tmp")
-    temp_path.write_bytes(data)
-    temp_path.replace(path)
-
 def safe_photo_filename(value: str, index: int, mime_type: str) -> str:
     raw_name = Path(value.strip()).name
     stem = re.sub(r"[^A-Za-z0-9._-]+", "-", Path(raw_name).stem).strip(".-")
@@ -233,7 +227,6 @@ def process_photo_capture_job(job_path: Path, job: QueueJob, context: RunContext
         allow_create=True,
         require_existing=False,
     )
-    attachment_dir = _shared.ensure_within_root(context.vault_root / "Journal" / "Attachments" / date, context.vault_root, "Photo capture attachment directory")
     processed_destination = processed_dir / job_path.name
     if not context.dry_run and processed_destination.exists():
         raise _shared.QueueProcessorError(f"Destination already exists: {processed_destination}")
@@ -258,7 +251,7 @@ def process_photo_capture_job(job_path: Path, job: QueueJob, context: RunContext
         _shared.write_log_line(context.log_path, f"job_id={job.job_id} action=skip status=success reason=job-id-marker-present")
         return
 
-    decoded_photos: list[tuple[Path, bytes, str]] = []
+    attachment_links: list[str] = []
     seen_names: set[str] = set()
     for index, photo in enumerate(payload["photos"], start=1):
         mime_type = str(photo["mime_type"]).strip()
@@ -268,10 +261,8 @@ def process_photo_capture_job(job_path: Path, job: QueueJob, context: RunContext
         if filename in seen_names:
             filename = f"{Path(filename).stem}-{index:02d}{Path(filename).suffix}"
         seen_names.add(filename)
-        photo_path = _shared.ensure_within_root(attachment_dir / filename, context.vault_root, "Photo attachment target")
-        decoded_photos.append((photo_path, read_photo_bytes(photo, mime_type, context), f"Attachments/{date}/{filename}"))
+        attachment_links.append(f"Attachments/{date}/{filename}")
 
-    attachment_links = [link for _, _, link in decoded_photos]
     capture_entry = render_photo_capture_entry(payload, attachment_links)
 
     print(f"Job {job.job_id}: validated")
@@ -281,12 +272,6 @@ def process_photo_capture_job(job_path: Path, job: QueueJob, context: RunContext
         print(f"Job {job.job_id}: would apply photo capture")
         _shared.write_log_line(context.log_path, f"job_id={job.job_id} action=photo-capture status=success error=")
         return
-
-    for photo_path, photo_bytes, _ in decoded_photos:
-        if photo_path.exists():
-            raise _shared.QueueProcessorError(f"Photo attachment already exists: {photo_path}")
-    for photo_path, photo_bytes, _ in decoded_photos:
-        atomic_write_bytes(photo_path, photo_bytes)
 
     def transform(state: CanonicalEntityState) -> CanonicalMutation:
         outgoing = dict(state.doc or {})

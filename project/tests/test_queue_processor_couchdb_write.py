@@ -10,9 +10,22 @@ import pytest
 import queue_processor.main as qp
 from btq_vault.entity_types import OPERATOR_ID_GREG
 from queue_processor.handlers import _shared as shared
-from queue_processor.handlers.people import personnel_event_path
 from queue_processor.main import QueueJob, QueueJobError, RunContext
 from test_helpers.queue_processor_stores import RecordingVaultStore
+
+
+def _attach_vault_dir(context: RunContext, vault_root: Path) -> RunContext:
+    """Expose a throwaway ``vault_root`` temp dir on a (frozen) RunContext.
+
+    The markdown-projection vault root was removed from the production
+    ``RunContext``. These tests still use a temp directory as a convenient place
+    to (a) seed legacy projection fixtures that doc-id resolution derives ids
+    from and (b) assert the projection is NOT written. We stash it as a bare
+    instance attribute (bypassing the frozen dataclass) without reintroducing a
+    production field.
+    """
+    object.__setattr__(context, "vault_root", vault_root)
+    return context
 
 
 class FailingVaultStore:
@@ -145,16 +158,15 @@ class MissingCanonicalEmployeeDocStore(RecordingRmwVaultStore):
 def context_for(root: Path) -> RunContext:
     runtime = root / "runtime"
     runtime.mkdir(parents=True, exist_ok=True)
-    return RunContext(
+    context = RunContext(
         project_root=root,
-        vault_root=root / "vault",
-        personal_vault_root=root / "personal",
         runtime_root=runtime,
         log_path=runtime / "queue.log",
         dry_run=False,
         valid_site_ids={"7060"},
         site_id_to_opportunities_dir={},
     )
+    return _attach_vault_dir(context, root / "vault")
 
 
 def write_site(vault: Path) -> Path:
@@ -879,16 +891,20 @@ def test_photo_capture_succeeds_without_markdown_file(
     doc = store.get_optional("journal_operational_2026-04-30")
     assert doc is not None
     assert "Trash accumulation at admin entrance." in doc["content"]
-    assert (context.vault_root / "Journal" / "Attachments" / "2026-04-30" / "admin-entrance.jpg").exists()
+    # The attachment link is recorded in the canonical journal content; no
+    # markdown-projection photo bytes are written under the (dead) vault root.
+    assert "Attachments/2026-04-30/admin-entrance.jpg" in doc["content"]
+    assert not (context.vault_root / "Journal" / "Attachments" / "2026-04-30" / "admin-entrance.jpg").exists()
     assert (processed_dir / queue_file.name).exists()
 
 
-def test_photo_capture_writes_attachment_files(
+def test_photo_capture_records_attachment_links_without_writing_bytes(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     context = context_for(tmp_path)
-    monkeypatch.setattr(shared, "_VAULT_STORE", RecordingRmwVaultStore())
+    store = RecordingRmwVaultStore()
+    monkeypatch.setattr(shared, "_VAULT_STORE", store)
     queue_file = make_queue_file(context, "job-one")
     processed_dir = context.runtime_root / "processed"
 
@@ -899,8 +915,11 @@ def test_photo_capture_writes_attachment_files(
         processed_dir,
     )
 
+    doc = store.get_optional("journal_operational_2026-04-30")
+    assert doc is not None
+    assert "Attachments/2026-04-30/admin-entrance.jpg" in doc["content"]
     attachment_path = context.vault_root / "Journal" / "Attachments" / "2026-04-30" / "admin-entrance.jpg"
-    assert attachment_path.read_bytes() == b"\xff\xd8\xff\xe0\x00\x10JFIF"
+    assert not attachment_path.exists()
 
 
 def test_log_site_issue_does_not_write_projection_after_canonical_write(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -2956,9 +2975,11 @@ def test_log_personnel_event_stale_markdown_does_not_cause_skip(
     ])
     monkeypatch.setattr(shared, "_VAULT_STORE", store)
     queue_file = make_queue_file(context, "job-one")
-    target_path = personnel_event_path(context, payload)
-    target_path.parent.mkdir(parents=True, exist_ok=True)
-    target_path.write_text("---\nbtq_job_ids:\n  - job-one\n---\n# stale projection\n", encoding="utf-8")
+    # A stale markdown projection must be ignored entirely: the canonical
+    # CouchDB personnel_event doc is authoritative.
+    stale_projection = context.vault_root / "People" / "Hutton, Maria" / "Events" / "stale.md"
+    stale_projection.parent.mkdir(parents=True, exist_ok=True)
+    stale_projection.write_text("---\nbtq_job_ids:\n  - job-one\n---\n# stale projection\n", encoding="utf-8")
 
     qp.process_log_personnel_event_job(
         queue_file,
@@ -3019,5 +3040,6 @@ def test_log_personnel_event_creates_canonical_doc_when_absent(
     assert doc["type"] == "personnel_event"
     assert doc["btq_job_ids"] == ["job-one"]
     assert doc["created_at"]
-    assert not personnel_event_path(context, payload).exists()
+    # No markdown projection is written under the (dead) vault root.
+    assert not (context.vault_root / "People").exists()
     assert (processed_dir / queue_file.name).exists()

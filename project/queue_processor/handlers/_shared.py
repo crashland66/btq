@@ -50,8 +50,6 @@ from queue_spec import (
     JOB_TRIGGER_RECRUITING,
     JOB_VISIT_CREATE,
     JOB_VOICE_MEMO_NOTE,
-    VAULT_RELATIVE_PATH_JOB_TYPES,
-    normalize_vault_relative_path,
     validate_job,
 )
 from vault_errors import NotFoundError
@@ -59,10 +57,6 @@ from vault_errors import NotFoundError
 DEFAULT_CONFIG = get_config()
 
 DEFAULT_PROJECT_ROOT = DEFAULT_CONFIG.project_dir
-
-DEFAULT_VAULT_ROOT = DEFAULT_CONFIG.vault_dir
-
-DEFAULT_PERSONAL_VAULT_ROOT = DEFAULT_CONFIG.personal_vault_dir
 
 DEFAULT_RUNTIME_ROOT = DEFAULT_CONFIG.project_runtime_root
 
@@ -252,8 +246,6 @@ def patch_canonical_employee_content(path: Path, final_text: str, job: QueueJob)
 @dataclass(frozen=True)
 class RunContext:
     project_root: Path
-    vault_root: Path
-    personal_vault_root: Path
     runtime_root: Path
     log_path: Path
     dry_run: bool

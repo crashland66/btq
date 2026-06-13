@@ -224,7 +224,7 @@ def allowed_sites_for_person(site_registry: object, person: Person, explicit_sit
     return tuple(sorted(sites, key=lambda site: site.canonical_name.lower()))
 
 
-def authorize_token(token_store: TokenStore, vault_root: Path, token_value: str) -> AuthorizedSession | None:
+def authorize_token(token_store: TokenStore, token_value: str) -> AuthorizedSession | None:
     record = token_store.authenticate(token_value)
     if record is None:
         return None

@@ -13,14 +13,6 @@ from .supplies_equipment import (
     supply_need_status,
 )
 
-def locate_supply_file_by_id(context: RunContext, supply_id: str) -> Path | None:
-    supply_id = supply_id.strip()
-    if not supply_id:
-        return None
-    accounts_root = _shared.ensure_within_root(context.vault_root / "Accounts", context.vault_root, "Accounts root")
-    matches = sorted(accounts_root.glob(f"*/Locations/*/Supplies/{supply_id}__*.md"))
-    return _shared.ensure_within_root(matches[0], context.vault_root, "Supply target") if matches else None
-
 def _resolve_supply_doc_id(supply_id: str) -> str:
     """Resolve the canonical supply_need ``_id`` for a bare ``supply_id``.
 
@@ -65,22 +57,6 @@ def _resolve_issue_doc_id(issue_id: str) -> str:
     ids = sorted(str(doc.get("_id")) for doc in docs if doc.get("_id"))
     return ids[0] if ids else legacy
 
-
-def locate_equipment_file_by_id(context: RunContext, equipment_id: str) -> Path | None:
-    equipment_id = equipment_id.strip()
-    if not equipment_id:
-        return None
-    accounts_root = _shared.ensure_within_root(context.vault_root / "Accounts", context.vault_root, "Accounts root")
-    matches = sorted(accounts_root.glob(f"*/Locations/*/Equipment/{equipment_id}__*.md"))
-    return _shared.ensure_within_root(matches[0], context.vault_root, "Equipment target") if matches else None
-
-def locate_issue_file_by_id(context: RunContext, issue_id: str) -> Path | None:
-    issue_id = issue_id.strip()
-    if not issue_id:
-        return None
-    accounts_root = _shared.ensure_within_root(context.vault_root / "Accounts", context.vault_root, "Accounts root")
-    matches = sorted(accounts_root.glob(f"*/Locations/*/Issues/{issue_id}__*.md"))
-    return _shared.ensure_within_root(matches[0], context.vault_root, "Issue target") if matches else None
 
 def _merge_transition_note(existing_notes: str, note: str) -> str:
     existing_notes = existing_notes.strip()

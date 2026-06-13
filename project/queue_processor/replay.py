@@ -394,9 +394,7 @@ def execute_replay(
     personal_vault_root: Path | None = None,
 ) -> None:
     from queue_processor.main import (  # noqa: PLC0415
-        DEFAULT_PERSONAL_VAULT_ROOT,
         DEFAULT_PROJECT_ROOT,
-        DEFAULT_VAULT_ROOT,
         RunContext,
         ensure_local_runtime_root,
         process_job,
@@ -404,8 +402,6 @@ def execute_replay(
 
     resolved_runtime_root = ensure_local_runtime_root(runtime_root)
     resolved_project_root = project_root or DEFAULT_PROJECT_ROOT
-    resolved_vault_root = vault_root or DEFAULT_VAULT_ROOT
-    resolved_personal_vault_root = personal_vault_root or DEFAULT_PERSONAL_VAULT_ROOT
     processed_dir = resolved_runtime_root / "processed"
     failed_dir = resolved_runtime_root / "failed"
     logs_root = resolved_runtime_root / "logs" / "queue_processor"
@@ -415,8 +411,6 @@ def execute_replay(
     run_timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
     context = RunContext(
         project_root=resolved_project_root,
-        vault_root=resolved_vault_root,
-        personal_vault_root=resolved_personal_vault_root,
         runtime_root=resolved_runtime_root,
         log_path=logs_root / f"replay-{run_timestamp}.log",
         dry_run=False,

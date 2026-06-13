@@ -88,16 +88,18 @@ class RecordingFindStore(CouchDBEntityStore):
 def context_for(root: Path) -> qp.RunContext:
     runtime = root / "runtime"
     runtime.mkdir(parents=True, exist_ok=True)
-    return qp.RunContext(
+    context = qp.RunContext(
         project_root=root,
-        vault_root=root / "vault",
-        personal_vault_root=root / "personal",
         runtime_root=runtime,
         log_path=runtime / "queue.log",
         dry_run=False,
         valid_site_ids=set(),
         site_id_to_opportunities_dir={},
     )
+    # vault_root was removed from the production RunContext; the test still uses
+    # a throwaway temp dir to assert that no markdown projection is written.
+    object.__setattr__(context, "vault_root", root / "vault")
+    return context
 
 
 def unknown_payload(**overrides: Any) -> dict[str, Any]:

@@ -17,7 +17,7 @@ EnvironmentFile=-/etc/btq/field-capture.env
 # previously only in a machine-local drop-in, which silently truncated (2026-06-08)
 # and took photos.gregstoltz.com auth down. See memory: field_capture_couch_creds.
 EnvironmentFile=-/etc/gregstoltz/field-capture.env
-ExecStart=/usr/bin/python3 -m field_capture.server --db /srv/btq/data/field_capture_tokens.sqlite3 --vault-root /srv/btq/data/vault-readonly --upload-dir /srv/btq/runtime/uploads serve --host 127.0.0.1 --port 8080
+ExecStart=/usr/bin/python3 -m field_capture.server --db /srv/btq/data/field_capture_tokens.sqlite3 --upload-dir /srv/btq/runtime/uploads serve --host 127.0.0.1 --port 8080
 Restart=on-failure
 RestartSec=5
 NoNewPrivileges=true

@@ -175,8 +175,6 @@ def build_context(tmp_path: Path) -> tuple[Path, Path, qp.RunContext, Path, Path
     write_summit_wire_site(vault_root)
     context = qp.RunContext(
         project_root=project_root,
-        vault_root=vault_root,
-        personal_vault_root=vault_root,
         runtime_root=runtime_root,
         log_path=runtime_root / "logs" / "run.log",
         dry_run=False,

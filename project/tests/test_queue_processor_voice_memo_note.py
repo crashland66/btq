@@ -57,16 +57,19 @@ class RecordingRmwVaultStore(RecordingVaultStore):
 def context_for(root: Path) -> RunContext:
     runtime = root / "runtime"
     runtime.mkdir(parents=True, exist_ok=True)
-    return RunContext(
+    context = RunContext(
         project_root=root,
-        vault_root=root / "vault",
-        personal_vault_root=root / "personal",
         runtime_root=runtime,
         log_path=runtime / "queue.log",
         dry_run=False,
         valid_site_ids={"7060"},
         site_id_to_opportunities_dir={},
     )
+    # vault_root was removed from the production RunContext; tests still use a
+    # throwaway temp dir to seed legacy projection fixtures and assert that no
+    # projection is written.
+    object.__setattr__(context, "vault_root", root / "vault")
+    return context
 
 
 def write_site(vault: Path, *, job_ids: list[str] | None = None) -> Path:

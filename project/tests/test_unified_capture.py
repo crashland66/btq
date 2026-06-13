@@ -553,9 +553,9 @@ class SessionHappyPathTests(unittest.TestCase):
         real_authorize = uc_server.authorize_token
         calls = {"n": 0}
 
-        def spy(token_store, vault_root, token_value):
+        def spy(token_store, token_value):
             calls["n"] += 1
-            return real_authorize(token_store, vault_root, token_value)
+            return real_authorize(token_store, token_value)
 
         spy_patch = mock.patch.object(uc_server, "authorize_token", side_effect=spy)
         spy_patch.start()
@@ -3277,9 +3277,9 @@ class MySubmissionsEndpointTests(unittest.TestCase):
         real_authorize = uc_server.authorize_token
         calls = {"n": 0}
 
-        def spy(token_store, vault_root, token_value):
+        def spy(token_store, token_value):
             calls["n"] += 1
-            return real_authorize(token_store, vault_root, token_value)
+            return real_authorize(token_store, token_value)
 
         spy_patch = mock.patch.object(uc_server, "authorize_token", side_effect=spy)
         spy_patch.start()

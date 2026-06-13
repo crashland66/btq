@@ -175,7 +175,10 @@ def process_log_site_issue_job(job_path: Path, job: QueueJob, context: RunContex
 
 def process_append_to_note_job(job_path: Path, job: QueueJob, context: RunContext, processed_dir: Path) -> None:
     payload = job.payload
-    target_path = _shared.ensure_within_root(context.vault_root / str(payload["path"]), context.vault_root, "Note target")
+    # The note path is a routing key (note_journal_<stem> / location_<site_id>),
+    # not a filesystem target: the canonical CouchDB document is authoritative and
+    # the markdown projection is no longer written.
+    target_path = Path(str(payload["path"]))
     if target_path.name.endswith("-unknown.md"):
         raise _shared.QueueProcessorError(
             f"append_to_note no longer handles unknown-capture files; use record_unknown_capture: {payload['path']}"
@@ -183,7 +186,6 @@ def process_append_to_note_job(job_path: Path, job: QueueJob, context: RunContex
     content = str(payload["content"])
     store = _shared._vault_store()
     event_date = datetime.now(timezone.utc).date().isoformat()
-    existing_text = target_path.read_text(encoding="utf-8") if target_path.exists() else ""
     processed_destination = processed_dir / job_path.name
     if not context.dry_run and processed_destination.exists():
         raise _shared.QueueProcessorError(f"Destination already exists: {processed_destination}")
@@ -191,7 +193,7 @@ def process_append_to_note_job(job_path: Path, job: QueueJob, context: RunContex
     visit_key: str | None = None
     if _shared.is_site_about_path(target_path):
         target = CanonicalTarget(
-            doc_id=_shared.canonical_location_doc_id_for_projection(target_path, existing_text),
+            doc_id=_shared.canonical_location_doc_id_for_projection(target_path, ""),
             doc_type="location",
             allow_create=False,
             require_existing=True,

@@ -14,18 +14,18 @@ from queue_spec import JOB_RECLASSIFY_UNKNOWN
 def context_for(root: Path, *, dry_run: bool = False) -> _shared.RunContext:
     vault_root = root / "vault"
     runtime_root = root / "runtime"
-    personal_vault_root = root / "personal"
     (vault_root / "Journal").mkdir(parents=True, exist_ok=True)
     runtime_root.mkdir(parents=True, exist_ok=True)
-    personal_vault_root.mkdir(parents=True, exist_ok=True)
-    return _shared.RunContext(
+    context = _shared.RunContext(
         project_root=root,
-        vault_root=vault_root,
-        personal_vault_root=personal_vault_root,
         runtime_root=runtime_root,
         log_path=runtime_root / "queue.log",
         dry_run=dry_run,
     )
+    # vault_root was removed from the production RunContext; the test still uses
+    # a throwaway temp dir to assert no markdown projection is written.
+    object.__setattr__(context, "vault_root", vault_root)
+    return context
 
 
 def unknown_body(text: str = "Visited #site: 7060 today.") -> str:

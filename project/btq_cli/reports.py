@@ -183,17 +183,13 @@ def handle_trigger_nightly_digest(args: argparse.Namespace) -> int:
 def handle_process_durable_queue(args: argparse.Namespace) -> int:
     config = get_config()
     project_root = Path(args.project_root).expanduser() if args.project_root is not None else config.project_dir
-    vault_root = Path(args.vault_root).expanduser() if args.vault_root is not None else config.vault_dir
     runtime_root = Path(args.runtime_root).expanduser() if args.runtime_root is not None else config.project_runtime_root
-    personal_vault_root = Path(args.personal_vault_root).expanduser() if args.personal_vault_root is not None else config.personal_vault_dir
     try:
         if args.json:
             processor_stdout = io.StringIO()
             with redirect_stdout(processor_stdout):
                 report = queue_processor_main.process_all(
                     project_root=project_root,
-                    vault_root=vault_root,
-                    personal_vault_root=personal_vault_root,
                     runtime_root=runtime_root,
                     dry_run=bool(args.dry_run),
                     skip_unknowns=bool(args.skip_unknowns),
@@ -202,8 +198,6 @@ def handle_process_durable_queue(args: argparse.Namespace) -> int:
         else:
             report = queue_processor_main.process_all(
                 project_root=project_root,
-                vault_root=vault_root,
-                personal_vault_root=personal_vault_root,
                 runtime_root=runtime_root,
                 dry_run=bool(args.dry_run),
                 skip_unknowns=bool(args.skip_unknowns),

@@ -604,9 +604,8 @@ def test_process_all_logs_under_supplied_runtime_root(tmp_path: Path, monkeypatc
     project_root, vault_root, runtime_root, _log_path = make_roots(tmp_path)
     global_logs_root = tmp_path / "global-logs" / "queue_processor"
     monkeypatch.setattr(queue_main, "DEFAULT_LOGS_ROOT", global_logs_root)
-    monkeypatch.setattr(queue_main, "DEFAULT_PERSONAL_VAULT_ROOT", vault_root)
 
-    queue_main.process_all(project_root, vault_root, runtime_root, dry_run=False)
+    queue_main.process_all(project_root, runtime_root, dry_run=False)
 
     assert (runtime_root / "logs" / "queue_processor").exists()
     assert not global_logs_root.exists()
@@ -618,8 +617,6 @@ def test_run_context_rejects_runtime_log_path_outside_runtime_root(tmp_path: Pat
     with pytest.raises(queue_main.QueueProcessorError, match="queue processor log path is outside allowed root"):
         queue_main.RunContext(
             project_root=project_root,
-            vault_root=vault_root,
-            personal_vault_root=vault_root,
             runtime_root=runtime_root,
             log_path=tmp_path / "outside-logs" / "run.log",
             dry_run=False,

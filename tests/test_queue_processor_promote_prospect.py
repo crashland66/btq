@@ -15,8 +15,6 @@ def context(tmp_path: Path) -> qp.RunContext:
     vault.mkdir()
     return qp.RunContext(
         project_root=tmp_path,
-        vault_root=vault,
-        personal_vault_root=vault,
         runtime_root=runtime,
         log_path=runtime / "queue.log",
         dry_run=False,

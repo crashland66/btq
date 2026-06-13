@@ -81,7 +81,6 @@ class UnifiedCaptureServer(ThreadingHTTPServer):
         address: tuple[str, int],
         *,
         token_store: TokenStore,
-        vault_root: Path,
         upload_dir: Path | None = None,
         max_images: int = 6,
         max_upload_bytes: int = 10 * 1024 * 1024,
@@ -92,7 +91,6 @@ class UnifiedCaptureServer(ThreadingHTTPServer):
     ) -> None:
         super().__init__(address, UnifiedCaptureHandler)
         self.token_store = token_store
-        self.vault_root = vault_root.expanduser()
         self.data_dir = data_dir
         self.upload_dir = (upload_dir or default_upload_dir()).expanduser().resolve(strict=False)
         self.max_images = max_images
@@ -177,7 +175,7 @@ class UnifiedCaptureHandler(BaseHTTPRequestHandler):
             self.write_json({"error": "missing_token"}, HTTPStatus.UNAUTHORIZED)
             return
         try:
-            session = authorize_token(self.server.token_store, self.server.vault_root, token_value)
+            session = authorize_token(self.server.token_store, token_value)
         except Exception:
             self.write_json({"error": "authorization_failed"}, HTTPStatus.FORBIDDEN)
             return
@@ -294,7 +292,7 @@ class UnifiedCaptureHandler(BaseHTTPRequestHandler):
             self.write_json({"error": "missing_token"}, HTTPStatus.UNAUTHORIZED)
             return
         try:
-            session = authorize_token(self.server.token_store, self.server.vault_root, token_value)
+            session = authorize_token(self.server.token_store, token_value)
         except Exception:
             self.write_json({"error": "authorization_failed"}, HTTPStatus.FORBIDDEN)
             return
@@ -364,7 +362,7 @@ class UnifiedCaptureHandler(BaseHTTPRequestHandler):
             self.write_json({"error": "missing_token"}, HTTPStatus.UNAUTHORIZED)
             return None
         try:
-            session = authorize_token(self.server.token_store, self.server.vault_root, token_value)
+            session = authorize_token(self.server.token_store, token_value)
         except Exception:
             self.write_json({"error": "authorization_failed"}, HTTPStatus.FORBIDDEN)
             return None
@@ -752,7 +750,7 @@ class UnifiedCaptureHandler(BaseHTTPRequestHandler):
             limits=self.media_record_limits(audio_files),
             audio_duration_seconds=fields.get("audio_duration_seconds", "").strip(),
         )
-        attribution = resolve_submission_attribution(session, fields, self.server.vault_root)
+        attribution = resolve_submission_attribution(session, fields)
         domain_fields: dict[str, object] = {
             "site": site,
             "site_id": str(site_id or ""),
@@ -810,7 +808,7 @@ class UnifiedCaptureHandler(BaseHTTPRequestHandler):
             self.write_json({"error": "missing_token"}, HTTPStatus.UNAUTHORIZED)
             return
         try:
-            session = authorize_token(self.server.token_store, self.server.vault_root, token_value)
+            session = authorize_token(self.server.token_store, token_value)
         except Exception:
             self.write_json({"error": "authorization_failed"}, HTTPStatus.FORBIDDEN)
             return
@@ -938,7 +936,6 @@ def run(
     host: str,
     port: int,
     db_path: Path,
-    vault_root: Path,
     upload_dir: Path,
     max_images: int,
     max_upload_bytes: int,
@@ -962,7 +959,6 @@ def run(
     server = UnifiedCaptureServer(
         (host, port),
         token_store=token_store,
-        vault_root=vault_root,
         upload_dir=upload_dir,
         max_images=max_images,
         max_upload_bytes=max_upload_bytes,
@@ -974,19 +970,16 @@ def run(
     logging.info("unified capture listening on http://%s:%s", host, port)
     logging.info("unified capture ingress: couchdb (db=%s)", couchdb_database)
     logging.info("token database: %s", db_path.expanduser())
-    logging.info("vault root: %s", vault_root.expanduser())
     logging.info("upload dir: %s", upload_dir.expanduser())
     server.serve_forever()
     return 0
 
 
 def main() -> int:
-    config = get_config()
     parser = argparse.ArgumentParser(description="Run the unified field-capture server.")
     parser.add_argument("--host", default=os.environ.get("UNIFIED_CAPTURE_HOST", "127.0.0.1"))
     parser.add_argument("--port", type=int, default=int(os.environ.get("UNIFIED_CAPTURE_PORT", "8093")))
     parser.add_argument("--db", type=Path, default=default_db_path(), help="SQLite token database path.")
-    parser.add_argument("--vault-root", type=Path, default=config.vault_dir, help="Vault root used for people/site authorization.")
     parser.add_argument("--upload-dir", type=Path, default=default_upload_dir(), help="Directory for submitted capture uploads.")
     parser.add_argument("--max-images", type=int, default=6, help="Maximum photos per submission.")
     parser.add_argument("--max-upload-bytes", type=int, default=10 * 1024 * 1024, help="Maximum bytes per uploaded photo.")
@@ -1006,7 +999,6 @@ def main() -> int:
         args.host,
         args.port,
         args.db,
-        args.vault_root,
         args.upload_dir,
         args.max_images,
         args.max_upload_bytes,

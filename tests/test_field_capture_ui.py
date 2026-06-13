@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from http import HTTPStatus
 from io import BytesIO
 from pathlib import Path
@@ -48,9 +49,9 @@ def test_mobile_form_uses_prominent_add_photo_button_without_camera_controls() -
     html = (PROJECT_ROOT / "index.html").read_text(encoding="utf-8")
 
     assert 'class="brand-logo"' in html
-    assert 'src="./assets/app-logo.png"' in html
+    assert 'src="./assets/field-capture-header-light.svg"' in html
     assert 'alt="Field Capture"' in html
-    assert (PROJECT_ROOT / "assets" / "app-logo.png").is_file()
+    assert (PROJECT_ROOT / "assets" / "field-capture-header-light.svg").is_file()
     assert "Photo evidence for BTQ queue review" not in html
     assert "<h1>Field Capture</h1>" not in html
     assert "Ready to submit field capture" in html
@@ -183,12 +184,12 @@ def test_javascript_keeps_file_upload_submit_flow_without_camera_state() -> None
     assert "stream?.getTracks().forEach((track) => track.stop());" in app_js
     assert "function finishActiveVoiceRecordingForSubmit()" in app_js
     assert "await finishActiveVoiceRecordingForSubmit();" in app_js
-    assert app_js.index("await finishActiveVoiceRecordingForSubmit();") < app_js.index("const record = buildCaptureRecord();")
+    assert app_js.index("await finishActiveVoiceRecordingForSubmit();") < app_js.index("const record = await buildCaptureRecord();")
     assert 'elements.recordVoiceButton.addEventListener("click", handleRecordVoiceEvent);' in app_js
     assert 'elements.recordVoiceButton.addEventListener("touchend", handleRecordVoiceEvent);' in app_js
     assert 'INTERFACE_VERSION = "2026.05.16-tape-deck"' in app_js
     assert 'INTERFACE_VERSION = "2026.05.14-success-screen"' in app_js
-    assert 'form.append("audio", record.audio.blob, record.audio.filename);' in app_js
+    assert 'form.append("audio", partBlob(record.audio), record.audio.filename);' in app_js
     assert 'form.append("audio_duration_seconds", String(record.audio.durationSeconds || 0));' in app_js
     assert "run on localhost" not in app_js
 
@@ -648,7 +649,7 @@ def test_interface_version_bumped_for_local_first() -> None:
     assert "2026.05.24-multi-photo" in app_js
 
 
-def test_service_worker_file_present_and_drain_only() -> None:
+def test_service_worker_file_present_drains_and_precaches_offline_shell() -> None:
     sw = render_service_worker("field_capture")
 
     # Sync event handler
@@ -659,11 +660,30 @@ def test_service_worker_file_present_and_drain_only() -> None:
     assert '"field_capture_v1"' in sw
     assert '"captures"' in sw
 
-    # No app-shell caching at this stage — the SW is
-    # deliberately drain-only.
-    assert 'addEventListener("fetch"' not in sw
-    assert "caches.open" not in sw
-    assert "addAll(" not in sw
+    # field_capture ships shell_assets, so the rendered SW precaches an offline
+    # app shell on install/activate and serves it stale-while-revalidate. The
+    # shell behavior is gated on SHELL_ENABLED (true when SHELL_ASSETS is
+    # non-empty), so the same source stays drain-only for shell-less products.
+    assert "const SHELL_ENABLED = SHELL_ASSETS.length > 0;" in sw
+    shell_assets = json.loads(sw.split("const SHELL_ASSETS = ", 1)[1].split(";", 1)[0])
+    assert shell_assets, "field_capture renders a non-empty SHELL_ASSETS list"
+    assert "/index.html" in shell_assets
+    assert "/app.js" in shell_assets
+    assert 'addEventListener("install"' in sw
+    assert 'addEventListener("activate"' in sw
+    assert "if (SHELL_ENABLED) {" in sw
+    assert "caches.open(SHELL_CACHE)" in sw
+    assert "cache.addAll(SHELL_ASSETS)" in sw
+    assert "await self.skipWaiting();" in sw
+    assert "await self.clients.claim();" in sw
+
+    # fetch handler: same-origin GET shell only; /api/* and non-GET pass through.
+    assert 'addEventListener("fetch"' in sw
+    assert "if (!SHELL_ENABLED) return;" in sw
+    assert 'if (request.method !== "GET") return;' in sw
+    assert 'if (url.pathname.startsWith("/api/")) return;' in sw
+    assert "function staleWhileRevalidate(request, navFallbackPath)" in sw
+    assert 'staleWhileRevalidate(request, "/index.html")' in sw
 
     # Upload contract matches the foreground path
     assert "/api/submit" in sw
@@ -682,6 +702,20 @@ def test_service_worker_file_present_and_drain_only() -> None:
     assert "recovered_orphaned_upload" in sw
 
 
+def test_service_worker_voice_memo_has_no_offline_shell() -> None:
+    sw = render_service_worker("voice_memo")
+
+    # voice_memo ships no shell_assets, so SHELL_ASSETS renders empty and
+    # SHELL_ENABLED is false: the install/activate precache and the fetch
+    # interception are no-ops, keeping voice_memo effectively drain-only.
+    assert "const SHELL_ASSETS = [];" in sw
+    assert "const SHELL_ENABLED = SHELL_ASSETS.length > 0;" in sw
+    # The drain pipeline is still present.
+    assert 'addEventListener("sync"' in sw
+    assert "/api/upload" in sw
+    assert "UPLOAD_ORPHAN_RESET_MS" in sw
+
+
 def test_service_worker_shared_source_renders_per_product() -> None:
     field_sw = render_service_worker("field_capture")
     voice_sw = render_service_worker("voice_memo")
@@ -697,15 +731,35 @@ def test_service_worker_shared_source_renders_per_product() -> None:
     assert "recovered_orphaned_upload" in field_sw
     assert "recovered_orphaned_upload" in voice_sw
 
-    normalized_field = (
-        field_sw.replace("Field-capture", "__PRODUCT__")
-        .replace("/api/submit", "__API_ENDPOINT__")
-        .replace("!response.ok", "__SUCCESS_CHECK__")
+    # Normalize the per-product substitutions back to template markers. This
+    # includes the rendered SHELL_ASSETS list, which differs because
+    # field_capture ships an offline shell and voice_memo does not — the SW
+    # SOURCE is still a single shared template.
+    def _normalize_shell_assets(sw: str) -> str:
+        prefix, rest = sw.split("const SHELL_ASSETS = ", 1)
+        _rendered, tail = rest.split(";", 1)
+        return prefix + "const SHELL_ASSETS = __SHELL_ASSETS__;" + tail
+
+    # The fetch-handler doc comment hardcodes "POST /api/submit" as an example.
+    # For field_capture the __API_ENDPOINT__ substitution rewrites it; for
+    # voice_memo (/api/upload) the literal stays. Neutralize it in both so the
+    # comparison reflects the shared template, not that one example string.
+    def _normalize_comment_endpoint(sw: str) -> str:
+        return sw.replace("notably POST /api/submit)", "notably POST __API_ENDPOINT__)")
+
+    normalized_field = _normalize_comment_endpoint(
+        _normalize_shell_assets(
+            field_sw.replace("Field-capture", "__PRODUCT__")
+            .replace("/api/submit", "__API_ENDPOINT__")
+            .replace("!response.ok", "__SUCCESS_CHECK__")
+        )
     )
-    normalized_voice = (
-        voice_sw.replace("Voice-memo", "__PRODUCT__")
-        .replace("/api/upload", "__API_ENDPOINT__")
-        .replace("response.status !== 201 && response.status !== 200", "__SUCCESS_CHECK__")
+    normalized_voice = _normalize_comment_endpoint(
+        _normalize_shell_assets(
+            voice_sw.replace("Voice-memo", "__PRODUCT__")
+            .replace("/api/upload", "__API_ENDPOINT__")
+            .replace("response.status !== 201 && response.status !== 200", "__SUCCESS_CHECK__")
+        )
     )
     assert normalized_field == normalized_voice
 

@@ -53,16 +53,16 @@ EXPECTED_HANDLER_NAMES = {
 def context_for(root: Path) -> qp.RunContext:
     runtime_root = root / "runtime"
     runtime_root.mkdir(parents=True)
-    return qp.RunContext(
+    context = qp.RunContext(
         project_root=root,
-        vault_root=root / "vault",
-        personal_vault_root=root / "personal",
         runtime_root=runtime_root,
         log_path=runtime_root / "queue.log",
         dry_run=False,
         valid_site_ids=set(),
         site_id_to_opportunities_dir={},
     )
+    object.__setattr__(context, "vault_root", root / "vault")
+    return context
 
 
 def test_registry_covers_all_allowed_job_types() -> None:

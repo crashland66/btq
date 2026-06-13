@@ -38,7 +38,6 @@ def test_queue_watcher_writes_personal_journal_entry(tmp_path: Path, monkeypatch
     ):
         directory.mkdir(parents=True, exist_ok=True)
     monkeypatch.setattr(queue_main, "DEFAULT_LOGS_ROOT", logs_dir / "queue_processor")
-    monkeypatch.setattr(queue_main, "DEFAULT_PERSONAL_VAULT_ROOT", personal_vault_root)
     job_payload = {
         "job_type": "personal_journal_entry",
         "payload": {
@@ -53,7 +52,6 @@ def test_queue_watcher_writes_personal_journal_entry(tmp_path: Path, monkeypatch
 
     watch.run_once(
         project_root,
-        vault_root,
         runtime_root,
         local_root,
         logs_dir,
@@ -94,8 +92,6 @@ def test_watch_default_log_path_follows_runtime_root(tmp_path: Path, monkeypatch
         [
             "--project-root",
             str(project_root),
-            "--vault-root",
-            str(vault_root),
             "--runtime-root",
             str(runtime_root),
             "--once",

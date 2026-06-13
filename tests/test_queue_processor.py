@@ -131,14 +131,17 @@ def build_context(
     dry_run: bool,
     personal_vault_root: Optional[Path] = None,
 ) -> qp.RunContext:
-    return qp.RunContext(
+    context = qp.RunContext(
         project_root=project_root,
-        vault_root=vault_root,
-        personal_vault_root=vault_root if personal_vault_root is None else personal_vault_root,
         runtime_root=runtime_root,
         log_path=log_path,
         dry_run=dry_run,
     )
+    # vault_root was removed from the production RunContext; tests still pass a
+    # throwaway temp dir for seeding legacy projection fixtures.
+    object.__setattr__(context, "vault_root", vault_root)
+    object.__setattr__(context, "personal_vault_root", vault_root if personal_vault_root is None else personal_vault_root)
+    return context
 
 
 def run_jobs(
@@ -1223,8 +1226,6 @@ def test_process_all_skip_unknowns_processes_durable_queue_only(tmp_path: Path, 
 
     report = qp.process_all(
         project_root=project_root,
-        vault_root=vault_root,
-        personal_vault_root=vault_root,
         runtime_root=runtime_root,
         dry_run=False,
         skip_unknowns=True,
@@ -1304,8 +1305,6 @@ def test_process_all_loads_processed_index_once_for_multiple_jobs(tmp_path: Path
 
     report = qp.process_all(
         project_root=project_root,
-        vault_root=vault_root,
-        personal_vault_root=vault_root,
         runtime_root=runtime_root,
         dry_run=False,
         skip_unknowns=True,
@@ -1330,8 +1329,6 @@ def test_existing_processed_destination_with_indexed_job_exits_cleanly(tmp_path:
     write_job(runtime_root / "queue", "indexed-replay.json", payload)
     qp.process_all(
         project_root=project_root,
-        vault_root=vault_root,
-        personal_vault_root=vault_root,
         runtime_root=runtime_root,
         dry_run=False,
         skip_unknowns=True,
@@ -1340,8 +1337,6 @@ def test_existing_processed_destination_with_indexed_job_exits_cleanly(tmp_path:
 
     report = qp.process_all(
         project_root=project_root,
-        vault_root=vault_root,
-        personal_vault_root=vault_root,
         runtime_root=runtime_root,
         dry_run=False,
         skip_unknowns=True,
@@ -1390,8 +1385,6 @@ def test_existing_processed_destination_with_applied_job_exits_cleanly(tmp_path:
 
     report = qp.process_all(
         project_root=project_root,
-        vault_root=vault_root,
-        personal_vault_root=vault_root,
         runtime_root=runtime_root,
         dry_run=False,
         skip_unknowns=True,
@@ -1418,8 +1411,6 @@ def test_ambiguous_failed_destination_collision_stays_retryable_and_logs(tmp_pat
 
     report = qp.process_all(
         project_root=project_root,
-        vault_root=vault_root,
-        personal_vault_root=vault_root,
         runtime_root=runtime_root,
         dry_run=False,
         skip_unknowns=True,
@@ -1936,7 +1927,9 @@ def test_photo_capture_writes_canonical_journal_entry_and_attachments(tmp_path: 
     assert "Trash accumulation at admin entrance." in journal_text
     assert "Severity" not in journal_text
     assert "![[Attachments/2026-04-30/admin-entrance.jpg]]" in journal_text
-    assert attachment_path.read_bytes() == b"\xff\xd8\xff\xe0\x00\x10JFIF"
+    # The attachment link is recorded in the canonical journal; no projection
+    # photo bytes are written under the (dead) vault root.
+    assert not attachment_path.exists()
     assert "action=photo-capture status=success" in log_text
     assert "updated" not in stdout
     assert (runtime_root / "processed" / "2026-04-30T18-00-00Z__photo-capture.json").exists()
@@ -1970,8 +1963,14 @@ def test_photo_capture_accepts_stored_upload_path(tmp_path: Path) -> None:
 
     run_jobs(project_root, vault_root, runtime_root, log_path)
 
+    # The capture is recorded canonically; the markdown-projection attachment
+    # bytes are no longer written under the (dead) vault root.
     attachment_path = vault_root / "Journal" / "Attachments" / "2026-04-30" / "admin-entrance.jpg"
-    assert attachment_path.read_bytes() == b"\xff\xd8stored"
+    assert not attachment_path.exists()
+    store = shared._VAULT_STORE
+    assert isinstance(store, RecordingVaultStore)
+    journal_doc = recording_doc(store, "journal_operational_2026-04-30")
+    assert "![[Attachments/2026-04-30/admin-entrance.jpg]]" in journal_doc["content"]
     assert not (vault_root / "Journal" / "2026-04-30.md").exists()
 
 
@@ -4071,25 +4070,6 @@ def test_flag_access_constraint_requires_canonical_site_target(tmp_path: Path) -
     assert "failed" in stdout
     assert "Could not resolve canonical site target: Warehouse 42" in log_text
     assert "Gate code changed overnight." not in site_text
-
-
-def test_load_people_query_records_combines_primary_and_additional_jobs(tmp_path: Path) -> None:
-    _project_root, vault_root, _runtime_root, _log_path = make_roots(tmp_path)
-    person_path = vault_root / "People" / "Pearson, Mike.md"
-    person_path.write_text(
-        "---\n"
-        "type: employee\n"
-        "name: Mike Pearson\n"
-        "status: active\n"
-        "job: 7050\n"
-        "additional_jobs:\n"
-        "  - 7060\n"
-        "  - 7071\n"
-        "---\n",
-        encoding="utf-8",
-    )
-
-    assert qp.load_people_query_records(vault_root) == [("Mike Pearson", "active", [7050, 7060, 7071])]
 
 
 def test_get_active_visit_returns_key_when_canonical_visit_exists(

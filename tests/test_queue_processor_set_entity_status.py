@@ -94,16 +94,16 @@ def context(tmp_path: Path) -> qp.RunContext:
     runtime.mkdir(exist_ok=True)
     vault = tmp_path / "vault"
     vault.mkdir(exist_ok=True)
-    return qp.RunContext(
+    context = qp.RunContext(
         project_root=tmp_path,
-        vault_root=vault,
-        personal_vault_root=vault,
         runtime_root=runtime,
         log_path=runtime / "queue.log",
         dry_run=False,
         valid_site_ids={"7030"},
         site_id_to_opportunities_dir={},
     )
+    object.__setattr__(context, "vault_root", vault)
+    return context
 
 
 def write_site(vault: Path, *, active: bool = True, status: str | None = None) -> Path:

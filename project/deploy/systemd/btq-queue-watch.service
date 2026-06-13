@@ -13,7 +13,6 @@ Environment="BTQ_COUCHDB_URL=@@BTQ_COUCHDB_URL@@"
 Environment="BTQ_COUCHDB_USER=@@BTQ_COUCHDB_USER@@"
 Environment="BTQ_COUCHDB_PASSWORD=@@BTQ_COUCHDB_PASSWORD@@"
 Environment="BTQ_RUNTIME_ROOT=@@BTQ_RUNTIME_ROOT@@"
-Environment="BTQ_VAULT_ROOT=@@BTQ_VAULT_ROOT@@"
 ExecStart=@@BTQ_PYTHON_BIN@@ -m queue_processor.watch
 Restart=always
 RestartSec=10

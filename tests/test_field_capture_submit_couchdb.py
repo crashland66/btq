@@ -368,7 +368,6 @@ def test_run_server_exits_when_btq_couchdb_url_not_set(tmp_path: Path, monkeypat
         "127.0.0.1",
         0,
         tmp_path / "tokens.sqlite3",
-        tmp_path / "vault",
         tmp_path / "uploads",
         6,
         1024 * 1024,

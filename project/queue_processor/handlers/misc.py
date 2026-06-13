@@ -443,10 +443,7 @@ def resolve_supply_email_path(context: RunContext, path_value: str) -> Path:
     candidate = Path(path_value).expanduser()
     if candidate.is_absolute():
         repo_root = context.project_root.parent
-        try:
-            return _shared.ensure_within_root(candidate, repo_root, "Supply email source")
-        except _shared.QueueProcessorError:
-            return _shared.ensure_within_root(candidate, context.vault_root, "Supply email source")
+        return _shared.ensure_within_root(candidate, repo_root, "Supply email source")
     return _shared.ensure_within_root(context.project_root.parent / candidate, context.project_root.parent, "Supply email source")
 
 def parse_source_email_datetime(value: str) -> datetime:

@@ -94,7 +94,7 @@ def test_authorize_token_valid_builds_session_from_canonical(tmp_path: Path, mon
     store = TokenStore(tmp_path / "tokens.sqlite3")
     created = store.create_token("jordan-avery", label="Jordan iPhone")
 
-    session = authorize_token(store, vault_root, created.token_value)
+    session = authorize_token(store, created.token_value)
 
     assert session is not None
     assert str(session.person.person_id) == "jordan-avery"
@@ -109,7 +109,7 @@ def test_revoked_token_is_rejected(tmp_path: Path) -> None:
     created = store.create_token("jordan-avery")
     assert store.revoke_token(created.record.token_id)
 
-    assert authorize_token(store, vault_root, created.token_value) is None
+    assert authorize_token(store, created.token_value) is None
 
 
 def test_expired_token_is_rejected(tmp_path: Path) -> None:
@@ -117,7 +117,7 @@ def test_expired_token_is_rejected(tmp_path: Path) -> None:
     store = TokenStore(tmp_path / "tokens.sqlite3")
     created = store.create_token("jordan-avery", expires_at=utc_now() - timedelta(minutes=1))
 
-    assert authorize_token(store, vault_root, created.token_value) is None
+    assert authorize_token(store, created.token_value) is None
 
 
 def test_multi_site_authorization(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -130,7 +130,7 @@ def test_multi_site_authorization(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
     store = TokenStore(tmp_path / "tokens.sqlite3")
     created = store.create_token("jordan-avery")
 
-    session = authorize_token(store, vault_root, created.token_value)
+    session = authorize_token(store, created.token_value)
 
     assert session is not None
     assert [site.canonical_name for site in session.sites] == ["Apex Powdered Metals", "Summit Wire"]
@@ -153,7 +153,7 @@ def test_authorize_token_explicit_site_scope(tmp_path: Path, monkeypatch: pytest
         site_ids=["7050", "missing"],
     )
 
-    session = authorize_token(store, vault_root, created.token_value)
+    session = authorize_token(store, created.token_value)
 
     assert session is not None
     assert session.record.token_type == "client_viewer"
@@ -173,7 +173,7 @@ def test_authorize_token_universal_scope_returns_all_sites_sorted(tmp_path: Path
     store = TokenStore(tmp_path / "tokens.sqlite3")
     created = store.create_token("jordan-avery", label="Jordan admin", token_type="admin_viewer", site_ids=["*"])
 
-    session = authorize_token(store, vault_root, created.token_value)
+    session = authorize_token(store, created.token_value)
 
     assert session is not None
     assert session.record.site_ids == ("*",)
@@ -183,7 +183,7 @@ def test_authorize_token_universal_scope_returns_all_sites_sorted(tmp_path: Path
 def test_authorize_token_invalid_token_returns_none(tmp_path: Path) -> None:
     store = TokenStore(tmp_path / "tokens.sqlite3")
 
-    assert authorize_token(store, tmp_path / "vault", "fc_missing") is None
+    assert authorize_token(store, "fc_missing") is None
 
 
 def test_authorize_token_missing_employee_doc_denies(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -191,7 +191,7 @@ def test_authorize_token_missing_employee_doc_denies(tmp_path: Path, monkeypatch
     store = TokenStore(tmp_path / "tokens.sqlite3")
     created = store.create_token("jordan-avery")
 
-    assert authorize_token(store, tmp_path / "vault", created.token_value) is None
+    assert authorize_token(store, created.token_value) is None
 
 
 def test_load_person_from_canonical_resolves_by_person_id_field_when_doc_id_differs() -> None:
@@ -236,7 +236,7 @@ def test_auth_fallback_matches_first_last_token_against_legacy_doc(tmp_path: Pat
     store = TokenStore(tmp_path / "tokens.sqlite3")
     created = store.create_token("frank-russo")
 
-    session = authorize_token(store, tmp_path / "vault", created.token_value)
+    session = authorize_token(store, created.token_value)
 
     assert session is not None
     assert str(session.person.person_id) == "frank-russo"
@@ -263,7 +263,7 @@ def test_auth_fallback_still_matches_last_first_order(tmp_path: Path, monkeypatc
     store = TokenStore(tmp_path / "tokens.sqlite3")
     created = store.create_token("russo-frank")
 
-    session = authorize_token(store, tmp_path / "vault", created.token_value)
+    session = authorize_token(store, created.token_value)
 
     assert session is not None
     assert str(session.person.person_id) == "russo-frank"
@@ -320,7 +320,7 @@ def test_auth_does_not_match_unrelated_doc(tmp_path: Path, monkeypatch: pytest.M
     store = TokenStore(tmp_path / "tokens.sqlite3")
     created = store.create_token("frank-russo")
 
-    assert authorize_token(store, tmp_path / "vault", created.token_value) is None
+    assert authorize_token(store, created.token_value) is None
 
 
 def test_load_person_from_canonical_raises_for_truly_absent_person() -> None:
@@ -333,7 +333,7 @@ def test_authorize_token_store_unreachable_denies(tmp_path: Path, monkeypatch: p
     store = TokenStore(tmp_path / "tokens.sqlite3")
     created = store.create_token("jordan-avery", site_ids=["*"])
 
-    assert authorize_token(store, tmp_path / "vault", created.token_value) is None
+    assert authorize_token(store, created.token_value) is None
 
 
 def test_read_helper_logs_then_falls_back(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog) -> None:
@@ -341,7 +341,7 @@ def test_read_helper_logs_then_falls_back(tmp_path: Path, monkeypatch: pytest.Mo
     store = TokenStore(tmp_path / "tokens.sqlite3")
     created = store.create_token("jordan-avery", site_ids=["7050"])
 
-    assert authorize_token(store, tmp_path / "vault", created.token_value) is None
+    assert authorize_token(store, created.token_value) is None
     assert "field-capture auth lookup failed person_id=jordan-avery" in caplog.text
     assert "store down" in caplog.text
 
@@ -363,7 +363,7 @@ def test_authorize_token_universal_scope_registry_failure_denies_session(tmp_pat
     store = TokenStore(tmp_path / "tokens.sqlite3")
     created = store.create_token("jordan-avery", site_ids=["*"])
 
-    assert authorize_token(store, tmp_path / "vault", created.token_value) is None
+    assert authorize_token(store, created.token_value) is None
 
 
 def test_site_membership_is_resolved_dynamically(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -373,9 +373,9 @@ def test_site_membership_is_resolved_dynamically(tmp_path: Path, monkeypatch: py
     store = TokenStore(tmp_path / "tokens.sqlite3")
     created = store.create_token("jordan-avery")
 
-    first_session = authorize_token(store, vault_root, created.token_value)
+    first_session = authorize_token(store, created.token_value)
     docs["employee_jordan-avery"] = employee_doc(site_ids=["7050", "7060"])
-    second_session = authorize_token(store, vault_root, created.token_value)
+    second_session = authorize_token(store, created.token_value)
 
     assert first_session is not None
     assert second_session is not None
