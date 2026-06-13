@@ -291,6 +291,46 @@ def _capture_provenance(doc: dict[str, Any]) -> str:
     return f"<details><summary>Capture provenance</summary>{''.join(parts)}</details>"
 
 
+def _notes_section(site_id: str) -> str:
+    """Site-tagged ``note`` docs from CouchDB (``btq_vault``).
+
+    Surfaces operator notes linked to this site (``site_id`` field). Note: legacy
+    day-record notes are keyed by date with no site_id and won't appear here.
+    """
+    base, headers, database, timeout = _cdb()
+    url = f"{base.rstrip('/')}/{urlparse.quote(database, safe='')}/_find"
+    payload = {"selector": {"type": "note"}, "limit": 1000}
+    req = urlrequest.Request(
+        url,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json", "Accept": "application/json", **headers},
+        method="POST",
+    )
+    try:
+        with urlrequest.urlopen(req, timeout=timeout) as resp:
+            docs = json.loads(resp.read().decode("utf-8")).get("docs", [])
+    except Exception:  # noqa: BLE001 — degrade to an empty section, never break the page
+        docs = []
+    target = str(site_id).strip()
+    notes = [d for d in docs if str(d.get("site_id") or "").strip().strip('"') == target]
+    if not notes:
+        return _section("Notes", '<p class="muted">No site notes.</p>')
+    notes.sort(key=lambda d: str(d.get("created_at") or d.get("date") or ""), reverse=True)
+    blocks = []
+    for doc in notes:
+        when = str(doc.get("created_at") or doc.get("date") or "")[:10]
+        content = str(doc.get("content") or "")
+        if content.startswith("---\n"):
+            closing = content.find("\n---\n")
+            if closing != -1:
+                content = content[closing + 5:]
+        meta = f'<div class="muted" style="font-size:12px">{html.escape(when)}</div>' if when else ""
+        blocks.append(
+            f'<article style="border:1px solid var(--line);border-radius:8px;background:var(--panel);padding:12px;margin-bottom:10px">{meta}{render_markdown(content)}</article>'
+        )
+    return _section("Notes", "".join(blocks))
+
+
 def _related_sections(site_id: str) -> list[str]:
     base, headers, database, timeout = _cdb()
     employee_rows = [
@@ -310,6 +350,7 @@ def _related_sections(site_id: str) -> list[str]:
     ]
     recent_visits = sorted(visit_rows, key=lambda row: _row_date(row) or date.min, reverse=True)[:5]
     return [
+        _notes_section(site_id),
         _section("Employees Assigned", _employee_table(employee_rows, include_sites=False)),
         _section("Open Opportunities", _simple_table(["Opportunity"], [_opportunity_label(row) for row in opportunity_rows])),
         _section("Recent Visits", _visit_details(recent_visits)),
