@@ -20,7 +20,7 @@ from field_capture.site_viewer import UnsafeMediaPath, resolve_media_request
 from ops_dashboard.common import SectionContext
 from ops_dashboard.layout import html_page
 from ops_dashboard.post_routes import dispatch_post_route
-from ops_dashboard.sections import admin, audio, batch_images, candidates, captures, drafts, employee_detail, employees, equipment, failed, field_photos, health, health_pipeline, help as help_section, home, inbox, issues, photos, prospect_detail, site_detail, sites, supplies, swipe, system, tokens, workers
+from ops_dashboard.sections import admin, audio, batch_images, candidates, captures, drafts, employee_detail, employees, equipment, failed, field_photos, health, health_pipeline, help as help_section, home, inbox, issues, photos, prospect_detail, records, site_detail, sites, supplies, swipe, system, tokens, workers
 from shared_pwa.assets import serve_static_asset
 
 # Cap concurrent request workers. stdlib ThreadingHTTPServer spawns an
@@ -63,7 +63,7 @@ SECTION_ROUTES = {
     "/equipment/mark-ordered-confirm": equipment, "/equipment/mark-provided-confirm": equipment,
     "/equipment/mark-no-action-needed-confirm": equipment, "/drafts": drafts, "/drafts/stage-preview": drafts,
     "/failed": failed, "/captures": captures, "/audio": audio, "/batch-images": batch_images,
-    "/photos": photos, "/field-photos": field_photos, "/sites": sites, "/sites/new": sites,
+    "/photos": photos, "/field-photos": field_photos, "/records": records, "/sites": sites, "/sites/new": sites,
     "/employees": employees, "/tokens": tokens, "/tokens/new": tokens, "/tokens/set-raw": tokens,
     "/workers": workers,
     "/system": system, "/help": help_section,
@@ -167,6 +167,10 @@ def route_response_with_headers(method: str, path: str, runtime_root: Path, body
         site_id = route_path.removeprefix("/sites/").rstrip("/")
         if site_id and "/" not in site_id:
             return (HTTPStatus.OK, "text/html; charset=utf-8", site_detail.render(ctx, site_id).encode("utf-8"), {})
+    if route_path.startswith("/records/") and route_path not in SECTION_ROUTES:
+        record_id = route_path.removeprefix("/records/").rstrip("/")
+        if record_id and "/" not in record_id:
+            return (HTTPStatus.OK, "text/html; charset=utf-8", records.render_detail(ctx, record_id).encode("utf-8"), {})
     if route_path.startswith("/employees/") and route_path not in SECTION_ROUTES:
         employee_id = route_path.removeprefix("/employees/").rstrip("/")
         if employee_id and "/" not in employee_id:

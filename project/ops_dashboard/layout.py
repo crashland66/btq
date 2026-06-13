@@ -13,6 +13,7 @@ NAV_ITEMS = (
     ("swipe", "Review", "/swipe", "R"),
     ("candidates", "Candidates", "/candidates", "C"),
     ("vault", "Vault", "/vault/types/index.html", "V"),
+    ("records", "Records", "/records", "D"),
     ("field_photos", "Field Photos", "/field-photos", "P"),
     ("admin", "Admin", "/admin", "A"),
     ("help", "Help", "/help", "?"),
