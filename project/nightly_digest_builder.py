@@ -396,6 +396,52 @@ def summarize_unknowns(journal_path: Path) -> list[dict]:
 
 
 def collect_visit_gaps(vault_root: Path, target_date: str) -> list[dict]:
+    """Visit gaps for the target date, from CouchDB (canonical) when configured.
+
+    Reads ``type: visit_gap`` docs from ``btq_vault``; the Markdown ``about.md``
+    glob is a dev/CI fallback only (removed once the projection is retired).
+    """
+    import os
+
+    if os.environ.get("BTQ_COUCHDB_URL", "").strip():
+        return _collect_visit_gaps_couchdb(target_date)
+    return _collect_visit_gaps_filesystem(vault_root, target_date)
+
+
+def _collect_visit_gaps_couchdb(target_date: str) -> list[dict]:
+    import json
+    from urllib import parse as urllib_parse, request as urllib_request
+
+    from event_pipeline import couchdb_config
+
+    cfg = couchdb_config.from_env()
+    db_name = couchdb_config.vault_database()
+    url = f"{cfg.base_url.rstrip('/')}/{urllib_parse.quote(db_name, safe='')}/_find"
+    payload = {"selector": {"type": "visit_gap", "date": target_date}, "limit": 100000}
+    headers = {"Content-Type": "application/json", "Accept": "application/json"}
+    headers.update(cfg.auth_header())
+    req = urllib_request.Request(url, data=json.dumps(payload).encode("utf-8"), headers=headers, method="POST")
+    try:
+        with urllib_request.urlopen(req, timeout=cfg.timeout) as resp:
+            response = json.loads(resp.read().decode("utf-8"))
+    except Exception:  # noqa: BLE001 — digest degrades to no gaps rather than crashing
+        return []
+    gaps: list[dict] = []
+    for doc in response.get("docs", []):
+        if str(doc.get("date") or "").strip() != target_date:
+            continue
+        gaps.append(
+            {
+                "site": str(doc.get("site") or "").strip(),
+                "date": str(doc.get("date") or "").strip(),
+                "reason": str(doc.get("reason") or "").strip(),
+                "path": str(doc.get("_id") or "").strip(),
+            }
+        )
+    return gaps
+
+
+def _collect_visit_gaps_filesystem(vault_root: Path, target_date: str) -> list[dict]:
     accounts_dir = vault_root / "Accounts"
     if not accounts_dir.exists():
         return []
