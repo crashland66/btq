@@ -17,7 +17,7 @@ from btq_vault.projector import (  # noqa: PLC2701 - mirror site_detail canonica
 )
 from event_pipeline import couchdb_config
 from ops_dashboard.common import first_query_value, humanize_key, parse_display_categories_rows, render_display_categories_editor, render_table
-from ops_dashboard.layout import html_page
+from ops_dashboard.layout import _demo_mode, html_page
 
 
 SITE_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
@@ -116,6 +116,8 @@ def render_list(ctx: object, query: dict[str, list[str]]) -> str:
         docs = [doc for doc in docs if site_filter in site_id_from_doc(doc).lower()]
     if canonical_filter:
         docs = [doc for doc in docs if canonical_filter in canonical_name(doc).lower()]
+    if _demo_mode():
+        docs = [doc for doc in docs if site_id_from_doc(doc) != "SANDBOX"]
     rows = []
     for doc in docs:
         aliases = doc.get("aliases") if isinstance(doc.get("aliases"), list) else []
@@ -126,7 +128,6 @@ def render_list(ctx: object, query: dict[str, list[str]]) -> str:
                 "active": bool(doc.get("active", True)),
                 "alias_count": len(aliases),
                 "vision_context": vision_context_summary(doc.get("vision_context")),
-                "rev": str(doc.get("_rev") or "")[:6],
             }
         )
     table = render_table(
@@ -137,7 +138,6 @@ def render_list(ctx: object, query: dict[str, list[str]]) -> str:
             {"key": "active", "label": "Active", "format": lambda value, _row: f'<span class="pill {"success" if bool(value) else "warning"}">{html.escape("Active" if bool(value) else "Inactive")}</span>', "nowrap": True},
             {"key": "alias_count", "label": "Aliases", "priority": 2, "nowrap": True},
             {"key": "vision_context", "label": "Vision Context", "priority": 3},
-            {"key": "rev", "label": "Rev", "format": lambda value, _row: f"<code>{html.escape(str(value))}</code>", "priority": 3, "nowrap": True},
         ],
         empty_text="No sites match this filter.",
     )

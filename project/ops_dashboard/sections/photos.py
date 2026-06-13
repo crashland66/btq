@@ -424,7 +424,7 @@ def _render_results(sidecars: list[dict[str, object]], *, fallback: bool) -> str
         {"key": "_generated_at", "label": "Generated", "format": lambda v, _r: render_relative_time(v), "priority": 2, "nowrap": True},
         {"key": "_warnings", "label": "Warnings", "format": lambda v, _r: v, "priority": 3},
     ]
-    table = render_table(rows, columns, empty_text="No photo-vision sidecars match this query.")
+    table = render_table(rows, columns, empty_text="No photos match this query.")
     return notice + table
 
 
@@ -600,8 +600,8 @@ def render(ctx: object) -> str:
 
     body = f"""
     <header>
-      <h1>Photo Vision Search</h1>
-      <p class="muted">Search and filter photo-vision sidecar data by content, area, quality, and date.</p>
+      <h1>Field Photo Search</h1>
+      <p class="muted">Search photos by content, area, quality, and date.</p>
     </header>
     <section>
       {filter_form}
@@ -610,4 +610,4 @@ def render(ctx: object) -> str:
       {results_html}
     </section>
     """
-    return html_page("Photo Vision Search — BTQ Ops", body, active_section="photos")
+    return html_page("Field Photo Search — BTQ Ops", body, active_section="photos")

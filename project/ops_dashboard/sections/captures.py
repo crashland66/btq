@@ -508,9 +508,10 @@ def render_detail(ctx: object, capture_id: str) -> str:
     audio_assets = audio_assets_for_capture(root, capture_id)
     voice_transcript_html = render_voice_transcript_section(root, audio_assets)
     semantic_results_html = render_semantic_results_section(root, audio_assets)
+    detail_record = capture_detail_record(root, capture_id, upload_dir, candidates, photo_records)
     capture_details = record_section(
         "Capture details",
-        capture_detail_record(root, capture_id, upload_dir, candidates, photo_records),
+        detail_record,
         (
             "capture_id",
             "site",
@@ -523,6 +524,14 @@ def render_detail(ctx: object, capture_id: str) -> str:
             "sidecar_count",
         ),
     )
+    vault_dir = getattr(getattr(ctx, "config", None), "vault_dir", root)
+    site_label = html.unescape(plain_site_label(str(detail_record.get("site") or ""), vault_dir))
+    raw_site = str(detail_record.get("site") or "")
+    if raw_site and site_label.endswith(f"({raw_site})"):
+        site_label = site_label[: -len(f"({raw_site})")].strip()
+    submitter_label = str(detail_record.get("submitter") or UNKNOWN_SUBMITTER)
+    header_parts = [part for part in (site_label, submitter_label) if part]
+    header_title = " &mdash; ".join(html.escape(part) for part in header_parts) or "Capture Detail"
 
     other_uploads = ""
     if upload_dir:
@@ -540,7 +549,7 @@ def render_detail(ctx: object, capture_id: str) -> str:
         for draft in drafts.get(str(candidate.get("candidate_id") or ""), []):
             draft_links.append(f'<li><a href="/drafts?draft_id={quote(str(draft.get("draft_id") or ""))}">{html.escape(str(draft.get("draft_id") or ""))}</a> {html.escape(humanize_key(draft.get("queue_state") or ""))}</li>')
     body = f"""
-    <header><h1>Capture Detail</h1><p><code>{render_short_id(capture_id)}</code></p></header>
+    <header><h1>{header_title}</h1><p class="muted"><code>{render_short_id(capture_id)}</code></p></header>
     {render_back_link("/captures", "Back to Captures")}
     {capture_details}
     <section><h3>Photos</h3>{photos_html}</section>

@@ -116,13 +116,22 @@ def _site_options() -> tuple[list[tuple[str, str]], bool]:
         return [], False
 
 
+def _site_display_name(site_id: str, options: list[tuple[str, str]] | None = None) -> str:
+    normalized = site_id.removeprefix("location_")
+    for option_id, canonical in options or []:
+        if option_id in {site_id, normalized} and canonical:
+            return canonical
+    return normalized or site_id
+
+
 def _promotion_section(prospect: dict[str, Any], prospect_id: str) -> str:
     status = str(prospect.get("status") or "")
     promoted_to = str(prospect.get("promoted_to_site_id") or "")
     promoted_at = str(prospect.get("promoted_at") or "")
     if status in prospects_mod.TERMINAL_PROSPECT_STATUSES:
         if status == "won" and promoted_to:
-            note = f"<p>Promoted to site <code>{html.escape(promoted_to)}</code>"
+            options, _registry_ok = _site_options()
+            note = f"<p>Promoted to site {html.escape(_site_display_name(promoted_to, options))}"
             if promoted_at:
                 note += f" on {html.escape(promoted_at)}"
             note += ".</p>"
@@ -134,7 +143,7 @@ def _promotion_section(prospect: dict[str, Any], prospect_id: str) -> str:
     if registry_ok and options:
         options_html = '<option value="">— select an active site —</option>'
         for site_id, canonical in options:
-            label = f"{site_id} — {canonical}" if canonical else site_id
+            label = f"{canonical} ({site_id})" if canonical else site_id
             options_html += (
                 f'<option value="{html.escape(site_id, quote=True)}">'
                 f"{html.escape(label)}</option>"
@@ -213,7 +222,7 @@ def render(ctx: object, prospect_id: str) -> str:
         sections = [
             _flash(getattr(ctx, "query", {})),
             (
-                f"<header><h1>{html.escape(name)} · {html.escape(prospect_id)}</h1>"
+                f"<header><h1>{html.escape(name)}</h1>"
                 '<p class="actions">'
                 f'<a class="button" href="/field-photos?target_type=prospect&amp;target_id={escaped_id}">'
                 "Field Photos for this prospect</a>"

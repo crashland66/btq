@@ -82,7 +82,10 @@ def test_prospect_detail_omits_promote_form_for_terminal_prospect(monkeypatch: p
     )
 
     assert 'action="/prospects/kmf-birch/promote"' not in html
-    assert "Promoted to site <code>7040</code> on 2026-05-27T12:00:00Z." in html
+    # Prompt 364: the promotion note now leads with the canonical site NAME
+    # (resolved via _site_options), not the raw <code>site_id</code>.
+    assert "Promoted to site KMF Main on 2026-05-27T12:00:00Z." in html
+    assert "<code>7040</code>" not in html
 
 
 def test_prospect_detail_renders_photos_panel_with_prospect_target(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

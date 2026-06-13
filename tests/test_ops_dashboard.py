@@ -605,7 +605,7 @@ def test_photos_page_surfaces_pending_raw_photo(tmp_path: Path, monkeypatch) -> 
     assert status_code == HTTPStatus.OK
     assert "Pending Photos" in body
     assert "Awaiting vision" in body
-    assert "Photo Vision Search" in body
+    assert "Field Photo Search" in body
 
 
 def test_ops_dashboard_healthz_and_status_missing_dirs_do_not_crash(tmp_path: Path) -> None:

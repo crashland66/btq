@@ -141,7 +141,8 @@ def test_home_employee_name_links_to_employee_detail() -> None:
                     "job": "7050",
                 }
             }
-        ]
+        ],
+        {},
     )
 
     # The home link must carry the BARE id (employee_detail re-prepends
@@ -160,7 +161,8 @@ def test_home_employee_link_round_trips_to_same_doc_id(
 
     doc_id = "employee_per_test"
     html = home._render_employee_directory(
-        [{"doc": {"_id": doc_id, "first": "Per", "last": "Test", "job": "7050"}}]
+        [{"doc": {"_id": doc_id, "first": "Per", "last": "Test", "job": "7050"}}],
+        {},
     )
     match = re.search(r'/employees/([^"]+)"', html)
     assert match, "no employee detail link rendered"

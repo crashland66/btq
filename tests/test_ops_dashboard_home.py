@@ -625,7 +625,7 @@ def test_home_renders_directory_group_full_width(monkeypatch: pytest.MonkeyPatch
     assert status == HTTPStatus.OK
     assert '<div class="home-group home-group--directory">' in body
     assert '<table class="account-directory">' in directory
-    assert '<tr class="acct-divider"><th colspan="3" scope="rowgroup">TestCo</th></tr>' in directory
+    assert '<tr class="acct-divider"><th colspan="2" scope="rowgroup">TestCo</th></tr>' in directory
 
 
 def test_home_includes_field_photos_preview_group(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -671,7 +671,7 @@ def test_home_directory_rows_carry_data_label_attrs(monkeypatch: pytest.MonkeyPa
     row = directory[row_start:row_end]
 
     assert status == HTTPStatus.OK
-    expected_labels = ["Site", "ID", "Contact"]
+    expected_labels = ["Site", "Contact"]
     for label in expected_labels:
         assert f'<td data-label="{label}"' in row
     assert [row.index(f'data-label="{label}"') for label in expected_labels] == sorted(
@@ -684,15 +684,15 @@ def test_home_directory_has_single_column_header_row() -> None:
 
     assert html.count("<thead><tr>") == 1
     assert html.count("</tr></thead>") == 1
-    assert "<thead><tr><th>Site</th><th>ID</th><th>Contact</th></tr></thead>" in html
+    assert "<thead><tr><th>Site</th><th>Contact</th></tr></thead>" in html
 
 
 def test_home_directory_renders_one_divider_row_per_account() -> None:
     html = home._render_account_directory(account_directory_fixture())
 
     assert html.count('<tr class="acct-divider">') == 2
-    assert '<tr class="acct-divider"><th colspan="3" scope="rowgroup">AcctA</th></tr>' in html
-    assert '<tr class="acct-divider"><th colspan="3" scope="rowgroup">AcctB</th></tr>' in html
+    assert '<tr class="acct-divider"><th colspan="2" scope="rowgroup">AcctA</th></tr>' in html
+    assert '<tr class="acct-divider"><th colspan="2" scope="rowgroup">AcctB</th></tr>' in html
 
 
 def test_home_directory_drops_phone_and_email_columns() -> None:
@@ -904,7 +904,8 @@ def test_employee_name_links_to_employee_detail() -> None:
                     "job": "site-17",
                 }
             }
-        ]
+        ],
+        {},
     )
 
     assert (
@@ -925,7 +926,8 @@ def test_employee_name_without_id_renders_plain() -> None:
                     "job": "site-17",
                 }
             }
-        ]
+        ],
+        {},
     )
 
     assert "O&#x27;Neil &amp; Sons, Anne" in html

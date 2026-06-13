@@ -46,12 +46,12 @@ def test_sandbox_site_registry_entry_shape() -> None:
 
 
 def test_sandbox_employee_renders_in_active_directory() -> None:
-    out = _render_employee_directory([sandbox_employee_view_row()])
+    out = _render_employee_directory([sandbox_employee_view_row()], {})
     assert "Sandbox, Sandy" in out
 
 
 def test_sandbox_employee_inactive_override_is_excluded() -> None:
-    out = _render_employee_directory([sandbox_employee_view_row(status="inactive")])
+    out = _render_employee_directory([sandbox_employee_view_row(status="inactive")], {})
     assert "Sandbox, Sandy" not in out
 
 

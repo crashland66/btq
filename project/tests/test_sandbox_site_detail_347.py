@@ -31,10 +31,13 @@ def test_sandbox_renders_full_non_degraded_page(
 
     html = site_detail.render(ctx, "SANDBOX")
 
-    # The full, non-degraded title proves the builtin-location fallback path:
-    # canonical_name(builtin) -> "Sandbox Site", title -> "Sandbox Site · SANDBOX".
-    assert "Sandbox Site · SANDBOX" in html
+    # The full, non-degraded H1 proves the builtin-location fallback path:
+    # canonical_name(builtin) -> "Sandbox Site". Prompt 364 made the H1 the
+    # canonical name only (no trailing " · {site_id}").
+    assert "<h1>Sandbox Site</h1>" in html
+    assert "Sandbox Site · SANDBOX" not in html
     assert "Sandbox Site" in html
+    # The site_id still appears on the page (e.g. the admin-metadata link).
     assert "SANDBOX" in html
     # Not the not_found page.
     assert "Site not found" not in html
@@ -71,7 +74,11 @@ def test_real_location_doc_wins_over_builtin(
 
     html = site_detail.render(ctx, "SANDBOX")
 
-    assert "Real Co · SANDBOX" in html
+    # Prompt 364: H1 is the canonical name only (no trailing " · {site_id}").
+    assert "<h1>Real Co</h1>" in html
+    assert "Real Co · SANDBOX" not in html
+    # The real site_id still appears on the page (e.g. links).
+    assert "SANDBOX" in html
     # The builtin's name must NOT have been consulted.
     assert "Sandbox Site" not in html
     assert "Site not found" not in html

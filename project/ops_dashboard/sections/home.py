@@ -157,7 +157,7 @@ def _render_empty_strip(empty_cards: list[dict]) -> str:
         )
     return (
         '<section class="empty-strip">'
-        '<h2 class="muted">All clear</h2>'
+        '<h2 class="muted">All Clear</h2>'
         f'<ul class="empty-pills">{"".join(items)}</ul>'
         '</section>'
     )
@@ -181,8 +181,7 @@ def _location_list(locations: list[_Location], *, empty: str, site_prefix: str =
     if not locations:
         return f'<p class="empty">{_esc(empty)}</p>'
     items = [
-        f'<li><a href="{site_prefix}{_url_path(loc.site_id)}{site_suffix}">{_esc(loc.name)}</a> '
-        '<span class="badge">no recent visit</span></li>'
+        f'<li><a href="{site_prefix}{_url_path(loc.site_id)}{site_suffix}">{_esc(loc.name)}</a></li>'
         for loc in locations
     ]
     return f"<ul>{''.join(items)}</ul>"
@@ -195,19 +194,18 @@ def _group(tag: str, inner_html: str) -> str:
 def _render_account_directory(by_account: dict[str, list[_SiteRecord]]) -> str:
     parts = [
         '<table class="account-directory">',
-        "<thead><tr><th>Site</th><th>ID</th><th>Contact</th></tr></thead>",
+        "<thead><tr><th>Site</th><th>Contact</th></tr></thead>",
         "<tbody>",
     ]
     for acct in sorted(by_account, key=lambda a: (a == "", a.lower())):
         sites = sorted(by_account[acct], key=lambda r: (r.name.lower(), r.site_id))
         parts.append(
-            f'<tr class="acct-divider"><th colspan="3" scope="rowgroup">{_esc(acct or "Other")}</th></tr>'
+            f'<tr class="acct-divider"><th colspan="2" scope="rowgroup">{_esc(acct or "Other")}</th></tr>'
         )
         for rec in sites:
             parts.append(
                 "<tr>"
                 f'<td data-label="Site"><a href="/sites/{_url_path(rec.site_id)}">{_esc(rec.name)}</a></td>'
-                f'<td data-label="ID">{_esc(rec.site_id)}</td>'
                 f'<td data-label="Contact">{_esc(rec.contact_name)}</td>'
                 "</tr>"
             )
@@ -237,7 +235,7 @@ def _collapsible_directory(dom_id: str, title: str, inner_html: str, storage_key
     )
 
 
-def _render_employee_directory(employee_rows: list[dict]) -> str:
+def _render_employee_directory(employee_rows: list[dict], site_records: dict[str, _SiteRecord]) -> str:
     def employee_label(doc: dict) -> tuple[str, tuple[str, str]]:
         first = _string(doc.get("first"))
         last = _string(doc.get("last"))
@@ -284,8 +282,13 @@ def _render_employee_directory(employee_rows: list[dict]) -> str:
         site_id = _string(value)
         if not site_id:
             return ""
+        site_name = (
+            site_records.get(site_id.removeprefix("location_"))
+            or site_records.get(site_id)
+        )
+        label = site_name.name if site_name and site_name.name else site_id
         escaped_site_id = _esc(site_id)
-        return f'<a href="/sites/{escaped_site_id}">{escaped_site_id}</a>'
+        return f'<a href="/sites/{escaped_site_id}">{_esc(label)}</a>'
 
     def employee_name_link(value: object, item: dict) -> str:
         name = _esc(_string(value))
@@ -599,17 +602,19 @@ def _render_voice_card(site_records: dict, employee_records: list[dict[str, str]
 
 
 def _render_photos_home_group(ctx: object) -> str:
-    filter_form = _field_photos_mod.render_filter_form()
     cards_html, fallback = _field_photos_mod.latest_photo_cards(ctx, limit=4)
     if fallback:
+        filter_form = ""
         strip_html = '<p class="muted">Photos unavailable.</p>'
     elif cards_html:
+        filter_form = _field_photos_mod.render_filter_form()
         strip_html = (
             '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:16px;margin-top:12px">'
             f"{cards_html}"
             "</div>"
         )
     else:
+        filter_form = ""
         strip_html = '<p class="zero-state">No photos yet.</p>'
     return _group(
         "photos",
@@ -828,7 +833,7 @@ def render(ctx: object) -> str:
             + _collapsible_directory(
                 "employee-directory",
                 "Employee Directory",
-                _render_employee_directory(employee_rows),
+                _render_employee_directory(employee_rows, site_records),
                 "btq-home-employees-collapsed",
             ),
         )

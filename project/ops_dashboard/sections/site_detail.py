@@ -12,7 +12,7 @@ from urllib import request as urlrequest
 
 from event_pipeline import couchdb_config
 from ops_dashboard.common import field_value, first_query_value, other_section, record_section
-from ops_dashboard.layout import html_page
+from ops_dashboard.layout import _demo_mode, html_page
 import ops_dashboard.sections.entity_edit as entity_edit
 import ops_dashboard.sections.field_photos as field_photos
 import ops_dashboard.sections.sites as sites
@@ -315,7 +315,7 @@ def _notes_section(site_id: str) -> str:
     target = str(site_id).strip()
     notes = [d for d in docs if str(d.get("site_id") or "").strip().strip('"') == target]
     if not notes:
-        return _section("Notes", '<p class="muted">No site notes.</p>')
+        return _section("Notes", '<p class="muted">No site notes yet</p>')
     notes.sort(key=lambda d: str(d.get("created_at") or d.get("date") or ""), reverse=True)
     blocks = []
     for doc in notes:
@@ -472,16 +472,17 @@ def render(ctx: object, site_id: str) -> str:
         edit_section = first_query_value(getattr(ctx, "query", {}), "edit")
         doc = _load_location(site_id)
         if not isinstance(doc, dict) or doc.get("type") != "location":
+            if _demo_mode() and site_id == "SANDBOX":
+                return _not_found(site_id)
             doc = _builtin_location_doc(site_id)
         if not isinstance(doc, dict) or doc.get("type") != "location":
             return _not_found(site_id)
 
         primary_name = sites.canonical_name(doc) or str(doc.get("location") or site_id)
-        title = f"{primary_name} · {site_id}"
         escaped_id = html.escape(site_id, quote=True)
         sections = [
             (
-                f"<header><h1>{html.escape(title)}</h1>"
+                f"<header><h1>{html.escape(primary_name)}</h1>"
                 '<p class="actions">'
                 f'<a class="button" href="/sites?site_id={escaped_id}">Admin metadata</a>'
                 f'<a class="button" href="/field-photos?site_id={escaped_id}">Field Photos for this site</a>'

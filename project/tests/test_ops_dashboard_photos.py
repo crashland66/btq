@@ -182,7 +182,7 @@ class PhotosSectionRenderTests(unittest.TestCase):
                 with mock.patch.dict("os.environ", {"BTQ_COUCHDB_URL": ""}):
                     result = render(ctx)
 
-        self.assertIn("Photo Vision Search", result)
+        self.assertIn("Field Photo Search", result)
         self.assertIn("fcp-001", result)
 
     def test_renders_with_couchdb_docs(self) -> None:
@@ -195,7 +195,7 @@ class PhotosSectionRenderTests(unittest.TestCase):
                 with mock.patch("ops_dashboard.sections.photos._query_couchdb", return_value=docs):
                     result = render(ctx)
 
-        self.assertIn("Photo Vision Search", result)
+        self.assertIn("Field Photo Search", result)
         self.assertIn("fcp-cdb-001", result)
 
     def test_couchdb_failure_falls_back_to_disk(self) -> None:
@@ -221,7 +221,7 @@ class PhotosSectionRenderTests(unittest.TestCase):
             with mock.patch.dict("os.environ", {"BTQ_COUCHDB_URL": ""}):
                 result = render(ctx)
 
-        self.assertIn("No photo-vision sidecars match this query", result)
+        self.assertIn("No photos match this query", result)
 
     def test_severity_filter_in_query(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

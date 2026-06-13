@@ -306,9 +306,43 @@ window.__btqSwipeInit = function () {
       var v = p[k];
       if (Array.isArray(v)) v = v.join(', ');
       else if (v && typeof v === 'object') v = JSON.stringify(v);
-      return '<tr><th>' + esc(k) + '</th><td>' + esc(v) + '</td></tr>';
+      return '<tr><th>' + esc(humanizeKey(k)) + '</th><td>' + esc(v) + '</td></tr>';
     }).join('');
     return '<table class="swipe-payload">' + rows + '</table>';
+  }
+
+  function humanizeKey(k) {
+    var text = String(k || '').replace(/[_-]+/g, ' ').replace(/\s+/g, ' ').trim();
+    if (!text) return '';
+    return text.charAt(0).toUpperCase() + text.slice(1).toLowerCase();
+  }
+
+  function friendlyTime(value) {
+    var raw = String(value || '').trim();
+    if (!raw) return '';
+    var date = new Date(raw);
+    if (Number.isNaN(date.getTime())) return raw.replace('T', ' ').replace(/\.\d+Z?$/, '').slice(0, 16);
+    var diffSeconds = Math.round((Date.now() - date.getTime()) / 1000);
+    var past = diffSeconds >= 0;
+    var abs = Math.abs(diffSeconds);
+    if (abs < 60) return 'Just now';
+    var units = [
+      ['year', 31536000],
+      ['month', 2592000],
+      ['day', 86400],
+      ['hour', 3600],
+      ['minute', 60]
+    ];
+    for (var i = 0; i < units.length; i += 1) {
+      var name = units[i][0];
+      var seconds = units[i][1];
+      if (abs >= seconds) {
+        var count = Math.floor(abs / seconds);
+        var label = count + ' ' + name + (count === 1 ? '' : 's');
+        return past ? label + ' ago' : 'in ' + label;
+      }
+    }
+    return date.toLocaleString([], { year: 'numeric', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
   }
 
   function prettyPayload(p) {
@@ -443,7 +477,7 @@ window.__btqSwipeInit = function () {
       '<article class="swipe-card" data-draft-id="' + esc(c.draft_id) + '">' +
         '<div class="swipe-card-top">' +
           '<span class="swipe-progress">' + remaining + ' left</span>' +
-          (c.captured_at ? '<span>' + esc(c.captured_at) + '</span>' : '') +
+          (c.captured_at ? '<span>' + esc(friendlyTime(c.captured_at)) + '</span>' : '') +
         '</div>' +
         '<p class="swipe-message">' + esc(c.message || c.summary || '(no message)') + '</p>' +
         '<p class="swipe-meta muted">' + esc(c.submitter_name || 'Unknown submitter') +

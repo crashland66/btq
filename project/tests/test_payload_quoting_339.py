@@ -151,8 +151,15 @@ def test_inbox_non_array_object_still_json_stringified(inbox_helpers):
 # --------------------------------------------------------------------------- #
 @pytest.fixture(scope="module")
 def swipe_helpers() -> tuple[str, str]:
+    # The swipe ``payloadRows`` now humanizes the row key via a ``humanizeKey``
+    # helper (prompt 364). ``payloadRows`` references it at call time, so the
+    # extracted execution snippet must include it or node throws a ReferenceError.
+    # ``humanizeKey`` only changes the <th> label text; the <td> *value*-rendering
+    # contract this file protects (arrays comma-joined, no brackets) is unchanged.
     src = _swipe_script()
-    return _extract_fn(src, "esc"), _extract_fn(src, "payloadRows")
+    esc_src = _extract_fn(src, "esc")
+    rows_src = _extract_fn(src, "payloadRows") + "\n" + _extract_fn(src, "humanizeKey")
+    return esc_src, rows_src
 
 
 def _swipe_render(swipe_helpers, payload: dict) -> str:
@@ -165,7 +172,9 @@ def _swipe_render(swipe_helpers, payload: dict) -> str:
 def test_swipe_array_field_renders_comma_joined_no_brackets(swipe_helpers):
     payload = {"related_capture_ids": ["cap-unified-abc", "cap-xyz"]}
     html = _swipe_render(swipe_helpers, payload)
-    td = _td_for(html, "related_capture_ids")
+    # The <th> is now the humanized key ("Related capture ids"); the value
+    # rendering is what this test protects and must be unchanged.
+    td = _td_for(html, "Related capture ids")
     assert td == "cap-unified-abc, cap-xyz"
     for bad in ("[", "]", '"', "&quot;"):
         assert bad not in td, f"unexpected {bad!r} in swipe array render: {td!r}"
@@ -173,17 +182,17 @@ def test_swipe_array_field_renders_comma_joined_no_brackets(swipe_helpers):
 
 def test_swipe_single_element_array_renders_bare_value(swipe_helpers):
     html = _swipe_render(swipe_helpers, {"ids": ["only-one"]})
-    assert _td_for(html, "ids") == "only-one"
+    assert _td_for(html, "Ids") == "only-one"
 
 
 def test_swipe_scalar_string_unchanged(swipe_helpers):
     html = _swipe_render(swipe_helpers, {"path": "Accounts/7050.md"})
-    assert _td_for(html, "path") == "Accounts/7050.md"
+    assert _td_for(html, "Path") == "Accounts/7050.md"
 
 
 def test_swipe_non_array_object_still_json_stringified(swipe_helpers):
     html = _swipe_render(swipe_helpers, {"meta": {"k": "v"}})
-    assert _td_for(html, "meta") == "{&quot;k&quot;:&quot;v&quot;}"
+    assert _td_for(html, "Meta") == "{&quot;k&quot;:&quot;v&quot;}"
 
 
 # --------------------------------------------------------------------------- #
