@@ -4,14 +4,21 @@ import html
 import json
 import re
 from datetime import date
-from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qs, quote
+from urllib.parse import quote
 from urllib import parse as urlparse
 from urllib import request as urlrequest
 
 from event_pipeline import couchdb_config
-from ops_dashboard.common import field_value, first_query_value, other_section, record_section
+from ops_dashboard.common import (
+    first_query_value,
+    load_photo_vision_sidecars,
+    record_section,
+    render_count_badge,
+    render_relative_time,
+    safe_media_url,
+    submitters_by_capture,
+)
 from ops_dashboard.layout import _demo_mode, html_page
 import ops_dashboard.sections.entity_edit as entity_edit
 import ops_dashboard.sections.field_photos as field_photos
@@ -30,17 +37,6 @@ from btq_vault.projector import (  # noqa: PLC2701 - reuse projector renderers f
     render_markdown,
 )
 
-
-_SUPPRESSED = {
-    "_id",
-    "_rev",
-    "type",
-    "operator",
-    "vault_path",
-    "content",
-    "btq_job_ids",
-    "voice_memo_capture_ids",
-}
 
 _SUMMARY_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
     (
@@ -118,6 +114,13 @@ _SUMMARY_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
 _DATAVIEW_HEADINGS = {"Employees Assigned", "Open Issues", "Recent Visits"}
 _FENCE_RE = re.compile(r"^(\s*)```(.*)$")
 _CLOSE_FENCE_RE = re.compile(r"^\s*```\s*$")
+_ACCESS_CONSTRAINT_RE = re.compile(r"(?im)^\s*#+\s*Access Constraints\b")
+_CAPTURE_GALLERY_LIMIT = 6
+_CAPTURE_COUNT_LIMIT = 5000
+_EMPTY_ABOUT_SECTION = (
+    '<section><h2>About &amp; operational notes</h2>'
+    '<p class="zero-state">No operational notes yet.</p></section>'
+)
 
 _BUILTIN_LOCATION_DOCS: dict[str, dict[str, Any]] = {
     "SANDBOX": {
@@ -221,13 +224,8 @@ def _strip_dataview_blocks(body: str) -> str:
     return "".join(output)
 
 
-def _format_value(value: object) -> str:
-    return field_value(value)
-
-
-def _summary_section(doc: dict[str, Any], site_id: str, edit_section: str) -> str:
+def _quick_facts_section(doc: dict[str, Any], site_id: str, edit_section: str) -> str:
     sections: list[str] = []
-    ordered_keys = {key for _title, keys in _SUMMARY_GROUPS for key in keys}
     site_id_escaped = html.escape(site_id, quote=True)
     editable_sections = {
         "Contact": "contact",
@@ -265,17 +263,13 @@ def _summary_section(doc: dict[str, Any], site_id: str, edit_section: str) -> st
             if section:
                 sections.append(section)
 
-    other = other_section(doc, ordered_keys, _SUPPRESSED, dl_class="fields summary-fields")
-    if other:
-        sections.append(other)
-
     provenance = _capture_provenance(doc)
     if provenance:
         sections.append(provenance)
 
     if not sections:
-        return ""
-    return _section("Summary", "".join(sections))
+        sections.append('<p class="zero-state">No quick facts yet.</p>')
+    return f'<section class="quick-facts"><h2>Quick facts</h2>{"".join(sections)}</section>'
 
 
 def _capture_provenance(doc: dict[str, Any]) -> str:
@@ -292,7 +286,7 @@ def _capture_provenance(doc: dict[str, Any]) -> str:
     return f"<details><summary>Capture provenance</summary>{''.join(parts)}</details>"
 
 
-def _notes_section(site_id: str) -> str:
+def _site_notes(site_id: str) -> list[dict[str, Any]]:
     """Site-tagged ``note`` docs from CouchDB (``btq_vault``).
 
     Surfaces operator notes linked to this site (``site_id`` field). Note: legacy
@@ -314,9 +308,14 @@ def _notes_section(site_id: str) -> str:
         docs = []
     target = str(site_id).strip()
     notes = [d for d in docs if str(d.get("site_id") or "").strip().strip('"') == target]
+    notes.sort(key=lambda d: str(d.get("created_at") or d.get("date") or ""), reverse=True)
+    return notes
+
+
+def _notes_section(notes: list[dict[str, Any]]) -> str:
+    """Render site notes with the same populated/empty output as the old site page."""
     if not notes:
         return _section("Notes", '<p class="muted">No site notes yet</p>')
-    notes.sort(key=lambda d: str(d.get("created_at") or d.get("date") or ""), reverse=True)
     blocks = []
     for doc in notes:
         when = str(doc.get("created_at") or doc.get("date") or "")[:10]
@@ -332,7 +331,7 @@ def _notes_section(site_id: str) -> str:
     return _section("Notes", "".join(blocks))
 
 
-def _related_sections(site_id: str) -> list[str]:
+def _related_data(site_id: str) -> dict[str, Any]:
     base, headers, database, timeout = _cdb()
     employee_rows = [
         row
@@ -350,33 +349,207 @@ def _related_sections(site_id: str) -> list[str]:
         if _site_id(row) == site_id
     ]
     recent_visits = sorted(visit_rows, key=lambda row: _row_date(row) or date.min, reverse=True)[:5]
+    notes = _site_notes(site_id)
+    return {
+        "notes": notes,
+        "employee_rows": employee_rows,
+        "opportunity_rows": opportunity_rows,
+        "visit_rows": visit_rows,
+        "recent_visits": recent_visits,
+    }
+
+
+def _related_sections(data: dict[str, Any]) -> list[tuple[str, int, str]]:
+    employee_rows = data["employee_rows"]
+    opportunity_rows = data["opportunity_rows"]
+    recent_visits = data["recent_visits"]
+    notes = data["notes"]
     return [
-        _notes_section(site_id),
-        _section("Employees Assigned", _employee_table(employee_rows, include_sites=False)),
-        _section("Open Opportunities", _simple_table(["Opportunity"], [_opportunity_label(row) for row in opportunity_rows])),
-        _section("Recent Visits", _visit_details(recent_visits)),
+        ("Notes", len(notes), _notes_section(notes)),
+        (
+            "Employees Assigned",
+            len(employee_rows),
+            _section("Employees Assigned", _employee_table(employee_rows, include_sites=False)),
+        ),
+        (
+            "Open Opportunities",
+            len(opportunity_rows),
+            _section(
+                "Open Opportunities",
+                _simple_table(["Opportunity"], [_opportunity_label(row) for row in opportunity_rows]),
+            ),
+        ),
+        ("Recent Visits", len(recent_visits), _section("Recent Visits", _visit_details(recent_visits))),
     ]
 
 
-def _photos_section(ctx: object, site_id: str) -> str:
-    filter_form_html = field_photos.render_filter_form(site_id=site_id)
-    cards_html, fallback = field_photos.latest_photo_cards(ctx, limit=4, site_id=site_id)
-    if fallback:
-        strip = '<p class="muted">Photos unavailable.</p>'
-    elif cards_html:
-        strip = (
-            '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));'
-            f'gap:16px;margin-top:12px">{cards_html}</div>'
+def _metric_cards(
+    *,
+    open_opportunities: int,
+    access_flags: int,
+    field_captures: int,
+    last_visit: str,
+) -> str:
+    metrics = (
+        ("Open opportunities", str(open_opportunities)),
+        ("Access flags", str(access_flags)),
+        ("Field captures", str(field_captures)),
+        ("Last visit", last_visit or "&mdash;"),
+    )
+    cards = "".join(
+        (
+            '<div class="metric-card">'
+            f'<strong>{value}</strong>'
+            f'<span>{html.escape(label)}</span>'
+            "</div>"
+        )
+        for label, value in metrics
+    )
+    return f'<section class="metric-grid" aria-label="Site metrics">{cards}</section>'
+
+
+def _details_block(title: str, count: int | None, body: str) -> str:
+    count_html = ""
+    if count is not None:
+        count_html = (
+            '<span class="details-count">'
+            f'{render_count_badge(count, kind="neutral")}'
+            f' {html.escape("record" if count == 1 else "records")}'
+            "</span>"
+        )
+    return (
+        '<details class="detail-block">'
+        f'<summary><span>{html.escape(title)}</span>{count_html}</summary>'
+        f'<div class="detail-block-body">{body}</div>'
+        "</details>"
+    )
+
+
+def _last_visit_label(visit_rows: list[dict[str, Any]]) -> str:
+    dates = sorted([row_date for row in visit_rows if (row_date := _row_date(row))], reverse=True)
+    if not dates:
+        return ""
+    return render_relative_time(dates[0].isoformat())
+
+
+def _site_subline(doc: dict[str, Any], site_id: str) -> str:
+    account = str(doc.get("account") or "").strip()
+    status = str(doc.get("status") or doc.get("operational_status") or "").strip()
+    parts = [
+        html.escape(account) if account else "&mdash;",
+        html.escape(site_id),
+        html.escape(status) if status else "&mdash;",
+    ]
+    return '<p class="subline">' + " &middot; ".join(parts) + "</p>"
+
+
+def _capture_sort_key(sidecar: dict[str, object]) -> str:
+    return str(sidecar.get("captured_at") or sidecar.get("generated_at") or "")
+
+
+def _site_capture_records(ctx: object, site_id: str) -> tuple[list[dict[str, object]], bool, int]:
+    cdb_config = field_photos._photo_vision_couchdb_config()  # noqa: SLF001 - reuse existing field-photo source.
+    sidecars: list[dict[str, object]] = []
+    fallback = False
+
+    if cdb_config is not None:
+        mango = field_photos._build_mango_selector("", site_id, "", "", "")  # noqa: SLF001
+        mango["limit"] = _CAPTURE_COUNT_LIMIT
+        docs = field_photos._query_couchdb(cdb_config, mango)  # noqa: SLF001
+        if docs is not None:
+            sidecars = docs
+        else:
+            fallback = True
+
+    if cdb_config is None or fallback:
+        from field_capture import photo_vision as field_photo_vision
+
+        photo_vision_dir = field_photo_vision.default_photo_vision_dir(ctx.runtime_root)
+        sidecars = [
+            sidecar
+            for sidecar in load_photo_vision_sidecars(photo_vision_dir)
+            if str(sidecar.get("site_id") or "") == site_id
+        ]
+
+    sidecars.sort(key=_capture_sort_key, reverse=True)
+    return sidecars[:_CAPTURE_GALLERY_LIMIT], fallback, len(sidecars)
+
+
+def _vision_status_chip(sidecar: dict[str, object]) -> str:
+    status = str(sidecar.get("status") or "").strip() or "processed"
+    css_status = re.sub(r"[^a-z0-9_-]+", "_", status.lower()).strip("_") or "processed"
+    return f'<span class="pill status-{html.escape(css_status, quote=True)}">{html.escape(status)}</span>'
+
+
+def _capture_gallery_card(sidecar: dict[str, object], submitters: dict[str, dict[str, str]]) -> str:
+    capture_id = str(sidecar.get("capture_id") or "").strip()
+    if not capture_id:
+        return ""
+    provenance = sidecar.get("provenance") if isinstance(sidecar.get("provenance"), dict) else {}
+    raw_url = (
+        provenance.get("image_media_url")
+        if isinstance(provenance, dict)
+        else None
+    ) or sidecar.get("image_media_url")
+    media_url = safe_media_url(raw_url)
+    if media_url:
+        preview = (
+            f'<img src="{html.escape(media_url, quote=True)}" alt="field capture thumbnail" '
+            'loading="lazy" class="site-gallery-thumb">'
         )
     else:
-        strip = '<p class="zero-state">No photos yet for this site.</p>'
-    escaped_id = html.escape(site_id, quote=True)
+        preview = '<div class="site-gallery-thumb site-gallery-thumb--audio" aria-hidden="true">&#127908;</div>'
+
+    title = (
+        str(sidecar.get("area_guess") or "").strip()
+        or str(sidecar.get("submitted_area") or "").strip()
+        or "Field capture"
+    )
+    submitter = submitters.get(capture_id, {}).get("submitter_name", "").strip()
+    when = render_relative_time(str(sidecar.get("captured_at") or sidecar.get("generated_at") or ""))
+    meta = " &middot; ".join(part for part in (html.escape(submitter), when) if part)
+    detail_url = f"/captures?capture_id={quote(capture_id)}"
+    meta_html = (
+        f'<p class="subline site-gallery-meta">{meta}</p>'
+        if meta
+        else '<p class="subline site-gallery-meta">&mdash;</p>'
+    )
     return (
-        "<section>"
-        "<h3>Photos</h3>"
-        f"{filter_form_html}"
-        f"{strip}"
-        f'<p><a href="/field-photos?site_id={escaped_id}">See all photos for this site &rarr;</a></p>'
+        f'<a class="site-gallery-card" href="{detail_url}">'
+        f"{preview}"
+        '<span class="site-gallery-card-body">'
+        f'<strong>{html.escape(title)}</strong>'
+        f"{meta_html}"
+        f"{_vision_status_chip(sidecar)}"
+        "</span>"
+        "</a>"
+    )
+
+
+def _captures_section(
+    ctx: object,
+    site_id: str,
+    records: list[dict[str, object]],
+    fallback: bool,
+    total_count: int,
+) -> str:
+    escaped_id = html.escape(site_id, quote=True)
+    submitters = submitters_by_capture(ctx.runtime_root)
+    cards = "".join(_capture_gallery_card(record, submitters) for record in records)
+    fallback_notice = '<p class="muted">CouchDB unavailable; showing disk cache captures.</p>' if fallback else ""
+    gallery = (
+        f'<div class="site-gallery">{cards}</div>'
+        if cards
+        else '<p class="zero-state">No field captures yet for this site.</p>'
+    )
+    return (
+        '<section class="site-captures">'
+        '<div class="section-heading-row">'
+        f"<h2>Field captures &middot; {html.escape(str(total_count))}</h2>"
+        f'<a href="/field-photos?site_id={escaped_id}">View all &rarr;</a>'
+        "</div>"
+        f"{fallback_notice}"
+        f"{gallery}"
         "</section>"
     )
 
@@ -480,24 +653,37 @@ def render(ctx: object, site_id: str) -> str:
 
         primary_name = sites.canonical_name(doc) or str(doc.get("location") or site_id)
         escaped_id = html.escape(site_id, quote=True)
+        related_data = _related_data(site_id)
+        capture_records, capture_fallback, capture_count = _site_capture_records(ctx, site_id)
+        raw_content = str(doc.get("content") or "")
+        access_flags = len(_ACCESS_CONSTRAINT_RE.findall(raw_content))
         sections = [
             (
-                f"<header><h1>{html.escape(primary_name)}</h1>"
-                '<p class="actions">'
+                '<header class="site-detail-header">'
+                '<div>'
+                f"<h1>{html.escape(primary_name)}</h1>"
+                f"{_site_subline(doc, site_id)}"
+                "</div>"
+                '<p class="actions site-header-actions">'
                 f'<a class="button" href="/sites?site_id={escaped_id}">Admin metadata</a>'
-                f'<a class="button" href="/field-photos?site_id={escaped_id}">Field Photos for this site</a>'
+                f'<a class="button" href="/field-photos?site_id={escaped_id}">Field Photos</a>'
                 "</p></header>"
             )
         ]
-        summary = _summary_section(doc, site_id, edit_section)
-        if summary:
-            sections.append(summary)
-        raw_content = str(doc.get("content") or "")
+        sections.append(
+            _metric_cards(
+                open_opportunities=len(related_data["opportunity_rows"]),
+                access_flags=access_flags,
+                field_captures=capture_count,
+                last_visit=_last_visit_label(related_data["visit_rows"]),
+            )
+        )
+        sections.append(_quick_facts_section(doc, site_id, edit_section))
         if edit_section == "about":
             escaped_id = html.escape(site_id, quote=True)
             rev = html.escape(str(doc.get("_rev", "")), quote=True)
             sections.append(
-                '<section><h3>About</h3>'
+                '<section><h2>About &amp; operational notes</h2>'
                 f'<form method="post" action="/sites/{escaped_id}/save-section">'
                 f'<input type="hidden" name="_rev" value="{rev}">'
                 f'<input type="hidden" name="_entity_id" value="{escaped_id}">'
@@ -510,9 +696,34 @@ def render(ctx: object, site_id: str) -> str:
         elif raw_content.strip():
             stripped = _strip_dataview_blocks(raw_content)
             if stripped.strip():
-                sections.append(_section("About", render_markdown(stripped)))
-        sections.extend(_related_sections(site_id))
-        sections.append(_photos_section(ctx, site_id))
+                sections.append(
+                    _details_block(
+                        "About & operational notes",
+                        None,
+                        _section("About & operational notes", render_markdown(stripped)),
+                    )
+                )
+            else:
+                sections.append(
+                    _details_block(
+                        "About & operational notes",
+                        None,
+                        _EMPTY_ABOUT_SECTION,
+                    )
+                )
+        else:
+            sections.append(
+                _details_block(
+                    "About & operational notes",
+                    None,
+                    _EMPTY_ABOUT_SECTION,
+                )
+            )
+        sections.extend(
+            _details_block(title, count, body)
+            for title, count, body in _related_sections(related_data)
+        )
+        sections.append(_captures_section(ctx, site_id, capture_records, capture_fallback, capture_count))
         body = "".join(sections)
         return html_page(f"Site {site_id} — BTQ", body, active_section="site_detail")
     except Exception as exc:  # noqa: BLE001

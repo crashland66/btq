@@ -32,8 +32,21 @@ def _minimal_location(**overrides: object) -> dict[str, object]:
 
 
 def _stub_expensive_sections(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(site_detail, "_related_sections", lambda site_id: [])
-    monkeypatch.setattr(site_detail, "_photos_section", lambda ctx, site_id: "")
+    # The redesigned render pulls related data + captures from CouchDB; neutralize
+    # them so the genuine non-degraded page renders without a live backend.
+    monkeypatch.setattr(
+        site_detail,
+        "_related_data",
+        lambda site_id: {
+            "notes": [],
+            "employee_rows": [],
+            "opportunity_rows": [],
+            "visit_rows": [],
+            "recent_visits": [],
+        },
+    )
+    monkeypatch.setattr(site_detail, "_related_sections", lambda data: [])
+    monkeypatch.setattr(site_detail, "_site_capture_records", lambda ctx, site_id: ([], False, 0))
 
 
 def test_site_detail_header_says_admin_metadata(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

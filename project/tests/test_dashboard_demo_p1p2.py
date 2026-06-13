@@ -51,8 +51,19 @@ def _sites_ctx() -> SimpleNamespace:
 def _stub_site_detail_downstream(monkeypatch: pytest.MonkeyPatch) -> None:
     # Neutralize the sections that need a live CouchDB / runtime_root so render
     # exercises the genuine non-degraded page (matches the 347 test's helper).
+    monkeypatch.setattr(
+        site_detail_section,
+        "_related_data",
+        lambda *a, **k: {
+            "notes": [],
+            "employee_rows": [],
+            "opportunity_rows": [],
+            "visit_rows": [],
+            "recent_visits": [],
+        },
+    )
     monkeypatch.setattr(site_detail_section, "_related_sections", lambda *a, **k: [])
-    monkeypatch.setattr(site_detail_section, "_photos_section", lambda *a, **k: "")
+    monkeypatch.setattr(site_detail_section, "_site_capture_records", lambda *a, **k: ([], False, 0))
 
 
 def _h1(html: str) -> str:

@@ -14,12 +14,23 @@ class DummyContext(SimpleNamespace):
 
 
 def _stub_downstream(monkeypatch: pytest.MonkeyPatch) -> None:
-    # _related_sections needs BTQ_COUCHDB_URL and _photos_section needs a real
-    # runtime_root + field_photos.latest_photo_cards; in a bare test both throw,
-    # tipping render into its _degraded except-handler and masking the real page.
-    # Neutralize them so we exercise the genuine non-degraded render path.
+    # _related_data + _site_capture_records need BTQ_COUCHDB_URL and a real
+    # runtime_root; in a bare test they throw, tipping render into its _degraded
+    # except-handler and masking the real page. Neutralize them so we exercise
+    # the genuine non-degraded render path.
+    monkeypatch.setattr(
+        site_detail,
+        "_related_data",
+        lambda *a, **k: {
+            "notes": [],
+            "employee_rows": [],
+            "opportunity_rows": [],
+            "visit_rows": [],
+            "recent_visits": [],
+        },
+    )
     monkeypatch.setattr(site_detail, "_related_sections", lambda *a, **k: [])
-    monkeypatch.setattr(site_detail, "_photos_section", lambda *a, **k: "")
+    monkeypatch.setattr(site_detail, "_site_capture_records", lambda *a, **k: ([], False, 0))
 
 
 def test_sandbox_renders_full_non_degraded_page(

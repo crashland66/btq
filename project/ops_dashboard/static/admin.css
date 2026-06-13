@@ -458,7 +458,169 @@ button.reject { background: var(--reject-bg); border-color: var(--reject-border)
 .person-name { font-weight: 600; }
 
 .muted { color: var(--muted); }
+.subline {
+  color: var(--muted);
+  font-size: .9rem;
+  line-height: 1.4;
+  margin: 0;
+}
 .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; }
+.site-detail-header {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 16px;
+  align-items: start;
+}
+.site-detail-header h1 { margin-bottom: 4px; }
+.site-header-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+  margin: 0;
+}
+.metric-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 12px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+.metric-card {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  padding: 14px;
+  min-width: 0;
+}
+.metric-card strong {
+  display: block;
+  color: var(--text);
+  font-size: 1.45rem;
+  line-height: 1.1;
+  overflow-wrap: anywhere;
+}
+.metric-card span {
+  display: block;
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: .85rem;
+  font-weight: 700;
+}
+.quick-facts > section {
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  padding: 0;
+  margin: 0 0 14px;
+  overflow: visible;
+}
+.quick-facts > section:last-child { margin-bottom: 0; }
+.detail-block {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  margin: 0 0 12px;
+  overflow: hidden;
+}
+.detail-block > summary {
+  cursor: pointer;
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 14px;
+  color: var(--text);
+  background: var(--panel-soft);
+  font-weight: 700;
+  user-select: none;
+}
+.detail-block > summary::-webkit-details-marker { display: none; }
+.detail-block > summary::before {
+  content: "\25B8";
+  color: var(--muted);
+  transition: transform .15s ease;
+}
+.detail-block[open] > summary::before { transform: rotate(90deg); }
+.detail-block > summary:hover { background: var(--highlight-bg); }
+.details-count {
+  margin-left: auto;
+  color: var(--muted);
+  font-size: .85rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.detail-block-body {
+  padding: 14px;
+}
+.detail-block-body > section {
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  padding: 0;
+  margin: 0;
+  overflow: visible;
+}
+.section-heading-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.section-heading-row h2 { margin-bottom: 0; }
+.section-heading-row a {
+  flex-shrink: 0;
+  font-weight: 700;
+  text-decoration: none;
+}
+.site-gallery {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 12px;
+}
+.site-gallery-card {
+  display: block;
+  color: var(--text);
+  text-decoration: none;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  overflow: hidden;
+}
+.site-gallery-card:hover {
+  border-color: var(--line-strong);
+  background: var(--panel-soft);
+}
+.site-gallery-thumb {
+  display: block;
+  width: 100%;
+  aspect-ratio: 4 / 3;
+  object-fit: cover;
+  background: var(--pill-bg);
+  border-bottom: 1px solid var(--line);
+}
+.site-gallery-thumb--audio {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted);
+  font-size: 2rem;
+}
+.site-gallery-card-body {
+  display: block;
+  padding: 10px;
+}
+.site-gallery-card-body strong {
+  display: block;
+  margin-bottom: 4px;
+  overflow-wrap: anywhere;
+}
+.site-gallery-meta {
+  margin-bottom: 8px;
+  font-size: .82rem;
+}
 .stat-strip { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-bottom: 16px; }
 .stat-badge { display: block; border: 1px solid var(--line); border-radius: 8px; padding: 12px; text-decoration: none; background: var(--panel); }
 .stat-badge strong { display: block; font-size: 1.7rem; line-height: 1; }
@@ -940,6 +1102,16 @@ details.raw-json pre { margin-top: 4px; }
   /* Tighter outer padding so the screen doesn't feel cramped */
   .admin-content {
     padding: 12px;
+  }
+  .site-detail-header {
+    grid-template-columns: 1fr;
+  }
+  .site-header-actions {
+    justify-content: flex-start;
+  }
+  .section-heading-row {
+    align-items: flex-start;
+    flex-direction: column;
   }
   header, section, article, .card {
     padding: 12px;

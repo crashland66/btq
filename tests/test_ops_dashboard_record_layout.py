@@ -163,7 +163,7 @@ def test_site_detail_summary_section_golden_markup() -> None:
         "service_days": ["Mon", "Tue"],
         "zzz_other": "extra",
     }
-    out = site_detail._summary_section(dict(doc), "S-1", "")
+    out = site_detail._quick_facts_section(dict(doc), "S-1", "")
 
     # Identity strips wrapping quotes via field_value.
     assert '<div class="field-row"><dt>Account</dt><dd>Quoted Account</dd></div>' in out
@@ -172,11 +172,12 @@ def test_site_detail_summary_section_golden_markup() -> None:
     assert '<div class="field-row"><dt>Customer Name</dt><dd>Jane Doe</dd></div>' in out
     # List values are joined.
     assert '<div class="field-row"><dt>Service Days</dt><dd>Mon, Tue</dd></div>' in out
-    # Other catch-all.
-    assert '<section><h3>Other</h3>' in out
-    assert '<div class="field-row"><dt>Zzz Other</dt><dd>extra</dd></div>' in out
-    # Field-group panels use <h3> headers (the outer "Summary" wrapper is <h2>,
-    # unchanged by this prompt — so only assert no stray <h2> inside the panels).
+    # The redesign drops the "Other" catch-all: unmapped keys are no longer
+    # surfaced in the quick-facts grid.
+    assert '<section><h3>Other</h3>' not in out
+    assert "Zzz Other" not in out
+    # Field-group panels use <h3> headers (the outer "Quick facts" wrapper is
+    # <h2> — so only assert no stray <h2> inside the panels).
     assert "<h2>Contact</h2>" not in out
     assert "<h2>Identity</h2>" not in out
 

@@ -179,11 +179,15 @@ def _golden_site_doc() -> dict[str, object]:
     }
 
 
-# Golden string captured from the pre-300 base commit (b62843f) render of
-# site_detail._summary_section(doc, "7090", "") on the doc above. Proven
-# byte-identical across base..HEAD by the verifier harness.
+# Golden string for the redesigned site_detail._quick_facts_section(doc, "7090",
+# "") on the doc above. The outer wrapper changed from <section><h2>Summary</h2>
+# to <section class="quick-facts"><h2>Quick facts</h2>, but every field group
+# (Identity/Contact/Schedule/Billing) is byte-identical to the prior render —
+# the same fields, values (quote-stripped), list-joins, and Edit actions. The
+# "Other" catch-all is intentionally dropped by the redesign, so the golden is
+# matched as a prefix (startswith) and stops after the Billing group.
 _SITE_GOLDEN = (
-    '<section><h2>Summary</h2>'
+    '<section class="quick-facts"><h2>Quick facts</h2>'
     '<section><h3>Identity</h3><dl class="fields summary-fields">'
     '<div class="field-row"><dt>Account</dt><dd>Roy Carson Inc</dd></div>'
     '<div class="field-row"><dt>Job</dt><dd>7090</dd></div>'
@@ -213,8 +217,8 @@ _SITE_GOLDEN = (
 
 
 def test_site_detail_non_edit_render_unchanged_golden() -> None:
-    out = site_detail._summary_section(_golden_site_doc(), "7090", "")
+    out = site_detail._quick_facts_section(_golden_site_doc(), "7090", "")
     # Pin the exact display markup so any regression to the site path is caught.
-    # (Other/provenance sections appended after the groups are allowed to vary;
-    # assert the field-group prefix is byte-stable.)
+    # (Provenance sections appended after the groups are allowed to vary; assert
+    # the field-group prefix is byte-stable.)
     assert out.startswith(_SITE_GOLDEN)

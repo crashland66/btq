@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from ops_dashboard import common
 from ops_dashboard.app import route_response_with_headers
 from ops_dashboard.sections import site_detail, sites
 
@@ -22,12 +23,25 @@ def location_doc(**overrides: object) -> dict[str, object]:
     return doc
 
 
+def _empty_related() -> dict[str, object]:
+    return {
+        "notes": [],
+        "employee_rows": [],
+        "opportunity_rows": [],
+        "visit_rows": [],
+        "recent_visits": [],
+    }
+
+
 def render_with_doc(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, doc: dict[str, object]) -> str:
     monkeypatch.setattr(site_detail, "_load_location", lambda site_id: doc)
-    monkeypatch.setattr(site_detail, "_related_sections", lambda site_id: [])
-    monkeypatch.setattr(site_detail.field_photos, "render_filter_form", lambda **kwargs: "<form>filter</form>")
-    monkeypatch.setattr(site_detail.field_photos, "latest_photo_cards", lambda ctx, limit, *, site_id="": ("", False))
-    return site_detail.render(SimpleNamespace(runtime_root=tmp_path / "runtime"), "7040")
+    # The redesigned render pulls related data (notes/employees/opportunities/
+    # visits) and field captures from CouchDB; neutralize those so we exercise
+    # the genuine non-degraded page without a live backend.
+    monkeypatch.setattr(site_detail, "_related_data", lambda site_id: _empty_related())
+    monkeypatch.setattr(site_detail, "_related_sections", lambda data: [])
+    monkeypatch.setattr(site_detail, "_site_capture_records", lambda ctx, site_id: ([], False, 0))
+    return site_detail.render(SimpleNamespace(runtime_root=tmp_path / "runtime", query={}), "7040")
 
 
 def test_site_detail_strip_dataview_drops_three_known_blocks() -> None:
@@ -152,28 +166,31 @@ def test_site_detail_summary_formats_list_value_as_comma_join(monkeypatch: pytes
     assert "['Mon', 'Wed', 'Fri']" not in html
 
 
+# The redesign moved value formatting into the shared common.field_value helper
+# (record_section uses it). The quote-stripping / escaping / list-join behavior
+# is unchanged — these tests now pin it at its new home.
 def test_format_value_strips_double_quotes() -> None:
-    assert site_detail._format_value('"19:01"') == "19:01"
+    assert common.field_value('"19:01"') == "19:01"
 
 
 def test_format_value_strips_single_quotes() -> None:
-    assert site_detail._format_value("'hello'") == "hello"
+    assert common.field_value("'hello'") == "hello"
 
 
 def test_format_value_leaves_embedded_quotes_alone() -> None:
-    assert site_detail._format_value('say "hi" please') == "say &quot;hi&quot; please"
+    assert common.field_value('say "hi" please') == "say &quot;hi&quot; please"
 
 
 def test_format_value_leaves_mismatched_bookends_alone() -> None:
-    assert site_detail._format_value('"abc\'') == "&quot;abc&#x27;"
+    assert common.field_value('"abc\'') == "&quot;abc&#x27;"
 
 
 def test_format_value_leaves_short_strings_alone() -> None:
-    assert site_detail._format_value('"') == "&quot;"
+    assert common.field_value('"') == "&quot;"
 
 
 def test_format_value_list_branch_unchanged() -> None:
-    assert site_detail._format_value(["a", "b"]) == "a, b"
+    assert common.field_value(["a", "b"]) == "a, b"
 
 
 def test_site_detail_render_includes_capture_provenance_when_lists_present(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -186,26 +203,40 @@ def test_site_detail_render_includes_capture_provenance_when_lists_present(monke
 def test_site_detail_render_includes_about_section_when_content_nonempty(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     html = render_with_doc(monkeypatch, tmp_path, location_doc(content="## Operational Notes\n- foo"))
 
-    assert "<h2>About</h2>" in html
+    # The redesign moved About into a collapsed <details> (collapsed != removed):
+    # the full markdown content is still present in the HTML.
+    assert '<details class="detail-block">' in html
+    assert "<h2>About &amp; operational notes</h2>" in html
     assert "<h2>Operational Notes</h2>" in html
     assert "<li>foo</li>" in html
 
 
-def test_site_detail_render_renders_photos_panel_with_filter_form(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_site_detail_render_renders_captures_gallery_linking_out(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    # The redesign replaced the inline photos panel + filter form with a field-
+    # captures gallery: each card links OUT to the capture detail and the section
+    # links to /field-photos for the full set (no inline capture body).
     monkeypatch.setattr(site_detail, "_load_location", lambda site_id: location_doc())
-    monkeypatch.setattr(site_detail, "_related_sections", lambda site_id: [])
-    monkeypatch.setattr(site_detail.field_photos, "render_filter_form", lambda **kwargs: "<form>sentinel filter</form>")
-    monkeypatch.setattr(
-        site_detail.field_photos,
-        "latest_photo_cards",
-        lambda ctx, limit, *, site_id="": ("<div class='card'>photo</div>", False),
-    )
+    monkeypatch.setattr(site_detail, "_related_data", lambda site_id: _empty_related())
+    monkeypatch.setattr(site_detail, "_related_sections", lambda data: [])
+    monkeypatch.setattr(site_detail, "submitters_by_capture", lambda runtime_root: {})
+    capture = {
+        "capture_id": "cap-123",
+        "area_guess": "Lobby",
+        "captured_at": "2026-06-10T10:00:00",
+        "status": "processed",
+        "image_media_url": "https://media.example/x.jpg",
+    }
+    monkeypatch.setattr(site_detail, "_site_capture_records", lambda ctx, site_id: ([capture], False, 1))
 
-    html = site_detail.render(SimpleNamespace(runtime_root=tmp_path / "runtime"), "7040")
+    html = site_detail.render(SimpleNamespace(runtime_root=tmp_path / "runtime", query={}), "7040")
 
-    assert "<h3>Photos</h3>" in html
-    assert "<form>sentinel filter</form>" in html
-    assert "<div class='card'>photo</div>" in html
+    assert '<section class="site-captures">' in html
+    assert "Field captures &middot; 1" in html
+    # The captures section links out to the field-photos page and each card links
+    # to the capture detail — provenance lives there, not inline.
+    assert "/field-photos?site_id=7040" in html
+    assert 'href="/captures?capture_id=cap-123"' in html
+    assert "site-gallery-card" in html
 
 
 def test_load_location_returns_none_on_404_or_network_error(monkeypatch: pytest.MonkeyPatch) -> None:
