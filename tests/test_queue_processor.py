@@ -4,7 +4,7 @@ import os
 import sys
 import types
 from contextlib import redirect_stdout
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Optional
 
@@ -1029,7 +1029,7 @@ def test_append_to_note_site_writes_canonical_location_content(tmp_path: Path, m
         },
     }
     expected_job_id = qp.compute_job_id(payload)
-    event_date = datetime.utcnow().date().isoformat()
+    event_date = datetime.now(timezone.utc).replace(tzinfo=None).date().isoformat()
     context = build_context(project_root, vault_root, runtime_root, log_path, dry_run=False)
     processed_dir, _failed_dir = make_processor_dirs(runtime_root, log_path)
     first_job_path = write_job(runtime_root / "queue", "site-canonical-first.json", payload)
@@ -4152,7 +4152,7 @@ def test_get_active_visit_ignores_markdown_visit_file(
 
 def test_event_links_to_existing_visit(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     project_root, vault_root, runtime_root, log_path = make_roots(tmp_path)
-    today = datetime.utcnow().date().isoformat()
+    today = datetime.now(timezone.utc).replace(tzinfo=None).date().isoformat()
     site_path = vault_root / "Accounts" / "Wgtco" / "Locations" / "7030 - Western Gas Transmission" / "about.md"
     write_frontmatter_file(
         site_path,
@@ -4190,7 +4190,7 @@ def test_event_links_to_existing_visit(tmp_path: Path, monkeypatch: pytest.Monke
 
 def test_event_without_visit(tmp_path: Path) -> None:
     project_root, vault_root, runtime_root, log_path = make_roots(tmp_path)
-    today = datetime.utcnow().date().isoformat()
+    today = datetime.now(timezone.utc).replace(tzinfo=None).date().isoformat()
     site_path = vault_root / "Accounts" / "Wgtco" / "Locations" / "7030 - Western Gas Transmission" / "about.md"
     write_frontmatter_file(
         site_path,
@@ -4234,7 +4234,7 @@ def test_event_without_visit(tmp_path: Path) -> None:
 
 def test_idempotent_event_visit_link(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     project_root, vault_root, runtime_root, log_path = make_roots(tmp_path)
-    today = datetime.utcnow().date().isoformat()
+    today = datetime.now(timezone.utc).replace(tzinfo=None).date().isoformat()
     site_path = vault_root / "Accounts" / "Wgtco" / "Locations" / "7030 - Western Gas Transmission" / "about.md"
     write_frontmatter_file(
         site_path,
@@ -5005,8 +5005,8 @@ def test_visit_create_basic(tmp_path: Path, legacy_markdown_writes: None) -> Non
     assert visit_doc["type"] == "visit"
     assert visit_doc["site"] == "Western Gas Transmission"
     assert visit_doc["site_id"] == "7030"
-    assert visit_doc["date"] == datetime.utcnow().date().isoformat()
-    assert visit_doc["visit_key"] == f"Western Gas Transmission:{datetime.utcnow().date().isoformat()}"
+    assert visit_doc["date"] == datetime.now(timezone.utc).replace(tzinfo=None).date().isoformat()
+    assert visit_doc["visit_key"] == f"Western Gas Transmission:{datetime.now(timezone.utc).replace(tzinfo=None).date().isoformat()}"
     assert visit_doc["source"] == "ingestion"
     assert visit_doc["confidence"] == "high"
     assert visit_doc["evidence"] == "I was at Western Gas Transmission."
@@ -5567,7 +5567,7 @@ def test_process_unknowns_backoff_is_respected(tmp_path: Path) -> None:
     project_root, vault_root, runtime_root, log_path = make_roots(tmp_path)
     unknown_path = vault_root / "Journal" / "2026-04-19-unknown.md"
     timestamp = "2026-04-19T10:00:00+00:00"
-    recent_attempt = (datetime.utcnow() - timedelta(minutes=30)).isoformat()
+    recent_attempt = (datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(minutes=30)).isoformat()
     write_unknown_capture(
         unknown_path,
         timestamp=timestamp,
@@ -5600,7 +5600,7 @@ def test_process_unknowns_retry_after_delay(tmp_path: Path) -> None:
     project_root, vault_root, runtime_root, log_path = make_roots(tmp_path)
     unknown_path = vault_root / "Journal" / "2026-04-19-unknown.md"
     timestamp = "2026-04-19T10:00:00+00:00"
-    stale_attempt = (datetime.utcnow() - timedelta(hours=3)).isoformat()
+    stale_attempt = (datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(hours=3)).isoformat()
     write_unknown_capture(
         unknown_path,
         timestamp=timestamp,
@@ -5666,7 +5666,7 @@ def test_process_unknowns_successful_delayed_resolution(tmp_path: Path) -> None:
     assert first_doc["status"] == "unresolved"
     assert first_doc["retry_count"] == 1
 
-    stale_attempt = (datetime.utcnow() - timedelta(hours=3)).isoformat()
+    stale_attempt = (datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(hours=3)).isoformat()
 
     def update_unknown_doc(current: dict[str, Any] | None) -> dict[str, Any] | None:
         assert current is not None
@@ -5708,7 +5708,7 @@ def build_visit_gap_text(date_value: str) -> str:
 
 def test_visit_gap_created_when_event_without_visit(tmp_path: Path) -> None:
     project_root, vault_root, runtime_root, log_path = make_roots(tmp_path)
-    today = datetime.utcnow().date().isoformat()
+    today = datetime.now(timezone.utc).replace(tzinfo=None).date().isoformat()
     site_path = vault_root / "Accounts" / "Wgtco" / "Locations" / "7030 - Western Gas Transmission" / "about.md"
     write_frontmatter_file(
         site_path,
@@ -5749,7 +5749,7 @@ def test_visit_gap_created_when_event_without_visit(tmp_path: Path) -> None:
 
 def test_append_to_site_note_writes_canonical_visit_gap_without_markdown_block(tmp_path: Path) -> None:
     project_root, vault_root, runtime_root, log_path = make_roots(tmp_path)
-    today = datetime.utcnow().date().isoformat()
+    today = datetime.now(timezone.utc).replace(tzinfo=None).date().isoformat()
     site_path = vault_root / "Accounts" / "Wgtco" / "Locations" / "7030 - Western Gas Transmission" / "about.md"
     write_frontmatter_file(
         site_path,
@@ -5802,7 +5802,7 @@ def test_append_to_site_note_writes_canonical_visit_gap_without_markdown_block(t
 
 def test_no_duplicate_visit_gap(tmp_path: Path) -> None:
     project_root, vault_root, runtime_root, log_path = make_roots(tmp_path)
-    today = datetime.utcnow().date().isoformat()
+    today = datetime.now(timezone.utc).replace(tzinfo=None).date().isoformat()
     site_path = vault_root / "Accounts" / "Wgtco" / "Locations" / "7030 - Western Gas Transmission" / "about.md"
     write_frontmatter_file(
         site_path,
@@ -5839,7 +5839,7 @@ def test_no_duplicate_visit_gap(tmp_path: Path) -> None:
 
 def test_no_visit_gap_when_visit_exists(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     project_root, vault_root, runtime_root, log_path = make_roots(tmp_path)
-    today = datetime.utcnow().date().isoformat()
+    today = datetime.now(timezone.utc).replace(tzinfo=None).date().isoformat()
     site_path = vault_root / "Accounts" / "Wgtco" / "Locations" / "7030 - Western Gas Transmission" / "about.md"
     write_frontmatter_file(
         site_path,

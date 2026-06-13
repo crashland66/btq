@@ -181,7 +181,7 @@ def should_retry(entry: dict[str, Any]) -> bool:
     except Exception:
         return True
 
-    now = datetime.now(last_dt.tzinfo) if last_dt.tzinfo is not None else datetime.utcnow()
+    now = datetime.now(last_dt.tzinfo) if last_dt.tzinfo is not None else datetime.now(timezone.utc).replace(tzinfo=None)
     delay_hours = 2 ** retry_count
     return (now - last_dt) > timedelta(hours=delay_hours)
 

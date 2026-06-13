@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 from dataclasses import asdict, dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -100,7 +100,7 @@ def generate_report(
         if not manifest.get("processed_records") and manifest.get("queue_jobs"):
             lineage_gaps.append({"capture_id": manifest_capture_id, "reason": "manifest has queue jobs but no processed records"})
     return ReconciliationReport(
-        generated_at=datetime.utcnow().isoformat(),
+        generated_at=datetime.now(timezone.utc).replace(tzinfo=None).isoformat(),
         semantic_drift_findings=semantic_drift,
         unresolved_ambiguities=[asdict(finding) for finding in repair_findings if finding.ambiguous],
         orphaned_evidence=orphaned_evidence,
