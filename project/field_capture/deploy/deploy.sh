@@ -135,6 +135,26 @@ if [ "${run_python}" = "1" ]; then
 		echo "ERROR: local field-capture API health check failed." >&2
 		exit 1
 	fi
+
+	# Auth-aware smoke check. /api/health passes without CouchDB, but worker login
+	# (/api/session) resolves the person from CouchDB — so missing/unwired creds
+	# 401 EVERY login while health still looks green. Fail the deploy here instead
+	# of letting a worker discover it. See memory: field_capture_couch_creds.
+	echo "Verifying CouchDB-backed auth wiring..."
+	if ! sudo systemctl cat "${SERVICE_NAME}" | grep -q '/etc/gregstoltz/field-capture.env'; then
+		echo "ERROR: ${SERVICE_NAME} does not load /etc/gregstoltz/field-capture.env — CouchDB auth will fail." >&2
+		exit 1
+	fi
+	if ! sudo test -f /etc/gregstoltz/field-capture.env; then
+		echo "ERROR: /etc/gregstoltz/field-capture.env is missing — CouchDB-backed auth cannot work." >&2
+		exit 1
+	fi
+	couch_user="$(sudo bash -c 'set -a; . /etc/gregstoltz/field-capture.env; set +a; curl -s -u "${BTQ_COUCHDB_USER}:${BTQ_COUCHDB_PASSWORD}" "${BTQ_COUCHDB_URL:-http://127.0.0.1:5984}/_session"' | python3 -c "import sys, json; print((json.load(sys.stdin).get('userCtx') or {}).get('name') or '')" 2>/dev/null || true)"
+	if [ -z "${couch_user}" ]; then
+		echo "ERROR: field-capture CouchDB credentials do not authenticate — worker logins will 401 (person lookup)." >&2
+		exit 1
+	fi
+	echo "CouchDB auth OK (user=${couch_user})."
 fi
 
 echo "Field-capture deploy phase complete."

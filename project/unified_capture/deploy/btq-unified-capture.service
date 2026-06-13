@@ -12,6 +12,10 @@ Environment=PYTHONPATH=/srv/btq/apps/unified-capture/project
 Environment=BT_PIPELINE_CONFIG_PATH=/srv/btq/apps/unified-capture/config.json
 Environment=UNIFIED_CAPTURE_DATA_DIR=/srv/btq/data
 EnvironmentFile=-/etc/btq/unified-capture.env
+# CouchDB credentials (BTQ_COUCHDB_USER/PASSWORD) — auth resolves the person from
+# CouchDB. Values stay out of version control; this reference must not. Mirrors
+# field-capture. See memory: field_capture_couch_creds.
+EnvironmentFile=-/etc/gregstoltz/unified-capture.env
 ExecStart=/usr/bin/python3 -m unified_capture.server --db /srv/btq/data/field_capture_tokens.sqlite3 --vault-root /srv/btq/data/vault-readonly --upload-dir /srv/btq/runtime/uploads --host 127.0.0.1 --port 8081 --data-dir /srv/btq/data
 Restart=on-failure
 RestartSec=5

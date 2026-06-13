@@ -11,6 +11,12 @@ WorkingDirectory=/srv/btq/apps/field-capture/project
 Environment=PYTHONPATH=/srv/btq/apps/field-capture/project
 Environment=BT_PIPELINE_CONFIG_PATH=/srv/btq/apps/field-capture/config.json
 EnvironmentFile=-/etc/btq/field-capture.env
+# CouchDB credentials (BTQ_COUCHDB_USER/PASSWORD). Auth now resolves the worker's
+# person from CouchDB, so without these every login 401s "invalid_token". The
+# values live outside version control (secrets); this reference must not. It was
+# previously only in a machine-local drop-in, which silently truncated (2026-06-08)
+# and took photos.gregstoltz.com auth down. See memory: field_capture_couch_creds.
+EnvironmentFile=-/etc/gregstoltz/field-capture.env
 ExecStart=/usr/bin/python3 -m field_capture.server --db /srv/btq/data/field_capture_tokens.sqlite3 --vault-root /srv/btq/data/vault-readonly --upload-dir /srv/btq/runtime/uploads serve --host 127.0.0.1 --port 8080
 Restart=on-failure
 RestartSec=5
