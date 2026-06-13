@@ -5,6 +5,10 @@ SOURCE_DIR="${FIELD_CAPTURE_SOURCE_DIR:-/home/deploy/field-capture-source}"
 APP_ROOT="${FIELD_CAPTURE_APP_ROOT:-/srv/btq/apps/field-capture}"
 DIST_DIR="${APP_ROOT}/dist"
 ENV_FILE="${FIELD_CAPTURE_ENV_FILE:-/etc/btq/field-capture.env}"
+# Runtime CouchDB secrets file the systemd unit loads (BTQ_COUCHDB_USER/PASSWORD).
+# Distinct from ENV_FILE (deploy-time DB-ensure creds): the runtime secrets live in
+# the /etc/gregstoltz drop-in. The auth gate below verifies THIS file. Overridable.
+RUNTIME_SECRETS_ENV_FILE="${FIELD_CAPTURE_RUNTIME_SECRETS_ENV_FILE:-/etc/gregstoltz/field-capture.env}"
 SERVICE_NAME="${FIELD_CAPTURE_SERVICE_NAME:-btq-field-capture.service}"
 
 run_static=1
@@ -145,18 +149,18 @@ if [ "${run_python}" = "1" ]; then
 	# after a restart, which previously false-alarmed this gate. Retry it.
 	unit_loads_creds=0
 	for attempt in 1 2 3 4 5; do
-		if sudo systemctl cat "${SERVICE_NAME}" 2>/dev/null | grep -q '/etc/gregstoltz/field-capture.env'; then
+		if sudo systemctl cat "${SERVICE_NAME}" 2>/dev/null | grep -Fq -- "${RUNTIME_SECRETS_ENV_FILE}"; then
 			unit_loads_creds=1
 			break
 		fi
 		sleep 1
 	done
 	if [ "${unit_loads_creds}" != "1" ]; then
-		echo "ERROR: ${SERVICE_NAME} does not load /etc/gregstoltz/field-capture.env — CouchDB auth will fail." >&2
+		echo "ERROR: ${SERVICE_NAME} does not load ${RUNTIME_SECRETS_ENV_FILE} — CouchDB auth will fail." >&2
 		exit 1
 	fi
-	if ! sudo test -f /etc/gregstoltz/field-capture.env; then
-		echo "ERROR: /etc/gregstoltz/field-capture.env is missing — CouchDB-backed auth cannot work." >&2
+	if ! sudo test -f "${RUNTIME_SECRETS_ENV_FILE}"; then
+		echo "ERROR: ${RUNTIME_SECRETS_ENV_FILE} is missing — CouchDB-backed auth cannot work." >&2
 		exit 1
 	fi
 	if [ -n "${FIELD_CAPTURE_HEALTH_TOKEN:-}" ]; then
@@ -179,7 +183,7 @@ if [ "${run_python}" = "1" ]; then
 		# Fallback: confirm the configured CouchDB creds actually authenticate.
 		couch_user=""
 		for attempt in 1 2 3; do
-			couch_user="$(sudo bash -c 'set -a; . /etc/gregstoltz/field-capture.env; set +a; curl -s -u "${BTQ_COUCHDB_USER}:${BTQ_COUCHDB_PASSWORD}" "${BTQ_COUCHDB_URL:-http://127.0.0.1:5984}/_session"' | python3 -c "import sys, json; print((json.load(sys.stdin).get('userCtx') or {}).get('name') or '')" 2>/dev/null || true)"
+			couch_user="$(sudo bash -c 'set -a; . "${1}"; set +a; curl -s -u "${BTQ_COUCHDB_USER}:${BTQ_COUCHDB_PASSWORD}" "${BTQ_COUCHDB_URL:-http://127.0.0.1:5984}/_session"' _ "${RUNTIME_SECRETS_ENV_FILE}" | python3 -c "import sys, json; print((json.load(sys.stdin).get('userCtx') or {}).get('name') or '')" 2>/dev/null || true)"
 			[ -n "${couch_user}" ] && break
 			sleep 1
 		done
