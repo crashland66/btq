@@ -10,6 +10,7 @@ from ops_dashboard.common import SectionContext
 from ops_dashboard.sections import console, inbox, swipe
 from tests.test_ops_dashboard import request_text, write_vault_site_issue
 from tests.test_ops_dashboard_admin import write_vault_equipment_request, write_vault_supply_need
+from tests._couch_vault_stub import couch_vault_stub  # noqa: F401 - autouse fixture
 
 
 def section_ctx(runtime_root: Path, vault_root: Path | None = None) -> SectionContext:

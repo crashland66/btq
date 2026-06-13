@@ -1,76 +1,94 @@
 from __future__ import annotations
 
-from pathlib import Path
+import io
+import json
+import urllib.request
+
+import pytest
 
 from site_equipment import _equipment_from_couch_doc, discover_site_equipment, equipment_as_export, priority_sort
 
 
-def write_equipment(
-    vault_root: Path,
+def equipment_doc(
     *,
-    account: str = "Summitsteel",
-    site_dir: str = "7050 - Summit Wire",
     equipment_id: str = "eqr_vacuum",
     site_id: str = "7050",
     status: str = "open",
     priority: str = "urgent",
     equipment_name: str = "vacuum",
     archived: bool = False,
-) -> Path:
-    path = vault_root / "Accounts" / account / "Locations" / site_dir / "Equipment" / f"{equipment_id}__equipment.md"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        f"""---
-type: equipment_request
-equipment_id: {equipment_id}
-site_id: "{site_id}"
-site_name: Summit Wire
-account: {account}
-equipment_name: {equipment_name}
-reason: Current vacuum will not start.
-priority: {priority}
-requested_by: Tom Walsh
-observed_at: 2026-05-08T14:12:43+00:00
-source: field_capture
-status: {status}
-archived: {str(archived).lower()}
-archived_at: 2026-06-10T12:00:00+00:00
-archived_by: Jordan
-created_at: 2026-05-08T20:00:00+00:00
-notes: Needed for lobby carpet.
-related_capture_ids:
-  - cap-equipment-summit
-related_candidate_ids:
-  - ac_equipment_summit
-approved_at: 2026-05-09T12:00:00+00:00
-approved_by: Jordan
-approval_note: Approved replacement.
-ordered_at: 2026-05-09T13:00:00+00:00
-ordered_by: Jordan
-ordered_note: Ordered from supplier.
-provided_at: 2026-05-10T13:00:00+00:00
-provided_by: Tom
-provided_note: Delivered to closet.
----
-# Equipment request: {equipment_name}
-""",
-        encoding="utf-8",
-    )
-    return path
+    **extra: object,
+) -> dict[str, object]:
+    doc: dict[str, object] = {
+        "_id": f"equipment_request_{equipment_id}",
+        "type": "equipment_request",
+        "equipment_id": equipment_id,
+        "site_id": site_id,
+        "site_name": "Summit Wire",
+        "account": "Summitsteel",
+        "equipment_name": equipment_name,
+        "reason": "Current vacuum will not start.",
+        "priority": priority,
+        "requested_by": "Tom Walsh",
+        "observed_at": "2026-05-08T14:12:43+00:00",
+        "source": "field_capture",
+        "status": status,
+        "archived": archived,
+        "archived_at": "2026-06-10T12:00:00+00:00",
+        "archived_by": "Jordan",
+        "created_at": "2026-05-08T20:00:00+00:00",
+        "notes": "Needed for lobby carpet.",
+        "related_capture_ids": ["cap-equipment-summit"],
+        "related_candidate_ids": ["ac_equipment_summit"],
+        "approved_at": "2026-05-09T12:00:00+00:00",
+        "approved_by": "Jordan",
+        "approval_note": "Approved replacement.",
+        "ordered_at": "2026-05-09T13:00:00+00:00",
+        "ordered_by": "Jordan",
+        "ordered_note": "Ordered from supplier.",
+        "provided_at": "2026-05-10T13:00:00+00:00",
+        "provided_by": "Tom",
+        "provided_note": "Delivered to closet.",
+    }
+    doc.update(extra)
+    return doc
 
 
-def test_discover_site_equipment_returns_empty_on_clean_vault(tmp_path: Path) -> None:
-    report = discover_site_equipment(tmp_path / "vault")
+def patch_couch(monkeypatch: pytest.MonkeyPatch, docs: list[dict[str, object]]) -> None:
+    """Drive the CouchDB ``_find`` reader off an in-memory doc list."""
+    monkeypatch.setenv("BTQ_COUCHDB_URL", "http://couchdb.test")
+
+    def fake_urlopen(req, timeout=None):  # noqa: ANN001
+        payload = json.loads(req.data.decode("utf-8"))
+        selector = payload["selector"]
+        matched: list[dict[str, object]] = []
+        for doc in docs:
+            if doc.get("type") != selector.get("type"):
+                continue
+            if "archived" in selector and bool(doc.get("archived")) is not bool(selector["archived"]):
+                continue
+            if "site_id" in selector and str(doc.get("site_id")) != str(selector["site_id"]):
+                continue
+            matched.append(doc)
+        body = json.dumps({"docs": matched}).encode("utf-8")
+        return io.BytesIO(body)
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+
+
+def test_discover_site_equipment_returns_empty_when_no_docs(monkeypatch: pytest.MonkeyPatch) -> None:
+    patch_couch(monkeypatch, [])
+
+    report = discover_site_equipment(None)
 
     assert report["equipment"] == []
     assert report["counts"]["total"] == 0
 
 
-def test_discover_site_equipment_parses_well_formed_file(tmp_path: Path) -> None:
-    vault_root = tmp_path / "vault"
-    write_equipment(vault_root)
+def test_discover_site_equipment_maps_couch_doc(monkeypatch: pytest.MonkeyPatch) -> None:
+    patch_couch(monkeypatch, [equipment_doc()])
 
-    report = discover_site_equipment(vault_root)
+    report = discover_site_equipment(None)
     [request] = report["equipment"]
 
     assert request.equipment_id == "eqr_vacuum"
@@ -89,53 +107,73 @@ def test_discover_site_equipment_parses_well_formed_file(tmp_path: Path) -> None
     assert request.provided_note == "Delivered to closet."
 
 
-def test_discover_site_equipment_filters_by_site_id(tmp_path: Path) -> None:
-    vault_root = tmp_path / "vault"
-    write_equipment(vault_root, equipment_id="eqr_7050", site_id="7050")
-    write_equipment(vault_root, account="Contworks", site_dir="7060 - Continental Metalworks", equipment_id="eqr_7060", site_id="7060")
+def test_discover_site_equipment_filters_by_site_id(monkeypatch: pytest.MonkeyPatch) -> None:
+    patch_couch(
+        monkeypatch,
+        [
+            equipment_doc(equipment_id="eqr_7050", site_id="7050"),
+            equipment_doc(equipment_id="eqr_7060", site_id="7060"),
+        ],
+    )
 
-    report = discover_site_equipment(vault_root, site_id="7060")
+    report = discover_site_equipment(None, site_id="7060")
 
     assert [request.equipment_id for request in report["equipment"]] == ["eqr_7060"]
 
 
-def test_discover_site_equipment_filters_by_status(tmp_path: Path) -> None:
-    vault_root = tmp_path / "vault"
-    write_equipment(vault_root, equipment_id="eqr_open", status="open")
-    write_equipment(vault_root, equipment_id="eqr_approved", status="approved")
+def test_discover_site_equipment_filters_by_status(monkeypatch: pytest.MonkeyPatch) -> None:
+    patch_couch(
+        monkeypatch,
+        [
+            equipment_doc(equipment_id="eqr_open", status="open"),
+            equipment_doc(equipment_id="eqr_approved", status="approved"),
+        ],
+    )
 
-    report = discover_site_equipment(vault_root, status="approved")
+    report = discover_site_equipment(None, status="approved")
 
     assert [request.equipment_id for request in report["equipment"]] == ["eqr_approved"]
 
 
-def test_discover_site_equipment_counts_by_status(tmp_path: Path) -> None:
-    vault_root = tmp_path / "vault"
-    write_equipment(vault_root, equipment_id="eqr_open", status="open")
-    write_equipment(vault_root, equipment_id="eqr_approved", status="approved")
+def test_discover_site_equipment_counts_by_status(monkeypatch: pytest.MonkeyPatch) -> None:
+    patch_couch(
+        monkeypatch,
+        [
+            equipment_doc(equipment_id="eqr_open", status="open"),
+            equipment_doc(equipment_id="eqr_approved", status="approved"),
+        ],
+    )
 
-    report = discover_site_equipment(vault_root)
+    report = discover_site_equipment(None)
 
     assert report["counts"]["by_status"] == {"approved": 1, "open": 1}
 
 
-def test_discover_site_equipment_counts_by_priority(tmp_path: Path) -> None:
-    vault_root = tmp_path / "vault"
-    write_equipment(vault_root, equipment_id="eqr_urgent", priority="urgent")
-    write_equipment(vault_root, equipment_id="eqr_high", priority="high")
+def test_discover_site_equipment_counts_by_priority(monkeypatch: pytest.MonkeyPatch) -> None:
+    patch_couch(
+        monkeypatch,
+        [
+            equipment_doc(equipment_id="eqr_urgent", priority="urgent"),
+            equipment_doc(equipment_id="eqr_high", priority="high"),
+        ],
+    )
 
-    report = discover_site_equipment(vault_root)
+    report = discover_site_equipment(None)
 
     assert report["counts"]["by_priority"] == {"high": 1, "urgent": 1}
 
 
-def test_discover_site_equipment_excludes_archived_by_default_and_can_list_archived(tmp_path: Path) -> None:
-    vault_root = tmp_path / "vault"
-    write_equipment(vault_root, equipment_id="eqr_open")
-    write_equipment(vault_root, equipment_id="eqr_archived", archived=True)
+def test_discover_site_equipment_excludes_archived_by_default_and_can_list_archived(monkeypatch: pytest.MonkeyPatch) -> None:
+    patch_couch(
+        monkeypatch,
+        [
+            equipment_doc(equipment_id="eqr_open"),
+            equipment_doc(equipment_id="eqr_archived", archived=True),
+        ],
+    )
 
-    default_report = discover_site_equipment(vault_root)
-    archived_report = discover_site_equipment(vault_root, include_archived=True, archived_only=True)
+    default_report = discover_site_equipment(None)
+    archived_report = discover_site_equipment(None, include_archived=True, archived_only=True)
 
     assert [request.equipment_id for request in default_report["equipment"]] == ["eqr_open"]
     assert default_report["counts"]["total"] == 1
@@ -143,38 +181,22 @@ def test_discover_site_equipment_excludes_archived_by_default_and_can_list_archi
     assert archived_report["counts"]["total"] == 1
 
 
-def test_discover_site_equipment_reports_warnings_for_malformed_file(tmp_path: Path) -> None:
-    vault_root = tmp_path / "vault"
-    path = vault_root / "Accounts" / "Bad" / "Locations" / "999 - Bad" / "Equipment" / "bad.md"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text("---\ntype: equipment_request\nequipment_id: eqr_bad\n---\n", encoding="utf-8")
+def test_discover_site_equipment_skips_non_equipment_request_type(monkeypatch: pytest.MonkeyPatch) -> None:
+    patch_couch(monkeypatch, [{"_id": "note", "type": "site_issue", "site_id": "1337"}])
 
-    report = discover_site_equipment(vault_root)
-
-    assert report["equipment"] == []
-    assert report["warnings"][0]["reason"] == "missing_required_site_id_or_equipment_id_or_equipment_name"
-
-
-def test_discover_site_equipment_skips_non_equipment_request_type(tmp_path: Path) -> None:
-    vault_root = tmp_path / "vault"
-    path = vault_root / "Accounts" / "Summitsteel" / "Locations" / "7050 - Summit Wire" / "Equipment" / "note.md"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text("---\ntype: site_issue\nsite_id: \"1337\"\n---\n", encoding="utf-8")
-
-    report = discover_site_equipment(vault_root)
+    report = discover_site_equipment(None)
 
     assert report["equipment"] == []
     assert report["warnings"] == []
 
 
-def test_equipment_as_export_includes_id_when_requested(tmp_path: Path) -> None:
-    vault_root = tmp_path / "vault"
-    write_equipment(vault_root)
-    [request] = discover_site_equipment(vault_root)["equipment"]
+def test_equipment_as_export_includes_id_when_requested(monkeypatch: pytest.MonkeyPatch) -> None:
+    patch_couch(monkeypatch, [equipment_doc()])
+    [request] = discover_site_equipment(None)["equipment"]
 
     exported = equipment_as_export(request, include_path=True)
 
-    assert exported["_id"] == "eqr_vacuum"
+    assert exported["_id"] == "equipment_request_eqr_vacuum"
 
 
 def test_equipment_from_couch_doc_uses_id_not_legacy_vault_path() -> None:

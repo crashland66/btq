@@ -3,9 +3,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
-from pathlib import Path
 
-from config import get_config
 from ops_dashboard import app as ops_dashboard_app
 from vps import ssh as vps_ssh
 
@@ -31,17 +29,6 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
         help="Skip site data migration (useful when re-running after a partial failure).",
     )
     setup_couchdb_parser.set_defaults(func=handle_setup_couchdb)
-    migrate_vault_parser = subparsers.add_parser("migrate-vault", help="Migrate typed vault markdown into btq_vault.")
-    migrate_vault_parser.set_defaults(func=handle_migrate_vault)
-    strip_vault_path_parser = subparsers.add_parser(
-        "strip-vault-path",
-        help="Remove the legacy vault_path field from canonical CouchDB docs after gated backup.",
-    )
-    strip_mode = strip_vault_path_parser.add_mutually_exclusive_group()
-    strip_mode.add_argument("--dry-run", dest="apply", action="store_false", default=False, help="Count legacy fields without writing.")
-    strip_mode.add_argument("--apply", dest="apply", action="store_true", help="Back up each database, then remove vault_path.")
-    strip_vault_path_parser.add_argument("--json", action="store_true", help="Output JSON.")
-    strip_vault_path_parser.set_defaults(func=handle_strip_vault_path)
     audit_site_coverage_parser = subparsers.add_parser("audit-site-coverage", help="Report active vault locations missing from the site registry.")
     audit_site_coverage_parser.set_defaults(func=handle_audit_site_coverage)
     backup_vault_parser = subparsers.add_parser("backup-vault", help="Watch btq_vault changes and write iCloud backups.")
@@ -49,21 +36,6 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
     export_today_parser = subparsers.add_parser("export-vault-today", help="Print today's btq_vault entity activity as markdown text.")
     export_today_parser.add_argument("--date", default=None, help="Date (YYYY-MM-DD). Defaults to today UTC.")
     export_today_parser.set_defaults(func=handle_export_vault_today)
-    open_positions_parser = subparsers.add_parser(
-        "open-positions",
-        help="List sites with net-open recruiting triggers (derived from vault about.md).",
-    )
-    open_positions_parser.add_argument(
-        "--vault-root",
-        type=Path,
-        default=None,
-        help="Vault root (defaults to effective_config().vault_dir).",
-    )
-    open_positions_parser.add_argument("--json", action="store_true", help="Output JSON instead of markdown.")
-    open_positions_parser.set_defaults(func=handle_open_positions)
-    freeze_vault_parser = subparsers.add_parser("freeze-vault", help="Write a FROZEN marker to the vault root and print the git-tag command.")
-    freeze_vault_parser.add_argument("--vault-root", required=True, help="Absolute path to the vault directory to freeze.")
-    freeze_vault_parser.set_defaults(func=handle_freeze_vault)
     vps_parser = subparsers.add_parser("vps", help="Manage the remote VPS.")
     vps_subparsers = vps_parser.add_subparsers(dest="vps_command", required=True)
     vps_status_parser = vps_subparsers.add_parser("status", help="Show VPS CouchDB service and disk status.")
@@ -99,37 +71,6 @@ def handle_setup_couchdb(args: argparse.Namespace) -> int:
     )
 
 
-def handle_migrate_vault(args: argparse.Namespace) -> int:
-    from event_pipeline.couchdb import migrate_vault
-
-    return migrate_vault.main()
-
-
-def handle_strip_vault_path(args: argparse.Namespace) -> int:
-    import json as _json
-
-    from btq_vault.strip_vault_path import strip_vault_path
-
-    try:
-        result = strip_vault_path(apply=bool(args.apply))
-    except Exception as exc:
-        print(f"error: {exc}", file=sys.stderr)
-        return 1
-    if args.json:
-        print(_json.dumps(result.as_dict(), indent=2, sort_keys=True))
-    else:
-        mode = "apply" if result.applied else "dry-run"
-        print(f"BTQ strip-vault-path ({mode})")
-        for item in result.databases:
-            print(
-                f"- {item.database}: matched={item.matched} changed={item.changed} "
-                f"conflicts={item.conflicts} backup={item.backup_database}"
-            )
-        if not result.applied:
-            print("No writes performed. Re-run with --apply to back up and remove vault_path.")
-    return 1 if result.errors else 0
-
-
 def handle_audit_site_coverage(args: argparse.Namespace) -> int:
     from event_pipeline.couchdb import audit_site_coverage
 
@@ -156,43 +97,6 @@ def handle_export_vault_today(args: argparse.Namespace) -> int:
     except Exception as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
-    return 0
-
-
-def handle_open_positions(args: argparse.Namespace) -> int:
-    from btq_vault.open_positions import compute_open_positions
-
-    root = args.vault_root or get_config().vault_dir
-    positions = compute_open_positions(root)
-    if args.json:
-        import json as _json
-
-        print(_json.dumps([p._asdict() for p in positions], indent=2))
-    elif not positions:
-        print("(no open positions)")
-    else:
-        for position in positions:
-            date_part = f" — oldest {position.oldest_trigger_date}" if position.oldest_trigger_date else ""
-            print(f"- {position.site_name} (#{position.site_id}) — {position.net_open} open position(s){date_part}")
-    return 0
-
-
-def handle_freeze_vault(args: argparse.Namespace) -> int:
-    import datetime as _dt
-
-    vault_root = Path(args.vault_root).expanduser().resolve(strict=False)
-    frozen_at = _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    tag_date = _dt.datetime.now(_dt.timezone.utc).date().isoformat()
-    marker = vault_root / "FROZEN.md"
-    content = (
-        f"---\nfrozen_at: {frozen_at}\n---\n\n"
-        "This vault is frozen. No new entity data is written here.\n"
-        "CouchDB (`btq_vault`) is the entity source of truth from this date forward.\n"
-    )
-    marker.write_text(content, encoding="utf-8")
-    print(f"Wrote {marker}")
-    print("Next step — run this git command to tag the archive:")
-    print(f"  git -C {vault_root} tag vault-archive-{tag_date}")
     return 0
 
 

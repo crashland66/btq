@@ -35,6 +35,7 @@ from processing_core.action_candidates import action_candidate_payload, write_ac
 from processing_core.artifacts import write_json_object
 from queue_processor import main as queue_processor_main
 from tests.test_field_capture_auth import employee_doc, patch_canonical
+from tests._couch_vault_stub import couch_vault_stub  # noqa: F401 - autouse fixture
 
 
 def write_capture(

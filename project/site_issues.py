@@ -4,8 +4,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
 
-from vault_markdown import frontmatter_list, read_typed_markdown_note
-
 
 CURRENT_STATUSES = {"open", "monitoring"}
 ISSUE_STATUSES = {"open", "monitoring", "resolved"}
@@ -52,23 +50,11 @@ def discover_site_issues(
     include_archived: bool = False,
     archived_only: bool = False,
 ) -> dict[str, object]:
-    """Return site issues.
+    """Return site issues from CouchDB (``btq_vault``, canonical).
 
-    CouchDB (``btq_vault``) is the canonical store for site issues. When CouchDB
-    is configured (production) we read from it and never touch the filesystem
-    vault — that vault is an iCloud-synced Obsidian folder, and a background
-    launchd process scanning it (dataless materialization) blocks indefinitely.
-    With no CouchDB env (dev/CI) we fall back to the on-disk Markdown glob.
+    ``vault_root`` is accepted for call-site compatibility but no longer used.
     """
-    if _couchdb_site_issues_enabled():
-        return _discover_site_issues_couchdb(site_id=site_id, include_archived=include_archived, archived_only=archived_only)
-    return _discover_site_issues_filesystem(vault_root, site_id=site_id, include_archived=include_archived, archived_only=archived_only)
-
-
-def _couchdb_site_issues_enabled() -> bool:
-    import os
-
-    return bool(os.environ.get("BTQ_COUCHDB_URL", "").strip())
+    return _discover_site_issues_couchdb(site_id=site_id, include_archived=include_archived, archived_only=archived_only)
 
 
 def _site_issue_from_couch_doc(doc: dict[str, Any]) -> SiteIssue | None:
@@ -169,85 +155,6 @@ def _discover_site_issues_couchdb(
     return {"issues": issues, "warnings": [], "counts": issue_counts(issues, include_archived=include_archived or archived_only)}
 
 
-def _discover_site_issues_filesystem(
-    vault_root: Path,
-    *,
-    site_id: str | None = None,
-    include_archived: bool = False,
-    archived_only: bool = False,
-) -> dict[str, object]:
-    issues: list[SiteIssue] = []
-    warnings: list[dict[str, str]] = []
-    root = vault_root.expanduser().resolve(strict=False)
-    accounts_root = root / "Accounts"
-    if not accounts_root.exists():
-        return {"issues": [], "warnings": [{"path": str(accounts_root), "reason": "accounts_root_missing"}], "counts": issue_counts([])}
-
-    for path in sorted(accounts_root.glob("*/Locations/*/Issues/*.md")):
-        issue, warning = parse_site_issue(path)
-        if warning is not None:
-            warnings.append(warning)
-            continue
-        if issue is None:
-            continue
-        if not _include_archived_item(issue.archived, include_archived=include_archived, archived_only=archived_only):
-            continue
-        if site_id is not None and issue.site_id != str(site_id):
-            continue
-        issues.append(issue)
-    issues.sort(key=lambda item: (status_sort(item.status), item.site_id, item.priority, item.created_at, item.issue_id))
-    return {"issues": issues, "warnings": warnings, "counts": issue_counts(issues, include_archived=include_archived or archived_only)}
-
-
-def parse_site_issue(path: Path) -> tuple[SiteIssue | None, dict[str, str] | None]:
-    frontmatter, body, warning = read_typed_markdown_note(path, "site_issue")
-    if warning is not None or frontmatter is None:
-        return None, warning
-    site_id = clean_string(frontmatter.get("site_id"))
-    issue_id = clean_string(frontmatter.get("issue_id")) or path.stem.split("__", 1)[0]
-    title = clean_string(frontmatter.get("title")) or path.stem
-    if not site_id or not issue_id:
-        return None, {"path": str(path), "reason": "missing_required_site_id_or_issue_id"}
-    status = clean_string(frontmatter.get("status")) or "open"
-    if status not in ISSUE_STATUSES:
-        return None, {"path": str(path), "reason": f"unknown_status:{status}"}
-    return (
-        SiteIssue(
-            issue_id=issue_id,
-            site_id=site_id,
-            site=clean_string(frontmatter.get("site")),
-            account=clean_string(frontmatter.get("account")),
-            title=title,
-            status=status,
-            priority=clean_string(frontmatter.get("priority")) or "normal",
-            category=clean_string(frontmatter.get("category")) or "other",
-            client_notified=bool_from_frontmatter(frontmatter.get("client_notified")),
-            client_notified_at=clean_string(frontmatter.get("client_notified_at")),
-            client_notified_by=clean_string(frontmatter.get("client_notified_by")),
-            client_notified_method=clean_string(frontmatter.get("client_notified_method")),
-            reported_by=clean_string(frontmatter.get("reported_by")),
-            observed_at=clean_string(frontmatter.get("observed_at")),
-            created_at=clean_string(frontmatter.get("created_at")),
-            updated_at=clean_string(frontmatter.get("updated_at")),
-            summary=summary_from_body(body),
-            resolution_trigger=clean_string(frontmatter.get("resolution_trigger")),
-            monitoring_at=clean_string(frontmatter.get("monitoring_at")),
-            monitoring_by=clean_string(frontmatter.get("monitoring_by")),
-            monitoring_note=clean_string(frontmatter.get("monitoring_note")),
-            resolved_at=clean_string(frontmatter.get("resolved_at")),
-            resolved_by=clean_string(frontmatter.get("resolved_by")),
-            resolved_note=clean_string(frontmatter.get("resolved_note")),
-            archived=bool_from_frontmatter(frontmatter.get("archived")),
-            archived_at=clean_string(frontmatter.get("archived_at")),
-            archived_by=clean_string(frontmatter.get("archived_by")),
-            related_capture_ids=tuple(frontmatter_list(frontmatter.get("related_capture_ids"))),
-            related_candidate_ids=tuple(frontmatter_list(frontmatter.get("related_candidate_ids"))),
-            path=path.expanduser().resolve(strict=False),
-        ),
-        None,
-    )
-
-
 def clean_string(value: Any) -> str:
     text = str(value or "").strip()
     if text in {"", '""', "''", "null", "None"}:
@@ -255,29 +162,6 @@ def clean_string(value: Any) -> str:
     if (text.startswith('"') and text.endswith('"')) or (text.startswith("'") and text.endswith("'")):
         text = text[1:-1].strip()
     return text
-
-
-def bool_from_frontmatter(value: Any) -> bool:
-    if isinstance(value, bool):
-        return value
-    return clean_string(value).lower() == "true"
-
-
-def summary_from_body(body: str) -> str:
-    lines = body.splitlines()
-    collecting = False
-    collected: list[str] = []
-    for line in lines:
-        if line.strip().lower() == "## summary":
-            collecting = True
-            continue
-        if collecting and line.startswith("## "):
-            break
-        if collecting:
-            stripped = line.strip()
-            if stripped:
-                collected.append(stripped)
-    return " ".join(collected).strip()
 
 
 def issue_counts(issues: Iterable[SiteIssue], *, include_archived: bool = False) -> dict[str, object]:

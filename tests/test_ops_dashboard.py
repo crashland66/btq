@@ -26,6 +26,7 @@ from processing_core.action_candidates import action_candidate_payload, write_ac
 from processing_core.artifacts import write_json_object
 from queue_processor import health as queue_health
 from queue_processor import main as queue_processor_main
+from tests._couch_vault_stub import couch_vault_stub  # noqa: F401 - autouse fixture
 
 
 def request_text(method: str, path: str, runtime_root: Path, body: str = "") -> tuple[HTTPStatus, str, str]:

@@ -7,8 +7,6 @@ from contextlib import redirect_stdout
 from pathlib import Path
 
 import docs_export
-from btq_vault import markdown_export
-from btq_vault.couch_store import CouchDBEntityStore
 from config import get_config
 from queue_processor import governance
 from queue_processor import health
@@ -112,16 +110,6 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
     export_docs_parser.add_argument("--docs-dir")
     export_docs_parser.add_argument("--json", action="store_true")
     export_docs_parser.set_defaults(func=handle_export_docs)
-    markdown_export_parser = subparsers.add_parser(
-        "markdown-export",
-        help="Regenerate the human-readable Markdown projection from canonical CouchDB entities; this is not a canonical write.",
-    )
-    markdown_export_parser.add_argument("--vault-root", type=Path, help="Vault root to receive exported Markdown projection files.")
-    markdown_export_parser.add_argument("--type", action="append", dest="types", choices=markdown_export.EXPORTABLE_TYPES, help="Entity type to export. Repeat for multiple types.")
-    markdown_export_parser.add_argument("--site", help="Restrict export to a site_id or related_site value.")
-    markdown_export_parser.add_argument("--dry-run", action="store_true", help="Render and report what would change without writing Markdown files.")
-    markdown_export_parser.add_argument("--json", action="store_true")
-    markdown_export_parser.set_defaults(func=handle_markdown_export)
 
 
 def handle_health(args: argparse.Namespace) -> int:
@@ -316,29 +304,3 @@ def handle_export_docs(args: argparse.Namespace) -> int:
     if args.json:
         export_args.append("--json")
     return docs_export.run(export_args)
-
-
-def handle_markdown_export(args: argparse.Namespace) -> int:
-    config = get_config()
-    vault_root = args.vault_root.expanduser() if args.vault_root is not None else config.vault_dir
-    store = CouchDBEntityStore.from_env()
-    report = markdown_export.export_all(
-        store,
-        vault_root,
-        types=args.types,
-        site=args.site,
-        dry_run=bool(args.dry_run),
-    )
-    if args.json:
-        print(json.dumps(report.as_dict(), indent=2, sort_keys=True))
-    else:
-        mode = "dry-run" if args.dry_run else "write"
-        print(f"BTQ Markdown projection export ({mode})")
-        print(
-            "seen={seen} rendered={rendered} written={written} would_write={would_write} unchanged={unchanged} skipped={skipped} errors={errors}".format(
-                **{**report.as_dict(), "errors": len(report.errors)}
-            )
-        )
-        for error in report.errors:
-            print(f"error: {error.doc_id}: {error.message}")
-    return 1 if report.errors else 0

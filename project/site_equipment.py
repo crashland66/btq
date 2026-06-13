@@ -4,8 +4,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
 
-from vault_markdown import frontmatter_list, read_typed_markdown_note
-
 
 EQUIPMENT_STATUSES = {"open", "approved", "ordered", "provided", "denied", "no_action_needed"}
 EQUIPMENT_PRIORITIES = {"low", "normal", "high", "urgent"}
@@ -54,17 +52,12 @@ def discover_site_equipment(
     include_archived: bool = False,
     archived_only: bool = False,
 ) -> dict[str, object]:
-    """Equipment requests, from CouchDB ``btq_vault`` (canonical) when configured.
+    """Equipment requests, from CouchDB ``btq_vault`` (canonical).
 
-    The on-disk vault is iCloud-synced; a background launchd daemon scanning it
-    blocks indefinitely. Read ``type: equipment_request`` docs from CouchDB in
-    prod; keep the Markdown glob only as a dev/CI fallback.
+    Reads ``type: equipment_request`` docs from CouchDB. ``vault_root`` is
+    accepted for call-site compatibility but no longer used.
     """
-    import os
-
-    if os.environ.get("BTQ_COUCHDB_URL", "").strip():
-        return _discover_site_equipment_couchdb(site_id=site_id, status=status, include_archived=include_archived, archived_only=archived_only)
-    return _discover_site_equipment_filesystem(vault_root, site_id=site_id, status=status, include_archived=include_archived, archived_only=archived_only)
+    return _discover_site_equipment_couchdb(site_id=site_id, status=status, include_archived=include_archived, archived_only=archived_only)
 
 
 def _equipment_from_couch_doc(doc: dict[str, Any]) -> EquipmentRequest | None:
@@ -168,93 +161,6 @@ def _discover_site_equipment_couchdb(
     return {"equipment": equipment, "warnings": [], "counts": equipment_counts(equipment, include_archived=include_archived or archived_only)}
 
 
-def _discover_site_equipment_filesystem(
-    vault_root: Path,
-    *,
-    site_id: str | None = None,
-    status: str | None = None,
-    include_archived: bool = False,
-    archived_only: bool = False,
-) -> dict[str, object]:
-    equipment: list[EquipmentRequest] = []
-    warnings: list[dict[str, str]] = []
-    root = vault_root.expanduser().resolve(strict=False)
-    accounts_root = root / "Accounts"
-    if not accounts_root.exists():
-        return {"equipment": [], "warnings": [{"path": str(accounts_root), "reason": "accounts_root_missing"}], "counts": equipment_counts([])}
-
-    status_filter = str(status).strip() if status is not None else None
-    for path in sorted(accounts_root.glob("*/Locations/*/Equipment/*.md")):
-        request, warning = parse_site_equipment(path)
-        if warning is not None:
-            warnings.append(warning)
-            continue
-        if request is None:
-            continue
-        if not _include_archived_item(request.archived, include_archived=include_archived, archived_only=archived_only):
-            continue
-        if site_id is not None and request.site_id != str(site_id):
-            continue
-        if status_filter is not None and request.status != status_filter:
-            continue
-        equipment.append(request)
-    equipment.sort(key=lambda item: (status_sort(item.status), priority_sort(item.priority), item.site_id, item.created_at, item.equipment_id))
-    return {"equipment": equipment, "warnings": warnings, "counts": equipment_counts(equipment, include_archived=include_archived or archived_only)}
-
-
-def parse_site_equipment(path: Path) -> tuple[EquipmentRequest | None, dict[str, str] | None]:
-    frontmatter, _body, warning = read_typed_markdown_note(path, "equipment_request")
-    if warning is not None or frontmatter is None:
-        return None, warning
-    site_id = clean_string(frontmatter.get("site_id"))
-    equipment_id = clean_string(frontmatter.get("equipment_id")) or path.stem.split("__", 1)[0]
-    equipment_name = clean_string(frontmatter.get("equipment_name")) or path.stem
-    if not site_id or not equipment_id or not equipment_name:
-        return None, {"path": str(path), "reason": "missing_required_site_id_or_equipment_id_or_equipment_name"}
-    status = clean_string(frontmatter.get("status")) or "open"
-    if status not in EQUIPMENT_STATUSES:
-        return None, {"path": str(path), "reason": f"unknown_status:{status}"}
-    priority = clean_string(frontmatter.get("priority")) or "normal"
-    if priority not in EQUIPMENT_PRIORITIES:
-        return None, {"path": str(path), "reason": f"unknown_priority:{priority}"}
-    return (
-        EquipmentRequest(
-            equipment_id=equipment_id,
-            site_id=site_id,
-            site_name=clean_string(frontmatter.get("site_name")),
-            account=clean_string(frontmatter.get("account")),
-            equipment_name=equipment_name,
-            reason=clean_string(frontmatter.get("reason")),
-            priority=priority,
-            requested_by=clean_string(frontmatter.get("requested_by")),
-            observed_at=clean_string(frontmatter.get("observed_at")),
-            source=clean_string(frontmatter.get("source")),
-            status=status,
-            notes=clean_string(frontmatter.get("notes")),
-            related_capture_ids=tuple(frontmatter_list(frontmatter.get("related_capture_ids"))),
-            related_candidate_ids=tuple(frontmatter_list(frontmatter.get("related_candidate_ids"))),
-            created_at=clean_string(frontmatter.get("created_at")),
-            doc_id=equipment_id,
-            approved_at=clean_string(frontmatter.get("approved_at")),
-            approved_by=clean_string(frontmatter.get("approved_by")),
-            approval_note=clean_string(frontmatter.get("approval_note")),
-            denied_at=clean_string(frontmatter.get("denied_at")),
-            denied_by=clean_string(frontmatter.get("denied_by")),
-            denial_note=clean_string(frontmatter.get("denial_note")),
-            ordered_at=clean_string(frontmatter.get("ordered_at")),
-            ordered_by=clean_string(frontmatter.get("ordered_by")),
-            ordered_note=clean_string(frontmatter.get("ordered_note")),
-            provided_at=clean_string(frontmatter.get("provided_at")),
-            provided_by=clean_string(frontmatter.get("provided_by")),
-            provided_note=clean_string(frontmatter.get("provided_note")),
-            archived=bool_from_frontmatter(frontmatter.get("archived")),
-            archived_at=clean_string(frontmatter.get("archived_at")),
-            archived_by=clean_string(frontmatter.get("archived_by")),
-        ),
-        None,
-    )
-
-
 def clean_string(value: Any) -> str:
     text = str(value or "").strip()
     if text in {"", '""', "''", "null", "None"}:
@@ -262,12 +168,6 @@ def clean_string(value: Any) -> str:
     if (text.startswith('"') and text.endswith('"')) or (text.startswith("'") and text.endswith("'")):
         text = text[1:-1].strip()
     return text
-
-
-def bool_from_frontmatter(value: Any) -> bool:
-    if isinstance(value, bool):
-        return value
-    return clean_string(value).lower() == "true"
 
 
 def equipment_counts(equipment: Iterable[EquipmentRequest], *, include_archived: bool = False) -> dict[str, object]:

@@ -15,7 +15,6 @@ from queue_spec import validate_job
 import btq
 from btq_vault.couch_store import CouchDBEntityStore
 from btq_vault.entity_types import OPERATOR_ID_GREG
-from btq_vault import markdown_export
 from event_pipeline import couchdb_config
 from event_pipeline.couchdb import setup_databases
 from queue_processor import repair
@@ -166,19 +165,8 @@ def run_jobs(
     with redirect_stdout(stdout_buffer):
         for job_path in sorted(path for path in queue_dir.iterdir() if path.is_file()):
             qp.process_job(job_path, context, processed_dir, failed_dir)
-    if not dry_run:
-        project_markdown_exports(vault_root)
-
     log_text = log_path.read_text(encoding="utf-8") if log_path.exists() else ""
     return stdout_buffer.getvalue(), log_text
-
-
-def project_markdown_exports(vault_root: Path) -> None:
-    if not os.environ.get("BTQ_VAULT_MARKDOWN_WRITE"):
-        return
-    store = shared._VAULT_STORE
-    if store is not None:
-        markdown_export.export_all(store, vault_root)
 
 
 def make_roots(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
@@ -2219,41 +2207,26 @@ def test_add_person_creates_canonical_person_file(tmp_path: Path, legacy_markdow
 
     stdout, log_text = run_jobs(project_root, vault_root, runtime_root, log_path)
 
-    target_path = vault_root / "People" / "Dalton, Eric Daniel.md"
-    assert target_path.exists()
-    text = target_path.read_text(encoding="utf-8")
     created = datetime.now(qp.timezone.utc).date().isoformat()
-    assert (
-        "---\n"
-        "type: person\n"
-        "person_id: dalton_eric\n"
-    ) in text
-    person_id = frontmatter_value(target_path, "person_id")
-    assert person_id == "dalton_eric"
-    assert (
-        "name: Eric Daniel Dalton\n"
-        "first: Eric Daniel\n"
-        "last: Dalton\n"
-        "employee_id: 567\n"
-        "\n"
-        "role: Cleaner\n"
-        "employment_type: part_time\n"
-        "status: active\n"
-        "job: 7060\n"
-        "additional_jobs:\n"
-        "  - 7071\n"
-        "\n"
-        "assignments:\n"
-        "  - job: 7060\n"
-        "    account: Contworks\n"
-        "    location: Continental Metalworks Holdings\n"
-        "    shift: evening\n"
-        "\n"
-        f"created: {created}\n"
-        "source: btq\n"
-    ) in text
-    assert "# Eric Daniel Dalton\n\n## Notes\n\n## Schedule\n\n## Training\n\n## Incidents\n" in text
-    assert_frontmatter_job_id(target_path, payload)
+    doc = canonical_doc("employee_dalton_eric")
+    assert doc["type"] == "employee"
+    assert doc["person_id"] == "dalton_eric"
+    assert doc["name"] == "Eric Daniel Dalton"
+    assert doc["employee_id"] == "567"
+    assert doc["role"] == "Cleaner"
+    assert doc["employment_type"] == "part_time"
+    assert doc["status"] == "active"
+    assert doc["additional_jobs"] == ["7071"]
+    assert doc["assignments"] == [
+        {
+            "job": "7060",
+            "account": "Contworks",
+            "location": "Continental Metalworks Holdings",
+            "shift": "evening",
+        }
+    ]
+    assert doc["created_at"] == created
+    assert len(doc.get("btq_job_ids", [])) == 1
     assert "action=add-person status=success" in log_text
 
 
@@ -2267,10 +2240,12 @@ def test_add_person_preserves_explicit_first_last(tmp_path: Path, legacy_markdow
 
     run_jobs(project_root, vault_root, runtime_root, log_path)
 
-    target_path = vault_root / "People" / "Avery, Jordan J.md"
-    text = target_path.read_text(encoding="utf-8")
-    assert "first: Jordan\n" in text
-    assert "last: Avery\n" in text
+    store = shared._VAULT_STORE
+    assert isinstance(store, RecordingVaultStore)
+    employees = [doc for doc in store.docs if doc.get("type") == "employee"]
+    assert len(employees) == 1
+    assert employees[0]["first"] == "Jordan"
+    assert employees[0]["last"] == "Avery"
     assert (runtime_root / "processed" / "2026-05-01T15-00-00Z__add-jordan-avery.json").exists()
 
 
@@ -2569,8 +2544,8 @@ def test_add_person_generates_unique_person_ids(tmp_path: Path, legacy_markdown_
 
     run_jobs(project_root, vault_root, runtime_root, log_path)
 
-    first_id = frontmatter_value(vault_root / "People" / "Dalton, Eric Daniel.md", "person_id")
-    second_id = frontmatter_value(vault_root / "People" / "Reed, Taylor Jordan.md", "person_id")
+    first_id = canonical_doc("employee_dalton_eric")["person_id"]
+    second_id = canonical_doc("employee_reed_taylor")["person_id"]
     assert first_id == "dalton_eric"
     assert second_id == "reed_taylor"
     assert first_id != second_id
@@ -2581,8 +2556,7 @@ def test_add_person_idempotent_replay_success_after_restart(tmp_path: Path, lega
     payload = add_person_job_payload("job-add-person-idempotent", idempotency_key="ehub-567")
     write_job(runtime_root / "queue", "first-idempotent.json", payload)
     run_jobs(project_root, vault_root, runtime_root, log_path)
-    target_path = vault_root / "People" / "Dalton, Eric Daniel.md"
-    original_text = target_path.read_text(encoding="utf-8")
+    original_doc = dict(canonical_doc("employee_dalton_eric"))
 
     # Prove the key ledger, not the processed archive, handles this replay.
     (runtime_root / "processed" / "first-idempotent.json").unlink()
@@ -2593,11 +2567,14 @@ def test_add_person_idempotent_replay_success_after_restart(tmp_path: Path, lega
 
     stdout, log_text = run_jobs(project_root, vault_root, runtime_root, log_path)
 
-    assert target_path.read_text(encoding="utf-8") == original_text
+    store = shared._VAULT_STORE
+    assert isinstance(store, RecordingVaultStore)
+    employees = [doc for doc in store.docs if doc.get("type") == "employee"]
+    assert len(employees) == 1
+    assert canonical_doc("employee_dalton_eric") == original_doc
     assert "idempotency key already completed" in stdout
     assert "reason=idempotency-key-already-completed" in log_text
     assert (runtime_root / "processed" / "second-idempotent.json").exists()
-    assert len(list((vault_root / "People").glob("*.md"))) == 1
 
 
 def test_add_person_idempotent_replay_skips_canonical_duplicate_guard(
@@ -2660,7 +2637,9 @@ def test_add_person_failed_job_does_not_mark_idempotency_key_success(tmp_path: P
     write_job(runtime_root / "queue", "valid-after-failure.json", valid)
     _stdout, log_text = run_jobs(project_root, vault_root, runtime_root, log_path)
 
-    assert (vault_root / "People" / "Dalton, Eric Daniel.md").exists()
+    store = shared._VAULT_STORE
+    assert isinstance(store, RecordingVaultStore)
+    assert any(doc.get("_id") == "employee_dalton_eric" for doc in store.docs)
     assert "action=add-person status=success" in log_text
 
 
@@ -2677,9 +2656,11 @@ def test_add_person_without_idempotency_key_still_uses_duplicate_protection(
     write_job(runtime_root / "queue", "second-unkeyed.json", duplicate)
     _stdout, log_text = run_jobs(project_root, vault_root, runtime_root, log_path)
 
+    store = shared._VAULT_STORE
+    assert isinstance(store, RecordingVaultStore)
     assert (runtime_root / "failed" / "second-unkeyed.json").exists()
     assert "Duplicate employee_id for add_person: 567" in log_text
-    assert len(list((vault_root / "People").glob("*.md"))) == 1
+    assert len([doc for doc in store.docs if doc.get("type") == "employee"]) == 1
 
 
 def test_append_to_note_skips_duplicate_existing_content(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -2805,36 +2786,29 @@ def test_log_site_issue_creates_structured_issue_file(tmp_path: Path, legacy_mar
 
     stdout, log_text = run_jobs(project_root, vault_root, runtime_root, log_path)
 
-    issue_files = sorted((vault_root / "Accounts" / "Summitsteel" / "Locations" / "7050 - Summit Wire" / "Issues").glob("*.md"))
-    assert len(issue_files) == 1
-    issue_path = issue_files[0]
-    issue_text = issue_path.read_text(encoding="utf-8")
+    store = shared._VAULT_STORE
+    assert isinstance(store, RecordingVaultStore)
+    issue_docs = [doc for doc in store.docs if doc.get("type") == "site_issue"]
+    assert len(issue_docs) == 1
+    issue = issue_docs[0]
     assert "updated" in stdout
     assert "action=log-site-issue status=success" in log_text
-    assert "type: site_issue" in issue_text
-    assert "issue_id: iss_" in issue_text
-    assert 'site_id: "7050"' in issue_text
-    assert "site: Summit Wire" in issue_text
-    assert "account: Summitsteel" in issue_text
-    assert "title: Restroom drain backup and inoperable stall" in issue_text
-    assert "status: open" in issue_text
-    assert "priority: high" in issue_text
-    assert "category: maintenance" in issue_text
-    assert "reported_by: Tom Walsh" in issue_text
-    assert "client_notified: true" in issue_text
-    assert "client_informed: true" in issue_text
-    assert "client_notified_method: email" in issue_text
-    assert "client_informed_note: Emailed client with photo/context." in issue_text
-    assert "resolution_trigger: Maintenance confirms the drain is clear and the stall is operable." in issue_text
-    assert "cap-photo-summit-drain" in issue_text
-    assert "ac_386bdf44bf4f08764e5a7bb7" in issue_text
-    assert "## Summary" in issue_text
-    assert "## Observations" in issue_text
-    assert "## Evidence" in issue_text
-    assert "## Client Communication" in issue_text
-    assert "## Follow-up / Resolution Notes" in issue_text
-    assert "## History" in issue_text
-    assert_frontmatter_job_id(issue_path, payload)
+    assert str(issue["issue_id"]).startswith("iss_")
+    assert issue["site_id"] == "7050"
+    assert issue["site_name"] == "Summit Wire"
+    assert issue["title"] == "Restroom drain backup and inoperable stall"
+    assert issue["status"] == "open"
+    assert issue["priority"] == "high"
+    assert issue["category"] == "maintenance"
+    assert issue["reported_by"] == "Tom Walsh"
+    assert issue["client_notified"] is True
+    assert issue["client_notified_method"] == "email"
+    assert issue["client_notified_note"] == "Emailed client with photo/context."
+    assert issue["resolution_trigger"] == "Maintenance confirms the drain is clear and the stall is operable."
+    assert issue["related_capture_ids"] == ["cap-photo-summit-drain"]
+    assert issue["related_candidate_ids"] == ["ac_386bdf44bf4f08764e5a7bb7"]
+    assert issue["summary"] == "Drain backed up and the sink drain pushed water onto the restroom floor."
+    assert len(issue.get("btq_job_ids", [])) == 1
     assert (runtime_root / "processed" / "2026-05-08T16-00-00Z__log-site-issue.json").exists()
 
 
@@ -2847,12 +2821,11 @@ def test_log_site_issue_records_notes_in_issue_file(tmp_path: Path, legacy_markd
 
     run_jobs(project_root, vault_root, runtime_root, log_path)
 
-    issue_files = sorted((vault_root / "Accounts" / "Summitsteel" / "Locations" / "7050 - Summit Wire" / "Issues").glob("*.md"))
-    assert len(issue_files) == 1
-    issue_text = issue_files[0].read_text(encoding="utf-8")
-    assert "notes: Distinct from the acute cleaning-failure issue; the two are linked but not collapsed." in issue_text
-    assert "## Notes" in issue_text
-    assert "## Notes\nDistinct from the acute cleaning-failure issue" in issue_text
+    store = shared._VAULT_STORE
+    assert isinstance(store, RecordingVaultStore)
+    issue_docs = [doc for doc in store.docs if doc.get("type") == "site_issue"]
+    assert len(issue_docs) == 1
+    assert issue_docs[0]["notes"] == "Distinct from the acute cleaning-failure issue; the two are linked but not collapsed."
 
 
 def test_log_site_issue_reprocessing_same_payload_does_not_duplicate_issue_file(
@@ -2868,13 +2841,13 @@ def test_log_site_issue_reprocessing_same_payload_does_not_duplicate_issue_file(
     write_job(runtime_root / "queue", "2026-05-08T16-01-00Z__log-site-issue-rerun.json", payload)
     stdout, log_text = run_jobs(project_root, vault_root, runtime_root, log_path)
 
-    issue_files = sorted((vault_root / "Accounts" / "Summitsteel" / "Locations" / "7050 - Summit Wire" / "Issues").glob("*.md"))
-    assert len(issue_files) == 1
-    issue_text = issue_files[0].read_text(encoding="utf-8")
+    store = shared._VAULT_STORE
+    assert isinstance(store, RecordingVaultStore)
+    issue_docs = [doc for doc in store.docs if doc.get("type") == "site_issue"]
+    assert len(issue_docs) == 1
     assert "job_id already processed" in stdout
     assert "reason=job-id-already-processed" in log_text
-    assert issue_text.count("## History") == 1
-    assert issue_text.count("logged/updated this issue") == 1
+    assert len(issue_docs[0].get("btq_job_ids", [])) == 1
 
 
 def test_log_site_issue_explicit_issue_id_updates_existing_issue(tmp_path: Path, legacy_markdown_writes: None) -> None:
@@ -2892,17 +2865,14 @@ def test_log_site_issue_explicit_issue_id_updates_existing_issue(tmp_path: Path,
     write_job(runtime_root / "queue", "2026-05-08T16-05-00Z__log-site-issue-monitoring.json", second_payload)
     stdout, log_text = run_jobs(project_root, vault_root, runtime_root, log_path)
 
-    issue_files = sorted((vault_root / "Accounts" / "Summitsteel" / "Locations" / "7050 - Summit Wire" / "Issues").glob("*.md"))
-    assert len(issue_files) == 1
-    issue_text = issue_files[0].read_text(encoding="utf-8")
+    doc = canonical_doc("site_issue_iss_summit_wire_drain")
     assert "updated" in stdout
     assert "action=log-site-issue status=success" in log_text
-    assert "issue_id: iss_summit_wire_drain" in issue_text
-    assert "status: monitoring" in issue_text
-    assert "Client has been notified; issue is being monitored" in issue_text
-    assert_frontmatter_job_id(issue_files[0], first_payload)
-    assert_frontmatter_job_id(issue_files[0], second_payload)
-    assert issue_text.count("logged/updated this issue") == 2
+    assert doc["issue_id"] == "iss_summit_wire_drain"
+    assert doc["status"] == "monitoring"
+    assert "Client has been notified; issue is being monitored" in doc["summary"]
+    # Both the open and monitoring log jobs recorded on the canonical doc.
+    assert len(doc.get("btq_job_ids", [])) == 2
 
 
 def test_append_to_note_still_works_after_log_site_issue_added(tmp_path: Path) -> None:
@@ -2937,28 +2907,25 @@ def test_log_supply_need_writes_new_file_under_site_supplies(tmp_path: Path, leg
 
     stdout, log_text = run_jobs(project_root, vault_root, runtime_root, log_path)
 
-    supply_files = sorted((vault_root / "Accounts" / "Summitsteel" / "Locations" / "7050 - Summit Wire" / "Supplies").glob("*.md"))
-    assert len(supply_files) == 1
-    supply_text = supply_files[0].read_text(encoding="utf-8")
+    store = shared._VAULT_STORE
+    assert isinstance(store, RecordingVaultStore)
+    supply_docs = [doc for doc in store.docs if doc.get("type") == "supply_need"]
+    assert len(supply_docs) == 1
+    supply = supply_docs[0]
     assert "updated" in stdout
     assert "action=log-supply-need status=success" in log_text
-    assert supply_files[0].name.startswith("sup_")
-    assert supply_files[0].name.endswith("__brightwash-cleaner.md")
-    assert "type: supply_need" in supply_text
-    assert "supply_id: sup_" in supply_text
-    assert 'site_id: "7050"' in supply_text
-    assert "site_name: Summit Wire" in supply_text
-    assert "account: Summitsteel" in supply_text
-    assert "item_name: BrightWash cleaner" in supply_text
-    assert "quantity_needed: 2 bottles" in supply_text
-    assert "urgency: high" in supply_text
-    assert "requested_by: Tom Walsh" in supply_text
-    assert "status: open" in supply_text
-    assert "cap-supply-summit" in supply_text
-    assert "ac_supply_summit" in supply_text
-    assert "# Supply need: BrightWash cleaner" in supply_text
-    assert "## Related captures/candidates" in supply_text
-    assert_frontmatter_job_id(supply_files[0], payload)
+    assert str(supply["supply_id"]).startswith("sup_")
+    assert supply["site_id"] == "7050"
+    assert supply["site_name"] == "Summit Wire"
+    assert supply["item_name"] == "BrightWash cleaner"
+    assert supply["quantity_needed"] == "2 bottles"
+    assert supply["urgency"] == "high"
+    assert supply["requested_by"] == "Tom Walsh"
+    # No explicit status in the payload; the canonical reader treats absent as "open".
+    assert supply.get("status", "open") == "open"
+    assert supply["related_capture_ids"] == ["cap-supply-summit"]
+    assert supply["related_candidate_ids"] == ["ac_supply_summit"]
+    assert len(supply.get("btq_job_ids", [])) == 1
     assert (runtime_root / "processed" / "2026-05-08T17-00-00Z__log-supply-need.json").exists()
 
 
@@ -2972,12 +2939,13 @@ def test_log_supply_need_idempotent_on_repeat_job_id(tmp_path: Path, legacy_mark
     write_job(runtime_root / "queue", "2026-05-08T17-01-00Z__log-supply-need-rerun.json", payload)
     stdout, log_text = run_jobs(project_root, vault_root, runtime_root, log_path)
 
-    supply_files = sorted((vault_root / "Accounts" / "Summitsteel" / "Locations" / "7050 - Summit Wire" / "Supplies").glob("*.md"))
-    assert len(supply_files) == 1
-    supply_text = supply_files[0].read_text(encoding="utf-8")
+    store = shared._VAULT_STORE
+    assert isinstance(store, RecordingVaultStore)
+    supply_docs = [doc for doc in store.docs if doc.get("type") == "supply_need"]
+    assert len(supply_docs) == 1
     assert "job_id already processed" in stdout
     assert "reason=job-id-already-processed" in log_text
-    assert supply_text.count("logged/updated this supply need") == 1
+    assert len(supply_docs[0].get("btq_job_ids", [])) == 1
 
 
 def test_log_supply_need_updates_status_field_on_re_application(tmp_path: Path, legacy_markdown_writes: None) -> None:
@@ -2997,16 +2965,14 @@ def test_log_supply_need_updates_status_field_on_re_application(tmp_path: Path, 
     write_job(runtime_root / "queue", "2026-05-08T18-00-00Z__log-supply-ordered.json", second_payload)
     stdout, log_text = run_jobs(project_root, vault_root, runtime_root, log_path)
 
-    supply_files = sorted((vault_root / "Accounts" / "Summitsteel" / "Locations" / "7050 - Summit Wire" / "Supplies").glob("*.md"))
-    assert len(supply_files) == 1
-    supply_text = supply_files[0].read_text(encoding="utf-8")
+    doc = canonical_doc("supply_need_sup_summit_brightwash")
     assert "updated" in stdout
     assert "action=log-supply-need status=success" in log_text
-    assert "status: ordered" in supply_text
-    assert "ordered_by: Jordan" in supply_text
-    assert "ordered_note: Ordered from Staples." in supply_text
-    assert_frontmatter_job_id(supply_files[0], first_payload)
-    assert_frontmatter_job_id(supply_files[0], second_payload)
+    assert doc["status"] == "ordered"
+    assert doc["ordered_by"] == "Jordan"
+    assert doc["ordered_note"] == "Ordered from Staples."
+    # Both the open and ordered log jobs recorded on the canonical doc.
+    assert len(doc.get("btq_job_ids", [])) == 2
 
 
 def test_log_supply_need_preserves_created_at_across_updates(tmp_path: Path, legacy_markdown_writes: None) -> None:
@@ -3016,8 +2982,7 @@ def test_log_supply_need_preserves_created_at_across_updates(tmp_path: Path, leg
     first_payload["payload"]["supply_id"] = "sup_summit_brightwash"
     write_job(runtime_root / "queue", "2026-05-08T17-00-00Z__log-supply-created-first.json", first_payload)
     run_jobs(project_root, vault_root, runtime_root, log_path)
-    supply_path = next((vault_root / "Accounts" / "Summitsteel" / "Locations" / "7050 - Summit Wire" / "Supplies").glob("*.md"))
-    created_at = frontmatter_value(supply_path, "created_at")
+    created_at = canonical_doc("supply_need_sup_summit_brightwash")["created_at"]
 
     second_payload = log_supply_need_job_payload("job-log-supply-created-second")
     second_payload["payload"]["supply_id"] = "sup_summit_brightwash"
@@ -3025,9 +2990,10 @@ def test_log_supply_need_preserves_created_at_across_updates(tmp_path: Path, leg
     write_job(runtime_root / "queue", "2026-05-08T19-00-00Z__log-supply-created-second.json", second_payload)
     run_jobs(project_root, vault_root, runtime_root, log_path)
 
-    assert frontmatter_value(supply_path, "created_at") == created_at
-    assert frontmatter_value(supply_path, "supply_id") == "sup_summit_brightwash"
-    assert frontmatter_value(supply_path, "status") == "delivered"
+    doc = canonical_doc("supply_need_sup_summit_brightwash")
+    assert doc["created_at"] == created_at
+    assert doc["supply_id"] == "sup_summit_brightwash"
+    assert doc["status"] == "delivered"
 
 
 def test_log_supply_need_dry_run_does_not_write(tmp_path: Path) -> None:
@@ -3072,29 +3038,25 @@ def test_log_equipment_request_writes_new_file_under_site_equipment(
 
     stdout, log_text = run_jobs(project_root, vault_root, runtime_root, log_path)
 
-    equipment_files = sorted((vault_root / "Accounts" / "Summitsteel" / "Locations" / "7050 - Summit Wire" / "Equipment").glob("*.md"))
-    assert len(equipment_files) == 1
-    equipment_text = equipment_files[0].read_text(encoding="utf-8")
+    store = shared._VAULT_STORE
+    assert isinstance(store, RecordingVaultStore)
+    equipment_docs = [doc for doc in store.docs if doc.get("type") == "equipment_request"]
+    assert len(equipment_docs) == 1
+    equipment = equipment_docs[0]
     assert "updated" in stdout
     assert "action=log-equipment-request status=success" in log_text
-    assert equipment_files[0].name.startswith("eqr_")
-    assert equipment_files[0].name.endswith("__vacuum.md")
-    assert "type: equipment_request" in equipment_text
-    assert "equipment_id: eqr_" in equipment_text
-    assert 'site_id: "7050"' in equipment_text
-    assert "site_name: Summit Wire" in equipment_text
-    assert "account: Summitsteel" in equipment_text
-    assert "equipment_name: vacuum" in equipment_text
-    assert "reason: Current vacuum will not start." in equipment_text
-    assert "priority: urgent" in equipment_text
-    assert "requested_by: Tom Walsh" in equipment_text
-    assert "status: open" in equipment_text
-    assert "cap-equipment-summit" in equipment_text
-    assert "ac_equipment_summit" in equipment_text
-    assert "# Equipment request: vacuum" in equipment_text
-    assert "## Reason" in equipment_text
-    assert "## Related captures/candidates" in equipment_text
-    assert_frontmatter_job_id(equipment_files[0], payload)
+    assert str(equipment["equipment_id"]).startswith("eqr_")
+    assert equipment["site_id"] == "7050"
+    assert equipment["site_name"] == "Summit Wire"
+    assert equipment["equipment_name"] == "vacuum"
+    assert equipment["reason"] == "Current vacuum will not start."
+    assert equipment["priority"] == "urgent"
+    assert equipment["requested_by"] == "Tom Walsh"
+    # No explicit status in the payload; the canonical reader treats absent as "open".
+    assert equipment.get("status", "open") == "open"
+    assert equipment["related_capture_ids"] == ["cap-equipment-summit"]
+    assert equipment["related_candidate_ids"] == ["ac_equipment_summit"]
+    assert len(equipment.get("btq_job_ids", [])) == 1
     assert (runtime_root / "processed" / "2026-05-08T17-00-00Z__log-equipment-request.json").exists()
 
 
@@ -3108,12 +3070,13 @@ def test_log_equipment_request_idempotent_on_repeat_job_id(tmp_path: Path, legac
     write_job(runtime_root / "queue", "2026-05-08T17-01-00Z__log-equipment-request-rerun.json", payload)
     stdout, log_text = run_jobs(project_root, vault_root, runtime_root, log_path)
 
-    equipment_files = sorted((vault_root / "Accounts" / "Summitsteel" / "Locations" / "7050 - Summit Wire" / "Equipment").glob("*.md"))
-    assert len(equipment_files) == 1
-    equipment_text = equipment_files[0].read_text(encoding="utf-8")
+    store = shared._VAULT_STORE
+    assert isinstance(store, RecordingVaultStore)
+    equipment_docs = [doc for doc in store.docs if doc.get("type") == "equipment_request"]
+    assert len(equipment_docs) == 1
     assert "job_id already processed" in stdout
     assert "reason=job-id-already-processed" in log_text
-    assert equipment_text.count("logged/updated this equipment request") == 1
+    assert len(equipment_docs[0].get("btq_job_ids", [])) == 1
 
 
 def test_log_equipment_request_updates_status_field_on_re_application(
@@ -3136,16 +3099,14 @@ def test_log_equipment_request_updates_status_field_on_re_application(
     write_job(runtime_root / "queue", "2026-05-08T18-00-00Z__log-equipment-approved.json", second_payload)
     stdout, log_text = run_jobs(project_root, vault_root, runtime_root, log_path)
 
-    equipment_files = sorted((vault_root / "Accounts" / "Summitsteel" / "Locations" / "7050 - Summit Wire" / "Equipment").glob("*.md"))
-    assert len(equipment_files) == 1
-    equipment_text = equipment_files[0].read_text(encoding="utf-8")
+    doc = canonical_doc("equipment_request_eqr_summit_vacuum")
     assert "updated" in stdout
     assert "action=log-equipment-request status=success" in log_text
-    assert "status: approved" in equipment_text
-    assert "approved_by: Jordan" in equipment_text
-    assert "approval_note: Approved replacement vacuum." in equipment_text
-    assert_frontmatter_job_id(equipment_files[0], first_payload)
-    assert_frontmatter_job_id(equipment_files[0], second_payload)
+    assert doc["status"] == "approved"
+    assert doc["approved_by"] == "Jordan"
+    assert doc["approval_note"] == "Approved replacement vacuum."
+    # Both the open and approved log jobs recorded on the canonical doc.
+    assert len(doc.get("btq_job_ids", [])) == 2
 
 
 def test_log_equipment_request_preserves_created_at_across_updates(
@@ -3158,8 +3119,7 @@ def test_log_equipment_request_preserves_created_at_across_updates(
     first_payload["payload"]["equipment_id"] = "eqr_summit_vacuum"
     write_job(runtime_root / "queue", "2026-05-08T17-00-00Z__log-equipment-created-first.json", first_payload)
     run_jobs(project_root, vault_root, runtime_root, log_path)
-    equipment_path = next((vault_root / "Accounts" / "Summitsteel" / "Locations" / "7050 - Summit Wire" / "Equipment").glob("*.md"))
-    created_at = frontmatter_value(equipment_path, "created_at")
+    created_at = canonical_doc("equipment_request_eqr_summit_vacuum")["created_at"]
 
     second_payload = log_equipment_request_job_payload("job-log-equipment-created-second")
     second_payload["payload"]["equipment_id"] = "eqr_summit_vacuum"
@@ -3167,9 +3127,10 @@ def test_log_equipment_request_preserves_created_at_across_updates(
     write_job(runtime_root / "queue", "2026-05-08T19-00-00Z__log-equipment-created-second.json", second_payload)
     run_jobs(project_root, vault_root, runtime_root, log_path)
 
-    assert frontmatter_value(equipment_path, "created_at") == created_at
-    assert frontmatter_value(equipment_path, "equipment_id") == "eqr_summit_vacuum"
-    assert frontmatter_value(equipment_path, "status") == "ordered"
+    doc = canonical_doc("equipment_request_eqr_summit_vacuum")
+    assert doc["created_at"] == created_at
+    assert doc["equipment_id"] == "eqr_summit_vacuum"
+    assert doc["status"] == "ordered"
 
 
 def test_log_equipment_request_dry_run_does_not_write(tmp_path: Path) -> None:
@@ -3196,27 +3157,22 @@ def test_log_personnel_event_creates_structured_event_file_under_people_events_d
 
     stdout, log_text = run_jobs(project_root, vault_root, runtime_root, log_path)
 
-    event_files = sorted((vault_root / "People" / "Tate, Marcus" / "Events").glob("evt_*__no-call-no-show-*.md"))
-    assert len(event_files) == 1
-    event_text = event_files[0].read_text(encoding="utf-8")
+    store = shared._VAULT_STORE
+    assert isinstance(store, RecordingVaultStore)
+    event_docs = [doc for doc in store.docs if doc.get("type") == "personnel_event"]
+    assert len(event_docs) == 1
+    event = event_docs[0]
     assert "updated" in stdout
     assert "action=log-personnel-event status=success" in log_text
-    assert "type: personnel_event" in event_text
-    assert "event_id: evt_" in event_text
-    assert "employee: Tate, Marcus" in event_text
-    assert "event_type: attendance" in event_text
-    assert "severity: concern" in event_text
-    assert "status: open" in event_text
-    assert "reported_by: Jordan" in event_text
-    assert "related_site: 7050" in event_text
-    assert "client_notified: false" in event_text
-    assert "## Summary" in event_text
-    assert "## Notes" in event_text
-    assert "## Evidence" in event_text
-    assert "## Client Communication" in event_text
-    assert "## Follow-up / Resolution Notes" in event_text
-    assert "## History" in event_text
-    assert_frontmatter_job_id(event_files[0], payload)
+    assert str(event["event_id"]).startswith("evt_")
+    assert event["employee"] == "Tate, Marcus"
+    assert event["event_type"] == "attendance"
+    assert event["severity"] == "concern"
+    assert event["status"] == "open"
+    assert event["reported_by"] == "Jordan"
+    assert str(event["related_site"]) == "7050"
+    assert event["client_notified"] is False
+    assert len(event.get("btq_job_ids", [])) == 1
     assert (runtime_root / "processed" / "2026-05-18T09-00-00Z__log-personnel-event.json").exists()
 
 
@@ -3232,12 +3188,13 @@ def test_log_personnel_event_reprocessing_same_job_id_does_not_duplicate_history
     write_job(runtime_root / "queue", "2026-05-18T09-01-00Z__log-personnel-event-rerun.json", payload)
     stdout, log_text = run_jobs(project_root, vault_root, runtime_root, log_path)
 
-    event_files = sorted((vault_root / "People" / "Tate, Marcus" / "Events").glob("*.md"))
-    assert len(event_files) == 1
-    event_text = event_files[0].read_text(encoding="utf-8")
+    store = shared._VAULT_STORE
+    assert isinstance(store, RecordingVaultStore)
+    event_docs = [doc for doc in store.docs if doc.get("type") == "personnel_event"]
+    assert len(event_docs) == 1
     assert "job_id already processed" in stdout
     assert "reason=job-id-already-processed" in log_text
-    assert event_text.count("logged/updated this personnel event") == 1
+    assert len(event_docs[0].get("btq_job_ids", [])) == 1
 
 
 def test_log_personnel_event_explicit_event_id_updates_existing_event(
@@ -3259,36 +3216,32 @@ def test_log_personnel_event_explicit_event_id_updates_existing_event(
     write_job(runtime_root / "queue", "2026-05-18T09-15-00Z__log-personnel-event-monitoring.json", second_payload)
     stdout, log_text = run_jobs(project_root, vault_root, runtime_root, log_path)
 
-    event_files = sorted((vault_root / "People" / "Tate, Marcus" / "Events").glob("*.md"))
-    assert len(event_files) == 1
-    event_text = event_files[0].read_text(encoding="utf-8")
+    doc = canonical_doc("personnel_event_evt_marcus_late_001")
     assert "updated" in stdout
     assert "action=log-personnel-event status=success" in log_text
-    assert "event_id: evt_marcus_late_001" in event_text
-    assert "status: monitoring" in event_text
-    assert "severity: verbal_warning" in event_text
-    assert "Verbal warning issued after Summit Wire" in event_text
-    assert_frontmatter_job_id(event_files[0], first_payload)
-    assert_frontmatter_job_id(event_files[0], second_payload)
-    assert event_text.count("logged/updated this personnel event") == 2
+    assert doc["event_id"] == "evt_marcus_late_001"
+    assert doc["status"] == "monitoring"
+    assert doc["severity"] == "verbal_warning"
+    assert "Verbal warning issued after Summit Wire" in doc["summary"]
+    # Both the open and monitoring log jobs recorded on the canonical doc.
+    assert len(doc.get("btq_job_ids", [])) == 2
 
 
-def test_log_personnel_event_creates_events_subdirectory_when_missing(
+def test_log_personnel_event_creates_canonical_event_doc(
     tmp_path: Path,
     legacy_markdown_writes: None,
 ) -> None:
     project_root, vault_root, runtime_root, log_path = make_roots(tmp_path)
-    person_file = vault_root / "People" / "Tate, Marcus.md"
-    person_file.write_text("# Tate, Marcus\n", encoding="utf-8")
     payload = log_personnel_event_job_payload()
     write_job(runtime_root / "queue", "2026-05-18T09-00-00Z__log-personnel-event.json", payload)
 
     run_jobs(project_root, vault_root, runtime_root, log_path)
 
-    assert person_file.exists()
-    assert person_file.read_text(encoding="utf-8") == "# Tate, Marcus\n"
-    event_files = sorted((vault_root / "People" / "Tate, Marcus" / "Events").glob("*.md"))
-    assert len(event_files) == 1
+    store = shared._VAULT_STORE
+    assert isinstance(store, RecordingVaultStore)
+    event_docs = [doc for doc in store.docs if doc.get("type") == "personnel_event"]
+    assert len(event_docs) == 1
+    assert event_docs[0]["employee"] == "Tate, Marcus"
 
 
 def test_log_personnel_event_dry_run_does_not_write(tmp_path: Path) -> None:
@@ -3302,34 +3255,6 @@ def test_log_personnel_event_dry_run_does_not_write(tmp_path: Path) -> None:
     assert "action=log-personnel-event status=success" in log_text
     assert not (vault_root / "People" / "Tate, Marcus" / "Events").exists()
     assert (runtime_root / "queue" / "2026-05-18T09-00-00Z__log-personnel-event.json").exists()
-
-
-def test_log_personnel_event_caps_filename_when_summary_is_very_long(
-    tmp_path: Path,
-    legacy_markdown_writes: None,
-) -> None:
-    project_root, vault_root, runtime_root, log_path = make_roots(tmp_path)
-    payload = log_personnel_event_job_payload("job-log-personnel-event-long-summary")
-    payload["payload"]["summary"] = (
-        "Late notice for the 6:00 AM Summit Wire day-porter shift, resolved later the same "
-        "morning with an apology and forward-notice commitment. Marcus messaged via WhatsApp "
-        "at 6:30 AM (30 minutes after shift start) that he could not come in due to kids' "
-        "doctor appointments starting at 8:30 AM; site went uncovered for the morning and "
-        "Bruce Keller shifted to an early start as gap cover. Jordan framed the issue as a "
-        "notice/surprise problem rather than a flexibility problem."
-    )
-    write_job(runtime_root / "queue", "2026-05-18T10-30-00Z__log-personnel-event-long-summary.json", payload)
-
-    stdout, log_text = run_jobs(project_root, vault_root, runtime_root, log_path)
-
-    event_files = sorted((vault_root / "People" / "Tate, Marcus" / "Events").glob("*.md"))
-    assert len(event_files) == 1
-    assert "action=log-personnel-event status=success" in log_text
-    # macOS NAME_MAX is 255; we cap the slug to keep us well under that, so
-    # any plausible summary length fits without ENAMETOOLONG. Regression
-    # guard for the prompt-64 launch bug where the unbounded summary slug
-    # blew through the limit on AC's first real authored event.
-    assert len(event_files[0].name.encode("utf-8")) <= 200, event_files[0].name
 
 
 def test_log_personnel_event_idempotent_across_employee_name_variations(
@@ -3347,12 +3272,12 @@ def test_log_personnel_event_idempotent_across_employee_name_variations(
     write_job(runtime_root / "queue", "2026-05-18T09-05-00Z__log-personnel-event-last-first.json", second_payload)
     run_jobs(project_root, vault_root, runtime_root, log_path)
 
-    event_files = sorted((vault_root / "People" / "Tate, Marcus" / "Events").glob("*.md"))
-    assert len(event_files) == 1
-    event_text = event_files[0].read_text(encoding="utf-8")
-    assert_frontmatter_job_id(event_files[0], first_payload)
-    assert_frontmatter_job_id(event_files[0], second_payload)
-    assert event_text.count("logged/updated this personnel event") == 2
+    store = shared._VAULT_STORE
+    assert isinstance(store, RecordingVaultStore)
+    event_docs = [doc for doc in store.docs if doc.get("type") == "personnel_event"]
+    # Both name forms resolve to the same canonical event doc.
+    assert len(event_docs) == 1
+    assert len(event_docs[0].get("btq_job_ids", [])) == 2
 
 
 def test_log_equipment_request_records_mutation_evidence(tmp_path: Path) -> None:
@@ -3602,6 +3527,15 @@ def test_process_update_site_equipment_rejects_unregistered_site_name(tmp_path: 
     assert not (runtime_root / "processed" / "2026-05-13T17-00-00Z__update-site-equipment.json").exists()
 
 
+def canonical_doc(doc_id: str) -> dict[str, Any]:
+    """Return the canonical CouchDB doc with ``doc_id`` from the recording store."""
+    store = shared._VAULT_STORE
+    assert isinstance(store, RecordingVaultStore)
+    matches = [doc for doc in store.docs if doc.get("_id") == doc_id]
+    assert len(matches) == 1, f"expected exactly one canonical doc {doc_id}, found {len(matches)}"
+    return matches[0]
+
+
 def create_supply_need(
     project_root: Path,
     vault_root: Path,
@@ -3610,13 +3544,13 @@ def create_supply_need(
     *,
     supply_id: str = "sup_summit_brightwash",
     status: str = "open",
-) -> Path:
+) -> str:
     payload = log_supply_need_job_payload(f"job-log-{supply_id}-{status}")
     payload["payload"]["supply_id"] = supply_id
     payload["payload"]["status"] = status
     write_job(runtime_root / "queue", f"2026-05-08T17-00-00Z__log-{supply_id}-{status}.json", payload)
     run_jobs(project_root, vault_root, runtime_root, log_path)
-    return next((vault_root / "Accounts" / "Summitsteel" / "Locations" / "7050 - Summit Wire" / "Supplies").glob(f"{supply_id}__*.md"))
+    return f"supply_need_{supply_id}"
 
 
 def create_equipment_request(
@@ -3627,19 +3561,19 @@ def create_equipment_request(
     *,
     equipment_id: str = "eqr_summit_vacuum",
     status: str = "open",
-) -> Path:
+) -> str:
     payload = log_equipment_request_job_payload(f"job-log-{equipment_id}-{status}")
     payload["payload"]["equipment_id"] = equipment_id
     payload["payload"]["status"] = status
     write_job(runtime_root / "queue", f"2026-05-08T17-00-00Z__log-{equipment_id}-{status}.json", payload)
     run_jobs(project_root, vault_root, runtime_root, log_path)
-    return next((vault_root / "Accounts" / "Summitsteel" / "Locations" / "7050 - Summit Wire" / "Equipment").glob(f"{equipment_id}__*.md"))
+    return f"equipment_request_{equipment_id}"
 
 
 def test_mark_supply_ordered_advances_status_from_open(tmp_path: Path, legacy_markdown_writes: None) -> None:
     project_root, vault_root, runtime_root, log_path = make_roots(tmp_path)
     write_summit_wire_site(vault_root)
-    supply_path = create_supply_need(project_root, vault_root, runtime_root, log_path)
+    doc_id = create_supply_need(project_root, vault_root, runtime_root, log_path)
     payload = mark_supply_job_payload()
     write_job(runtime_root / "queue", "2026-05-08T18-00-00Z__mark-supply-ordered.json", payload)
 
@@ -3647,21 +3581,24 @@ def test_mark_supply_ordered_advances_status_from_open(tmp_path: Path, legacy_ma
 
     assert "updated" in stdout
     assert "action=mark-supply-ordered status=success" in log_text
-    assert frontmatter_value(supply_path, "status") == "ordered"
-    assert_frontmatter_job_id(supply_path, payload)
+    doc = canonical_doc(doc_id)
+    assert doc["status"] == "ordered"
+    # log job + mark job both recorded on the canonical doc.
+    assert len(doc.get("btq_job_ids", [])) == 2
 
 
 def test_mark_supply_ordered_sets_ordered_at_ordered_by_fields(tmp_path: Path, legacy_markdown_writes: None) -> None:
     project_root, vault_root, runtime_root, log_path = make_roots(tmp_path)
     write_summit_wire_site(vault_root)
-    supply_path = create_supply_need(project_root, vault_root, runtime_root, log_path)
+    doc_id = create_supply_need(project_root, vault_root, runtime_root, log_path)
     payload = mark_supply_job_payload()
     write_job(runtime_root / "queue", "2026-05-08T18-00-00Z__mark-supply-ordered.json", payload)
 
     run_jobs(project_root, vault_root, runtime_root, log_path)
 
-    assert frontmatter_value(supply_path, "ordered_at") == "2026-05-08T18:00:00+00:00"
-    assert frontmatter_value(supply_path, "ordered_by") == "Jordan"
+    doc = canonical_doc(doc_id)
+    assert doc["ordered_at"] == "2026-05-08T18:00:00+00:00"
+    assert doc["ordered_by"] == "Jordan"
 
 
 def test_mark_supply_ordered_canonical_patch_failure_keeps_queue_unprocessed(
@@ -3682,8 +3619,8 @@ def test_mark_supply_ordered_canonical_patch_failure_keeps_queue_unprocessed(
 
     project_root, vault_root, runtime_root, log_path = make_roots(tmp_path)
     write_summit_wire_site(vault_root)
-    supply_path = create_supply_need(project_root, vault_root, runtime_root, log_path)
-    original_text = supply_path.read_text(encoding="utf-8")
+    doc_id = create_supply_need(project_root, vault_root, runtime_root, log_path)
+    original_doc = dict(canonical_doc(doc_id))
     monkeypatch.setattr(shared, "_vault_store", lambda: FailingStatusStore())
     payload = mark_supply_job_payload()
     write_job(runtime_root / "queue", "2026-05-08T18-00-00Z__mark-supply-ordered.json", payload)
@@ -3691,7 +3628,7 @@ def test_mark_supply_ordered_canonical_patch_failure_keeps_queue_unprocessed(
     _stdout, log_text = run_jobs(project_root, vault_root, runtime_root, log_path)
 
     assert "canonical couchdb write failed" in log_text
-    assert supply_path.read_text(encoding="utf-8") == original_text
+    assert canonical_doc(doc_id) == original_doc
     assert not (runtime_root / "processed" / "2026-05-08T18-00-00Z__mark-supply-ordered.json").exists()
     assert (runtime_root / "failed" / "2026-05-08T18-00-00Z__mark-supply-ordered.json").exists()
 
@@ -3702,8 +3639,7 @@ def test_mark_supply_ordered_missing_canonical_doc_fails_job(
 ) -> None:
     project_root, vault_root, runtime_root, log_path = make_roots(tmp_path)
     write_summit_wire_site(vault_root)
-    supply_path = create_supply_need(project_root, vault_root, runtime_root, log_path)
-    original_text = supply_path.read_text(encoding="utf-8")
+    create_supply_need(project_root, vault_root, runtime_root, log_path)
     store = shared._VAULT_STORE
     assert isinstance(store, RecordingVaultStore)
     store.docs = [doc for doc in store.docs if doc.get("_id") != "supply_need_sup_summit_brightwash"]
@@ -3717,7 +3653,6 @@ def test_mark_supply_ordered_missing_canonical_doc_fails_job(
     assert "job_id=job-mark-supply-ordered" in log_text
     assert "entity_id=supply_need_sup_summit_brightwash" in log_text
     assert "CouchDB required document not found for canonical RMW: supply_need_sup_summit_brightwash" in log_text
-    assert supply_path.read_text(encoding="utf-8") == original_text
     assert not (runtime_root / "processed" / "2026-05-08T18-00-00Z__mark-supply-ordered.json").exists()
     assert (runtime_root / "failed" / "2026-05-08T18-00-00Z__mark-supply-ordered.json").exists()
 
@@ -3734,7 +3669,7 @@ def test_mark_supply_ordered_resolves_path_derived_canonical_doc_id(
     # _id by the supply_id field instead.
     project_root, vault_root, runtime_root, log_path = make_roots(tmp_path)
     write_summit_wire_site(vault_root)
-    supply_path = create_supply_need(project_root, vault_root, runtime_root, log_path)
+    create_supply_need(project_root, vault_root, runtime_root, log_path)
     store = shared._VAULT_STORE
     assert isinstance(store, RecordingVaultStore)
     # Rewrite the canonical doc to the production-shaped path-derived _id so the
@@ -3750,7 +3685,6 @@ def test_mark_supply_ordered_resolves_path_derived_canonical_doc_id(
     stdout, log_text = run_jobs(project_root, vault_root, runtime_root, log_path)
 
     assert "action=mark-supply-ordered status=success" in log_text
-    assert frontmatter_value(supply_path, "status") == "ordered"
     resolved = next(doc for doc in store.docs if doc.get("_id") == path_derived_id)
     assert resolved["status"] == "ordered"
     assert not (runtime_root / "failed" / "2026-05-08T18-00-00Z__mark-supply-ordered.json").exists()
@@ -3760,20 +3694,20 @@ def test_mark_supply_ordered_resolves_path_derived_canonical_doc_id(
 def test_mark_supply_ordered_records_note_when_present(tmp_path: Path, legacy_markdown_writes: None) -> None:
     project_root, vault_root, runtime_root, log_path = make_roots(tmp_path)
     write_summit_wire_site(vault_root)
-    supply_path = create_supply_need(project_root, vault_root, runtime_root, log_path)
+    doc_id = create_supply_need(project_root, vault_root, runtime_root, log_path)
     payload = mark_supply_job_payload()
     payload["payload"]["note"] = "Ordered from Staples."
     write_job(runtime_root / "queue", "2026-05-08T18-00-00Z__mark-supply-ordered.json", payload)
 
     run_jobs(project_root, vault_root, runtime_root, log_path)
 
-    assert frontmatter_value(supply_path, "ordered_note") == "Ordered from Staples."
+    assert canonical_doc(doc_id)["ordered_note"] == "Ordered from Staples."
 
 
 def test_mark_supply_ordered_rejects_when_source_status_is_delivered(tmp_path: Path, legacy_markdown_writes: None) -> None:
     project_root, vault_root, runtime_root, log_path = make_roots(tmp_path)
     write_summit_wire_site(vault_root)
-    supply_path = create_supply_need(project_root, vault_root, runtime_root, log_path, status="delivered")
+    doc_id = create_supply_need(project_root, vault_root, runtime_root, log_path, status="delivered")
     payload = mark_supply_job_payload()
     write_job(runtime_root / "queue", "2026-05-08T18-00-00Z__mark-supply-ordered.json", payload)
 
@@ -3781,7 +3715,7 @@ def test_mark_supply_ordered_rejects_when_source_status_is_delivered(tmp_path: P
 
     assert "status=failure" in log_text
     assert "Cannot transition supply" in log_text
-    assert frontmatter_value(supply_path, "status") == "delivered"
+    assert canonical_doc(doc_id)["status"] == "delivered"
     assert (runtime_root / "failed" / "2026-05-08T18-00-00Z__mark-supply-ordered.json").exists()
 
 
@@ -3801,7 +3735,7 @@ def test_mark_supply_ordered_rejects_when_file_does_not_exist(tmp_path: Path) ->
 def test_mark_supply_ordered_is_idempotent_on_repeat_job_id(tmp_path: Path, legacy_markdown_writes: None) -> None:
     project_root, vault_root, runtime_root, log_path = make_roots(tmp_path)
     write_summit_wire_site(vault_root)
-    supply_path = create_supply_need(project_root, vault_root, runtime_root, log_path)
+    doc_id = create_supply_need(project_root, vault_root, runtime_root, log_path)
     payload = mark_supply_job_payload()
     write_job(runtime_root / "queue", "2026-05-08T18-00-00Z__mark-supply-ordered.json", payload)
     run_jobs(project_root, vault_root, runtime_root, log_path)
@@ -3811,33 +3745,38 @@ def test_mark_supply_ordered_is_idempotent_on_repeat_job_id(tmp_path: Path, lega
 
     assert "job_id already processed" in stdout
     assert "reason=job-id-already-processed" in log_text
-    assert supply_path.read_text(encoding="utf-8").count("logged/updated this supply need") == 2
+    doc = canonical_doc(doc_id)
+    assert doc["status"] == "ordered"
+    # Rerun is idempotent: still only the log job + the single mark job recorded.
+    assert len(doc.get("btq_job_ids", [])) == 2
 
 
 def test_mark_supply_delivered_advances_status_from_ordered(tmp_path: Path, legacy_markdown_writes: None) -> None:
     project_root, vault_root, runtime_root, log_path = make_roots(tmp_path)
     write_summit_wire_site(vault_root)
-    supply_path = create_supply_need(project_root, vault_root, runtime_root, log_path, status="ordered")
+    doc_id = create_supply_need(project_root, vault_root, runtime_root, log_path, status="ordered")
     payload = mark_supply_job_payload("mark_supply_delivered", "job-mark-supply-delivered")
     write_job(runtime_root / "queue", "2026-05-08T18-00-00Z__mark-supply-delivered.json", payload)
 
     run_jobs(project_root, vault_root, runtime_root, log_path)
 
-    assert frontmatter_value(supply_path, "status") == "delivered"
-    assert frontmatter_value(supply_path, "delivered_by") == "Jordan"
+    doc = canonical_doc(doc_id)
+    assert doc["status"] == "delivered"
+    assert doc["delivered_by"] == "Jordan"
 
 
 def test_mark_supply_stocked_advances_status_from_delivered(tmp_path: Path, legacy_markdown_writes: None) -> None:
     project_root, vault_root, runtime_root, log_path = make_roots(tmp_path)
     write_summit_wire_site(vault_root)
-    supply_path = create_supply_need(project_root, vault_root, runtime_root, log_path, status="delivered")
+    doc_id = create_supply_need(project_root, vault_root, runtime_root, log_path, status="delivered")
     payload = mark_supply_job_payload("mark_supply_stocked", "job-mark-supply-stocked")
     write_job(runtime_root / "queue", "2026-05-08T18-00-00Z__mark-supply-stocked.json", payload)
 
     run_jobs(project_root, vault_root, runtime_root, log_path)
 
-    assert frontmatter_value(supply_path, "status") == "stocked"
-    assert frontmatter_value(supply_path, "stocked_by") == "Jordan"
+    doc = canonical_doc(doc_id)
+    assert doc["status"] == "stocked"
+    assert doc["stocked_by"] == "Jordan"
 
 
 def test_mark_supply_no_action_needed_allowed_from_any_non_terminal(
@@ -3848,17 +3787,17 @@ def test_mark_supply_no_action_needed_allowed_from_any_non_terminal(
     write_summit_wire_site(vault_root)
     for index, status in enumerate(("open", "ordered", "delivered"), start=1):
         supply_id = f"sup_summit_brightwash_{index}"
-        supply_path = create_supply_need(project_root, vault_root, runtime_root, log_path, supply_id=supply_id, status=status)
+        doc_id = create_supply_need(project_root, vault_root, runtime_root, log_path, supply_id=supply_id, status=status)
         payload = mark_supply_job_payload("mark_supply_no_action_needed", f"job-mark-supply-no-action-{index}", supply_id)
         write_job(runtime_root / "queue", f"2026-05-08T18-0{index}-00Z__mark-supply-no-action-{index}.json", payload)
         run_jobs(project_root, vault_root, runtime_root, log_path)
-        assert frontmatter_value(supply_path, "status") == "no_action_needed"
+        assert canonical_doc(doc_id)["status"] == "no_action_needed"
 
 
 def test_mark_equipment_approved_advances_status_from_open(tmp_path: Path, legacy_markdown_writes: None) -> None:
     project_root, vault_root, runtime_root, log_path = make_roots(tmp_path)
     write_summit_wire_site(vault_root)
-    equipment_path = create_equipment_request(project_root, vault_root, runtime_root, log_path)
+    doc_id = create_equipment_request(project_root, vault_root, runtime_root, log_path)
     payload = mark_equipment_job_payload()
     write_job(runtime_root / "queue", "2026-05-08T18-00-00Z__mark-equipment-approved.json", payload)
 
@@ -3866,8 +3805,9 @@ def test_mark_equipment_approved_advances_status_from_open(tmp_path: Path, legac
 
     assert "updated" in stdout
     assert "action=mark-equipment-approved status=success" in log_text
-    assert frontmatter_value(equipment_path, "status") == "approved"
-    assert frontmatter_value(equipment_path, "approved_by") == "Jordan"
+    doc = canonical_doc(doc_id)
+    assert doc["status"] == "approved"
+    assert doc["approved_by"] == "Jordan"
 
 
 def test_mark_equipment_approved_canonical_patch_failure_keeps_queue_unprocessed(
@@ -3888,8 +3828,8 @@ def test_mark_equipment_approved_canonical_patch_failure_keeps_queue_unprocessed
 
     project_root, vault_root, runtime_root, log_path = make_roots(tmp_path)
     write_summit_wire_site(vault_root)
-    equipment_path = create_equipment_request(project_root, vault_root, runtime_root, log_path)
-    original_text = equipment_path.read_text(encoding="utf-8")
+    doc_id = create_equipment_request(project_root, vault_root, runtime_root, log_path)
+    original_doc = dict(canonical_doc(doc_id))
     monkeypatch.setattr(shared, "_vault_store", lambda: FailingStatusStore())
     payload = mark_equipment_job_payload()
     write_job(runtime_root / "queue", "2026-05-08T18-00-00Z__mark-equipment-approved.json", payload)
@@ -3897,7 +3837,7 @@ def test_mark_equipment_approved_canonical_patch_failure_keeps_queue_unprocessed
     _stdout, log_text = run_jobs(project_root, vault_root, runtime_root, log_path)
 
     assert "canonical couchdb write failed" in log_text
-    assert equipment_path.read_text(encoding="utf-8") == original_text
+    assert canonical_doc(doc_id) == original_doc
     assert not (runtime_root / "processed" / "2026-05-08T18-00-00Z__mark-equipment-approved.json").exists()
     assert (runtime_root / "failed" / "2026-05-08T18-00-00Z__mark-equipment-approved.json").exists()
 
@@ -3908,8 +3848,7 @@ def test_mark_equipment_approved_missing_canonical_doc_fails_job(
 ) -> None:
     project_root, vault_root, runtime_root, log_path = make_roots(tmp_path)
     write_summit_wire_site(vault_root)
-    equipment_path = create_equipment_request(project_root, vault_root, runtime_root, log_path)
-    original_text = equipment_path.read_text(encoding="utf-8")
+    create_equipment_request(project_root, vault_root, runtime_root, log_path)
     store = shared._VAULT_STORE
     assert isinstance(store, RecordingVaultStore)
     store.docs = [doc for doc in store.docs if doc.get("_id") != "equipment_request_eqr_summit_vacuum"]
@@ -3923,7 +3862,6 @@ def test_mark_equipment_approved_missing_canonical_doc_fails_job(
     assert "job_id=job-mark-equipment-approved" in log_text
     assert "entity_id=equipment_request_eqr_summit_vacuum" in log_text
     assert "CouchDB required document not found for canonical RMW: equipment_request_eqr_summit_vacuum" in log_text
-    assert equipment_path.read_text(encoding="utf-8") == original_text
     assert not (runtime_root / "processed" / "2026-05-08T18-00-00Z__mark-equipment-approved.json").exists()
     assert (runtime_root / "failed" / "2026-05-08T18-00-00Z__mark-equipment-approved.json").exists()
 
@@ -3933,38 +3871,41 @@ def test_mark_equipment_denied_allowed_from_open_or_approved(tmp_path: Path, leg
     write_summit_wire_site(vault_root)
     for index, status in enumerate(("open", "approved"), start=1):
         equipment_id = f"eqr_summit_vacuum_{index}"
-        equipment_path = create_equipment_request(project_root, vault_root, runtime_root, log_path, equipment_id=equipment_id, status=status)
+        doc_id = create_equipment_request(project_root, vault_root, runtime_root, log_path, equipment_id=equipment_id, status=status)
         payload = mark_equipment_job_payload("mark_equipment_denied", f"job-mark-equipment-denied-{index}", equipment_id)
         write_job(runtime_root / "queue", f"2026-05-08T18-0{index}-00Z__mark-equipment-denied-{index}.json", payload)
         run_jobs(project_root, vault_root, runtime_root, log_path)
-        assert frontmatter_value(equipment_path, "status") == "denied"
-        assert frontmatter_value(equipment_path, "denied_by") == "Jordan"
+        doc = canonical_doc(doc_id)
+        assert doc["status"] == "denied"
+        assert doc["denied_by"] == "Jordan"
 
 
 def test_mark_equipment_ordered_advances_status_from_approved(tmp_path: Path, legacy_markdown_writes: None) -> None:
     project_root, vault_root, runtime_root, log_path = make_roots(tmp_path)
     write_summit_wire_site(vault_root)
-    equipment_path = create_equipment_request(project_root, vault_root, runtime_root, log_path, status="approved")
+    doc_id = create_equipment_request(project_root, vault_root, runtime_root, log_path, status="approved")
     payload = mark_equipment_job_payload("mark_equipment_ordered", "job-mark-equipment-ordered")
     write_job(runtime_root / "queue", "2026-05-08T18-00-00Z__mark-equipment-ordered.json", payload)
 
     run_jobs(project_root, vault_root, runtime_root, log_path)
 
-    assert frontmatter_value(equipment_path, "status") == "ordered"
-    assert frontmatter_value(equipment_path, "ordered_by") == "Jordan"
+    doc = canonical_doc(doc_id)
+    assert doc["status"] == "ordered"
+    assert doc["ordered_by"] == "Jordan"
 
 
 def test_mark_equipment_provided_advances_status_from_ordered(tmp_path: Path, legacy_markdown_writes: None) -> None:
     project_root, vault_root, runtime_root, log_path = make_roots(tmp_path)
     write_summit_wire_site(vault_root)
-    equipment_path = create_equipment_request(project_root, vault_root, runtime_root, log_path, status="ordered")
+    doc_id = create_equipment_request(project_root, vault_root, runtime_root, log_path, status="ordered")
     payload = mark_equipment_job_payload("mark_equipment_provided", "job-mark-equipment-provided")
     write_job(runtime_root / "queue", "2026-05-08T18-00-00Z__mark-equipment-provided.json", payload)
 
     run_jobs(project_root, vault_root, runtime_root, log_path)
 
-    assert frontmatter_value(equipment_path, "status") == "provided"
-    assert frontmatter_value(equipment_path, "provided_by") == "Jordan"
+    doc = canonical_doc(doc_id)
+    assert doc["status"] == "provided"
+    assert doc["provided_by"] == "Jordan"
 
 
 def test_mark_equipment_no_action_needed_allowed_from_any_non_terminal(
@@ -3975,11 +3916,11 @@ def test_mark_equipment_no_action_needed_allowed_from_any_non_terminal(
     write_summit_wire_site(vault_root)
     for index, status in enumerate(("open", "approved", "ordered"), start=1):
         equipment_id = f"eqr_summit_vacuum_{index}"
-        equipment_path = create_equipment_request(project_root, vault_root, runtime_root, log_path, equipment_id=equipment_id, status=status)
+        doc_id = create_equipment_request(project_root, vault_root, runtime_root, log_path, equipment_id=equipment_id, status=status)
         payload = mark_equipment_job_payload("mark_equipment_no_action_needed", f"job-mark-equipment-no-action-{index}", equipment_id)
         write_job(runtime_root / "queue", f"2026-05-08T18-0{index}-00Z__mark-equipment-no-action-{index}.json", payload)
         run_jobs(project_root, vault_root, runtime_root, log_path)
-        assert frontmatter_value(equipment_path, "status") == "no_action_needed"
+        assert canonical_doc(doc_id)["status"] == "no_action_needed"
 
 
 def test_flag_access_constraint_updates_site_about_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -5030,17 +4971,18 @@ def test_visit_create_crash_after_write_before_move_reruns_safely(
     finally:
         monkeypatch.setattr(shared, "move_job_file", original_move_job_file)
 
-    visit_path = site_path.parent / "Visits" / f"{datetime.utcnow().date().isoformat()}.md"
-    project_markdown_exports(vault_root)
     assert job_path.exists()
-    assert visit_path.read_text(encoding="utf-8").count("evidence: I was at Western Gas Transmission.") == 1
     assert store.job_id_applied_doc_id(job.job_id) is not None
+    visit_docs = [doc for doc in store.docs if doc.get("type") == "visit" and doc.get("site_id") == "7030"]
+    assert len(visit_docs) == 1
+    assert visit_docs[0]["evidence"] == "I was at Western Gas Transmission."
 
     stdout, log_text = run_jobs(project_root, vault_root, runtime_root, log_path)
 
     assert "job_id marker already present" in stdout
     assert "reason=job-id-marker-present" in log_text
-    assert visit_path.read_text(encoding="utf-8").count("evidence: I was at Western Gas Transmission.") == 1
+    visit_docs = [doc for doc in store.docs if doc.get("type") == "visit" and doc.get("site_id") == "7030"]
+    assert len(visit_docs) == 1
 
 
 def test_visit_create_basic(tmp_path: Path, legacy_markdown_writes: None) -> None:
@@ -5078,21 +5020,16 @@ def test_visit_create_basic(tmp_path: Path, legacy_markdown_writes: None) -> Non
     visit_docs = [doc for doc in store.docs if doc.get("type") == "visit" and doc.get("site_id") == "7030"]
     assert len(visit_docs) == 1
     visit_doc = visit_docs[0]
-    visit_path = site_path.parent / "Visits" / f"{datetime.utcnow().date().isoformat()}.md"
-    visit_text = visit_path.read_text(encoding="utf-8")
 
     assert "action=visit-create status=success" in log_text
     assert visit_doc["type"] == "visit"
     assert visit_doc["site"] == "Western Gas Transmission"
     assert visit_doc["site_id"] == "7030"
+    assert visit_doc["date"] == datetime.utcnow().date().isoformat()
+    assert visit_doc["visit_key"] == f"Western Gas Transmission:{datetime.utcnow().date().isoformat()}"
+    assert visit_doc["source"] == "ingestion"
+    assert visit_doc["confidence"] == "high"
     assert visit_doc["evidence"] == "I was at Western Gas Transmission."
-    assert "type: visit" in visit_text
-    assert "site: Western Gas Transmission" in visit_text
-    assert f"date: {datetime.utcnow().date().isoformat()}" in visit_text
-    assert f'visit_key: "Western Gas Transmission:{datetime.utcnow().date().isoformat()}"' in visit_text
-    assert "source: ingestion" in visit_text
-    assert "confidence: high" in visit_text
-    assert "evidence: I was at Western Gas Transmission." in visit_text
 
 
 def test_visit_create_writes_visit_type_to_vault(tmp_path: Path, legacy_markdown_writes: None) -> None:
@@ -5125,10 +5062,12 @@ def test_visit_create_writes_visit_type_to_vault(tmp_path: Path, legacy_markdown
     )
 
     run_jobs(project_root, vault_root, runtime_root, log_path)
-    visit_path = site_path.parent / "Visits" / f"{datetime.utcnow().date().isoformat()}.md"
-    visit_text = visit_path.read_text(encoding="utf-8")
+    store = shared._VAULT_STORE
+    assert isinstance(store, RecordingVaultStore)
+    visit_docs = [doc for doc in store.docs if doc.get("type") == "visit" and doc.get("site_id") == "7030"]
+    assert len(visit_docs) == 1
 
-    assert "visit_type: qc_inspection" in visit_text
+    assert visit_docs[0]["visit_type"] == "qc_inspection"
 
 
 def test_visit_create_writes_visited_by_to_vault(tmp_path: Path, legacy_markdown_writes: None) -> None:
@@ -5161,10 +5100,12 @@ def test_visit_create_writes_visited_by_to_vault(tmp_path: Path, legacy_markdown
     )
 
     run_jobs(project_root, vault_root, runtime_root, log_path)
-    visit_path = site_path.parent / "Visits" / f"{datetime.utcnow().date().isoformat()}.md"
-    visit_text = visit_path.read_text(encoding="utf-8")
+    store = shared._VAULT_STORE
+    assert isinstance(store, RecordingVaultStore)
+    visit_docs = [doc for doc in store.docs if doc.get("type") == "visit" and doc.get("site_id") == "7030"]
+    assert len(visit_docs) == 1
 
-    assert "visited_by: per_test006" in visit_text
+    assert visit_docs[0]["visited_by"] == "per_test006"
 
 
 def test_visit_create_without_visited_by_still_validates() -> None:
@@ -5209,11 +5150,13 @@ def test_visit_create_idempotent(tmp_path: Path, legacy_markdown_writes: None) -
     write_job(runtime_root / "queue", "2026-04-19T23-04-32Z__job-visit-create-2.json", {"job_id": "job-visit-create-2", **payload})
     stdout, log_text = run_jobs(project_root, vault_root, runtime_root, log_path)
 
-    visit_path = site_path.parent / "Visits" / f"{datetime.utcnow().date().isoformat()}.md"
-    visit_text = visit_path.read_text(encoding="utf-8")
+    store = shared._VAULT_STORE
+    assert isinstance(store, RecordingVaultStore)
+    visit_docs = [doc for doc in store.docs if doc.get("type") == "visit" and doc.get("site_id") == "7030"]
     assert "job_id already processed" in stdout
     assert "reason=job-id-already-processed" in log_text
-    assert visit_text.count("evidence: I was at Western Gas Transmission.") == 1
+    assert len(visit_docs) == 1
+    assert visit_docs[0]["evidence"] == "I was at Western Gas Transmission."
 
 
 def test_visit_create_invalid_payload(tmp_path: Path) -> None:

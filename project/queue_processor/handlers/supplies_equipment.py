@@ -15,9 +15,6 @@ from queue_processor.canonical_rmw import (
     apply_canonical_rmw,
     resolve_site_context,
 )
-from site_equipment import EquipmentRequest, parse_site_equipment
-from site_supplies import SupplyNeed, parse_site_supply
-
 from . import _shared
 from ._shared import (
     QueueJob,

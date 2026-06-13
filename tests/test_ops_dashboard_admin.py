@@ -21,6 +21,7 @@ from processing_core.action_candidates import action_candidate_payload, write_ac
 from processing_core.artifacts import write_json_object
 from shared_pwa.assets import DB_JS_PATH
 from tests.test_ops_dashboard import request_text, write_field_capture_fixture, write_photo_vision_sidecar, write_vault_site_issue, seed_review_draft
+from tests._couch_vault_stub import couch_vault_stub  # noqa: F401 - autouse fixture
 from voice_memo.server import VoiceMemoHandler
 
 

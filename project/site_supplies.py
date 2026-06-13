@@ -4,8 +4,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
 
-from vault_markdown import frontmatter_list, read_typed_markdown_note
-
 
 SUPPLY_STATUSES = {"open", "ordered", "delivered", "stocked", "no_action_needed"}
 SUPPLY_URGENCIES = {"low", "normal", "high", "critical"}
@@ -51,17 +49,12 @@ def discover_site_supplies(
     include_archived: bool = False,
     archived_only: bool = False,
 ) -> dict[str, object]:
-    """Supplies, from CouchDB ``btq_vault`` (canonical) when configured.
+    """Supplies, from CouchDB ``btq_vault`` (canonical).
 
-    The on-disk vault is iCloud-synced; a background launchd daemon scanning it
-    blocks indefinitely. Read ``type: supply_need`` docs from CouchDB in prod;
-    keep the Markdown glob only as a dev/CI fallback.
+    Reads ``type: supply_need`` docs from CouchDB. ``vault_root`` is accepted
+    for call-site compatibility but no longer used.
     """
-    import os
-
-    if os.environ.get("BTQ_COUCHDB_URL", "").strip():
-        return _discover_site_supplies_couchdb(site_id=site_id, status=status, include_archived=include_archived, archived_only=archived_only)
-    return _discover_site_supplies_filesystem(vault_root, site_id=site_id, status=status, include_archived=include_archived, archived_only=archived_only)
+    return _discover_site_supplies_couchdb(site_id=site_id, status=status, include_archived=include_archived, archived_only=archived_only)
 
 
 def _supply_from_couch_doc(doc: dict[str, Any]) -> SupplyNeed | None:
@@ -162,90 +155,6 @@ def _discover_site_supplies_couchdb(
     return {"supplies": supplies, "warnings": [], "counts": supply_counts(supplies, include_archived=include_archived or archived_only)}
 
 
-def _discover_site_supplies_filesystem(
-    vault_root: Path,
-    *,
-    site_id: str | None = None,
-    status: str | None = None,
-    include_archived: bool = False,
-    archived_only: bool = False,
-) -> dict[str, object]:
-    supplies: list[SupplyNeed] = []
-    warnings: list[dict[str, str]] = []
-    root = vault_root.expanduser().resolve(strict=False)
-    accounts_root = root / "Accounts"
-    if not accounts_root.exists():
-        return {"supplies": [], "warnings": [{"path": str(accounts_root), "reason": "accounts_root_missing"}], "counts": supply_counts([])}
-
-    status_filter = str(status).strip() if status is not None else None
-    for path in sorted(accounts_root.glob("*/Locations/*/Supplies/*.md")):
-        supply, warning = parse_site_supply(path)
-        if warning is not None:
-            warnings.append(warning)
-            continue
-        if supply is None:
-            continue
-        if not _include_archived_item(supply.archived, include_archived=include_archived, archived_only=archived_only):
-            continue
-        if site_id is not None and supply.site_id != str(site_id):
-            continue
-        if status_filter is not None and supply.status != status_filter:
-            continue
-        supplies.append(supply)
-    supplies.sort(key=lambda item: (status_sort(item.status), urgency_sort(item.urgency), item.site_id, item.created_at, item.supply_id))
-    return {"supplies": supplies, "warnings": warnings, "counts": supply_counts(supplies, include_archived=include_archived or archived_only)}
-
-
-def parse_site_supply(path: Path) -> tuple[SupplyNeed | None, dict[str, str] | None]:
-    frontmatter, _body, warning = read_typed_markdown_note(path, "supply_need")
-    if warning is not None or frontmatter is None:
-        return None, warning
-    site_id = clean_string(frontmatter.get("site_id"))
-    supply_id = clean_string(frontmatter.get("supply_id")) or path.stem.split("__", 1)[0]
-    item_name = clean_string(frontmatter.get("item_name")) or path.stem
-    if not site_id or not supply_id or not item_name:
-        return None, {"path": str(path), "reason": "missing_required_site_id_or_supply_id_or_item_name"}
-    status = clean_string(frontmatter.get("status")) or "open"
-    if status not in SUPPLY_STATUSES:
-        return None, {"path": str(path), "reason": f"unknown_status:{status}"}
-    urgency = clean_string(frontmatter.get("urgency")) or "normal"
-    if urgency not in SUPPLY_URGENCIES:
-        return None, {"path": str(path), "reason": f"unknown_urgency:{urgency}"}
-    return (
-        SupplyNeed(
-            supply_id=supply_id,
-            site_id=site_id,
-            site_name=clean_string(frontmatter.get("site_name")),
-            account=clean_string(frontmatter.get("account")),
-            item_name=item_name,
-            quantity_needed=clean_string(frontmatter.get("quantity_needed")),
-            urgency=urgency,
-            requested_by=clean_string(frontmatter.get("requested_by")),
-            observed_at=clean_string(frontmatter.get("observed_at")),
-            source=clean_string(frontmatter.get("source")),
-            status=status,
-            notes=clean_string(frontmatter.get("notes")),
-            related_capture_ids=tuple(frontmatter_list(frontmatter.get("related_capture_ids"))),
-            related_candidate_ids=tuple(frontmatter_list(frontmatter.get("related_candidate_ids"))),
-            created_at=clean_string(frontmatter.get("created_at")),
-            doc_id=supply_id,
-            ordered_at=clean_string(frontmatter.get("ordered_at")),
-            ordered_by=clean_string(frontmatter.get("ordered_by")),
-            ordered_note=clean_string(frontmatter.get("ordered_note")),
-            delivered_at=clean_string(frontmatter.get("delivered_at")),
-            delivered_by=clean_string(frontmatter.get("delivered_by")),
-            delivered_note=clean_string(frontmatter.get("delivered_note")),
-            stocked_at=clean_string(frontmatter.get("stocked_at")),
-            stocked_by=clean_string(frontmatter.get("stocked_by")),
-            stocked_note=clean_string(frontmatter.get("stocked_note")),
-            archived=bool_from_frontmatter(frontmatter.get("archived")),
-            archived_at=clean_string(frontmatter.get("archived_at")),
-            archived_by=clean_string(frontmatter.get("archived_by")),
-        ),
-        None,
-    )
-
-
 def clean_string(value: Any) -> str:
     text = str(value or "").strip()
     if text in {"", '""', "''", "null", "None"}:
@@ -253,12 +162,6 @@ def clean_string(value: Any) -> str:
     if (text.startswith('"') and text.endswith('"')) or (text.startswith("'") and text.endswith("'")):
         text = text[1:-1].strip()
     return text
-
-
-def bool_from_frontmatter(value: Any) -> bool:
-    if isinstance(value, bool):
-        return value
-    return clean_string(value).lower() == "true"
 
 
 def supply_counts(supplies: Iterable[SupplyNeed], *, include_archived: bool = False) -> dict[str, object]:
