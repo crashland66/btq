@@ -419,6 +419,66 @@ Use a stable source-system key when available, for example `ehub-9213`.
 }
 ```
 
+## 2b. `record_shift_report`
+
+Use when:
+
+- an end-of-day shift report should land in canonical `btq_vault`
+- the report date is known and the Markdown content is ready for deterministic
+  capture
+
+Do not use when:
+
+- the entry is a personal, non-operational journal note; use
+  `personal_journal_entry`
+- the report should only be preserved as raw evidence without a canonical
+  shift-report document
+- you are trying to mutate downstream projections or reader behavior directly
+
+### Required payload fields
+
+- `date`: `YYYY-MM-DD`
+- `content`: non-empty Markdown string
+
+### Optional payload fields
+
+- `prepared_by`: string; defaults to `Greg` at runtime
+- `source`: string provenance label
+
+### Optional top-level fields
+
+- `idempotency_key`: string, strongly recommended for replay safety
+
+Use a stable date-keyed value when available, for example
+`shift-report-2026-06-12`.
+
+### Runtime behavior notes
+
+- upserts the canonical `shift_report` document in `btq_vault`
+- the document id is keyed by date:
+  `shift_report_journal_YYYY_MM_DD_shift_report`
+- the writer sets `date`, `operator`, `prepared_by`, and `content`
+- `operator` is resolved by the handler, not supplied by the job payload
+- reprocessing the same job is idempotent via the `btq_job_ids` marker
+- a new job for the same date updates the same canonical document instead of
+  creating a duplicate
+
+### Valid example
+
+```json
+{
+  "job_id": "2026-06-12T23-00-00Z__record-shift-report",
+  "job_type": "record_shift_report",
+  "idempotency_key": "shift-report-2026-06-12",
+  "payload": {
+    "date": "2026-06-12",
+    "prepared_by": "Greg",
+    "source": "closeday",
+    "content": "# Shift Report\n\nEnd-of-day operations summary."
+  }
+}
+```
+
 ## 3. `trigger_recruiting`
 
 Use when:

@@ -44,6 +44,7 @@ KNOWN_JOB_SUMMARY_TYPES = {
     "visit_create",
     "parse_supply_email",
     "personal_journal_entry",
+    "record_shift_report",
     "photo_capture",
     "promote_prospect",
     "retarget_capture",
@@ -862,6 +863,11 @@ def render_job_summary(job_type: object, payload: object) -> str:
         return _summary_with_suffix("Parse supply email", html.escape(_clean_display_part(body.get("subject"))))
     if job_type_text == "personal_journal_entry":
         return _summary_with_suffix("Personal journal for", html.escape(_clean_display_part(body.get("date"))))
+    if job_type_text == "record_shift_report":
+        date = html.escape(_clean_display_part(body.get("date")))
+        prepared_by = html.escape(_clean_display_part(body.get("prepared_by")))
+        suffix = _join_summary_parts(date, f"by {prepared_by}" if prepared_by else "")
+        return _summary_with_suffix("Record shift report", suffix)
     if job_type_text == "photo_capture":
         category = html.escape(_clean_display_part(body.get("qc_category")))
         suffix = _join_summary_parts(_site_summary(body), f"({category})" if category else "")

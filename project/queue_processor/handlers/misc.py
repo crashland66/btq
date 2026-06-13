@@ -248,6 +248,41 @@ def process_personal_journal_entry_job(job_path: Path, job: QueueJob, context: R
     print(f"Job {job.job_id}: updated {target.doc_id}"); print(f"Job {job.job_id}: moved queue file to {moved_path}")
     _shared.write_log_line(context.log_path, f"job_id={job.job_id} action=personal-journal-entry status=success error=")
 
+def process_record_shift_report_job(job_path: Path, job: QueueJob, context: RunContext, processed_dir: Path) -> None:
+    payload = job.payload
+    date = str(payload["date"]).strip()
+    doc_id = f"shift_report_journal_{date.replace('-', '_')}_shift_report"
+    processed_destination = processed_dir / job_path.name
+    if not context.dry_run and processed_destination.exists():
+        raise _shared.QueueProcessorError(f"Destination already exists: {processed_destination}")
+    target = CanonicalTarget(doc_id=doc_id, doc_type="shift_report", allow_create=True, require_existing=False)
+    content = str(payload["content"])
+    prepared_by = str(payload.get("prepared_by") or "Greg")
+    def transform(state: CanonicalEntityState) -> CanonicalMutation:
+        outgoing = dict(state.doc or {})
+        outgoing["content"] = content
+        outgoing["date"] = date
+        outgoing["operator"] = OPERATOR_ID_GREG
+        outgoing["prepared_by"] = prepared_by
+        return CanonicalMutation(doc=outgoing, evidence_text=f"shift report {date}")
+    print(f"Job {job.job_id}: validated")
+    print(f"Job {job.job_id}: target {target.doc_id}")
+    if context.dry_run:
+        print(f"Job {job.job_id}: would apply record-shift-report"); _shared.write_log_line(context.log_path, f"job_id={job.job_id} action=record-shift-report status=success error=")
+        return
+    try:
+        canonical_doc = apply_canonical_rmw(_shared._vault_store(), target, job.job_id, transform)
+    except Exception as exc:
+        raise _shared.QueueJobError("canonical couchdb write failed " f"job_type={job.job_type} job_id={job.job_id} entity_id={target.doc_id}: {exc}") from exc
+    if canonical_doc is None:
+        print(f"Job {job.job_id}: job_id marker already present — skipping"); moved_path = _shared.move_job_file(job_path, processed_dir)
+        print(f"Job {job.job_id}: moved queue file to {moved_path}"); _shared.write_log_line(context.log_path, f"job_id={job.job_id} action=skip status=success reason=job-id-marker-present")
+        return
+    _shared.write_mutation_evidence(context, job, canonical_doc, f"shift report {date}")
+    moved_path = _shared.move_job_file(job_path, processed_dir)
+    print(f"Job {job.job_id}: updated {target.doc_id}"); print(f"Job {job.job_id}: moved queue file to {moved_path}")
+    _shared.write_log_line(context.log_path, f"job_id={job.job_id} action=record-shift-report status=success error=")
+
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 

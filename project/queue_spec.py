@@ -37,6 +37,7 @@ JOB_FLAG_ACCESS_CONSTRAINT = "flag_access_constraint"
 JOB_FLAG_RETENTION_RISK = "flag_retention_risk"
 JOB_ADD_PERSON = "add_person"
 JOB_SET_EMPLOYEE_ID = "set_employee_id"
+JOB_RECORD_SHIFT_REPORT = "record_shift_report"
 JOB_RECORD_UNKNOWN_CAPTURE = "record_unknown_capture"
 JOB_RECLASSIFY_UNKNOWN = "reclassify_unknown"
 JOB_VISIT_CREATE = "visit_create"
@@ -119,6 +120,7 @@ ALLOWED_JOB_TYPES = {
     JOB_FLAG_RETENTION_RISK,
     JOB_ADD_PERSON,
     JOB_SET_EMPLOYEE_ID,
+    JOB_RECORD_SHIFT_REPORT,
     JOB_RECORD_UNKNOWN_CAPTURE,
     JOB_RECLASSIFY_UNKNOWN,
     JOB_VISIT_CREATE,
@@ -175,6 +177,7 @@ JOB_SCHEMAS = {
     JOB_FLAG_RETENTION_RISK: ["employee", "site", "details"],
     JOB_ADD_PERSON: ["name", "role"],
     JOB_SET_EMPLOYEE_ID: ["person", "employee_id"],
+    JOB_RECORD_SHIFT_REPORT: ["date", "content"],
     JOB_RECORD_UNKNOWN_CAPTURE: ["path", "content", "timestamp", "audio_file"],
     JOB_RECLASSIFY_UNKNOWN: ["path"],
     JOB_VISIT_CREATE: ["site", "confidence", "source", "evidence"],
@@ -234,6 +237,7 @@ SET_EMPLOYEE_ID_ALLOWED_PAYLOAD_FIELDS = {
     "source",
     "metadata",
 }
+RECORD_SHIFT_REPORT_ALLOWED_PAYLOAD_FIELDS = {"date", "content", "prepared_by", "source"}
 LOG_SITE_ISSUE_ALLOWED_PAYLOAD_FIELDS = {
     "site_id",
     "title",
@@ -625,6 +629,17 @@ def _validate_set_employee_id_payload(payload: dict) -> bool:
     return True
 
 
+def _validate_record_shift_report_payload(payload: dict) -> bool:
+    if set(payload) - RECORD_SHIFT_REPORT_ALLOWED_PAYLOAD_FIELDS:
+        return False
+    date = payload.get("date")
+    if not _is_non_empty_string(date) or INSPECTION_DATE_RE.match(str(date).strip()) is None:
+        return False
+    if not _is_non_empty_string(payload.get("content")):
+        return False
+    return True
+
+
 def _is_string_list(value: object) -> bool:
     if value is None:
         return True
@@ -973,6 +988,9 @@ def validate_job(job: dict) -> bool:
             return False
     if job_type == JOB_SET_EMPLOYEE_ID:
         if not _validate_set_employee_id_payload(payload):
+            return False
+    if job_type == JOB_RECORD_SHIFT_REPORT:
+        if not _validate_record_shift_report_payload(payload):
             return False
     if job_type == JOB_VISIT_CREATE:
         confidence = payload.get("confidence")
