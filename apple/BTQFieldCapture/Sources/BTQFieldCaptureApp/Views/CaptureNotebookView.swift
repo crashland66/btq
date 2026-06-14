@@ -268,37 +268,43 @@ struct CaptureNotebookView: View {
     }
 
     private var categoryPicker: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                Label("Area / QC", systemImage: "tag")
+        Picker(selection: categorySelection) {
+            Text("Select category...").tag(Optional<String>.none)
+            ForEach(model.selectedSite?.displayCategories ?? []) { category in
+                Text(category.label).tag(Optional(category.value))
+            }
+        } label: {
+            HStack(spacing: 10) {
+                Image(systemName: "tag")
                     .font(.headline)
-                Spacer()
+                    .foregroundStyle(.primary)
+                Text("Area / QC")
+                    .font(.headline)
+                    .foregroundStyle(.primary)
+                Spacer(minLength: 12)
                 Text(selectedCategoryLabel)
-                    .font(.subheadline.weight(.medium))
-                    .foregroundStyle(model.selectedCategoryValue == nil ? .secondary : Color.btqNavy)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(model.selectedCategoryValue == nil ? .secondary : Color.btqAccent)
                     .lineLimit(1)
+                Image(systemName: "chevron.up.chevron.down")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(Color.btqAccent)
             }
-
-            Picker("Area / QC", selection: categorySelection) {
-                Text("Select category...").tag(Optional<String>.none)
-                ForEach(model.selectedSite?.displayCategories ?? []) { category in
-                    Text(category.label).tag(Optional(category.value))
-                }
-            }
-            .pickerStyle(.menu)
-            .tint(.btqNavy)
-            .disabled(!canEditDraft)
-            .accessibilityIdentifier("capture.category.picker")
         }
-        .padding(14)
-        .background(
-            RoundedRectangle(cornerRadius: 8)
-                .fill(model.selectedCategoryValue == nil ? Color.btqAccent.opacity(0.08) : Color.clear)
-        )
+        .pickerStyle(.menu)
+        .tint(.btqAccent)
+        .disabled(!canEditDraft)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 14)
+        .frame(minHeight: 56)
+        .contentShape(RoundedRectangle(cornerRadius: 8))
         .overlay(
             RoundedRectangle(cornerRadius: 8)
-                .stroke(model.selectedCategoryValue == nil ? Color.btqAccent : Color.secondary.opacity(0.25), lineWidth: 1.5)
+                .stroke(model.selectedCategoryValue == nil ? Color.btqAccent : Color.secondary.opacity(0.25), lineWidth: 1.25)
         )
+        .accessibilityIdentifier("capture.category.picker")
+        .accessibilityLabel("Area / QC")
+        .accessibilityValue(selectedCategoryLabel)
     }
 
     private var photoTools: some View {

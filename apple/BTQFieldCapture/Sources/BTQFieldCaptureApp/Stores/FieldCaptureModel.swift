@@ -160,13 +160,21 @@ public final class FieldCaptureModel {
         do {
             let snapshot = try await store.load()
             apply(snapshot)
-            recoverInterruptedUploads()
+            let recoveredUploads = recoverInterruptedUploads()
             _ = await refreshSessionIfPossible()
             if sites.isEmpty {
                 applyDemoSession()
                 statusMessage = "Demo data loaded. Paste a token to connect BTQ."
             }
-            try? await persist()
+            if recoveredUploads {
+                do {
+                    try await persist()
+                } catch {
+                    statusMessage = "Could not save recovered uploads. Try again."
+                }
+            } else {
+                try? await persist()
+            }
         } catch {
             applyDemoSession()
             statusMessage = "Local store unavailable. Demo data loaded."
@@ -304,6 +312,14 @@ public final class FieldCaptureModel {
     }
 
     public func resumeOnlineWork() async {
+        if recoverInterruptedUploads() {
+            do {
+                try await persist()
+            } catch {
+                statusMessage = "Could not save recovered uploads. Try again."
+                return
+            }
+        }
         guard await refreshSessionIfPossible() else { return }
         await syncPending()
     }
@@ -476,13 +492,24 @@ public final class FieldCaptureModel {
             photos: photos,
             audio: audio
         )
+        let previousCaptures = captures
+        let previousSites = sites
+        let previousAccountWorkspaces = accountWorkspaces
         captures.append(capture)
         var updatedSite = site
         updatedSite.lastUsedAt = now
         replaceSite(updatedSite)
+        do {
+            try await persist()
+        } catch {
+            captures = previousCaptures
+            sites = previousSites
+            accountWorkspaces = previousAccountWorkspaces
+            statusMessage = "Could not save locally. Try again."
+            return false
+        }
         observationText = ""
         statusMessage = "Saved locally"
-        try? await persist()
         guard !isOfflineMode else {
             statusMessage = "Saved offline. Captures will sync when connection returns."
             return true
@@ -533,9 +560,8 @@ public final class FieldCaptureModel {
                 statusMessage = "Synced \(releasedCapture.siteLabel)"
             } catch let error as CaptureAPIError {
                 guard let failedIndex = captures.firstIndex(where: { $0.captureID == uploadingCapture.captureID }) else {
-                    if error.isPermanent { continue }
                     statusMessage = "Sync paused. Will retry."
-                    break
+                    continue
                 }
                 captures[failedIndex].attempts += 1
                 captures[failedIndex].lastError = error.description
@@ -549,21 +575,25 @@ public final class FieldCaptureModel {
                 captures[failedIndex].status = .pending
                 captures[failedIndex].retryAfter = nextRetryDate(attempts: captures[failedIndex].attempts)
                 statusMessage = "Sync paused. Will retry."
-                break
+                continue
             } catch {
                 guard let failedIndex = captures.firstIndex(where: { $0.captureID == uploadingCapture.captureID }) else {
                     statusMessage = "Offline. Capture will sync later."
-                    break
+                    continue
                 }
                 captures[failedIndex].attempts += 1
                 captures[failedIndex].status = .pending
                 captures[failedIndex].lastError = error.localizedDescription
                 captures[failedIndex].retryAfter = nextRetryDate(attempts: captures[failedIndex].attempts)
                 statusMessage = "Offline. Capture will sync later."
-                break
+                continue
             }
         }
-        try? await persist()
+        do {
+            try await persist()
+        } catch {
+            statusMessage = "Could not save queue state. Try syncing again."
+        }
         if successfulUploadCount > 0, queueSummary.pending == 0, queueSummary.failed == 0 {
             await notificationScheduler.notifySyncRecovered(pendingCount: 0)
         }
@@ -744,16 +774,20 @@ public final class FieldCaptureModel {
         }
     }
 
-    private func recoverInterruptedUploads(now: Date = .now) {
+    @discardableResult
+    private func recoverInterruptedUploads(now: Date = .now) -> Bool {
         let staleThreshold: TimeInterval = 120
+        var recoveredUploads = false
         for index in captures.indices where captures[index].status == .uploading {
             let lastTriedAt = captures[index].lastTriedAt ?? captures[index].capturedAt
             if now.timeIntervalSince(lastTriedAt) > staleThreshold {
                 captures[index].status = .pending
                 captures[index].lastError = "Upload was interrupted. It will retry automatically."
                 captures[index].retryAfter = now
+                recoveredUploads = true
             }
         }
+        return recoveredUploads
     }
 
     private func isReadyToRetry(_ capture: LocalCapture, now: Date = .now) -> Bool {

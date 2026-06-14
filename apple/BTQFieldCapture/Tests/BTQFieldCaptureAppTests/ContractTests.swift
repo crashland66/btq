@@ -809,6 +809,20 @@ import UniformTypeIdentifiers
     #expect(loaded.captures.first?.retryAfter != nil)
 }
 
+@Test func sqliteStoreDeclaresDurabilityPragmas() throws {
+    let source = try String(
+        contentsOf: packageRoot().appendingPathComponent("Sources/BTQFieldCaptureApp/Stores/SQLiteFieldCaptureStore.swift"),
+        encoding: .utf8
+    )
+    let migrateRange = try #require(source.range(of: "private func migrate(_ database: OpaquePointer) throws"))
+    let tableRange = try #require(source.range(of: "CREATE TABLE IF NOT EXISTS metadata", range: migrateRange.lowerBound..<source.endIndex))
+    let migrationBlock = source[migrateRange.lowerBound..<tableRange.lowerBound]
+
+    #expect(migrationBlock.contains("PRAGMA busy_timeout=5000;"))
+    #expect(migrationBlock.contains("PRAGMA journal_mode=WAL;"))
+    #expect(migrationBlock.contains("PRAGMA synchronous=FULL;"))
+}
+
 @Test func localMediaStorePersistsPhotosAndAudioOutsideTemporaryInputs() throws {
     let temp = FileManager.default.temporaryDirectory.appendingPathComponent("btq-media-\(UUID().uuidString)", isDirectory: true)
     let source = FileManager.default.temporaryDirectory.appendingPathComponent("btq-media-source-\(UUID().uuidString)", isDirectory: true)
@@ -1113,7 +1127,10 @@ import UniformTypeIdentifiers
     #expect(captureViewSource.contains("Button(\"Clear\")"))
     #expect(captureViewSource.contains(".disabled(activeVisit == nil || !canEditDraft)"))
     #expect(captureViewSource.contains("Picker(\"Site\", selection: siteSelection)"))
-    #expect(captureViewSource.contains("Picker(\"Area / QC\", selection: categorySelection)"))
+    #expect(captureViewSource.contains("Picker(selection: categorySelection)"))
+    #expect(captureViewSource.contains("} label: {"))
+    #expect(captureViewSource.contains(".contentShape(RoundedRectangle(cornerRadius: 8))"))
+    #expect(captureViewSource.contains(".accessibilityValue(selectedCategoryLabel)"))
     #expect(captureViewSource.contains("Text(\"Select category...\").tag(Optional<String>.none)"))
     #expect(captureViewSource.contains("CapturePhotoThumbnail(photo: photo)"))
     #expect(captureViewSource.contains("AppVersionFooter()"))
@@ -1422,6 +1439,38 @@ import UniformTypeIdentifiers
     #expect(model.queueSummary.pending == 1)
     #expect(model.statusMessage == "Saved offline. Captures will sync when connection returns.")
     #expect(await apiClient.submitted.isEmpty)
+}
+
+@Test @MainActor func saveQuickObservationDoesNotReportSuccessWhenPersistenceFails() async {
+    let site = BTQSite(siteID: "site_1", label: "Site One")
+    let snapshot = FieldCaptureSnapshot(
+        account: .defaultProduction,
+        session: BTQSession(
+            person: BTQPerson(personID: "person_field", name: "Field User"),
+            token: BTQToken(tokenID: "token_field", label: "Pilot"),
+            sites: [site],
+            canSubmit: true,
+            canReview: false,
+            maxImages: 6
+        ),
+        sites: [site]
+    )
+    let model = FieldCaptureModel(
+        store: FailingSaveFieldCaptureStore(snapshot: snapshot),
+        apiClient: MockCaptureAPIClient(),
+        tokenStore: MemoryTokenStore(),
+        notificationScheduler: NoopUploadNotificationScheduler()
+    )
+    await model.load()
+    model.observationText = "Do not lose this note"
+
+    let didSave = await model.saveQuickObservation()
+
+    #expect(!didSave)
+    #expect(model.captures.isEmpty)
+    #expect(model.observationText == "Do not lose this note")
+    #expect(model.sites.first?.lastUsedAt == nil)
+    #expect(model.statusMessage == "Could not save locally. Try again.")
 }
 
 @Test @MainActor func saveQuickObservationRejectsTooManyPhotosForSessionLimit() async {
@@ -1932,6 +1981,54 @@ import UniformTypeIdentifiers
     #expect(await notificationScheduler.syncRecoveredPendingCounts.isEmpty)
 }
 
+@Test @MainActor func transientCaptureFailureDoesNotBlockLaterPendingUploads() async {
+    let account = BTQAccount.defaultProduction
+    let transient = LocalCapture(
+        captureID: "capture-transient",
+        jobID: "job-transient",
+        visitID: nil,
+        siteID: "site_1",
+        siteLabel: "Site One",
+        targetID: "site_1",
+        qcCategory: "general_note",
+        note: "Temporary transport failure",
+        capturedAt: Date(timeIntervalSince1970: 1_800_000_000),
+        exportedAt: Date(timeIntervalSince1970: 1_800_000_001)
+    )
+    let later = LocalCapture(
+        captureID: "capture-later",
+        jobID: "job-later",
+        visitID: nil,
+        siteID: "site_1",
+        siteLabel: "Site One",
+        targetID: "site_1",
+        qcCategory: "general_note",
+        note: "Should still upload",
+        capturedAt: Date(timeIntervalSince1970: 1_800_000_002),
+        exportedAt: Date(timeIntervalSince1970: 1_800_000_003)
+    )
+    let apiClient = FlakySubmitAPIClient(errors: [URLError(.timedOut)])
+    let tokenStore = MemoryTokenStore()
+    let model = FieldCaptureModel(
+        store: MemoryFieldCaptureStore(snapshot: captureSnapshot(account: account, captures: [transient, later])),
+        apiClient: apiClient,
+        tokenStore: tokenStore,
+        notificationScheduler: NoopUploadNotificationScheduler()
+    )
+    await model.load()
+    await tokenStore.saveToken("token-submit", accountID: account.id)
+
+    await model.syncPending()
+
+    let transientCapture = model.captures.first { $0.captureID == "capture-transient" }
+    let laterCapture = model.captures.first { $0.captureID == "capture-later" }
+    #expect(transientCapture?.status == .pending)
+    #expect(transientCapture?.attempts == 1)
+    #expect(transientCapture?.retryAfter != nil)
+    #expect(laterCapture?.status == .done)
+    #expect(await apiClient.submittedCaptureIDs == ["capture-later"])
+}
+
 @Test @MainActor func syncUsesCaptureIDAfterUploadWhenQueueMutatesDuringAwait() async {
     let account = BTQAccount.defaultProduction
     let first = LocalCapture(
@@ -2040,6 +2137,19 @@ import UniformTypeIdentifiers
     #expect(model.captures.first?.status == .pending)
     #expect(model.captures.first?.lastError == "Upload was interrupted. It will retry automatically.")
     #expect(model.captures.first?.retryAfter != nil)
+}
+
+@Test func resumeOnlineWorkRunsInterruptedUploadRecoveryBeforeSync() throws {
+    let source = try String(
+        contentsOf: packageRoot().appendingPathComponent("Sources/BTQFieldCaptureApp/Stores/FieldCaptureModel.swift"),
+        encoding: .utf8
+    )
+    let resumeRange = try #require(source.range(of: "public func resumeOnlineWork() async"))
+    let sessionRefreshRange = try #require(source.range(of: "guard await refreshSessionIfPossible() else { return }", range: resumeRange.lowerBound..<source.endIndex))
+    let recoveryRange = try #require(source.range(of: "recoverInterruptedUploads()", range: resumeRange.lowerBound..<sessionRefreshRange.lowerBound))
+
+    #expect(recoveryRange.lowerBound > resumeRange.lowerBound)
+    #expect(recoveryRange.lowerBound < sessionRefreshRange.lowerBound)
 }
 
 @Test @MainActor func retryFailedCaptureRequeuesAndSyncs() async throws {
@@ -2899,6 +3009,26 @@ private func urlSchemes(in info: [String: Any]) -> [String] {
 private func nonEmptyString(_ value: Any?) -> Bool {
     guard let string = value as? String else { return false }
     return !string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+}
+
+private enum TestFieldCaptureStoreError: Error {
+    case saveFailed
+}
+
+private actor FailingSaveFieldCaptureStore: FieldCaptureStore {
+    private let snapshot: FieldCaptureSnapshot
+
+    init(snapshot: FieldCaptureSnapshot) {
+        self.snapshot = snapshot
+    }
+
+    func load() async throws -> FieldCaptureSnapshot {
+        snapshot
+    }
+
+    func save(_ snapshot: FieldCaptureSnapshot) async throws {
+        throw TestFieldCaptureStoreError.saveFailed
+    }
 }
 
 private func makeTestImageData(type: TestImageType, width: Int = 1, height: Int = 1, orientation: Int? = nil) throws -> Data {

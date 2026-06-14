@@ -67,7 +67,9 @@ public actor SQLiteFieldCaptureStore: FieldCaptureStore {
     private func migrate(_ database: OpaquePointer) throws {
         try execute(
             """
+            PRAGMA busy_timeout=5000;
             PRAGMA journal_mode=WAL;
+            PRAGMA synchronous=FULL;
             PRAGMA foreign_keys=ON;
             CREATE TABLE IF NOT EXISTS metadata (
                 key TEXT PRIMARY KEY NOT NULL,
