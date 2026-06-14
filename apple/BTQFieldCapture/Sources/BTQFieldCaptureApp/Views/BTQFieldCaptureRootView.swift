@@ -115,7 +115,7 @@ struct BTQFieldCaptureShell: View {
         case .capture:
             CaptureNotebookView(model: model)
         case .sites:
-            SitesView(model: model)
+            SitesView(model: model, onSiteSelected: routeToCapture)
         case .queue:
             QueueView(model: model)
         case .settings:

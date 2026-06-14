@@ -2,6 +2,7 @@ import SwiftUI
 
 struct SitesView: View {
     @Bindable var model: FieldCaptureModel
+    var onSiteSelected: () -> Void = {}
     @State private var searchText = ""
 
     private var filteredSites: [BTQSite] {
@@ -17,20 +18,30 @@ struct SitesView: View {
             HStack {
                 Button {
                     model.selectedSite = site
+                    onSiteSelected()
                 } label: {
-                    VStack(alignment: .leading) {
-                        Text(site.label)
-                            .foregroundStyle(.primary)
-                        Text(site.siteID)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                    HStack {
+                        VStack(alignment: .leading) {
+                            Text(site.label)
+                                .foregroundStyle(.primary)
+                            Text(site.siteID)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        if site.siteID == model.selectedSiteID {
+                            Label("Selected", systemImage: "checkmark.circle.fill")
+                                .labelStyle(.iconOnly)
+                                .foregroundStyle(.tint)
+                        }
                     }
                 }
                 .buttonStyle(.plain)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .contentShape(Rectangle())
                 .accessibilityLabel("Select site \(site.label)")
-                .accessibilityHint("Switches field capture to this site.")
+                .accessibilityValue(site.siteID == model.selectedSiteID ? "Selected" : "Not selected")
+                .accessibilityHint("Switches field capture to this site and returns to Capture.")
 
                 Button {
                     Task { await model.toggleFavorite(site: site) }
