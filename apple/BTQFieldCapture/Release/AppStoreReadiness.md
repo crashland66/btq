@@ -153,6 +153,10 @@ candidate.
   photos, recorded audio, typed an observation, and submitted without the app
   closing. This verifies the Photos picker import path and combined
   photo/audio/text submission path for the current pilot limit.
+- 2026-06-14: TestFlight build `202606141343` installed successfully on both
+  physical test iPhones. This verifies the App Store Connect/TestFlight
+  distribution path reaches the target phone mix beyond local development
+  installs.
 
 ### Remaining Physical Device Checks
 

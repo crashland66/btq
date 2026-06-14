@@ -445,6 +445,7 @@ import UniformTypeIdentifiers
     #expect(releaseReadiness.contains("Live audio recording submitted from the native iPhone app"))
     #expect(releaseReadiness.contains("Settings test alert displayed successfully"))
     #expect(releaseReadiness.contains("Heavy Photos picker capture succeeded on the iPhone"))
+    #expect(releaseReadiness.contains("TestFlight build `202606141343` installed successfully on both"))
     #expect(releaseReadiness.contains("Remaining Physical Device Checks"))
 
     let captureView = try String(
