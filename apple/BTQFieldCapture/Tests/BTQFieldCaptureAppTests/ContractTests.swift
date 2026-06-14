@@ -1892,6 +1892,35 @@ import UniformTypeIdentifiers
     #expect(model.statusMessage == "Capture is uploading and cannot be removed yet.")
 }
 
+@Test @MainActor func interruptedUploadingCaptureRecoversToPendingOnLoad() async {
+    let staleUpload = LocalCapture(
+        captureID: "capture-interrupted-upload",
+        jobID: "job-interrupted-upload",
+        visitID: nil,
+        siteID: "site_1",
+        siteLabel: "Site One",
+        targetID: "site_1",
+        qcCategory: "general_note",
+        note: "Recovered after app suspension",
+        capturedAt: Date(timeIntervalSinceNow: -600),
+        exportedAt: Date(timeIntervalSinceNow: -600),
+        status: .uploading,
+        lastTriedAt: Date(timeIntervalSinceNow: -300)
+    )
+    let model = FieldCaptureModel(
+        store: MemoryFieldCaptureStore(snapshot: captureSnapshot(captures: [staleUpload])),
+        apiClient: MockCaptureAPIClient(),
+        tokenStore: MemoryTokenStore(),
+        notificationScheduler: NoopUploadNotificationScheduler()
+    )
+
+    await model.load()
+
+    #expect(model.captures.first?.status == .pending)
+    #expect(model.captures.first?.lastError == "Upload was interrupted. It will retry automatically.")
+    #expect(model.captures.first?.retryAfter != nil)
+}
+
 @Test @MainActor func retryFailedCaptureRequeuesAndSyncs() async throws {
     let apiClient = FlakySubmitAPIClient(errors: [
         CaptureAPIError.serverStatus(

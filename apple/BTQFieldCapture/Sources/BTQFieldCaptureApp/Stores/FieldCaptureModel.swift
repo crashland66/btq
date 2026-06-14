@@ -750,7 +750,7 @@ public final class FieldCaptureModel {
             let lastTriedAt = captures[index].lastTriedAt ?? captures[index].capturedAt
             if now.timeIntervalSince(lastTriedAt) > staleThreshold {
                 captures[index].status = .pending
-                captures[index].lastError = "recovered_interrupted_upload"
+                captures[index].lastError = "Upload was interrupted. It will retry automatically."
                 captures[index].retryAfter = now
             }
         }
