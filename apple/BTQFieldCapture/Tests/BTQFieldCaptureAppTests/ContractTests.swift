@@ -508,24 +508,38 @@ import UniformTypeIdentifiers
     #expect(captureView.contains("TapeStopButtonStyle"))
     #expect(captureView.contains("TapeClearButtonStyle"))
     #expect(captureView.contains(".tint(.btqAccent)"))
-    #expect(captureView.contains("case .done: .btqAccent"))
-    #expect(captureView.contains("case .uploading: .btqUploading"))
     #expect(!captureView.contains("case .uploading: .blue"))
     #expect(captureView.contains("Text(\"●\")"))
     #expect(captureView.contains("Text(\"■\")"))
     #expect(captureView.contains("Text(\"×\")"))
     #expect(captureView.contains("Voice memo ready"))
     #expect(captureView.contains("\"voice.status\""))
-    #expect(captureView.contains(".accessibilityElement(children: .combine)"))
 
     let queueView = try String(
         contentsOf: packageRoot().appendingPathComponent("Sources/BTQFieldCaptureApp/Views/QueueView.swift"),
+        encoding: .utf8
+    )
+    let appVersionFooter = try String(
+        contentsOf: packageRoot().appendingPathComponent("Sources/BTQFieldCaptureApp/Views/AppVersionFooter.swift"),
+        encoding: .utf8
+    )
+    let photoThumbnail = try String(
+        contentsOf: packageRoot().appendingPathComponent("Sources/BTQFieldCaptureApp/Views/CapturePhotoThumbnail.swift"),
         encoding: .utf8
     )
     #expect(queueView.contains("\"queue.summary.\\(label.lowercased())\""))
     #expect(queueView.contains("\"queue.capture.\\(capture.captureID)\""))
     #expect(queueView.contains("\"queue.server.refresh\""))
     #expect(queueView.contains("\"queue.server.capture.\\(submission.captureID)\""))
+    #expect(queueView.contains("case .done: .btqAccent"))
+    #expect(queueView.contains("case .uploading: .btqUploading"))
+    #expect(queueView.contains("DisclosureGroup(isExpanded: $isExpanded)"))
+    #expect(queueView.contains("QueueCaptureDetailSheet(detail: detail)"))
+    #expect(queueView.contains("selectedDetail = .local(capture)"))
+    #expect(queueView.contains("selectedDetail = .submitted(submission)"))
+    #expect(queueView.contains("LocalCaptureDetailContent(capture: capture)"))
+    #expect(queueView.contains("SubmittedCaptureDetailContent(submission: submission)"))
+    #expect(queueView.contains("CapturePhotoThumbnail(photo: photo)"))
     #expect(queueView.contains("Retry upload for"))
     #expect(queueView.contains("Moves this failed capture back to pending."))
     #expect(queueView.contains("failureRecoveryHint"))
@@ -537,6 +551,12 @@ import UniformTypeIdentifiers
     #expect(queueView.contains("Delete this local capture?"))
     #expect(queueView.contains("Delete Capture\", role: .destructive"))
     #expect(queueView.contains("queued capture and any app-owned photo or voice memo files"))
+    #expect(queueView.contains("AppVersionFooter()"))
+    #expect(appVersionFooter.contains("CFBundleShortVersionString"))
+    #expect(appVersionFooter.contains("CFBundleVersion"))
+    #expect(appVersionFooter.contains("\"app.version.footer\""))
+    #expect(photoThumbnail.contains("struct CapturePhotoThumbnail"))
+    #expect(photoThumbnail.contains("Data(contentsOf: fileURL)"))
 
     let sitesView = try String(
         contentsOf: packageRoot().appendingPathComponent("Sources/BTQFieldCaptureApp/Views/SitesView.swift"),
@@ -1095,7 +1115,9 @@ import UniformTypeIdentifiers
     #expect(captureViewSource.contains("Picker(\"Site\", selection: siteSelection)"))
     #expect(captureViewSource.contains("Picker(\"Area / QC\", selection: categorySelection)"))
     #expect(captureViewSource.contains("Text(\"Select category...\").tag(Optional<String>.none)"))
-    #expect(captureViewSource.contains("DraftPhotoThumbnail(photo: photo)"))
+    #expect(captureViewSource.contains("CapturePhotoThumbnail(photo: photo)"))
+    #expect(captureViewSource.contains("AppVersionFooter()"))
+    #expect(!captureViewSource.contains("Text(\"Visit Timeline\")"))
     #expect(captureViewSource.contains(".disabled(!canEditDraft)\n\n                    Button"))
     #expect(captureViewSource.contains(".disabled(!canEditDraft)\n                .accessibilityLabel(\"Clear pending media\")"))
     #expect(captureViewSource.contains(".disabled(!canEditDraft)\n                            .accessibilityLabel(\"Photo note for"))

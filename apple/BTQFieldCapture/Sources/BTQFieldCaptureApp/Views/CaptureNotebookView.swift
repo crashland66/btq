@@ -3,8 +3,6 @@ import PhotosUI
 import SwiftUI
 #if os(iOS)
 import UIKit
-#elseif os(macOS)
-import AppKit
 #endif
 
 private struct DraftContext: Equatable {
@@ -58,7 +56,7 @@ struct CaptureNotebookView: View {
                 siteCard
                 captureTools
                 noteEditor
-                timeline
+                AppVersionFooter()
             }
             .padding(.horizontal, 16)
             .padding(.top, 8)
@@ -375,7 +373,7 @@ struct CaptureNotebookView: View {
 
             ForEach($pendingPhotos) { $photo in
                 HStack(alignment: .top, spacing: 10) {
-                    DraftPhotoThumbnail(photo: photo)
+                    CapturePhotoThumbnail(photo: photo)
                     VStack(alignment: .leading, spacing: 4) {
                         Text("Photo")
                             .font(.caption.weight(.semibold))
@@ -411,30 +409,6 @@ struct CaptureNotebookView: View {
             .buttonStyle(.borderedProminent)
             .disabled(!canEditDraft)
             .accessibilityIdentifier("capture.save.local")
-        }
-    }
-
-    private var timeline: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("Visit Timeline")
-                .font(.headline)
-            ForEach(model.timeline) { entry in
-                HStack(alignment: .top) {
-                    Image(systemName: icon(for: entry.status))
-                        .foregroundStyle(color(for: entry.status))
-                    VStack(alignment: .leading) {
-                        Text(entry.title)
-                            .lineLimit(2)
-                        Text(entry.subtitle)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                }
-                .padding(.vertical, 4)
-                .accessibilityElement(children: .combine)
-                .accessibilityLabel("\(entry.title). \(entry.subtitle)")
-            }
         }
     }
 
@@ -681,68 +655,6 @@ struct CaptureNotebookView: View {
     }
     #endif
 
-    private func icon(for status: CaptureQueueStatus) -> String {
-        switch status {
-        case .draft: "circle"
-        case .pending: "clock"
-        case .uploading: "arrow.up.circle"
-        case .done: "checkmark.circle"
-        case .failed: "exclamationmark.triangle"
-        }
-    }
-
-    private func color(for status: CaptureQueueStatus) -> Color {
-        switch status {
-        case .failed: .red
-        case .done: .btqAccent
-        case .uploading: .btqUploading
-        default: .secondary
-        }
-    }
-}
-
-private struct DraftPhotoThumbnail: View {
-    let photo: CapturePhoto
-
-    var body: some View {
-        Group {
-            if let image = thumbnailImage {
-                image
-                    .resizable()
-                    .scaledToFill()
-            } else {
-                Image(systemName: "photo")
-                    .font(.title2)
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            }
-        }
-        .frame(width: 64, height: 64)
-        .background(Color.secondary.opacity(0.10))
-        .clipShape(RoundedRectangle(cornerRadius: 8))
-        .overlay(
-            RoundedRectangle(cornerRadius: 8)
-                .stroke(Color.secondary.opacity(0.25), lineWidth: 1)
-        )
-        .accessibilityLabel("Selected photo thumbnail")
-    }
-
-    private var thumbnailImage: Image? {
-        guard let fileURL = photo.fileURL,
-              let data = try? Data(contentsOf: fileURL) else {
-            return nil
-        }
-
-        #if os(iOS)
-        guard let image = UIImage(data: data) else { return nil }
-        return Image(uiImage: image)
-        #elseif os(macOS)
-        guard let image = NSImage(data: data) else { return nil }
-        return Image(nsImage: image)
-        #else
-        return nil
-        #endif
-    }
 }
 
 struct VoiceRecorderView: View {
