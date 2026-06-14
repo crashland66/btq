@@ -1,0 +1,2836 @@
+import CoreGraphics
+import Foundation
+import ImageIO
+import Testing
+import UniformTypeIdentifiers
+@testable import BTQFieldCaptureApp
+
+@Test func sessionDecodesBackendShape() throws {
+    let json = """
+    {
+      "person": {"person_id": "employee_1", "name": "Field Person"},
+      "token": {"token_id": "token_1", "label": "Pilot"},
+      "sites": [
+        {
+          "site_id": "site_1",
+          "label": "Site One",
+          "capture_guidance": "Look around.",
+          "display_categories": [{"value": "supplies", "label": "Supplies"}]
+        }
+      ],
+      "can_submit": true,
+      "can_review": false,
+      "max_images": 6,
+      "inbox_count": 0
+    }
+    """.data(using: .utf8)!
+
+    let session = try JSONDecoder().decode(BTQSession.self, from: json)
+
+    #expect(session.person.personID == "employee_1")
+    #expect(session.sites.first?.displayCategories.first?.value == "supplies")
+    #expect(session.maxImages == 6)
+}
+
+@Test func mySubmissionsDecodesBackendShape() throws {
+    let json = """
+    {
+      "submissions": [
+        {
+          "capture_id": "cap_1",
+          "site_id": "site_1",
+          "site_name": "Site One",
+          "target_type": "location",
+          "target_id": "site_1",
+          "captured_at": "2026-06-14T10:15:00Z",
+          "photo_count": 1,
+          "has_audio": true,
+          "has_text_note": true,
+          "note_text": "Lobby needs towels",
+          "photo_urls": ["/media/photo_1"],
+          "track": "B",
+          "stage": "reviewed",
+          "retargetable": false,
+          "outcome_label": "No action needed",
+          "per_photo_quality": [
+            {
+              "severity": "degraded",
+              "flags": ["too_dark"],
+              "description": "Dark hallway",
+              "possible_issues": ["lights off"]
+            }
+          ]
+        }
+      ],
+      "quality_summary": {
+        "total_processed": 5,
+        "clear": 4,
+        "flag_counts": {"too_dark": 1}
+      }
+    }
+    """.data(using: .utf8)!
+
+    let response = try JSONDecoder().decode(MySubmissionsResponse.self, from: json)
+
+    #expect(response.submissions.first?.captureID == "cap_1")
+    #expect(response.submissions.first?.siteName == "Site One")
+    #expect(response.submissions.first?.hasAudio == true)
+    #expect(response.submissions.first?.perPhotoQuality.first?.possibleIssues == ["lights off"])
+    #expect(response.qualitySummary?.flagCounts["too_dark"] == 1)
+}
+
+@Test func onboardingParserFindsQueryAndFragmentTokens() {
+    #expect(OnboardingLinkParser.token(from: URL(string: "https://fc.gregstoltz.com/?token=abc")!) == "abc")
+    #expect(OnboardingLinkParser.token(from: URL(string: "https://fc.gregstoltz.com/#token=def")!) == "def")
+    #expect(OnboardingLinkParser.token(from: URL(string: "btq://onboard#ghi")!) == "ghi")
+}
+
+@Test func onboardingParserFindsUniversalLinkPathTokens() {
+    #expect(OnboardingLinkParser.token(from: URL(string: "https://fc.gregstoltz.com/onboard/path-token")!) == "path-token")
+    #expect(OnboardingLinkParser.token(from: URL(string: "https://fc.gregstoltz.com/onboard/fct_%20encoded")!) == "fct_ encoded")
+    #expect(OnboardingLinkParser.token(from: URL(string: "btq://onboard/custom-scheme-token")!) == "custom-scheme-token")
+    #expect(OnboardingLinkParser.token(from: URL(string: "btq-field-capture://onboard/app-scheme-token")!) == "app-scheme-token")
+    #expect(OnboardingLinkParser.token(from: URL(string: "https://fc.gregstoltz.com/app.js")!) == nil)
+    #expect(OnboardingLinkParser.token(from: URL(string: "https://fc.gregstoltz.com/onboard/")!) == nil)
+}
+
+@Test func appMetadataDeclaresCapturePermissionsAndOnboardingLinks() throws {
+    let iOSInfo = try loadProjectPlist("AppResources/iOS/Info.plist")
+    let macInfo = try loadProjectPlist("AppResources/macOS/Info.plist")
+    let iOSEntitlements = try loadProjectPlist("AppResources/iOS/BTQFieldCapture.entitlements")
+    let macEntitlements = try loadProjectPlist("AppResources/BTQFieldCapture.entitlements")
+    let privacyManifest = try loadProjectPlist("AppResources/PrivacyInfo.xcprivacy")
+
+    for info in [iOSInfo, macInfo] {
+        let schemes = urlSchemes(in: info)
+        #expect(schemes.contains("btq-field-capture"))
+        #expect(schemes.contains("btq"))
+        #expect(info["CFBundleExecutable"] as? String == "$(EXECUTABLE_NAME)")
+        #expect(nonEmptyString(info["NSCameraUsageDescription"]))
+        #expect(nonEmptyString(info["NSMicrophoneUsageDescription"]))
+        #expect(nonEmptyString(info["NSPhotoLibraryUsageDescription"]))
+        #expect(nonEmptyString(info["NSUserNotificationsUsageDescription"]))
+    }
+
+    let backgroundModes = try #require(iOSInfo["UIBackgroundModes"] as? [String])
+    #expect(backgroundModes.contains("audio"))
+    #expect(backgroundModes.contains("fetch"))
+    #expect(backgroundModes.contains("processing"))
+
+    let permittedIdentifiers = try #require(iOSInfo["BGTaskSchedulerPermittedIdentifiers"] as? [String])
+    #expect(permittedIdentifiers.contains(BackgroundUploadSupport.sessionIdentifier))
+
+    let backgroundSyncScheduler = try String(
+        contentsOf: packageRoot().appendingPathComponent("Sources/BTQFieldCaptureApp/Services/BackgroundSyncScheduler.swift"),
+        encoding: .utf8
+    )
+    #expect(backgroundSyncScheduler.contains("BGTaskScheduler.shared.register"))
+    #expect(backgroundSyncScheduler.contains("BGProcessingTaskRequest"))
+    #expect(backgroundSyncScheduler.contains("BackgroundUploadSupport.sessionIdentifier"))
+    #expect(backgroundSyncScheduler.contains("requiresNetworkConnectivity = true"))
+
+    let iOSApp = try String(
+        contentsOf: packageRoot().appendingPathComponent("AppTargets/iOS/BTQFieldCaptureiOSApp.swift"),
+        encoding: .utf8
+    )
+    #expect(iOSApp.contains("IOSBackgroundSyncTaskHandler.register"))
+    #expect(iOSApp.contains("IOSBackgroundSyncScheduler()"))
+
+    let associatedDomains = try #require(iOSEntitlements["com.apple.developer.associated-domains"] as? [String])
+    #expect(associatedDomains.contains("applinks:fc.gregstoltz.com"))
+    #expect(macEntitlements["com.apple.security.app-sandbox"] as? Bool == true)
+    #expect(macEntitlements["com.apple.security.network.client"] as? Bool == true)
+    #expect(macEntitlements["com.apple.security.device.camera"] as? Bool == true)
+    #expect(macEntitlements["com.apple.security.device.audio-input"] as? Bool == true)
+    #expect(privacyManifest["NSPrivacyTracking"] as? Bool == false)
+    #expect((privacyManifest["NSPrivacyTrackingDomains"] as? [String])?.isEmpty == true)
+    #expect((privacyManifest["NSPrivacyAccessedAPITypes"] as? [Any])?.isEmpty == true)
+
+    let projectFile = try String(
+        contentsOf: packageRoot().appendingPathComponent("BTQFieldCapture.xcodeproj/project.pbxproj"),
+        encoding: .utf8
+    )
+    let iOSEntitlementReferences = projectFile.components(separatedBy: "CODE_SIGN_ENTITLEMENTS = AppResources/iOS/BTQFieldCapture.entitlements;").count - 1
+    let macEntitlementReferences = projectFile.components(separatedBy: "CODE_SIGN_ENTITLEMENTS = AppResources/BTQFieldCapture.entitlements;").count - 1
+    #expect(iOSEntitlementReferences == 2)
+    #expect(macEntitlementReferences == 2)
+    #expect(projectFile.contains("PrivacyInfo.xcprivacy in Resources"))
+    #expect(projectFile.contains("PRODUCT_BUNDLE_IDENTIFIER = com.btq.fieldcapture;"))
+    #expect(projectFile.contains("PRODUCT_BUNDLE_IDENTIFIER = com.btq.fieldcapture.mac;"))
+    #expect(projectFile.contains("SUPPORTED_PLATFORMS = \"iphoneos iphonesimulator\";"))
+    #expect(projectFile.contains("DEVELOPMENT_TEAM = \"\";"))
+
+    let packageManifest = try String(
+        contentsOf: packageRoot().appendingPathComponent("Package.swift"),
+        encoding: .utf8
+    )
+    #expect(packageManifest.contains("BTQFieldCaptureAPISmoke"))
+    #expect(packageManifest.contains("BTQFieldCaptureLiveAPIVerifier"))
+
+    let simulatorVerifier = try String(
+        contentsOf: packageRoot().appendingPathComponent("script/verify_ios_simulator.sh"),
+        encoding: .utf8
+    )
+    #expect(simulatorVerifier.contains("xcrun simctl bootstatus"))
+    #expect(simulatorVerifier.contains("xcrun simctl install"))
+    #expect(simulatorVerifier.contains("xcrun simctl launch"))
+    #expect(simulatorVerifier.contains("CODE_SIGNING_ALLOWED=NO"))
+    #expect(simulatorVerifier.contains("BTQ_SIMULATOR_FAMILY"))
+    #expect(simulatorVerifier.contains("BTQ_SIMULATOR_NAME"))
+
+    let deviceVerifier = try String(
+        contentsOf: packageRoot().appendingPathComponent("script/verify_ios_device.sh"),
+        encoding: .utf8
+    )
+    #expect(deviceVerifier.contains("BTQ_DEVELOPMENT_TEAM"))
+    #expect(deviceVerifier.contains("BTQ_DEVICE_NAME"))
+    #expect(deviceVerifier.contains("ios_device.env.example"))
+    #expect(deviceVerifier.contains("load_ios_device_env.sh"))
+    #expect(deviceVerifier.contains("-allowProvisioningUpdates"))
+    #expect(deviceVerifier.contains("xcrun devicectl device install app"))
+    #expect(deviceVerifier.contains("xcrun devicectl device process launch"))
+    #expect(deviceVerifier.contains("xcrun devicectl device info details"))
+    #expect(deviceVerifier.contains("developerModeStatus: disabled"))
+    #expect(deviceVerifier.contains("Developer Mode"))
+    #expect(!deviceVerifier.contains("RKGF2ZYLJP"))
+
+    let deviceEnvExample = try String(
+        contentsOf: packageRoot().appendingPathComponent("script/ios_device.env.example"),
+        encoding: .utf8
+    )
+    #expect(deviceEnvExample.contains("BTQ_DEVELOPMENT_TEAM=\"<team id>\""))
+    #expect(deviceEnvExample.contains("BTQ_DEVICE_NAME=\"<device name>\""))
+    #expect(!deviceEnvExample.contains("RKGF2ZYLJP"))
+
+    let gitignore = try String(
+        contentsOf: packageRoot().appendingPathComponent(".gitignore"),
+        encoding: .utf8
+    )
+    #expect(gitignore.contains("script/ios_device.env"))
+
+    let macOSVerifier = try String(
+        contentsOf: packageRoot().appendingPathComponent("script/verify_macos_app.sh"),
+        encoding: .utf8
+    )
+    #expect(macOSVerifier.contains("SCHEME=\"BTQ Capture Mac\""))
+    #expect(macOSVerifier.contains("platform=macOS"))
+    #expect(macOSVerifier.contains("com.btq.fieldcapture.mac"))
+    #expect(macOSVerifier.contains("PrivacyInfo.xcprivacy"))
+    #expect(macOSVerifier.contains("--launch"))
+
+    let mockAPIVerifier = try String(
+        contentsOf: packageRoot().appendingPathComponent("script/verify_mock_api_submit.sh"),
+        encoding: .utf8
+    )
+    #expect(mockAPIVerifier.contains("mock_capture_api_server.py"))
+    #expect(mockAPIVerifier.contains("BTQFieldCaptureAPISmoke"))
+    #expect(mockAPIVerifier.contains("btq-smoke-token"))
+
+    let mockAPIServer = try String(
+        contentsOf: packageRoot().appendingPathComponent("script/mock_capture_api_server.py"),
+        encoding: .utf8
+    )
+    #expect(mockAPIServer.contains("/api/session"))
+    #expect(mockAPIServer.contains("/api/my-submissions"))
+    #expect(mockAPIServer.contains("/api/submit"))
+    #expect(mockAPIServer.contains("metadata_json"))
+    #expect(mockAPIServer.contains("photo_notes_json"))
+
+    let liveAPIVerifier = try String(
+        contentsOf: packageRoot().appendingPathComponent("script/verify_live_api.sh"),
+        encoding: .utf8
+    )
+    #expect(liveAPIVerifier.contains("BTQ_LIVE_TOKEN"))
+    #expect(liveAPIVerifier.contains("BTQ_LIVE_SUBMIT=1"))
+    #expect(liveAPIVerifier.contains("BTQFieldCaptureLiveAPIVerifier"))
+    #expect(liveAPIVerifier.contains("mySubmissions"))
+    #expect(!liveAPIVerifier.contains("RKGF2ZYLJP"))
+
+    let liveAPISource = try String(
+        contentsOf: packageRoot().appendingPathComponent("Sources/BTQFieldCaptureLiveAPIVerifier/main.swift"),
+        encoding: .utf8
+    )
+    #expect(liveAPISource.contains("BTQ_LIVE_TOKEN"))
+    #expect(liveAPISource.contains("BTQ_LIVE_SUBMIT"))
+    #expect(liveAPISource.contains("HTTPCaptureAPIClient"))
+    #expect(liveAPISource.contains("client.mySubmissions"))
+    #expect(liveAPISource.contains("validate(history:"))
+    #expect(liveAPISource.contains("invalidSubmittedHistory"))
+    #expect(!liveAPISource.contains("btq-smoke-token"))
+
+    let universalLinkVerifier = try String(
+        contentsOf: packageRoot().appendingPathComponent("script/verify_universal_links.sh"),
+        encoding: .utf8
+    )
+    #expect(universalLinkVerifier.contains("applinks:fc.gregstoltz.com"))
+    #expect(universalLinkVerifier.contains("apple_app_site_association_payload"))
+    #expect(universalLinkVerifier.contains("/.well-known/apple-app-site-association"))
+    #expect(universalLinkVerifier.contains("BTQ_AASA_BASE_URL"))
+    #expect(universalLinkVerifier.contains(".com.btq.fieldcapture"))
+
+    let fieldPilotReadiness = try String(
+        contentsOf: packageRoot().appendingPathComponent("script/field_pilot_readiness.sh"),
+        encoding: .utf8
+    )
+    #expect(fieldPilotReadiness.contains("swift test"))
+    #expect(fieldPilotReadiness.contains("script/check_release_readiness.sh"))
+    #expect(fieldPilotReadiness.contains("script/verify_live_api.sh --check"))
+    #expect(fieldPilotReadiness.contains("script/verify_universal_links.sh --check"))
+    #expect(fieldPilotReadiness.contains("script/verify_mock_api_submit.sh"))
+    #expect(fieldPilotReadiness.contains("script/verify_macos_app.sh"))
+    #expect(fieldPilotReadiness.contains("script/verify_ios_simulator.sh"))
+    #expect(fieldPilotReadiness.contains("BTQ_SIMULATOR_FAMILY=iPad"))
+    #expect(fieldPilotReadiness.contains("BTQ_LIVE_TOKEN"))
+    #expect(fieldPilotReadiness.contains("script/verify_ios_device.sh"))
+    #expect(fieldPilotReadiness.contains("skipped optional gates"))
+    #expect(!fieldPilotReadiness.contains("sh script/verify_"))
+
+    let releaseReadiness = try String(
+        contentsOf: packageRoot().appendingPathComponent("Release/AppStoreReadiness.md"),
+        encoding: .utf8
+    )
+    #expect(!releaseReadiness.contains("sh script/verify_"))
+    #expect(releaseReadiness.contains("./script/verify_live_api.sh"))
+    #expect(releaseReadiness.contains("./script/verify_universal_links.sh"))
+
+    let captureView = try String(
+        contentsOf: packageRoot().appendingPathComponent("Sources/BTQFieldCaptureApp/Views/CaptureNotebookView.swift"),
+        encoding: .utf8
+    )
+    #expect(captureView.contains("\"capture.status.pending\""))
+    #expect(captureView.contains("\"capture.observation.text\""))
+    #expect(captureView.contains("\"capture.save.local\""))
+    #expect(captureView.contains("Clear pending media"))
+    #expect(captureView.contains("showingClearDraftMediaConfirmation"))
+    #expect(captureView.contains("Clear pending media?"))
+    #expect(captureView.contains("Clear Media\", role: .destructive"))
+    #expect(captureView.contains("unsaved photos and voice memo from the current draft"))
+    #expect(captureView.contains("Photo note for"))
+    #expect(captureView.contains("Starts recording a voice memo."))
+    #expect(captureView.contains(".accessibilityElement(children: .combine)"))
+
+    let queueView = try String(
+        contentsOf: packageRoot().appendingPathComponent("Sources/BTQFieldCaptureApp/Views/QueueView.swift"),
+        encoding: .utf8
+    )
+    #expect(queueView.contains("\"queue.summary.\\(label.lowercased())\""))
+    #expect(queueView.contains("\"queue.capture.\\(capture.captureID)\""))
+    #expect(queueView.contains("\"queue.server.refresh\""))
+    #expect(queueView.contains("\"queue.server.capture.\\(submission.captureID)\""))
+    #expect(queueView.contains("Retry upload for"))
+    #expect(queueView.contains("Moves this failed capture back to pending."))
+    #expect(queueView.contains(".disabled(model.isSyncing || !model.canSubmitCaptures)"))
+    #expect(queueView.contains("accessibilitySummary"))
+    #expect(queueView.contains("Flags:"))
+    #expect(queueView.contains("showingDeleteConfirmation"))
+    #expect(queueView.contains("Delete this local capture?"))
+    #expect(queueView.contains("Delete Capture\", role: .destructive"))
+    #expect(queueView.contains("queued capture and any app-owned photo or voice memo files"))
+
+    let sitesView = try String(
+        contentsOf: packageRoot().appendingPathComponent("Sources/BTQFieldCaptureApp/Views/SitesView.swift"),
+        encoding: .utf8
+    )
+    #expect(sitesView.contains("Select site"))
+    #expect(sitesView.contains("Add \\(site.label) to favorites"))
+    #expect(sitesView.contains("Remove \\(site.label) from favorites"))
+    #expect(sitesView.contains("Favorites appear first in the site list."))
+
+    let settingsView = try String(
+        contentsOf: packageRoot().appendingPathComponent("Sources/BTQFieldCaptureApp/Views/SettingsView.swift"),
+        encoding: .utf8
+    )
+    #expect(settingsView.contains("\"settings.notifications.status\""))
+    #expect(settingsView.contains("\"settings.notifications.enable\""))
+    #expect(settingsView.contains("showingRemoveAccountConfirmation"))
+    #expect(settingsView.contains(".confirmationDialog("))
+    #expect(settingsView.contains("Remove this account?"))
+    #expect(settingsView.contains("Remove Account\", role: .destructive"))
+    #expect(settingsView.contains("cached workspace and stored token"))
+    #expect(settingsView.contains(".textInputAutocapitalization(.never)"))
+    #expect(settingsView.contains(".autocorrectionDisabled()"))
+    #expect(settingsView.contains(".privacySensitive()"))
+    #expect(settingsView.contains("if didConnect"))
+    #expect(settingsView.contains("tokenOrLink = \"\""))
+    #expect(settingsView.contains("connectButtonLabel"))
+    #expect(settingsView.contains("model.isConnecting ? \"Connecting\" : \"Connect\""))
+    #expect(settingsView.contains(".disabled(model.isConnecting || tokenOrLink.trimmingCharacters"))
+    #expect(settingsView.contains(".disabled(model.isSyncing || model.isConnecting)"))
+    #expect(settingsView.contains(".disabled(model.isSyncing || model.isConnecting || account.id == model.account.id)"))
+}
+
+@Test func multipartFieldsMatchSubmitContract() {
+    let capturedAt = Date(timeIntervalSince1970: 1_800_000_000)
+    let capture = LocalCapture(
+        captureID: "cap-unified-test",
+        jobID: "job-test",
+        visitID: nil,
+        siteID: "site_1",
+        siteLabel: "Site One",
+        targetID: "site_1",
+        qcCategory: "supplies",
+        note: "Need towels",
+        capturedAt: capturedAt,
+        exportedAt: capturedAt
+    )
+
+    let fields = Dictionary(uniqueKeysWithValues: MultipartCaptureBuilder.fields(for: capture))
+
+    #expect(fields["job_id"] == "job-test")
+    #expect(fields["capture_id"] == "cap-unified-test")
+    #expect(fields["site"] == "Site One")
+    #expect(fields["site_id"] == "site_1")
+    #expect(fields["target_type"] == "location")
+    #expect(fields["target_id"] == "site_1")
+    #expect(fields["qc_category"] == "supplies")
+    #expect(fields["note"] == "Need towels")
+    #expect(fields["captured_at"] != nil)
+    #expect(fields["exported_at"] != nil)
+}
+
+@Test func multipartFieldsIncludePhotoNotesWhenPresent() throws {
+    let capture = LocalCapture(
+        captureID: "cap-unified-photo-note",
+        jobID: "job-photo-note",
+        visitID: nil,
+        siteID: "site_1",
+        siteLabel: "Site One",
+        targetID: "site_1",
+        qcCategory: "cleaning_quality",
+        note: "Two photos",
+        capturedAt: Date(timeIntervalSince1970: 1_800_000_000),
+        exportedAt: Date(timeIntervalSince1970: 1_800_000_001),
+        photos: [
+            CapturePhoto(filename: "before.jpg", note: "Before cleanup"),
+            CapturePhoto(filename: "after.jpg"),
+        ]
+    )
+
+    let fields = Dictionary(uniqueKeysWithValues: MultipartCaptureBuilder.fields(for: capture))
+    let rawNotes = try #require(fields["photo_notes_json"])
+    let notes = try JSONDecoder().decode([PhotoNoteExpectation].self, from: Data(rawNotes.utf8))
+
+    #expect(notes.count == 1)
+    #expect(notes.first?.index == 0)
+    #expect(notes.first?.filename == "before.jpg")
+    #expect(notes.first?.note == "Before cleanup")
+}
+
+@Test func multipartFieldsIncludeNativeClientMetadata() throws {
+    let visitID = UUID(uuidString: "00000000-0000-0000-0000-000000000123")!
+    let capture = LocalCapture(
+        captureID: "cap-unified-metadata",
+        jobID: "job-metadata",
+        visitID: visitID,
+        siteID: "site_1",
+        siteLabel: "Site One",
+        targetID: "site_1",
+        qcCategory: "general_note",
+        note: "Metadata test",
+        capturedAt: Date(timeIntervalSince1970: 1_800_000_000),
+        exportedAt: Date(timeIntervalSince1970: 1_800_000_001),
+        photos: [CapturePhoto(filename: "photo.jpg")],
+        audio: CaptureAudio(filename: "voice.m4a", durationSeconds: 12)
+    )
+
+    let fields = Dictionary(uniqueKeysWithValues: MultipartCaptureBuilder.fields(for: capture))
+    let rawMetadata = try #require(fields["metadata_json"])
+    let metadata = try JSONDecoder().decode(ClientMetadataExpectation.self, from: Data(rawMetadata.utf8))
+
+    #expect(metadata.schemaVersion == 1)
+    #expect(metadata.client == "btq_native_apple")
+    #expect(metadata.visitID == visitID.uuidString)
+    #expect(metadata.siteID == "site_1")
+    #expect(metadata.assetKind == "photo-voice")
+    #expect(metadata.photoCount == 1)
+    #expect(metadata.hasAudio)
+    #expect(metadata.audioDurationSeconds == 12)
+}
+
+@Test func fileBackedMultipartBodyContainsFieldsAndMedia() throws {
+    let temp = FileManager.default.temporaryDirectory.appendingPathComponent("btq-test-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: temp, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: temp) }
+
+    let photoURL = temp.appendingPathComponent("photo.jpg")
+    let audioURL = temp.appendingPathComponent("voice.m4a")
+    try Data("fake-photo".utf8).write(to: photoURL)
+    try Data("fake-audio".utf8).write(to: audioURL)
+
+    let capture = LocalCapture(
+        captureID: "cap-unified-file-test",
+        jobID: "job-file-test",
+        visitID: nil,
+        siteID: "site_1",
+        siteLabel: "Site One",
+        targetID: "site_1",
+        qcCategory: "cleaning_quality",
+        note: "Photo and voice",
+        capturedAt: Date(timeIntervalSince1970: 1_800_000_000),
+        exportedAt: Date(timeIntervalSince1970: 1_800_000_001),
+        photos: [CapturePhoto(filename: "photo.jpg", fileURL: photoURL)],
+        audio: CaptureAudio(filename: "voice.m4a", fileURL: audioURL, durationSeconds: 4)
+    )
+
+    let bodyURL = temp.appendingPathComponent("body.multipart")
+    try MultipartCaptureBuilder.writeBody(for: capture, boundary: "TestBoundary", to: bodyURL)
+    let body = try String(contentsOf: bodyURL, encoding: .utf8)
+
+    #expect(body.contains("name=\"capture_id\""))
+    #expect(body.contains("cap-unified-file-test"))
+    #expect(body.contains("name=\"photos\"; filename=\"photo.jpg\""))
+    #expect(body.contains("fake-photo"))
+    #expect(body.contains("name=\"audio\"; filename=\"voice.m4a\""))
+    #expect(body.contains("fake-audio"))
+    #expect(body.contains("name=\"audio_duration_seconds\""))
+}
+
+@Test func sqliteStoreRoundTripsOfflineSnapshot() async throws {
+    let temp = FileManager.default.temporaryDirectory.appendingPathComponent("btq-sqlite-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: temp, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: temp) }
+
+    let store = SQLiteFieldCaptureStore(fileURL: temp.appendingPathComponent("field_capture.sqlite3"))
+    let capture = LocalCapture(
+        captureID: "cap-unified-sqlite",
+        jobID: "job-sqlite",
+        visitID: nil,
+        siteID: "site_1",
+        siteLabel: "Site One",
+        targetID: "site_1",
+        qcCategory: "general_note",
+        note: "Stored offline",
+        capturedAt: Date(timeIntervalSince1970: 1_800_000_000),
+        exportedAt: Date(timeIntervalSince1970: 1_800_000_001),
+        retryAfter: Date(timeIntervalSince1970: 1_800_000_010)
+    )
+    let snapshot = FieldCaptureSnapshot(
+        account: .defaultProduction,
+        session: .demo,
+        sites: BTQSession.demo.sites,
+        visits: [Visit(siteID: "site_1", siteLabel: "Site One")],
+        captures: [capture]
+    )
+
+    try await store.save(snapshot)
+    let loaded = try await store.load()
+
+    #expect(loaded.session?.person.name == "Demo Employee")
+    #expect(loaded.sites.count == BTQSession.demo.sites.count)
+    #expect(loaded.visits.count == 1)
+    #expect(loaded.captures.first?.captureID == "cap-unified-sqlite")
+    #expect(loaded.captures.first?.retryAfter != nil)
+}
+
+@Test func localMediaStorePersistsPhotosAndAudioOutsideTemporaryInputs() throws {
+    let temp = FileManager.default.temporaryDirectory.appendingPathComponent("btq-media-\(UUID().uuidString)", isDirectory: true)
+    let source = FileManager.default.temporaryDirectory.appendingPathComponent("btq-media-source-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: temp, withIntermediateDirectories: true)
+    try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
+    defer {
+        try? FileManager.default.removeItem(at: temp)
+        try? FileManager.default.removeItem(at: source)
+    }
+
+    let store = LocalMediaStore(rootDirectory: temp)
+    let photo = try store.savePhotoData(makeTestImageData(type: .png), preferredStem: "Camera Photo", bucketID: "visit/one")
+
+    #expect(photo.fileURL?.path.hasPrefix(temp.path) == true)
+    #expect(photo.filename.hasSuffix(".jpg"))
+    #expect(photo.mimeType == "image/jpeg")
+    #expect(CGImageSourceCreateWithData(try Data(contentsOf: photo.fileURL!) as CFData, nil) != nil)
+
+    let sourceAudioURL = source.appendingPathComponent("voice memo.m4a")
+    try Data("audio-bytes".utf8).write(to: sourceAudioURL)
+    let audio = CaptureAudio(filename: "voice memo.m4a", fileURL: sourceAudioURL, durationSeconds: 7)
+    let persistedAudio = try store.persistAudio(audio, bucketID: "visit/one")
+
+    #expect(persistedAudio.fileURL?.path.hasPrefix(temp.path) == true)
+    #expect(persistedAudio.fileURL != sourceAudioURL)
+    #expect(try Data(contentsOf: persistedAudio.fileURL!) == Data("audio-bytes".utf8))
+}
+
+@Test func localMediaStoreCanRemoveTemporaryAudioAfterCopy() throws {
+    let temp = FileManager.default.temporaryDirectory.appendingPathComponent("btq-audio-cleanup-\(UUID().uuidString)", isDirectory: true)
+    let source = FileManager.default.temporaryDirectory.appendingPathComponent("btq-audio-cleanup-source-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: temp, withIntermediateDirectories: true)
+    try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
+    defer {
+        try? FileManager.default.removeItem(at: temp)
+        try? FileManager.default.removeItem(at: source)
+    }
+
+    let sourceAudioURL = source.appendingPathComponent("voice memo.m4a")
+    try Data("audio-bytes".utf8).write(to: sourceAudioURL)
+    let store = LocalMediaStore(rootDirectory: temp)
+    let audio = CaptureAudio(filename: "voice memo.m4a", fileURL: sourceAudioURL, durationSeconds: 7)
+
+    let persistedAudio = try store.persistAudio(audio, bucketID: "visit-one", removeSourceAfterCopy: true)
+
+    #expect(FileManager.default.fileExists(atPath: sourceAudioURL.path) == false)
+    #expect(persistedAudio.fileURL?.path.hasPrefix(temp.path) == true)
+    #expect(try Data(contentsOf: persistedAudio.fileURL!) == Data("audio-bytes".utf8))
+}
+
+@Test func localMediaStoreDeletesDiscardedPendingManagedMediaOnly() throws {
+    let temp = FileManager.default.temporaryDirectory.appendingPathComponent("btq-pending-media-\(UUID().uuidString)", isDirectory: true)
+    let external = FileManager.default.temporaryDirectory.appendingPathComponent("btq-pending-media-external-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: temp, withIntermediateDirectories: true)
+    try FileManager.default.createDirectory(at: external, withIntermediateDirectories: true)
+    defer {
+        try? FileManager.default.removeItem(at: temp)
+        try? FileManager.default.removeItem(at: external)
+    }
+
+    let store = LocalMediaStore(rootDirectory: temp)
+    let managedPhoto = try store.savePhotoData(makeTestImageData(type: .png), preferredStem: "pending", bucketID: "draft")
+    let managedAudioURL = store.mediaDirectory(bucketID: "draft").appendingPathComponent("voice.m4a")
+    try FileManager.default.createDirectory(at: managedAudioURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+    try Data("managed-audio".utf8).write(to: managedAudioURL)
+    let managedAudio = CaptureAudio(filename: "voice.m4a", fileURL: managedAudioURL, durationSeconds: 3)
+
+    let externalPhotoURL = external.appendingPathComponent("external.jpg")
+    try Data("external-photo".utf8).write(to: externalPhotoURL)
+    let externalAudioURL = external.appendingPathComponent("external.m4a")
+    try Data("external-audio".utf8).write(to: externalAudioURL)
+
+    store.deletePendingMedia(
+        photos: [
+            managedPhoto,
+            CapturePhoto(filename: "external.jpg", fileURL: externalPhotoURL),
+        ],
+        audio: managedAudio
+    )
+    store.deletePendingMedia(
+        photos: [],
+        audio: CaptureAudio(filename: "external.m4a", fileURL: externalAudioURL, durationSeconds: 3)
+    )
+
+    #expect(FileManager.default.fileExists(atPath: managedPhoto.fileURL!.path) == false)
+    #expect(FileManager.default.fileExists(atPath: managedAudioURL.path) == false)
+    #expect(FileManager.default.fileExists(atPath: externalPhotoURL.path) == true)
+    #expect(FileManager.default.fileExists(atPath: externalAudioURL.path) == true)
+}
+
+@Test func imageNormalizerConvertsPngToJpeg() throws {
+    let jpeg = try ImageNormalizer.normalizedData(from: makeTestImageData(type: .png), policy: .fieldCapture)
+    let source = CGImageSourceCreateWithData(jpeg as CFData, nil)
+    let type = source.flatMap { CGImageSourceGetType($0) as String? }
+
+    #expect(type == UTType.jpeg.identifier)
+}
+
+@Test func fieldCaptureImagePolicyUploadsBackendCompatibleJpegs() throws {
+    let policy = ImageUploadPolicy.fieldCapture
+    let temp = FileManager.default.temporaryDirectory.appendingPathComponent("btq-image-policy-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: temp, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: temp) }
+
+    let store = LocalMediaStore(rootDirectory: temp, imagePolicy: policy)
+    let photo = try store.savePhotoData(makeTestImageData(type: .png), preferredStem: "heic-source", bucketID: "visit-one")
+
+    #expect(policy.format == .jpeg)
+    #expect(policy.format.fileExtension == "jpg")
+    #expect(policy.format.mimeType == "image/jpeg")
+    #expect(policy.maxPixelDimension == 2_048)
+    #expect(photo.filename.hasSuffix(".jpg"))
+    #expect(photo.mimeType == "image/jpeg")
+
+    let source = CGImageSourceCreateWithData(try Data(contentsOf: photo.fileURL!) as CFData, nil)
+    let type = source.flatMap { CGImageSourceGetType($0) as String? }
+    #expect(type == UTType.jpeg.identifier)
+}
+
+@Test func voiceRecorderFormatsDurationsForFieldUi() {
+    #expect(VoiceRecorder.formatDuration(0) == "0:00")
+    #expect(VoiceRecorder.formatDuration(65.2) == "1:05")
+}
+
+@Test func voiceRecordingInterruptionPolicyResumesOnlyWhenItPausedActiveRecording() {
+    var policy = VoiceRecordingInterruptionPolicy()
+
+    #expect(policy.interruptionBegan(isRecording: true, isPaused: false) == .pause)
+    #expect(policy.interruptionEnded(shouldResume: true) == .resume)
+
+    #expect(policy.interruptionEnded(shouldResume: true) == .remainPaused)
+}
+
+@Test func voiceRecordingInterruptionPolicyToleratesDuplicateBeganEvents() {
+    var policy = VoiceRecordingInterruptionPolicy()
+
+    #expect(policy.interruptionBegan(isRecording: true, isPaused: false) == .pause)
+    #expect(policy.interruptionBegan(isRecording: true, isPaused: true) == .remainPaused)
+    #expect(policy.interruptionEnded(shouldResume: true) == .resume)
+}
+
+@Test func voiceRecordingInterruptionPolicyKeepsUserPausedRecordingPaused() {
+    var policy = VoiceRecordingInterruptionPolicy()
+
+    #expect(policy.interruptionBegan(isRecording: true, isPaused: true) == .remainPaused)
+    #expect(policy.interruptionEnded(shouldResume: true) == .remainPaused)
+}
+
+@Test func voiceRecordingInterruptionPolicyIgnoresIdleInterruptions() {
+    var policy = VoiceRecordingInterruptionPolicy()
+
+    #expect(policy.interruptionBegan(isRecording: false, isPaused: false) == .ignore)
+    #expect(policy.interruptionEnded(shouldResume: true) == .remainPaused)
+}
+
+@Test @MainActor func voiceRecorderDeniedMicrophonePermissionDoesNotStartRecording() async {
+    let permissionChecker = RecordingVoicePermissionChecker(status: .notDetermined, requestedStatus: .denied)
+    let recorder = VoiceRecorder(permissionChecker: permissionChecker)
+
+    await recorder.refreshPermissionStatus()
+    #expect(recorder.permissionStatus == .notDetermined)
+
+    await recorder.start()
+
+    #expect(recorder.permissionStatus == .denied)
+    #expect(recorder.isRecording == false)
+    #expect(recorder.lastAudio == nil)
+    #expect(recorder.errorMessage == "Microphone access is required for voice notes.")
+    #expect(await permissionChecker.authorizationRequestCount == 1)
+}
+
+@Test func cameraCapturePermissionGateHandlesUnavailableDeniedAndGrantedStates() {
+    #expect(
+        CameraCapturePermissionGate.decision(status: .granted, cameraAvailable: false)
+            == .showMessage(CameraCapturePermissionGate.unavailableMessage)
+    )
+    #expect(
+        CameraCapturePermissionGate.decision(status: .denied, cameraAvailable: true)
+            == .showMessage(CameraCapturePermissionGate.deniedMessage)
+    )
+    #expect(
+        CameraCapturePermissionGate.decision(status: .restricted, cameraAvailable: true)
+            == .showMessage(CameraCapturePermissionGate.restrictedMessage)
+    )
+    #expect(CameraCapturePermissionGate.decision(status: .notDetermined, cameraAvailable: true) == .requestPermission)
+    #expect(CameraCapturePermissionGate.decision(status: .granted, cameraAvailable: true) == .presentCamera)
+}
+
+@Test func voiceRecorderSubscribesToSystemInterruptionsAndKeepsBackgroundPolicyExplicit() throws {
+    let recorderSource = try String(
+        contentsOf: packageRoot().appendingPathComponent("Sources/BTQFieldCaptureApp/Services/VoiceRecorder.swift"),
+        encoding: .utf8
+    )
+    let cameraPermissionSource = try String(
+        contentsOf: packageRoot().appendingPathComponent("Sources/BTQFieldCaptureApp/Services/CameraPermission.swift"),
+        encoding: .utf8
+    )
+    let cameraViewSource = try String(
+        contentsOf: packageRoot().appendingPathComponent("Sources/BTQFieldCaptureApp/Views/CameraCaptureView.swift"),
+        encoding: .utf8
+    )
+    let rootViewSource = try String(
+        contentsOf: packageRoot().appendingPathComponent("Sources/BTQFieldCaptureApp/Views/BTQFieldCaptureRootView.swift"),
+        encoding: .utf8
+    )
+    let captureViewSource = try String(
+        contentsOf: packageRoot().appendingPathComponent("Sources/BTQFieldCaptureApp/Views/CaptureNotebookView.swift"),
+        encoding: .utf8
+    )
+
+    #expect(recorderSource.contains("AVAudioSession.interruptionNotification"))
+    #expect(recorderSource.contains("NotificationCenter.default.notifications"))
+    #expect(recorderSource.contains("handleAudioSessionInterruption(notification)"))
+    #expect(recorderSource.contains("interruptionTask?.cancel()"))
+    #expect(recorderSource.contains("AVAudioApplication.shared.recordPermission"))
+    #expect(recorderSource.contains("AVAudioApplication.requestRecordPermission"))
+    #expect(recorderSource.contains("Microphone access is required for voice notes."))
+    #expect(recorderSource.contains("setCategory(.playAndRecord"))
+    #expect(!captureViewSource.contains("AVAudioSession.interruptionNotification"))
+    #expect(!captureViewSource.contains("handleAudioSessionInterruption(notification)"))
+    #expect(captureViewSource.contains("Task { await recorder.start() }"))
+    let draftValidationRange = try #require(captureViewSource.range(of: "model.validateQuickObservationDraft(photoCount: pendingPhotos.count, hasAudio: hasPendingAudio)"))
+    let pendingAudioRange = try #require(captureViewSource.range(of: "let hadPendingAudio = hasPendingAudio"))
+    let persistAudioRange = try #require(captureViewSource.range(of: "let audio = persistPendingAudio()"))
+    #expect(draftValidationRange.lowerBound < persistAudioRange.lowerBound)
+    #expect(draftValidationRange.lowerBound < pendingAudioRange.lowerBound)
+    #expect(pendingAudioRange.lowerBound < persistAudioRange.lowerBound)
+    #expect(captureViewSource.contains("guard !hadPendingAudio || audio != nil else"))
+    #expect(captureViewSource.contains("Could not save voice memo. Try recording again."))
+    #expect(captureViewSource.contains("private var hasPendingAudio"))
+    #expect(cameraPermissionSource.contains("AVCaptureDevice.authorizationStatus(for: .video)"))
+    #expect(cameraPermissionSource.contains("AVCaptureDevice.requestAccess(for: .video)"))
+    #expect(cameraPermissionSource.contains(CameraCapturePermissionGate.deniedMessage))
+    #expect(cameraPermissionSource.contains(CameraCapturePermissionGate.unavailableMessage))
+    #expect(cameraViewSource.contains("public static var isCameraAvailable"))
+    #expect(cameraViewSource.contains("controller.sourceType = .camera"))
+    #expect(!cameraViewSource.contains("? .camera : .photoLibrary"))
+    #expect(captureViewSource.contains("Task { await openCameraIfAllowed() }"))
+    #expect(captureViewSource.contains("CameraCapturePermissionGate.decision"))
+    #expect(captureViewSource.contains("@State private var cameraDraftContext: DraftContext?"))
+    #expect(captureViewSource.contains("cameraDraftContext = currentDraftContext"))
+    #expect(captureViewSource.contains("guard let context = cameraDraftContext, canAttachMedia(to: context) else { return }"))
+    #expect(captureViewSource.contains("cameraDraftContext = nil"))
+    #expect(captureViewSource.contains("private func canAttachMedia(to context: DraftContext) -> Bool"))
+    #expect(captureViewSource.contains("private func isActiveDraftContext(_ context: DraftContext) -> Bool"))
+    #expect(captureViewSource.contains("context == currentDraftContext && model.canSubmitCaptures"))
+    #expect(captureViewSource.contains("@State private var isSavingDraft = false"))
+    #expect(captureViewSource.contains("private var canEditDraft"))
+    #expect(captureViewSource.contains("model.canSubmitCaptures && !isSavingDraft"))
+    #expect(captureViewSource.contains("Task { await saveCurrentDraft() }"))
+    #expect(captureViewSource.contains("guard !isSavingDraft else { return }"))
+    #expect(captureViewSource.contains("defer { isSavingDraft = false }"))
+    #expect(captureViewSource.contains("let savedPhotos = pendingPhotos"))
+    #expect(captureViewSource.contains("pendingPhotos.removeAll"))
+    #expect(captureViewSource.contains("Draft changed before save completed. Review and save again."))
+    #expect(captureViewSource.contains("Button(\"Clear\")"))
+    #expect(captureViewSource.contains(".disabled(activeVisit == nil || !canEditDraft)"))
+    #expect(captureViewSource.contains("Picker(\"Site\", selection: siteSelection)"))
+    #expect(captureViewSource.contains("Picker(\"Observation\", selection: categorySelection)"))
+    #expect(captureViewSource.contains(".disabled(!canEditDraft)\n\n                    Button"))
+    #expect(captureViewSource.contains(".disabled(!canEditDraft)\n                .accessibilityLabel(\"Clear pending media\")"))
+    #expect(captureViewSource.contains(".disabled(!canEditDraft)\n                            .accessibilityLabel(\"Photo note for"))
+    #expect(captureViewSource.contains("discardPendingMedia()"))
+    #expect(captureViewSource.contains("mediaStore.deletePendingMedia(photos: pendingPhotos, audio: recorder.lastAudio)"))
+    #expect(captureViewSource.contains(".onChange(of: model.selectedSiteID)"))
+    #expect(captureViewSource.contains("discardDraftAfterSiteChange()"))
+    #expect(captureViewSource.contains("model.observationText = \"\""))
+    #expect(captureViewSource.contains("Draft cleared after site change."))
+    #expect(captureViewSource.contains(".onChange(of: model.account.id)"))
+    #expect(captureViewSource.contains("discardDraftAfterAccountChange()"))
+    #expect(captureViewSource.contains("Draft cleared after account change."))
+    #expect(captureViewSource.contains("private struct DraftContext: Equatable"))
+    #expect(captureViewSource.contains("DraftContext(accountID: model.account.id, siteID: model.selectedSiteID)"))
+    #expect(captureViewSource.contains("Task { await loadPhotos(items, context: context) }"))
+    #expect(captureViewSource.contains("guard canAttachMedia(to: context) else { return }"))
+    #expect(captureViewSource.contains("guard canAttachMedia(to: context) else { break }"))
+    #expect(captureViewSource.contains("defer { selectedPhotoItems = [] }"))
+    #expect(captureViewSource.contains(".onChange(of: model.canSubmitCaptures)"))
+    #expect(captureViewSource.contains("discardDraftAfterSubmitPermissionRevoked()"))
+    #expect(captureViewSource.contains(".disabled(!canEditDraft || isAtPhotoLimit)"))
+    #expect(captureViewSource.contains("VoiceRecorderView(recorder: recorder)"))
+    #expect(captureViewSource.contains(".disabled(!canEditDraft)"))
+    #expect(captureViewSource.contains("Draft cleared because this account cannot submit captures."))
+    #expect(rootViewSource.contains("case .background:"))
+    #expect(!rootViewSource.contains("recorder.pause()"))
+    #expect(!rootViewSource.contains("VoiceRecorder().pause()"))
+}
+
+@Test @MainActor func capturesOnlyAttachToActiveVisitForSameSite() async throws {
+    let siteOne = BTQSite(siteID: "site_1", label: "Site One")
+    let siteTwo = BTQSite(siteID: "site_2", label: "Site Two")
+    let snapshot = FieldCaptureSnapshot(
+        account: .defaultProduction,
+        session: BTQSession(
+            person: BTQPerson(personID: "person_field", name: "Field User"),
+            token: BTQToken(tokenID: "token_field", label: "Pilot"),
+            sites: [siteOne, siteTwo],
+            canSubmit: true,
+            canReview: false,
+            maxImages: 6
+        ),
+        sites: [siteOne, siteTwo]
+    )
+    let model = FieldCaptureModel(
+        store: MemoryFieldCaptureStore(snapshot: snapshot),
+        apiClient: MockCaptureAPIClient(),
+        tokenStore: MemoryTokenStore(),
+        notificationScheduler: NoopUploadNotificationScheduler()
+    )
+    await model.load()
+
+    await model.startVisit(site: siteOne)
+    let visitID = try #require(model.activeVisit(forSiteID: siteOne.siteID)?.id)
+    model.selectedSite = siteTwo
+    model.observationText = "Observation at a different site"
+
+    let didSave = await model.saveQuickObservation()
+
+    #expect(didSave)
+    #expect(model.captures.first?.siteID == siteTwo.siteID)
+    #expect(model.captures.first?.visitID == nil)
+    #expect(model.activeVisit(forSiteID: siteOne.siteID)?.id == visitID)
+    #expect(model.activeVisit(forSiteID: siteTwo.siteID) == nil)
+
+    await model.endVisit(site: siteOne)
+
+    let timelineTitles = model.timeline.map(\.title)
+    #expect(timelineTitles.contains("Visit started"))
+    #expect(timelineTitles.contains("Visit ended"))
+}
+
+@Test @MainActor func savingObservationMarksSiteRecentlyUsed() async throws {
+    let oldRecent = Date(timeIntervalSince1970: 1_000)
+    let siteOne = BTQSite(siteID: "site_1", label: "Site One", lastUsedAt: oldRecent)
+    let siteTwo = BTQSite(siteID: "site_2", label: "Site Two")
+    let snapshot = FieldCaptureSnapshot(
+        account: .defaultProduction,
+        session: BTQSession(
+            person: BTQPerson(personID: "person_field", name: "Field User"),
+            token: BTQToken(tokenID: "token_field", label: "Pilot"),
+            sites: [siteOne, siteTwo],
+            canSubmit: true,
+            canReview: false,
+            maxImages: 6
+        ),
+        sites: [siteOne, siteTwo]
+    )
+    let model = FieldCaptureModel(
+        store: MemoryFieldCaptureStore(snapshot: snapshot),
+        apiClient: MockCaptureAPIClient(),
+        tokenStore: MemoryTokenStore(),
+        notificationScheduler: NoopUploadNotificationScheduler()
+    )
+    await model.load()
+    model.selectedSite = siteTwo
+    model.observationText = "New observation"
+
+    let didSave = await model.saveQuickObservation()
+
+    #expect(didSave)
+    #expect(model.sites.first(where: { $0.siteID == siteTwo.siteID })?.lastUsedAt != nil)
+    #expect(model.prioritizedSites.first?.siteID == siteTwo.siteID)
+}
+
+@Test @MainActor func loadRefreshesStoredTokenIntoLiveSession() async {
+    let account = BTQAccount.defaultProduction
+    let liveSession = BTQSession(
+        person: BTQPerson(personID: "person_saved", name: "Saved Token User"),
+        token: BTQToken(tokenID: "token_saved", label: "Saved Token"),
+        sites: [BTQSite(siteID: "site_saved", label: "Saved Site")],
+        canSubmit: true,
+        canReview: false,
+        maxImages: 4
+    )
+    let tokenStore = MemoryTokenStore()
+    let model = FieldCaptureModel(
+        store: MemoryFieldCaptureStore(snapshot: FieldCaptureSnapshot(account: account)),
+        apiClient: SequencedSessionAPIClient(sessions: [liveSession]),
+        tokenStore: tokenStore,
+        notificationScheduler: NoopUploadNotificationScheduler()
+    )
+    await tokenStore.saveToken("stored-token", accountID: account.id)
+
+    await model.load()
+
+    #expect(model.session?.person.name == "Saved Token User")
+    #expect(model.sites.map(\.siteID) == ["site_saved"])
+    #expect(model.selectedSiteID == "site_saved")
+    #expect(model.maxImagesPerCapture == 4)
+    #expect(model.isOfflineMode == false)
+    #expect(model.statusMessage == "Session refreshed")
+}
+
+@Test @MainActor func sessionRefreshPreservesValidSelectedCategory() async {
+    let site = BTQSite(
+        siteID: "site_1",
+        label: "Site One",
+        displayCategories: [
+            BTQDisplayCategory(value: "general_note", label: "General"),
+            BTQDisplayCategory(value: "supplies", label: "Supplies"),
+        ]
+    )
+    let account = BTQAccount.defaultProduction
+    let tokenStore = MemoryTokenStore()
+    let model = FieldCaptureModel(
+        store: MemoryFieldCaptureStore(snapshot: FieldCaptureSnapshot(account: account)),
+        apiClient: SequencedSessionAPIClient(sessions: [
+            BTQSession(
+                person: BTQPerson(personID: "person_field", name: "Field User"),
+                token: BTQToken(tokenID: "token_field", label: "Pilot"),
+                sites: [site],
+                canSubmit: true,
+                canReview: false,
+                maxImages: 6
+            ),
+            BTQSession(
+                person: BTQPerson(personID: "person_field", name: "Field User"),
+                token: BTQToken(tokenID: "token_field", label: "Pilot"),
+                sites: [site],
+                canSubmit: true,
+                canReview: false,
+                maxImages: 6
+            ),
+        ]),
+        tokenStore: tokenStore,
+        notificationScheduler: NoopUploadNotificationScheduler()
+    )
+    await tokenStore.saveToken("stored-token", accountID: account.id)
+
+    await model.load()
+    model.selectedCategoryValue = "supplies"
+    model.observationText = "Need paper towels"
+
+    let didRefresh = await model.refreshSessionIfPossible()
+
+    #expect(didRefresh)
+    #expect(model.selectedSiteID == site.siteID)
+    #expect(model.selectedCategoryValue == "supplies")
+    #expect(model.observationText == "Need paper towels")
+}
+
+@Test @MainActor func startupLoadIsOneShotAndDoesNotResetLiveSelection() async {
+    let siteOne = BTQSite(siteID: "site_1", label: "Site One")
+    let siteTwo = BTQSite(siteID: "site_2", label: "Site Two")
+    let snapshot = FieldCaptureSnapshot(
+        account: .defaultProduction,
+        session: BTQSession(
+            person: BTQPerson(personID: "person_field", name: "Field User"),
+            token: BTQToken(tokenID: "token_field", label: "Pilot"),
+            sites: [siteOne, siteTwo],
+            canSubmit: true,
+            canReview: false,
+            maxImages: 6
+        ),
+        sites: [siteOne, siteTwo]
+    )
+    let model = FieldCaptureModel(
+        store: MemoryFieldCaptureStore(snapshot: snapshot),
+        apiClient: MockCaptureAPIClient(),
+        tokenStore: MemoryTokenStore(),
+        notificationScheduler: NoopUploadNotificationScheduler()
+    )
+
+    await model.load()
+    #expect(model.hasLoaded)
+    model.selectedSite = siteTwo
+    model.observationText = "Live draft that should survive root task restart"
+
+    await model.load()
+
+    #expect(model.selectedSiteID == siteTwo.siteID)
+    #expect(model.observationText == "Live draft that should survive root task restart")
+}
+
+@Test @MainActor func connectivityRecoverySyncsPendingCapture() async {
+    let apiClient = MockCaptureAPIClient()
+    let tokenStore = MemoryTokenStore()
+    let model = FieldCaptureModel(
+        store: MemoryFieldCaptureStore(),
+        apiClient: apiClient,
+        tokenStore: tokenStore,
+        notificationScheduler: NoopUploadNotificationScheduler()
+    )
+    await model.load()
+    await model.handleConnectivityChange(.unsatisfied)
+
+    model.observationText = "Lobby needs towels"
+    await model.saveQuickObservation()
+
+    #expect(model.isOfflineMode)
+    #expect(model.queueSummary.pending == 1)
+
+    await tokenStore.saveToken("token-123", accountID: model.account.id)
+    await model.handleConnectivityChange(.satisfied)
+
+    let submitted = await apiClient.submitted
+    #expect(model.isOfflineMode == false)
+    #expect(model.queueSummary.done == 1)
+    #expect(submitted.count == 1)
+    #expect(submitted.first?.note == "Lobby needs towels")
+}
+
+@Test @MainActor func saveQuickObservationQueuesWithoutUploadWhenAlreadyOffline() async {
+    let apiClient = MockCaptureAPIClient()
+    let tokenStore = MemoryTokenStore()
+    let model = FieldCaptureModel(
+        store: MemoryFieldCaptureStore(),
+        apiClient: apiClient,
+        tokenStore: tokenStore,
+        notificationScheduler: NoopUploadNotificationScheduler()
+    )
+    await model.load()
+    await tokenStore.saveToken("token-123", accountID: model.account.id)
+
+    model.observationText = "Offline field note"
+    let didSave = await model.saveQuickObservation()
+
+    #expect(didSave)
+    #expect(model.isOfflineMode)
+    #expect(model.queueSummary.pending == 1)
+    #expect(model.statusMessage == "Saved offline. Captures will sync when connection returns.")
+    #expect(await apiClient.submitted.isEmpty)
+}
+
+@Test @MainActor func saveQuickObservationRejectsTooManyPhotosForSessionLimit() async {
+    let snapshot = FieldCaptureSnapshot(
+        account: .defaultProduction,
+        session: BTQSession(
+            person: BTQPerson(personID: "person_field", name: "Field User"),
+            token: BTQToken(tokenID: "token_field", label: "Pilot"),
+            sites: [BTQSite(siteID: "site_1", label: "Site One")],
+            canSubmit: true,
+            canReview: false,
+            maxImages: 1
+        ),
+        sites: [BTQSite(siteID: "site_1", label: "Site One")]
+    )
+    let model = FieldCaptureModel(
+        store: MemoryFieldCaptureStore(snapshot: snapshot),
+        apiClient: MockCaptureAPIClient(),
+        tokenStore: MemoryTokenStore(),
+        notificationScheduler: NoopUploadNotificationScheduler()
+    )
+    await model.load()
+
+    let didSave = await model.saveQuickObservation(photos: [
+        CapturePhoto(filename: "one.jpg"),
+        CapturePhoto(filename: "two.jpg"),
+    ])
+
+    #expect(didSave == false)
+    #expect(model.captures.isEmpty)
+    #expect(model.statusMessage == "Limit is 1 photo per capture.")
+}
+
+@Test @MainActor func quickObservationDraftPreflightMatchesSaveValidation() async {
+    let snapshot = FieldCaptureSnapshot(
+        account: .defaultProduction,
+        session: BTQSession(
+            person: BTQPerson(personID: "person_field", name: "Field User"),
+            token: BTQToken(tokenID: "token_field", label: "Pilot"),
+            sites: [BTQSite(siteID: "site_1", label: "Site One")],
+            canSubmit: true,
+            canReview: false,
+            maxImages: 1
+        ),
+        sites: [BTQSite(siteID: "site_1", label: "Site One")]
+    )
+    let model = FieldCaptureModel(
+        store: MemoryFieldCaptureStore(snapshot: snapshot),
+        apiClient: MockCaptureAPIClient(),
+        tokenStore: MemoryTokenStore(),
+        notificationScheduler: NoopUploadNotificationScheduler()
+    )
+    await model.load()
+
+    #expect(model.validateQuickObservationDraft(photoCount: 0, hasAudio: false) == false)
+    #expect(model.statusMessage == "Add a note, photo, or voice memo.")
+    #expect(model.validateQuickObservationDraft(photoCount: 0, hasAudio: true))
+    #expect(model.validateQuickObservationDraft(photoCount: 2, hasAudio: true) == false)
+    #expect(model.statusMessage == "Limit is 1 photo per capture.")
+}
+
+@Test @MainActor func saveQuickObservationRejectsViewOnlyToken() async {
+    let snapshot = FieldCaptureSnapshot(
+        account: .defaultProduction,
+        session: BTQSession(
+            person: BTQPerson(personID: "person_view", name: "View Only"),
+            token: BTQToken(tokenID: "token_view", label: "Viewer"),
+            sites: [BTQSite(siteID: "site_1", label: "Site One")],
+            canSubmit: false,
+            canReview: true,
+            maxImages: 6
+        ),
+        sites: [BTQSite(siteID: "site_1", label: "Site One")]
+    )
+    let model = FieldCaptureModel(
+        store: MemoryFieldCaptureStore(snapshot: snapshot),
+        apiClient: MockCaptureAPIClient(),
+        tokenStore: MemoryTokenStore(),
+        notificationScheduler: NoopUploadNotificationScheduler()
+    )
+    await model.load()
+    model.observationText = "Should not save"
+
+    let didSave = await model.saveQuickObservation()
+
+    #expect(didSave == false)
+    #expect(model.canSubmitCaptures == false)
+    #expect(model.captures.isEmpty)
+    #expect(model.statusMessage == "This account cannot submit captures.")
+}
+
+@Test @MainActor func syncPendingDoesNotUploadForViewOnlyToken() async {
+    let account = BTQAccount.defaultProduction
+    let capture = LocalCapture(
+        captureID: "capture-view-only",
+        jobID: "job-view-only",
+        visitID: nil,
+        siteID: "site_1",
+        siteLabel: "Site One",
+        targetID: "site_1",
+        qcCategory: "general_note",
+        note: "Already pending",
+        capturedAt: Date(timeIntervalSince1970: 1_800_000_000),
+        exportedAt: Date(timeIntervalSince1970: 1_800_000_001)
+    )
+    let snapshot = FieldCaptureSnapshot(
+        account: account,
+        session: BTQSession(
+            person: BTQPerson(personID: "person_view", name: "View Only"),
+            token: BTQToken(tokenID: "token_view", label: "Viewer"),
+            sites: [BTQSite(siteID: "site_1", label: "Site One")],
+            canSubmit: false,
+            canReview: true,
+            maxImages: 6
+        ),
+        sites: [BTQSite(siteID: "site_1", label: "Site One")],
+        captures: [capture]
+    )
+    let apiClient = MockCaptureAPIClient()
+    let tokenStore = MemoryTokenStore()
+    let model = FieldCaptureModel(
+        store: MemoryFieldCaptureStore(snapshot: snapshot),
+        apiClient: apiClient,
+        tokenStore: tokenStore,
+        notificationScheduler: NoopUploadNotificationScheduler()
+    )
+    await model.load()
+    await tokenStore.saveToken("token-view", accountID: account.id)
+
+    await model.syncPending()
+
+    #expect(model.captures.first?.status == .pending)
+    #expect(model.captures.first?.attempts == 0)
+    #expect(model.statusMessage == "This account cannot submit captures.")
+    #expect(await apiClient.submitted.isEmpty)
+}
+
+@Test @MainActor func syncPendingFailsMissingPhotoWithoutNetworkAttempt() async {
+    let account = BTQAccount.defaultProduction
+    let missingPhotoURL = FileManager.default.temporaryDirectory
+        .appendingPathComponent("btq-missing-photo-\(UUID().uuidString).jpg")
+    let capture = LocalCapture(
+        captureID: "capture-missing-photo",
+        jobID: "job-missing-photo",
+        visitID: nil,
+        siteID: "site_1",
+        siteLabel: "Site One",
+        targetID: "site_1",
+        qcCategory: "general_note",
+        note: "Missing photo",
+        capturedAt: Date(timeIntervalSince1970: 1_800_000_000),
+        exportedAt: Date(timeIntervalSince1970: 1_800_000_001),
+        photos: [CapturePhoto(filename: "missing.jpg", fileURL: missingPhotoURL)]
+    )
+    let apiClient = MockCaptureAPIClient()
+    let tokenStore = MemoryTokenStore()
+    let model = FieldCaptureModel(
+        store: MemoryFieldCaptureStore(snapshot: captureSnapshot(account: account, captures: [capture])),
+        apiClient: apiClient,
+        tokenStore: tokenStore,
+        notificationScheduler: NoopUploadNotificationScheduler()
+    )
+    await model.load()
+    await tokenStore.saveToken("token-submit", accountID: account.id)
+
+    await model.syncPending()
+
+    #expect(model.captures.first?.status == .failed)
+    #expect(model.captures.first?.attempts == 0)
+    #expect(model.captures.first?.lastError == "Missing photo file: missing.jpg")
+    #expect(model.statusMessage == "Capture failed: Missing photo file: missing.jpg")
+    #expect(await apiClient.submitted.isEmpty)
+}
+
+@Test @MainActor func syncPendingFailsMissingAudioWithoutNetworkAttempt() async {
+    let account = BTQAccount.defaultProduction
+    let missingAudioURL = FileManager.default.temporaryDirectory
+        .appendingPathComponent("btq-missing-audio-\(UUID().uuidString).m4a")
+    let capture = LocalCapture(
+        captureID: "capture-missing-audio",
+        jobID: "job-missing-audio",
+        visitID: nil,
+        siteID: "site_1",
+        siteLabel: "Site One",
+        targetID: "site_1",
+        qcCategory: "general_note",
+        note: "Missing audio",
+        capturedAt: Date(timeIntervalSince1970: 1_800_000_000),
+        exportedAt: Date(timeIntervalSince1970: 1_800_000_001),
+        audio: CaptureAudio(filename: "missing.m4a", fileURL: missingAudioURL, durationSeconds: 4)
+    )
+    let apiClient = MockCaptureAPIClient()
+    let tokenStore = MemoryTokenStore()
+    let model = FieldCaptureModel(
+        store: MemoryFieldCaptureStore(snapshot: captureSnapshot(account: account, captures: [capture])),
+        apiClient: apiClient,
+        tokenStore: tokenStore,
+        notificationScheduler: NoopUploadNotificationScheduler()
+    )
+    await model.load()
+    await tokenStore.saveToken("token-submit", accountID: account.id)
+
+    await model.syncPending()
+
+    #expect(model.captures.first?.status == .failed)
+    #expect(model.captures.first?.attempts == 0)
+    #expect(model.captures.first?.lastError == "Missing audio file: missing.m4a")
+    #expect(model.statusMessage == "Capture failed: Missing audio file: missing.m4a")
+    #expect(await apiClient.submitted.isEmpty)
+}
+
+@Test @MainActor func syncCompleteNotificationRequiresCleanSuccessfulUpload() async {
+    let account = BTQAccount.defaultProduction
+    let capture = LocalCapture(
+        captureID: "capture-notify-success",
+        jobID: "job-notify-success",
+        visitID: nil,
+        siteID: "site_1",
+        siteLabel: "Site One",
+        targetID: "site_1",
+        qcCategory: "general_note",
+        note: "Notify when clean",
+        capturedAt: Date(timeIntervalSince1970: 1_800_000_000),
+        exportedAt: Date(timeIntervalSince1970: 1_800_000_001)
+    )
+    let notificationScheduler = RecordingUploadNotificationScheduler()
+    let tokenStore = MemoryTokenStore()
+    let model = FieldCaptureModel(
+        store: MemoryFieldCaptureStore(snapshot: captureSnapshot(account: account, captures: [capture])),
+        apiClient: MockCaptureAPIClient(),
+        tokenStore: tokenStore,
+        notificationScheduler: notificationScheduler
+    )
+    await model.load()
+    await tokenStore.saveToken("token-submit", accountID: account.id)
+
+    await model.syncPending()
+
+    #expect(model.queueSummary.done == 1)
+    #expect(await notificationScheduler.syncRecoveredPendingCounts == [0])
+    #expect(await notificationScheduler.failedUploads.isEmpty)
+}
+
+@Test @MainActor func notificationPermissionRequestUpdatesModelStatus() async {
+    let notificationScheduler = RecordingUploadNotificationScheduler(status: .notDetermined, requestedStatus: .authorized)
+    let model = FieldCaptureModel(
+        store: MemoryFieldCaptureStore(),
+        apiClient: MockCaptureAPIClient(),
+        tokenStore: MemoryTokenStore(),
+        notificationScheduler: notificationScheduler
+    )
+
+    await model.refreshNotificationPermissionStatus()
+    #expect(model.notificationPermissionStatus == .notDetermined)
+
+    await model.requestNotificationPermission()
+
+    #expect(model.notificationPermissionStatus == .authorized)
+    #expect(model.statusMessage == "Sync alerts enabled.")
+    #expect(await notificationScheduler.authorizationRequestCount == 1)
+}
+
+@Test @MainActor func syncCompleteNotificationDoesNotFireWhenPendingBecomesFailed() async {
+    let account = BTQAccount.defaultProduction
+    let missingPhotoURL = FileManager.default.temporaryDirectory
+        .appendingPathComponent("btq-notify-missing-photo-\(UUID().uuidString).jpg")
+    let capture = LocalCapture(
+        captureID: "capture-notify-missing-photo",
+        jobID: "job-notify-missing-photo",
+        visitID: nil,
+        siteID: "site_1",
+        siteLabel: "Site One",
+        targetID: "site_1",
+        qcCategory: "general_note",
+        note: "Do not notify complete",
+        capturedAt: Date(timeIntervalSince1970: 1_800_000_000),
+        exportedAt: Date(timeIntervalSince1970: 1_800_000_001),
+        photos: [CapturePhoto(filename: "missing.jpg", fileURL: missingPhotoURL)]
+    )
+    let notificationScheduler = RecordingUploadNotificationScheduler()
+    let tokenStore = MemoryTokenStore()
+    let model = FieldCaptureModel(
+        store: MemoryFieldCaptureStore(snapshot: captureSnapshot(account: account, captures: [capture])),
+        apiClient: MockCaptureAPIClient(),
+        tokenStore: tokenStore,
+        notificationScheduler: notificationScheduler
+    )
+    await model.load()
+    await tokenStore.saveToken("token-submit", accountID: account.id)
+
+    await model.syncPending()
+
+    #expect(model.queueSummary.failed == 1)
+    #expect(await notificationScheduler.syncRecoveredPendingCounts.isEmpty)
+    #expect(await notificationScheduler.failedUploads == [
+        RecordingUploadFailure(captureID: "capture-notify-missing-photo", reason: "Missing photo file: missing.jpg")
+    ])
+}
+
+@Test @MainActor func successfulSyncReleasesManagedMediaFiles() async throws {
+    let mediaRoot = FileManager.default.temporaryDirectory.appendingPathComponent("btq-sync-media-release-\(UUID().uuidString)", isDirectory: true)
+    let externalRoot = FileManager.default.temporaryDirectory.appendingPathComponent("btq-sync-media-external-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: mediaRoot, withIntermediateDirectories: true)
+    try FileManager.default.createDirectory(at: externalRoot, withIntermediateDirectories: true)
+    defer {
+        try? FileManager.default.removeItem(at: mediaRoot)
+        try? FileManager.default.removeItem(at: externalRoot)
+    }
+
+    let account = BTQAccount.defaultProduction
+    let mediaStore = LocalMediaStore(rootDirectory: mediaRoot)
+    let bucketURL = mediaStore.mediaDirectory(bucketID: "capture-release")
+    try FileManager.default.createDirectory(at: bucketURL, withIntermediateDirectories: true)
+    let managedPhotoURL = bucketURL.appendingPathComponent("photo.jpg")
+    let managedAudioURL = bucketURL.appendingPathComponent("voice.m4a")
+    let externalPhotoURL = externalRoot.appendingPathComponent("external.jpg")
+    try Data("managed-photo".utf8).write(to: managedPhotoURL)
+    try Data("managed-audio".utf8).write(to: managedAudioURL)
+    try Data("external-photo".utf8).write(to: externalPhotoURL)
+
+    let capture = LocalCapture(
+        captureID: "capture-release",
+        jobID: "job-release",
+        visitID: nil,
+        siteID: "site_1",
+        siteLabel: "Site One",
+        targetID: "site_1",
+        qcCategory: "general_note",
+        note: "Release media after upload",
+        capturedAt: Date(timeIntervalSince1970: 1_800_000_000),
+        exportedAt: Date(timeIntervalSince1970: 1_800_000_001),
+        photos: [
+            CapturePhoto(filename: "photo.jpg", fileURL: managedPhotoURL),
+            CapturePhoto(filename: "external.jpg", fileURL: externalPhotoURL),
+        ],
+        audio: CaptureAudio(filename: "voice.m4a", fileURL: managedAudioURL, durationSeconds: 4)
+    )
+    let apiClient = MockCaptureAPIClient()
+    let tokenStore = MemoryTokenStore()
+    let model = FieldCaptureModel(
+        store: MemoryFieldCaptureStore(snapshot: captureSnapshot(account: account, captures: [capture])),
+        apiClient: apiClient,
+        tokenStore: tokenStore,
+        notificationScheduler: NoopUploadNotificationScheduler(),
+        mediaStore: mediaStore
+    )
+    await model.load()
+    await tokenStore.saveToken("token-submit", accountID: account.id)
+
+    await model.syncPending()
+
+    let submitted = await apiClient.submitted.first
+    #expect(submitted?.photos.first?.fileURL == managedPhotoURL)
+    #expect(submitted?.audio?.fileURL == managedAudioURL)
+    #expect(model.captures.first?.status == .done)
+    #expect(model.captures.first?.photos[0].fileURL == nil)
+    #expect(model.captures.first?.photos[1].fileURL == externalPhotoURL)
+    #expect(model.captures.first?.audio?.fileURL == nil)
+    #expect(FileManager.default.fileExists(atPath: managedPhotoURL.path) == false)
+    #expect(FileManager.default.fileExists(atPath: managedAudioURL.path) == false)
+    #expect(FileManager.default.fileExists(atPath: externalPhotoURL.path) == true)
+}
+
+@Test @MainActor func syncFailureStoresReadableBackendReason() async {
+    let apiClient = FailingSubmitAPIClient(
+        error: CaptureAPIError.serverStatus(
+            status: 400,
+            code: "too_many_images",
+            message: "At most one photo may be submitted"
+        )
+    )
+    let tokenStore = MemoryTokenStore()
+    let model = FieldCaptureModel(
+        store: MemoryFieldCaptureStore(),
+        apiClient: apiClient,
+        tokenStore: tokenStore,
+        notificationScheduler: NoopUploadNotificationScheduler()
+    )
+    await model.load()
+    await tokenStore.saveToken("token-123", accountID: model.account.id)
+    await model.handleConnectivityChange(.satisfied)
+
+    model.observationText = "Backend rejection test"
+    let didSave = await model.saveQuickObservation()
+
+    #expect(didSave)
+    #expect(model.captures.first?.status == .failed)
+    #expect(model.captures.first?.lastError == "At most one photo may be submitted")
+    #expect(model.statusMessage == "Capture failed: At most one photo may be submitted")
+}
+
+@Test @MainActor func permanentCaptureFailureDoesNotBlockLaterPendingUploads() async {
+    let account = BTQAccount.defaultProduction
+    let rejected = LocalCapture(
+        captureID: "capture-rejected",
+        jobID: "job-rejected",
+        visitID: nil,
+        siteID: "site_1",
+        siteLabel: "Site One",
+        targetID: "site_1",
+        qcCategory: "general_note",
+        note: "Rejected capture",
+        capturedAt: Date(timeIntervalSince1970: 1_800_000_000),
+        exportedAt: Date(timeIntervalSince1970: 1_800_000_001)
+    )
+    let valid = LocalCapture(
+        captureID: "capture-valid",
+        jobID: "job-valid",
+        visitID: nil,
+        siteID: "site_1",
+        siteLabel: "Site One",
+        targetID: "site_1",
+        qcCategory: "general_note",
+        note: "Valid capture",
+        capturedAt: Date(timeIntervalSince1970: 1_800_000_002),
+        exportedAt: Date(timeIntervalSince1970: 1_800_000_003)
+    )
+    let apiClient = FlakySubmitAPIClient(errors: [
+        CaptureAPIError.serverStatus(
+            status: 400,
+            code: "invalid_capture",
+            message: "Capture is not valid for this site"
+        ),
+    ])
+    let tokenStore = MemoryTokenStore()
+    let notificationScheduler = RecordingUploadNotificationScheduler()
+    let model = FieldCaptureModel(
+        store: MemoryFieldCaptureStore(snapshot: captureSnapshot(account: account, captures: [rejected, valid])),
+        apiClient: apiClient,
+        tokenStore: tokenStore,
+        notificationScheduler: notificationScheduler
+    )
+    await model.load()
+    await tokenStore.saveToken("token-submit", accountID: account.id)
+
+    await model.syncPending()
+
+    #expect(model.captures.first(where: { $0.captureID == "capture-rejected" })?.status == .failed)
+    #expect(model.captures.first(where: { $0.captureID == "capture-rejected" })?.lastError == "Capture is not valid for this site")
+    #expect(model.captures.first(where: { $0.captureID == "capture-valid" })?.status == .done)
+    #expect(model.queueSummary.failed == 1)
+    #expect(model.queueSummary.done == 1)
+    #expect(await apiClient.submittedCount == 1)
+    #expect(await apiClient.submittedCaptureIDs == ["capture-valid"])
+    #expect(await notificationScheduler.failedUploads == [
+        RecordingUploadFailure(captureID: "capture-rejected", reason: "Capture is not valid for this site")
+    ])
+    #expect(await notificationScheduler.syncRecoveredPendingCounts.isEmpty)
+}
+
+@Test @MainActor func syncUsesCaptureIDAfterUploadWhenQueueMutatesDuringAwait() async {
+    let account = BTQAccount.defaultProduction
+    let first = LocalCapture(
+        captureID: "capture-first",
+        jobID: "job-first",
+        visitID: nil,
+        siteID: "site_1",
+        siteLabel: "Site One",
+        targetID: "site_1",
+        qcCategory: "general_note",
+        note: "First capture",
+        capturedAt: Date(timeIntervalSince1970: 1_800_000_000),
+        exportedAt: Date(timeIntervalSince1970: 1_800_000_001)
+    )
+    let second = LocalCapture(
+        captureID: "capture-second",
+        jobID: "job-second",
+        visitID: nil,
+        siteID: "site_1",
+        siteLabel: "Site One",
+        targetID: "site_1",
+        qcCategory: "general_note",
+        note: "Second capture",
+        capturedAt: Date(timeIntervalSince1970: 1_800_000_002),
+        exportedAt: Date(timeIntervalSince1970: 1_800_000_003)
+    )
+    let tokenStore = MemoryTokenStore()
+    let modelBox = FieldCaptureModelBox()
+    let apiClient = ReentrantSubmitAPIClient { capture in
+        if capture.captureID == "capture-second" {
+            await modelBox.model?.deleteCapture("capture-first")
+        }
+    }
+    let model = FieldCaptureModel(
+        store: MemoryFieldCaptureStore(snapshot: captureSnapshot(account: account, captures: [first, second])),
+        apiClient: apiClient,
+        tokenStore: tokenStore,
+        notificationScheduler: NoopUploadNotificationScheduler()
+    )
+    modelBox.model = model
+    await model.load()
+    await tokenStore.saveToken("token-submit", accountID: account.id)
+
+    await model.syncPending()
+
+    #expect(model.captures.map(\.captureID) == ["capture-second"])
+    #expect(model.captures.first?.status == .done)
+    #expect(model.statusMessage == "Synced Site One")
+    #expect(await apiClient.submittedCaptureIDs == ["capture-first", "capture-second"])
+}
+
+@Test @MainActor func uploadingCaptureCannotBeDeleted() async {
+    let account = BTQAccount.defaultProduction
+    let uploading = LocalCapture(
+        captureID: "capture-uploading",
+        jobID: "job-uploading",
+        visitID: nil,
+        siteID: "site_1",
+        siteLabel: "Site One",
+        targetID: "site_1",
+        qcCategory: "general_note",
+        note: "Uploading",
+        capturedAt: Date(timeIntervalSince1970: 1_800_000_000),
+        exportedAt: Date(timeIntervalSince1970: 1_800_000_001),
+        status: .uploading
+    )
+    let model = FieldCaptureModel(
+        store: MemoryFieldCaptureStore(snapshot: captureSnapshot(account: account, captures: [uploading])),
+        apiClient: MockCaptureAPIClient(),
+        tokenStore: MemoryTokenStore(),
+        notificationScheduler: NoopUploadNotificationScheduler()
+    )
+    await model.load()
+
+    await model.deleteCapture("capture-uploading")
+
+    #expect(model.captures.map(\.captureID) == ["capture-uploading"])
+    #expect(model.captures.first?.status == .uploading)
+    #expect(model.statusMessage == "Capture is uploading and cannot be removed yet.")
+}
+
+@Test @MainActor func retryFailedCaptureRequeuesAndSyncs() async throws {
+    let apiClient = FlakySubmitAPIClient(errors: [
+        CaptureAPIError.serverStatus(
+            status: 400,
+            code: "temporary_backend_rejection",
+            message: "Operator fixed the site assignment"
+        ),
+    ])
+    let tokenStore = MemoryTokenStore()
+    let model = FieldCaptureModel(
+        store: MemoryFieldCaptureStore(),
+        apiClient: apiClient,
+        tokenStore: tokenStore,
+        notificationScheduler: NoopUploadNotificationScheduler()
+    )
+    await model.load()
+    await tokenStore.saveToken("token-123", accountID: model.account.id)
+    await model.handleConnectivityChange(.satisfied)
+
+    model.observationText = "Retry me"
+    let didSave = await model.saveQuickObservation()
+    let captureID = model.captures.first?.captureID
+
+    #expect(didSave)
+    #expect(model.captures.first?.status == .failed)
+    #expect(model.captures.first?.lastError == "Operator fixed the site assignment")
+
+    await model.retryCapture(try #require(captureID))
+
+    #expect(model.captures.first?.status == .done)
+    #expect(model.captures.first?.lastError == nil)
+    #expect(model.queueSummary.done == 1)
+    #expect(await apiClient.submittedCount == 1)
+}
+
+@Test @MainActor func retryFailedCaptureIsBlockedDuringActiveSync() async {
+    let failed = LocalCapture(
+        captureID: "capture-failed",
+        jobID: "job-failed",
+        visitID: nil,
+        siteID: "site_1",
+        siteLabel: "Site One",
+        targetID: "site_1",
+        qcCategory: "general_note",
+        note: "Retry me later",
+        capturedAt: .now,
+        exportedAt: .now,
+        status: .failed,
+        attempts: 1,
+        lastError: "Previous failure"
+    )
+    let model = FieldCaptureModel(
+        store: MemoryFieldCaptureStore(snapshot: captureSnapshot(captures: [failed])),
+        apiClient: MockCaptureAPIClient(),
+        tokenStore: MemoryTokenStore(),
+        notificationScheduler: NoopUploadNotificationScheduler()
+    )
+    await model.load()
+
+    model.isSyncing = true
+    await model.retryCapture("capture-failed")
+
+    #expect(model.captures.first?.status == .failed)
+    #expect(model.captures.first?.lastError == "Previous failure")
+    #expect(model.captures.first?.retryAfter == nil)
+    #expect(model.statusMessage == "Wait for sync to finish before retrying.")
+}
+
+@Test @MainActor func modelCanConnectAndSwitchBetweenCachedAccounts() async {
+    let apiClient = SequencedSessionAPIClient(sessions: [
+        BTQSession(
+            person: BTQPerson(personID: "person_alpha", name: "Alpha User"),
+            token: BTQToken(tokenID: "token_alpha", label: "Alpha"),
+            sites: [BTQSite(siteID: "site_alpha", label: "Alpha Site")],
+            canSubmit: true,
+            canReview: false,
+            maxImages: 6
+        ),
+        BTQSession(
+            person: BTQPerson(personID: "person_beta", name: "Beta User"),
+            token: BTQToken(tokenID: "token_beta", label: "Beta"),
+            sites: [BTQSite(siteID: "site_beta", label: "Beta Site")],
+            canSubmit: true,
+            canReview: false,
+            maxImages: 6
+        ),
+    ])
+    let model = FieldCaptureModel(
+        store: MemoryFieldCaptureStore(),
+        apiClient: apiClient,
+        tokenStore: MemoryTokenStore(),
+        notificationScheduler: NoopUploadNotificationScheduler()
+    )
+    await model.load()
+
+    let didConnectAlpha = await model.connect(token: "alpha")
+    let alphaAccountID = model.account.id
+
+    #expect(didConnectAlpha)
+    #expect(model.account.personName == "Alpha User")
+    #expect(model.sites.map(\.siteID) == ["site_alpha"])
+
+    model.observationText = "Draft should not cross accounts"
+    let didConnectBeta = await model.connect(token: "beta")
+    let betaAccountID = model.account.id
+
+    #expect(didConnectBeta)
+    #expect(betaAccountID != alphaAccountID)
+    #expect(model.accounts.count == 2)
+    #expect(model.account.personName == "Beta User")
+    #expect(model.sites.map(\.siteID) == ["site_beta"])
+    #expect(model.observationText.isEmpty)
+
+    model.observationText = "Another cross-account draft"
+    await model.switchAccount(alphaAccountID)
+
+    #expect(model.account.id == alphaAccountID)
+    #expect(model.account.personName == "Alpha User")
+    #expect(model.sites.map(\.siteID) == ["site_alpha"])
+    #expect(model.observationText.isEmpty)
+}
+
+@Test @MainActor func invalidConnectReturnsFalseWithoutReplacingCachedSession() async {
+    let apiClient = OneGoodSessionThenUnauthorizedAPIClient(session:
+        BTQSession(
+            person: BTQPerson(personID: "person_alpha", name: "Alpha User"),
+            token: BTQToken(tokenID: "token_alpha", label: "Alpha"),
+            sites: [BTQSite(siteID: "site_alpha", label: "Alpha Site")],
+            canSubmit: true,
+            canReview: false,
+            maxImages: 6
+        )
+    )
+    let model = FieldCaptureModel(
+        store: MemoryFieldCaptureStore(),
+        apiClient: apiClient,
+        tokenStore: MemoryTokenStore(),
+        notificationScheduler: NoopUploadNotificationScheduler()
+    )
+    await model.load()
+
+    let didConnect = await model.connect(token: "alpha")
+    let didReconnect = await model.connect(token: "invalid")
+    let didParseBadLink = await model.connectWithOnboardingURL(URL(string: "https://fc.gregstoltz.com/onboard/")!)
+
+    #expect(didConnect)
+    #expect(!didReconnect)
+    #expect(!didParseBadLink)
+    #expect(model.account.personName == "Alpha User")
+    #expect(model.sites.map(\.siteID) == ["site_alpha"])
+    #expect(model.statusMessage == "No token found in link.")
+}
+
+@Test @MainActor func connectReturnsFalseWhileAlreadyConnectingWithoutCallingAPI() async {
+    let apiClient = RecordingSessionAPIClient()
+    let model = FieldCaptureModel(
+        store: MemoryFieldCaptureStore(),
+        apiClient: apiClient,
+        tokenStore: MemoryTokenStore(),
+        notificationScheduler: NoopUploadNotificationScheduler()
+    )
+    await model.load()
+
+    model.isConnecting = true
+    let didConnect = await model.connect(token: "token-123")
+
+    #expect(!didConnect)
+    #expect(model.isConnecting)
+    #expect(await apiClient.requestedTokens.isEmpty)
+}
+
+@Test @MainActor func connectCanProceedWhileStartupLoadIsActive() async {
+    let apiClient = RecordingSessionAPIClient()
+    let model = FieldCaptureModel(
+        store: MemoryFieldCaptureStore(),
+        apiClient: apiClient,
+        tokenStore: MemoryTokenStore(),
+        notificationScheduler: NoopUploadNotificationScheduler()
+    )
+    await model.load()
+
+    model.isLoading = true
+    let didConnect = await model.connect(token: "token-123")
+
+    #expect(didConnect)
+    #expect(model.isLoading)
+    #expect(!model.isConnecting)
+    #expect(await apiClient.requestedTokens == ["token-123"])
+}
+
+@Test @MainActor func removingActiveAccountDeletesTokenAndSwitchesToFallbackAccount() async {
+    let apiClient = SequencedSessionAPIClient(sessions: [
+        BTQSession(
+            person: BTQPerson(personID: "person_alpha", name: "Alpha User"),
+            token: BTQToken(tokenID: "token_alpha", label: "Alpha"),
+            sites: [BTQSite(siteID: "site_alpha", label: "Alpha Site")],
+            canSubmit: true,
+            canReview: false,
+            maxImages: 6
+        ),
+        BTQSession(
+            person: BTQPerson(personID: "person_beta", name: "Beta User"),
+            token: BTQToken(tokenID: "token_beta", label: "Beta"),
+            sites: [BTQSite(siteID: "site_beta", label: "Beta Site")],
+            canSubmit: true,
+            canReview: false,
+            maxImages: 6
+        ),
+    ])
+    let tokenStore = MemoryTokenStore()
+    let model = FieldCaptureModel(
+        store: MemoryFieldCaptureStore(),
+        apiClient: apiClient,
+        tokenStore: tokenStore,
+        notificationScheduler: NoopUploadNotificationScheduler()
+    )
+    await model.load()
+    await model.connect(token: "alpha-token")
+    let alphaAccountID = model.account.id
+    await model.connect(token: "beta-token")
+    let betaAccountID = model.account.id
+
+    model.observationText = "Remove should clear this draft"
+    await model.removeAccount(betaAccountID)
+
+    #expect(model.account.id == alphaAccountID)
+    #expect(model.accounts.count == 1)
+    #expect(model.account.personName == "Alpha User")
+    #expect(model.observationText.isEmpty)
+    #expect(await tokenStore.loadToken(accountID: betaAccountID) == nil)
+    #expect(await tokenStore.loadToken(accountID: alphaAccountID) == "alpha-token")
+}
+
+@Test @MainActor func accountSwitchAndRemovalAreBlockedDuringSync() async {
+    let apiClient = SequencedSessionAPIClient(sessions: [
+        BTQSession(
+            person: BTQPerson(personID: "person_alpha", name: "Alpha User"),
+            token: BTQToken(tokenID: "token_alpha", label: "Alpha"),
+            sites: [BTQSite(siteID: "site_alpha", label: "Alpha Site")],
+            canSubmit: true,
+            canReview: false,
+            maxImages: 6
+        ),
+        BTQSession(
+            person: BTQPerson(personID: "person_beta", name: "Beta User"),
+            token: BTQToken(tokenID: "token_beta", label: "Beta"),
+            sites: [BTQSite(siteID: "site_beta", label: "Beta Site")],
+            canSubmit: true,
+            canReview: false,
+            maxImages: 6
+        ),
+    ])
+    let model = FieldCaptureModel(
+        store: MemoryFieldCaptureStore(),
+        apiClient: apiClient,
+        tokenStore: MemoryTokenStore(),
+        notificationScheduler: NoopUploadNotificationScheduler()
+    )
+    await model.load()
+    await model.connect(token: "alpha-token")
+    let alphaAccountID = model.account.id
+    await model.connect(token: "beta-token")
+    let betaAccountID = model.account.id
+
+    model.isSyncing = true
+    await model.switchAccount(alphaAccountID)
+
+    #expect(model.account.id == betaAccountID)
+    #expect(model.statusMessage == "Wait for sync to finish before switching accounts.")
+
+    await model.removeAccount(betaAccountID)
+
+    #expect(model.account.id == betaAccountID)
+    #expect(model.accounts.count == 2)
+    #expect(model.statusMessage == "Wait for sync to finish before removing accounts.")
+}
+
+@Test @MainActor func accountSwitchAndRemovalAreBlockedDuringConnect() async {
+    let apiClient = SequencedSessionAPIClient(sessions: [
+        BTQSession(
+            person: BTQPerson(personID: "person_alpha", name: "Alpha User"),
+            token: BTQToken(tokenID: "token_alpha", label: "Alpha"),
+            sites: [BTQSite(siteID: "site_alpha", label: "Alpha Site")],
+            canSubmit: true,
+            canReview: false,
+            maxImages: 6
+        ),
+        BTQSession(
+            person: BTQPerson(personID: "person_beta", name: "Beta User"),
+            token: BTQToken(tokenID: "token_beta", label: "Beta"),
+            sites: [BTQSite(siteID: "site_beta", label: "Beta Site")],
+            canSubmit: true,
+            canReview: false,
+            maxImages: 6
+        ),
+    ])
+    let model = FieldCaptureModel(
+        store: MemoryFieldCaptureStore(),
+        apiClient: apiClient,
+        tokenStore: MemoryTokenStore(),
+        notificationScheduler: NoopUploadNotificationScheduler()
+    )
+    await model.load()
+    await model.connect(token: "alpha-token")
+    let alphaAccountID = model.account.id
+    await model.connect(token: "beta-token")
+    let betaAccountID = model.account.id
+
+    model.isConnecting = true
+    await model.switchAccount(alphaAccountID)
+
+    #expect(model.account.id == betaAccountID)
+    #expect(model.statusMessage == "Wait for connect to finish before switching accounts.")
+
+    await model.removeAccount(betaAccountID)
+
+    #expect(model.account.id == betaAccountID)
+    #expect(model.accounts.count == 2)
+    #expect(model.statusMessage == "Wait for connect to finish before removing accounts.")
+}
+
+@Test @MainActor func removingAccountDeletesOnlyManagedMediaFiles() async throws {
+    let mediaRoot = FileManager.default.temporaryDirectory.appendingPathComponent("btq-managed-media-\(UUID().uuidString)", isDirectory: true)
+    let externalRoot = FileManager.default.temporaryDirectory.appendingPathComponent("btq-external-media-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: mediaRoot, withIntermediateDirectories: true)
+    try FileManager.default.createDirectory(at: externalRoot, withIntermediateDirectories: true)
+    defer {
+        try? FileManager.default.removeItem(at: mediaRoot)
+        try? FileManager.default.removeItem(at: externalRoot)
+    }
+
+    let mediaStore = LocalMediaStore(rootDirectory: mediaRoot)
+    let bucketURL = mediaStore.mediaDirectory(bucketID: "capture-one")
+    try FileManager.default.createDirectory(at: bucketURL, withIntermediateDirectories: true)
+    let managedPhotoURL = bucketURL.appendingPathComponent("photo.jpg")
+    let managedAudioURL = bucketURL.appendingPathComponent("voice.m4a")
+    let externalPhotoURL = externalRoot.appendingPathComponent("external-photo.jpg")
+    try Data("managed-photo".utf8).write(to: managedPhotoURL)
+    try Data("managed-audio".utf8).write(to: managedAudioURL)
+    try Data("external-photo".utf8).write(to: externalPhotoURL)
+
+    let account = BTQAccount(
+        label: "Field User",
+        baseURL: URL(string: "https://example.test")!,
+        tokenID: "token_media",
+        personID: "person_media",
+        personName: "Field User"
+    )
+    let capture = LocalCapture(
+        captureID: "capture-one",
+        jobID: "job-one",
+        visitID: nil,
+        siteID: "site_1",
+        siteLabel: "Site One",
+        targetID: "site_1",
+        qcCategory: "general_note",
+        note: "Remove me",
+        capturedAt: Date(timeIntervalSince1970: 1_800_000_000),
+        exportedAt: Date(timeIntervalSince1970: 1_800_000_001),
+        photos: [
+            CapturePhoto(filename: "photo.jpg", fileURL: managedPhotoURL),
+            CapturePhoto(filename: "external-photo.jpg", fileURL: externalPhotoURL),
+        ],
+        audio: CaptureAudio(filename: "voice.m4a", fileURL: managedAudioURL, durationSeconds: 5)
+    )
+    let snapshot = FieldCaptureSnapshot(
+        account: account,
+        session: BTQSession(
+            person: BTQPerson(personID: "person_media", name: "Field User"),
+            token: BTQToken(tokenID: "token_media", label: "Field"),
+            sites: [BTQSite(siteID: "site_1", label: "Site One")],
+            canSubmit: true,
+            canReview: false,
+            maxImages: 6
+        ),
+        sites: [BTQSite(siteID: "site_1", label: "Site One")],
+        captures: [capture]
+    )
+    let tokenStore = MemoryTokenStore()
+    let model = FieldCaptureModel(
+        store: MemoryFieldCaptureStore(snapshot: snapshot),
+        apiClient: MockCaptureAPIClient(),
+        tokenStore: tokenStore,
+        notificationScheduler: NoopUploadNotificationScheduler(),
+        mediaStore: mediaStore
+    )
+    await tokenStore.saveToken("token-123", accountID: account.id)
+    await model.load()
+
+    await model.removeAccount(account.id)
+
+    #expect(FileManager.default.fileExists(atPath: managedPhotoURL.path) == false)
+    #expect(FileManager.default.fileExists(atPath: managedAudioURL.path) == false)
+    #expect(FileManager.default.fileExists(atPath: externalPhotoURL.path) == true)
+    #expect(await tokenStore.loadToken(accountID: account.id) == nil)
+    #expect(model.accounts.count == 1)
+}
+
+@Test @MainActor func deletingCaptureRemovesManagedMediaOnly() async throws {
+    let mediaRoot = FileManager.default.temporaryDirectory.appendingPathComponent("btq-delete-capture-media-\(UUID().uuidString)", isDirectory: true)
+    let externalRoot = FileManager.default.temporaryDirectory.appendingPathComponent("btq-delete-capture-external-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: mediaRoot, withIntermediateDirectories: true)
+    try FileManager.default.createDirectory(at: externalRoot, withIntermediateDirectories: true)
+    defer {
+        try? FileManager.default.removeItem(at: mediaRoot)
+        try? FileManager.default.removeItem(at: externalRoot)
+    }
+
+    let mediaStore = LocalMediaStore(rootDirectory: mediaRoot)
+    let bucketURL = mediaStore.mediaDirectory(bucketID: "capture-delete")
+    try FileManager.default.createDirectory(at: bucketURL, withIntermediateDirectories: true)
+    let managedPhotoURL = bucketURL.appendingPathComponent("photo.jpg")
+    let managedAudioURL = bucketURL.appendingPathComponent("voice.m4a")
+    let externalPhotoURL = externalRoot.appendingPathComponent("external-photo.jpg")
+    try Data("managed-photo".utf8).write(to: managedPhotoURL)
+    try Data("managed-audio".utf8).write(to: managedAudioURL)
+    try Data("external-photo".utf8).write(to: externalPhotoURL)
+
+    let capture = LocalCapture(
+        captureID: "capture-delete",
+        jobID: "job-delete",
+        visitID: nil,
+        siteID: "site_1",
+        siteLabel: "Site One",
+        targetID: "site_1",
+        qcCategory: "general_note",
+        note: "Delete me",
+        capturedAt: Date(timeIntervalSince1970: 1_800_000_000),
+        exportedAt: Date(timeIntervalSince1970: 1_800_000_001),
+        status: .failed,
+        photos: [
+            CapturePhoto(filename: "photo.jpg", fileURL: managedPhotoURL),
+            CapturePhoto(filename: "external-photo.jpg", fileURL: externalPhotoURL),
+        ],
+        audio: CaptureAudio(filename: "voice.m4a", fileURL: managedAudioURL, durationSeconds: 5)
+    )
+    let snapshot = FieldCaptureSnapshot(
+        account: .defaultProduction,
+        session: .demo,
+        sites: BTQSession.demo.sites,
+        captures: [capture]
+    )
+    let model = FieldCaptureModel(
+        store: MemoryFieldCaptureStore(snapshot: snapshot),
+        apiClient: MockCaptureAPIClient(),
+        tokenStore: MemoryTokenStore(),
+        notificationScheduler: NoopUploadNotificationScheduler(),
+        mediaStore: mediaStore
+    )
+    await model.load()
+
+    await model.deleteCapture(capture.captureID)
+
+    #expect(model.captures.isEmpty)
+    #expect(model.queueSummary.failed == 0)
+    #expect(model.statusMessage == "Capture removed")
+    #expect(FileManager.default.fileExists(atPath: managedPhotoURL.path) == false)
+    #expect(FileManager.default.fileExists(atPath: managedAudioURL.path) == false)
+    #expect(FileManager.default.fileExists(atPath: externalPhotoURL.path) == true)
+}
+
+@Test @MainActor func refreshSessionUpdatesCachedAssignedSites() async {
+    let apiClient = SequencedSessionAPIClient(sessions: [
+        BTQSession(
+            person: BTQPerson(personID: "person_field", name: "Field User"),
+            token: BTQToken(tokenID: "token_field", label: "Pilot"),
+            sites: [BTQSite(siteID: "old_site", label: "Old Site")],
+            canSubmit: true,
+            canReview: false,
+            maxImages: 6
+        ),
+        BTQSession(
+            person: BTQPerson(personID: "person_field", name: "Field User"),
+            token: BTQToken(tokenID: "token_field", label: "Pilot"),
+            sites: [
+                BTQSite(siteID: "new_site", label: "New Site"),
+                BTQSite(siteID: "supply_site", label: "Supply Site"),
+            ],
+            canSubmit: true,
+            canReview: false,
+            maxImages: 4
+        ),
+    ])
+    let model = FieldCaptureModel(
+        store: MemoryFieldCaptureStore(),
+        apiClient: apiClient,
+        tokenStore: MemoryTokenStore(),
+        notificationScheduler: NoopUploadNotificationScheduler()
+    )
+    await model.load()
+    await model.connect(token: "token-123")
+
+    #expect(model.sites.map(\.siteID) == ["old_site"])
+    #expect(model.selectedSiteID == "old_site")
+    #expect(model.session?.maxImages == 6)
+
+    await model.refreshSessionIfPossible()
+
+    #expect(model.sites.map(\.siteID) == ["new_site", "supply_site"])
+    #expect(model.selectedSiteID == "new_site")
+    #expect(model.selectedSite?.siteID == "new_site")
+    #expect(model.sites.contains { $0.siteID == model.selectedSiteID })
+    #expect(model.session?.maxImages == 4)
+    #expect(model.statusMessage == "Session refreshed")
+}
+
+@Test @MainActor func refreshSubmittedHistoryLoadsServerSubmissions() async {
+    let apiClient = SubmittedHistoryAPIClient(
+        response: MySubmissionsResponse(
+            submissions: [
+                SubmittedCapture(
+                    captureID: "cap-history-1",
+                    siteID: "site_1",
+                    siteName: "Site One",
+                    targetID: "site_1",
+                    capturedAt: "2026-06-14T10:15:00Z",
+                    photoCount: 1,
+                    hasAudio: true,
+                    hasTextNote: true,
+                    noteText: "Lobby needs towels",
+                    track: "B",
+                    stage: "reviewed",
+                    outcomeLabel: "No action needed",
+                    perPhotoQuality: [
+                        SubmittedPhotoQuality(
+                            severity: "degraded",
+                            flags: ["too_dark"],
+                            description: "Dark hallway",
+                            possibleIssues: ["lights off"]
+                        )
+                    ]
+                )
+            ],
+            qualitySummary: SubmissionQualitySummary(totalProcessed: 5, clear: 4, flagCounts: ["too_dark": 1])
+        )
+    )
+    let tokenStore = MemoryTokenStore()
+    let model = FieldCaptureModel(
+        store: MemoryFieldCaptureStore(),
+        apiClient: apiClient,
+        tokenStore: tokenStore,
+        notificationScheduler: NoopUploadNotificationScheduler()
+    )
+    await tokenStore.saveToken("token-history", accountID: model.account.id)
+
+    await model.refreshSubmittedHistory()
+
+    #expect(model.submittedCaptures.map(\.captureID) == ["cap-history-1"])
+    #expect(model.submissionQualitySummary?.clear == 4)
+    #expect(model.statusMessage == "Submitted history refreshed.")
+    #expect(await apiClient.requestedTokens == ["token-history"])
+}
+
+@Test @MainActor func submittedHistoryRefreshDoesNotCrossAccountSwitch() async {
+    let alphaID = UUID(uuidString: "00000000-0000-0000-0000-0000000000a1")!
+    let betaID = UUID(uuidString: "00000000-0000-0000-0000-0000000000b2")!
+    let alphaAccount = BTQAccount(
+        id: alphaID,
+        label: "Alpha",
+        baseURL: URL(string: "https://alpha.example.test")!,
+        tokenID: "token_alpha",
+        personName: "Alpha User"
+    )
+    let betaAccount = BTQAccount(
+        id: betaID,
+        label: "Beta",
+        baseURL: URL(string: "https://beta.example.test")!,
+        tokenID: "token_beta",
+        personName: "Beta User"
+    )
+    let alphaSite = BTQSite(siteID: "site_alpha", label: "Alpha Site")
+    let betaSite = BTQSite(siteID: "site_beta", label: "Beta Site")
+    let response = MySubmissionsResponse(
+        submissions: [
+            SubmittedCapture(
+                captureID: "cap-alpha-history",
+                siteID: alphaSite.siteID,
+                siteName: alphaSite.label,
+                targetID: alphaSite.siteID,
+                capturedAt: "2026-06-14T10:15:00Z",
+                photoCount: 0,
+                hasAudio: false,
+                hasTextNote: true,
+                noteText: "Alpha-only history",
+                track: "A",
+                stage: "processed"
+            )
+        ],
+        qualitySummary: SubmissionQualitySummary(totalProcessed: 1, clear: 1, flagCounts: [:])
+    )
+    let modelBox = FieldCaptureModelBox()
+    let apiClient = ReentrantSubmittedHistoryAPIClient(response: response) {
+        await modelBox.model?.switchAccount(betaID)
+    }
+    let tokenStore = MemoryTokenStore()
+    let model = FieldCaptureModel(
+        store: MemoryFieldCaptureStore(
+            snapshot: FieldCaptureSnapshot(
+                account: alphaAccount,
+                activeAccountID: alphaID,
+                accountWorkspaces: [
+                    BTQAccountWorkspace(account: alphaAccount, session: nil, sites: [alphaSite]),
+                    BTQAccountWorkspace(account: betaAccount, session: nil, sites: [betaSite]),
+                ]
+            )
+        ),
+        apiClient: apiClient,
+        tokenStore: tokenStore,
+        notificationScheduler: NoopUploadNotificationScheduler()
+    )
+    modelBox.model = model
+    await model.load()
+    await tokenStore.saveToken("alpha-token", accountID: alphaID)
+
+    await model.refreshSubmittedHistory()
+
+    #expect(model.account.id == betaID)
+    #expect(model.submittedCaptures.isEmpty)
+    #expect(model.submissionQualitySummary == nil)
+    #expect(model.statusMessage == "Switched to Beta User")
+    #expect(!model.isRefreshingSubmittedHistory)
+    #expect(await apiClient.requestedTokens == ["alpha-token"])
+}
+
+@Test func apiClientUsesSessionAndSubmitContracts() async throws {
+    let temp = FileManager.default.temporaryDirectory.appendingPathComponent("btq-api-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: temp, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: temp) }
+
+    let photoURL = temp.appendingPathComponent("photo.jpg")
+    try makeTestImageData(type: .jpeg).write(to: photoURL)
+    let recorder = RequestRecorder()
+    let client = HTTPCaptureAPIClient(session: makeStubbedSession(recorder: recorder), uploadBodyDirectory: temp)
+
+    let session = try await client.session(baseURL: URL(string: "https://example.test")!, token: "token-123")
+    let sessionRequest = await recorder.requests.first
+
+    #expect(session.person.personID == "employee_1")
+    #expect(sessionRequest?.url?.path == "/api/session")
+    #expect(sessionRequest?.value(forHTTPHeaderField: "Authorization") == "Bearer token-123")
+    #expect(sessionRequest?.value(forHTTPHeaderField: "Accept") == "application/json")
+
+    let history = try await client.mySubmissions(baseURL: URL(string: "https://example.test")!, token: "token-history")
+    let historyRequest = await recorder.requests.last
+
+    #expect(history.submissions.first?.captureID == "cap-history-api")
+    #expect(historyRequest?.url?.path == "/api/my-submissions")
+    #expect(historyRequest?.httpMethod == "GET")
+    #expect(historyRequest?.value(forHTTPHeaderField: "Authorization") == "Bearer token-history")
+    #expect(historyRequest?.value(forHTTPHeaderField: "Accept") == "application/json")
+
+    let capture = LocalCapture(
+        captureID: "cap-unified-api",
+        jobID: "job-api",
+        visitID: nil,
+        siteID: "site_1",
+        siteLabel: "Site One",
+        targetID: "site_1",
+        qcCategory: "supplies",
+        note: "API test",
+        capturedAt: Date(timeIntervalSince1970: 1_800_000_000),
+        exportedAt: Date(timeIntervalSince1970: 1_800_000_001),
+        photos: [CapturePhoto(filename: "photo.jpg", fileURL: photoURL)]
+    )
+
+    let response = try await client.submit(capture: capture, baseURL: URL(string: "https://example.test")!, token: "token-456")
+    let request = await recorder.requests.last
+
+    #expect(response.captureID == "cap-unified-api")
+    #expect(request?.url?.path == "/api/submit")
+    #expect(request?.httpMethod == "POST")
+    #expect(request?.value(forHTTPHeaderField: "Authorization") == "Bearer token-456")
+    #expect(request?.value(forHTTPHeaderField: "Content-Type")?.contains("multipart/form-data") == true)
+
+    let errorClient = HTTPCaptureAPIClient(
+        session: makeBackendErrorSession(
+            status: 400,
+            body: #"{"error":"too_many_images","message":"At most one photo may be submitted"}"#
+        ),
+        uploadBodyDirectory: temp
+    )
+    do {
+        _ = try await errorClient.submit(capture: capture, baseURL: URL(string: "https://example.test")!, token: "token-456")
+        Issue.record("Expected backend error payload to throw")
+    } catch let error as CaptureAPIError {
+        #expect(error == .serverStatus(status: 400, code: "too_many_images", message: "At most one photo may be submitted"))
+        #expect(error.description == "At most one photo may be submitted")
+    }
+}
+
+@Test func apiClientDefaultsToConnectivityAwareForegroundUploadSession() {
+    let client = HTTPCaptureAPIClient()
+    let configuration = client.session.configuration
+
+    #expect(configuration.waitsForConnectivity)
+    #expect(configuration.allowsExpensiveNetworkAccess)
+    #expect(configuration.allowsConstrainedNetworkAccess)
+    #expect(configuration.httpMaximumConnectionsPerHost == 2)
+    #expect(configuration.identifier == nil)
+}
+
+private enum TestImageType {
+    case jpeg
+    case png
+
+    var identifier: String {
+        switch self {
+        case .jpeg: UTType.jpeg.identifier
+        case .png: UTType.png.identifier
+        }
+    }
+}
+
+private struct PhotoNoteExpectation: Decodable {
+    var index: Int
+    var filename: String
+    var note: String
+}
+
+private struct ClientMetadataExpectation: Decodable {
+    var schemaVersion: Int
+    var client: String
+    var visitID: String?
+    var siteID: String
+    var assetKind: String
+    var photoCount: Int
+    var hasAudio: Bool
+    var audioDurationSeconds: Double?
+
+    enum CodingKeys: String, CodingKey {
+        case schemaVersion = "schema_version"
+        case client
+        case visitID = "visit_id"
+        case siteID = "site_id"
+        case assetKind = "asset_kind"
+        case photoCount = "photo_count"
+        case hasAudio = "has_audio"
+        case audioDurationSeconds = "audio_duration_seconds"
+    }
+}
+
+private func packageRoot() -> URL {
+    URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+}
+
+private func loadProjectPlist(_ relativePath: String) throws -> [String: Any] {
+    let data = try Data(contentsOf: packageRoot().appendingPathComponent(relativePath))
+    let plist = try PropertyListSerialization.propertyList(from: data, options: [], format: nil)
+    return try #require(plist as? [String: Any])
+}
+
+private func captureSnapshot(account: BTQAccount = .defaultProduction, captures: [LocalCapture]) -> FieldCaptureSnapshot {
+    FieldCaptureSnapshot(
+        account: account,
+        session: BTQSession(
+            person: BTQPerson(personID: "person_field", name: "Field User"),
+            token: BTQToken(tokenID: "token_field", label: "Pilot"),
+            sites: [BTQSite(siteID: "site_1", label: "Site One")],
+            canSubmit: true,
+            canReview: false,
+            maxImages: 6
+        ),
+        sites: [BTQSite(siteID: "site_1", label: "Site One")],
+        captures: captures
+    )
+}
+
+private func urlSchemes(in info: [String: Any]) -> [String] {
+    guard let urlTypes = info["CFBundleURLTypes"] as? [[String: Any]] else { return [] }
+    return urlTypes.flatMap { $0["CFBundleURLSchemes"] as? [String] ?? [] }
+}
+
+private func nonEmptyString(_ value: Any?) -> Bool {
+    guard let string = value as? String else { return false }
+    return !string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+}
+
+private func makeTestImageData(type: TestImageType) throws -> Data {
+    let colorSpace = CGColorSpaceCreateDeviceRGB()
+    var pixel: UInt32 = 0xFF_44_88_CC
+    guard let context = CGContext(
+        data: &pixel,
+        width: 1,
+        height: 1,
+        bitsPerComponent: 8,
+        bytesPerRow: 4,
+        space: colorSpace,
+        bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+    ), let image = context.makeImage() else {
+        throw ImageNormalizerError.encodeFailed
+    }
+
+    let data = NSMutableData()
+    guard let destination = CGImageDestinationCreateWithData(data, type.identifier as CFString, 1, nil) else {
+        throw ImageNormalizerError.encodeFailed
+    }
+    CGImageDestinationAddImage(destination, image, nil)
+    guard CGImageDestinationFinalize(destination) else {
+        throw ImageNormalizerError.encodeFailed
+    }
+    return data as Data
+}
+
+private actor RequestRecorder {
+    private(set) var requests: [URLRequest] = []
+    private(set) var bodies: [Data] = []
+
+    func record(request: URLRequest, body: Data) {
+        requests.append(request)
+        bodies.append(body)
+    }
+}
+
+private func makeStubbedSession(recorder: RequestRecorder) -> URLSession {
+    StubURLProtocol.handler = { request in
+        let body = request.httpBody ?? streamData(request.httpBodyStream)
+        await recorder.record(request: request, body: body)
+        if request.url?.path == "/api/session" {
+            return (
+                200,
+                """
+                {
+                  "person": {"person_id": "employee_1", "name": "Field Person"},
+                  "token": {"token_id": "token_1", "label": "Pilot"},
+                  "sites": [],
+                  "can_submit": true,
+                  "can_review": false,
+                  "max_images": 6,
+                  "inbox_count": 0
+                }
+                """.data(using: .utf8)!
+            )
+        }
+        if request.url?.path == "/api/my-submissions" {
+            return (
+                200,
+                """
+                {
+                  "submissions": [
+                    {
+                      "capture_id": "cap-history-api",
+                      "site_id": "site_1",
+                      "site_name": "Site One",
+                      "target_type": "location",
+                      "target_id": "site_1",
+                      "captured_at": "2026-06-14T10:15:00Z",
+                      "photo_count": 1,
+                      "has_audio": false,
+                      "has_text_note": true,
+                      "note_text": "Submitted from API test",
+                      "photo_urls": ["/media/photo_1"],
+                      "track": "A",
+                      "stage": "processed",
+                      "retargetable": false,
+                      "outcome_label": "",
+                      "per_photo_quality": []
+                    }
+                  ],
+                  "quality_summary": {
+                    "total_processed": 1,
+                    "clear": 1,
+                    "flag_counts": {}
+                  }
+                }
+                """.data(using: .utf8)!
+            )
+        }
+        return (
+            201,
+            """
+            {
+              "status": "submitted",
+              "job_id": "job-api",
+              "capture_id": "cap-unified-api",
+              "couchdb_doc_id": "cap-unified-api",
+              "photo_count": 1,
+              "audio_count": 0
+            }
+            """.data(using: .utf8)!
+        )
+    }
+    let configuration = URLSessionConfiguration.ephemeral
+    configuration.protocolClasses = [StubURLProtocol.self]
+    return URLSession(configuration: configuration)
+}
+
+private func makeBackendErrorSession(status: Int, body: String) -> URLSession {
+    StubURLProtocol.handler = { _ in
+        (status, Data(body.utf8))
+    }
+    let configuration = URLSessionConfiguration.ephemeral
+    configuration.protocolClasses = [StubURLProtocol.self]
+    return URLSession(configuration: configuration)
+}
+
+private func streamData(_ stream: InputStream?) -> Data {
+    guard let stream else { return Data() }
+    stream.open()
+    defer { stream.close() }
+    var data = Data()
+    var buffer = [UInt8](repeating: 0, count: 4_096)
+    while stream.hasBytesAvailable {
+        let count = stream.read(&buffer, maxLength: buffer.count)
+        if count > 0 {
+            data.append(buffer, count: count)
+        } else {
+            break
+        }
+    }
+    return data
+}
+
+private final class StubURLProtocol: URLProtocol, @unchecked Sendable {
+    nonisolated(unsafe) static var handler: ((URLRequest) async throws -> (Int, Data))?
+
+    override class func canInit(with request: URLRequest) -> Bool {
+        true
+    }
+
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest {
+        request
+    }
+
+    override func startLoading() {
+        Task {
+            do {
+                let (status, data) = try await Self.handler?(request) ?? (500, Data())
+                let response = HTTPURLResponse(
+                    url: request.url!,
+                    statusCode: status,
+                    httpVersion: "HTTP/1.1",
+                    headerFields: ["Content-Type": "application/json"]
+                )!
+                client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+                client?.urlProtocol(self, didLoad: data)
+                client?.urlProtocolDidFinishLoading(self)
+            } catch {
+                client?.urlProtocol(self, didFailWithError: error)
+            }
+        }
+    }
+
+    override func stopLoading() {}
+}
+
+private actor SequencedSessionAPIClient: CaptureAPIClient {
+    private var sessions: [BTQSession]
+
+    init(sessions: [BTQSession]) {
+        self.sessions = sessions
+    }
+
+    func session(baseURL: URL, token: String) async throws -> BTQSession {
+        guard !sessions.isEmpty else { return .demo }
+        return sessions.removeFirst()
+    }
+
+    func mySubmissions(baseURL: URL, token: String) async throws -> MySubmissionsResponse {
+        MySubmissionsResponse(submissions: [])
+    }
+
+    func submit(capture: LocalCapture, baseURL: URL, token: String) async throws -> SubmitCaptureResponse {
+        SubmitCaptureResponse(
+            status: "submitted",
+            jobID: capture.jobID,
+            captureID: capture.captureID,
+            couchdbDocID: capture.captureID,
+            photoCount: capture.photos.count,
+            audioCount: capture.audio == nil ? 0 : 1,
+            idempotentReplay: false
+        )
+    }
+}
+
+private actor RecordingSessionAPIClient: CaptureAPIClient {
+    private let sessionResponse: BTQSession
+    private(set) var requestedTokens: [String] = []
+
+    init(session: BTQSession = .demo) {
+        self.sessionResponse = session
+    }
+
+    func session(baseURL: URL, token: String) async throws -> BTQSession {
+        requestedTokens.append(token)
+        return sessionResponse
+    }
+
+    func mySubmissions(baseURL: URL, token: String) async throws -> MySubmissionsResponse {
+        MySubmissionsResponse(submissions: [])
+    }
+
+    func submit(capture: LocalCapture, baseURL: URL, token: String) async throws -> SubmitCaptureResponse {
+        SubmitCaptureResponse(
+            status: "submitted",
+            jobID: capture.jobID,
+            captureID: capture.captureID,
+            couchdbDocID: capture.captureID,
+            photoCount: capture.photos.count,
+            audioCount: capture.audio == nil ? 0 : 1,
+            idempotentReplay: false
+        )
+    }
+}
+
+private actor OneGoodSessionThenUnauthorizedAPIClient: CaptureAPIClient {
+    private var sessionResponse: BTQSession?
+
+    init(session: BTQSession) {
+        self.sessionResponse = session
+    }
+
+    func session(baseURL: URL, token: String) async throws -> BTQSession {
+        guard let sessionResponse else {
+            throw CaptureAPIError.unauthorized
+        }
+        self.sessionResponse = nil
+        return sessionResponse
+    }
+
+    func mySubmissions(baseURL: URL, token: String) async throws -> MySubmissionsResponse {
+        MySubmissionsResponse(submissions: [])
+    }
+
+    func submit(capture: LocalCapture, baseURL: URL, token: String) async throws -> SubmitCaptureResponse {
+        SubmitCaptureResponse(
+            status: "submitted",
+            jobID: capture.jobID,
+            captureID: capture.captureID,
+            couchdbDocID: capture.captureID,
+            photoCount: capture.photos.count,
+            audioCount: capture.audio == nil ? 0 : 1,
+            idempotentReplay: false
+        )
+    }
+}
+
+private actor FailingSubmitAPIClient: CaptureAPIClient {
+    private let error: Error
+
+    init(error: Error) {
+        self.error = error
+    }
+
+    func session(baseURL: URL, token: String) async throws -> BTQSession {
+        .demo
+    }
+
+    func mySubmissions(baseURL: URL, token: String) async throws -> MySubmissionsResponse {
+        MySubmissionsResponse(submissions: [])
+    }
+
+    func submit(capture: LocalCapture, baseURL: URL, token: String) async throws -> SubmitCaptureResponse {
+        throw error
+    }
+}
+
+@MainActor
+private final class FieldCaptureModelBox {
+    var model: FieldCaptureModel?
+}
+
+private actor ReentrantSubmitAPIClient: CaptureAPIClient {
+    private var submitted: [LocalCapture] = []
+    private let onSubmit: @MainActor @Sendable (LocalCapture) async -> Void
+
+    var submittedCaptureIDs: [String] {
+        submitted.map(\.captureID)
+    }
+
+    init(onSubmit: @escaping @MainActor @Sendable (LocalCapture) async -> Void) {
+        self.onSubmit = onSubmit
+    }
+
+    func session(baseURL: URL, token: String) async throws -> BTQSession {
+        .demo
+    }
+
+    func mySubmissions(baseURL: URL, token: String) async throws -> MySubmissionsResponse {
+        MySubmissionsResponse(submissions: [])
+    }
+
+    func submit(capture: LocalCapture, baseURL: URL, token: String) async throws -> SubmitCaptureResponse {
+        submitted.append(capture)
+        await onSubmit(capture)
+        return SubmitCaptureResponse(
+            status: "submitted",
+            jobID: capture.jobID,
+            captureID: capture.captureID,
+            couchdbDocID: capture.captureID,
+            photoCount: capture.photos.count,
+            audioCount: capture.audio == nil ? 0 : 1,
+            idempotentReplay: false
+        )
+    }
+}
+
+private actor FlakySubmitAPIClient: CaptureAPIClient {
+    private var errors: [Error]
+    private var submitted: [LocalCapture] = []
+
+    var submittedCount: Int {
+        submitted.count
+    }
+
+    var submittedCaptureIDs: [String] {
+        submitted.map(\.captureID)
+    }
+
+    init(errors: [Error]) {
+        self.errors = errors
+    }
+
+    func session(baseURL: URL, token: String) async throws -> BTQSession {
+        .demo
+    }
+
+    func mySubmissions(baseURL: URL, token: String) async throws -> MySubmissionsResponse {
+        MySubmissionsResponse(submissions: [])
+    }
+
+    func submit(capture: LocalCapture, baseURL: URL, token: String) async throws -> SubmitCaptureResponse {
+        if !errors.isEmpty {
+            throw errors.removeFirst()
+        }
+        submitted.append(capture)
+        return SubmitCaptureResponse(
+            status: "submitted",
+            jobID: capture.jobID,
+            captureID: capture.captureID,
+            couchdbDocID: capture.captureID,
+            photoCount: capture.photos.count,
+            audioCount: capture.audio == nil ? 0 : 1,
+            idempotentReplay: false
+        )
+    }
+}
+
+private actor SubmittedHistoryAPIClient: CaptureAPIClient {
+    private let response: MySubmissionsResponse
+    private(set) var requestedTokens: [String] = []
+
+    init(response: MySubmissionsResponse) {
+        self.response = response
+    }
+
+    func session(baseURL: URL, token: String) async throws -> BTQSession {
+        .demo
+    }
+
+    func mySubmissions(baseURL: URL, token: String) async throws -> MySubmissionsResponse {
+        requestedTokens.append(token)
+        return response
+    }
+
+    func submit(capture: LocalCapture, baseURL: URL, token: String) async throws -> SubmitCaptureResponse {
+        SubmitCaptureResponse(
+            status: "submitted",
+            jobID: capture.jobID,
+            captureID: capture.captureID,
+            couchdbDocID: capture.captureID,
+            photoCount: capture.photos.count,
+            audioCount: capture.audio == nil ? 0 : 1,
+            idempotentReplay: false
+        )
+    }
+}
+
+private actor ReentrantSubmittedHistoryAPIClient: CaptureAPIClient {
+    private let response: MySubmissionsResponse
+    private let onMySubmissions: @MainActor @Sendable () async -> Void
+    private(set) var requestedTokens: [String] = []
+
+    init(response: MySubmissionsResponse, onMySubmissions: @escaping @MainActor @Sendable () async -> Void) {
+        self.response = response
+        self.onMySubmissions = onMySubmissions
+    }
+
+    func session(baseURL: URL, token: String) async throws -> BTQSession {
+        .demo
+    }
+
+    func mySubmissions(baseURL: URL, token: String) async throws -> MySubmissionsResponse {
+        requestedTokens.append(token)
+        await onMySubmissions()
+        return response
+    }
+
+    func submit(capture: LocalCapture, baseURL: URL, token: String) async throws -> SubmitCaptureResponse {
+        SubmitCaptureResponse(
+            status: "submitted",
+            jobID: capture.jobID,
+            captureID: capture.captureID,
+            couchdbDocID: capture.captureID,
+            photoCount: capture.photos.count,
+            audioCount: capture.audio == nil ? 0 : 1,
+            idempotentReplay: false
+        )
+    }
+}
+
+private struct RecordingUploadFailure: Equatable, Sendable {
+    var captureID: String
+    var reason: String
+}
+
+private actor RecordingUploadNotificationScheduler: UploadNotificationScheduling {
+    private(set) var failedUploads: [RecordingUploadFailure] = []
+    private(set) var syncRecoveredPendingCounts: [Int] = []
+    private(set) var authorizationRequestCount = 0
+    private var status: NotificationPermissionStatus
+    private let requestedStatus: NotificationPermissionStatus
+
+    init(status: NotificationPermissionStatus = .authorized, requestedStatus: NotificationPermissionStatus = .authorized) {
+        self.status = status
+        self.requestedStatus = requestedStatus
+    }
+
+    func authorizationStatus() async -> NotificationPermissionStatus {
+        status
+    }
+
+    func requestAuthorization() async -> NotificationPermissionStatus {
+        authorizationRequestCount += 1
+        status = requestedStatus
+        return status
+    }
+
+    func notifyUploadFailed(capture: LocalCapture, reason: String) async {
+        failedUploads.append(RecordingUploadFailure(captureID: capture.captureID, reason: reason))
+    }
+
+    func notifySyncRecovered(pendingCount: Int) async {
+        syncRecoveredPendingCounts.append(pendingCount)
+    }
+}
+
+private actor RecordingVoicePermissionChecker: VoiceRecordingPermissionChecking {
+    private(set) var authorizationRequestCount = 0
+    private var status: VoiceRecordingPermissionStatus
+    private let requestedStatus: VoiceRecordingPermissionStatus
+
+    init(status: VoiceRecordingPermissionStatus, requestedStatus: VoiceRecordingPermissionStatus) {
+        self.status = status
+        self.requestedStatus = requestedStatus
+    }
+
+    func authorizationStatus() async -> VoiceRecordingPermissionStatus {
+        status
+    }
+
+    func requestAuthorization() async -> VoiceRecordingPermissionStatus {
+        authorizationRequestCount += 1
+        status = requestedStatus
+        return status
+    }
+}

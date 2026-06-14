@@ -1,0 +1,9 @@
+.build/
+build/
+dist/
+.swiftpm/
+.codex/
+DerivedData/
+xcuserdata/
+*.xcuserstate
+script/ios_device.env

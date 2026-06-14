@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleDisplayName</key>
+  <string>BTQ Capture</string>
+  <key>CFBundleExecutable</key>
+  <string>$(EXECUTABLE_NAME)</string>
+  <key>CFBundleIdentifier</key>
+  <string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+  <key>CFBundleName</key>
+  <string>BTQFieldCapture</string>
+  <key>CFBundlePackageType</key>
+  <string>APPL</string>
+  <key>CFBundleShortVersionString</key>
+  <string>1.0</string>
+  <key>CFBundleVersion</key>
+  <string>1</string>
+  <key>CFBundleURLTypes</key>
+  <array>
+    <dict>
+      <key>CFBundleURLName</key>
+      <string>BTQ Field Capture</string>
+      <key>CFBundleURLSchemes</key>
+      <array>
+        <string>btq-field-capture</string>
+        <string>btq</string>
+      </array>
+    </dict>
+  </array>
+  <key>LSMinimumSystemVersion</key>
+  <string>15.0</string>
+  <key>NSCameraUsageDescription</key>
+  <string>BTQ Field Capture uses the camera to document site conditions.</string>
+  <key>NSMicrophoneUsageDescription</key>
+  <string>BTQ Field Capture records voice notes for site observations.</string>
+  <key>NSPhotoLibraryUsageDescription</key>
+  <string>BTQ Field Capture can attach selected photos to site observations.</string>
+  <key>NSUserNotificationsUsageDescription</key>
+  <string>BTQ Field Capture sends sync and upload failure alerts.</string>
+  <key>NSPrincipalClass</key>
+  <string>NSApplication</string>
+</dict>
+</plist>
