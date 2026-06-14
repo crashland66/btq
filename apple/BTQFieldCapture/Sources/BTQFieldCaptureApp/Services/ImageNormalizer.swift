@@ -76,7 +76,7 @@ public enum ImageNormalizer {
     }
 
     private static func jpegData(from source: CGImageSource, quality: Double, maxPixelDimension: CGFloat) throws -> Data {
-        guard let image = CGImageSourceCreateImageAtIndex(
+        guard let image = CGImageSourceCreateThumbnailAtIndex(
                 source,
                 0,
                 [

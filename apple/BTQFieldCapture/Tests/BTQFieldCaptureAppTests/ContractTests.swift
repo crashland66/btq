@@ -902,6 +902,19 @@ import UniformTypeIdentifiers
     #expect(type == UTType.jpeg.identifier)
 }
 
+@Test func imageNormalizerBakesExifOrientationIntoPixels() throws {
+    let jpeg = try ImageNormalizer.normalizedData(
+        from: makeTestImageData(type: .jpeg, width: 2, height: 1, orientation: 6),
+        policy: .fieldCapture
+    )
+    let source = try #require(CGImageSourceCreateWithData(jpeg as CFData, nil))
+    let properties = try #require(CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any])
+
+    #expect(properties[kCGImagePropertyPixelWidth] as? Int == 1)
+    #expect(properties[kCGImagePropertyPixelHeight] as? Int == 2)
+    #expect((properties[kCGImagePropertyOrientation] as? Int ?? 1) == 1)
+}
+
 @Test func fieldCaptureImagePolicyUploadsBackendCompatibleJpegs() throws {
     let policy = ImageUploadPolicy.fieldCapture
     let temp = FileManager.default.temporaryDirectory.appendingPathComponent("btq-image-policy-\(UUID().uuidString)", isDirectory: true)
@@ -2825,15 +2838,15 @@ private func nonEmptyString(_ value: Any?) -> Bool {
     return !string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
 }
 
-private func makeTestImageData(type: TestImageType) throws -> Data {
+private func makeTestImageData(type: TestImageType, width: Int = 1, height: Int = 1, orientation: Int? = nil) throws -> Data {
     let colorSpace = CGColorSpaceCreateDeviceRGB()
-    var pixel: UInt32 = 0xFF_44_88_CC
+    var pixels = Array(repeating: UInt32(0xFF_44_88_CC), count: width * height)
     guard let context = CGContext(
-        data: &pixel,
-        width: 1,
-        height: 1,
+        data: &pixels,
+        width: width,
+        height: height,
         bitsPerComponent: 8,
-        bytesPerRow: 4,
+        bytesPerRow: width * 4,
         space: colorSpace,
         bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
     ), let image = context.makeImage() else {
@@ -2844,7 +2857,8 @@ private func makeTestImageData(type: TestImageType) throws -> Data {
     guard let destination = CGImageDestinationCreateWithData(data, type.identifier as CFString, 1, nil) else {
         throw ImageNormalizerError.encodeFailed
     }
-    CGImageDestinationAddImage(destination, image, nil)
+    let properties = orientation.map { [kCGImagePropertyOrientation: $0] as CFDictionary }
+    CGImageDestinationAddImage(destination, image, properties)
     guard CGImageDestinationFinalize(destination) else {
         throw ImageNormalizerError.encodeFailed
     }
