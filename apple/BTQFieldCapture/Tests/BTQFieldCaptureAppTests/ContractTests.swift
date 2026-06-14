@@ -346,6 +346,8 @@ import UniformTypeIdentifiers
     #expect(releaseReadiness.contains("Do not store a personal Team ID by editing"))
     #expect(releaseReadiness.contains("Physical Device Validation Log"))
     #expect(releaseReadiness.contains("Live image capture submitted from the native iPhone app"))
+    #expect(releaseReadiness.contains("Live audio recording submitted from the native iPhone app"))
+    #expect(releaseReadiness.contains("Settings test alert displayed successfully"))
     #expect(releaseReadiness.contains("Remaining Physical Device Checks"))
 
     let captureView = try String(

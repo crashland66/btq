@@ -75,13 +75,20 @@ submission.
   appeared in the BTQ dashboard with vision context. This verifies the real
   device photo capture, upload path, backend ingestion, and dashboard/vision
   handoff for a test capture.
+- 2026-06-14: Live audio recording submitted from the native iPhone app and
+  appeared in the admin dashboard. This verifies the real device voice memo
+  capture, upload path, backend ingestion, and dashboard handoff for a test
+  recording.
+- 2026-06-14: Settings test alert displayed successfully on the iPhone. This
+  verifies local notification permission/presentation for the app-level alert
+  path.
 
 ### Remaining Physical Device Checks
 
 - Photos picker import.
-- Voice recording, pause/resume, save, and playback.
+- Voice pause/resume and playback.
 - Lock/background voice recording continuation.
-- Local notification test alert visibility and upload-failure alert behavior.
+- Upload-failure alert behavior.
 - Poor-connectivity capture with automatic sync recovery.
 - Background sync behavior after app backgrounding.
 
