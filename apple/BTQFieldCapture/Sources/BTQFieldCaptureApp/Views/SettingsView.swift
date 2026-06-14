@@ -2,6 +2,7 @@ import SwiftUI
 
 struct SettingsView: View {
     @Bindable var model: FieldCaptureModel
+    var onConnected: () -> Void = {}
     @State private var tokenOrLink = ""
     @State private var showingRemoveAccountConfirmation = false
 
@@ -142,6 +143,7 @@ struct SettingsView: View {
         }
         if didConnect {
             tokenOrLink = ""
+            onConnected()
         }
     }
 }

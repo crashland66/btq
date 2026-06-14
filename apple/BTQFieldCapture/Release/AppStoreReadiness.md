@@ -129,5 +129,11 @@ For repeated local checks, copy `script/ios_device.env.example` to
 `script/ios_device.env` and fill in the same values. The real env file is
 gitignored; only the example is public.
 
+For Xcode GUI device runs, copy `Local.xcconfig.example` to
+`Local.xcconfig` and set the local `DEVELOPMENT_TEAM` there. The checked-in
+project must keep concrete Team IDs out of
+`BTQFieldCapture.xcodeproj/project.pbxproj`; release readiness fails if one is
+written there.
+
 If the verifier reports Developer Mode is disabled, enable Developer Mode on
 the iPhone and rerun the same command.

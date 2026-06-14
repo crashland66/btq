@@ -3,6 +3,8 @@ set -eu
 
 ROOT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 PROJECT_FILE="$ROOT_DIR/BTQFieldCapture.xcodeproj/project.pbxproj"
+SIGNING_CONFIG="$ROOT_DIR/Signing.xcconfig"
+LOCAL_SIGNING_EXAMPLE="$ROOT_DIR/Local.xcconfig.example"
 IOS_INFO="$ROOT_DIR/AppResources/iOS/Info.plist"
 MAC_INFO="$ROOT_DIR/AppResources/macOS/Info.plist"
 IOS_ENTITLEMENTS="$ROOT_DIR/AppResources/iOS/BTQFieldCapture.entitlements"
@@ -30,6 +32,8 @@ require_plist_key() {
 }
 
 require_file "$PROJECT_FILE"
+require_file "$SIGNING_CONFIG"
+require_file "$LOCAL_SIGNING_EXAMPLE"
 require_file "$IOS_INFO"
 require_file "$MAC_INFO"
 require_file "$IOS_ENTITLEMENTS"
@@ -62,6 +66,11 @@ grep -q 'com.btq.fieldcapture.mac' "$PROJECT_FILE" || fail "missing macOS bundle
 grep -q 'SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";' "$PROJECT_FILE" || fail "missing iOS supported platforms"
 grep -q 'PRODUCT_BUNDLE_IDENTIFIER = com.btq.fieldcapture.mac;' "$PROJECT_FILE" || fail "missing macOS app bundle identifier"
 grep -q 'PrivacyInfo.xcprivacy in Resources' "$PROJECT_FILE" || fail "privacy manifest is not included in the Xcode project"
+grep -q 'Signing.xcconfig' "$PROJECT_FILE" || fail "Xcode project must use public-safe Signing.xcconfig"
+grep -q '^DEVELOPMENT_TEAM = *$' "$SIGNING_CONFIG" || fail "Signing.xcconfig must keep DEVELOPMENT_TEAM empty"
+grep -q '#include? "Local.xcconfig"' "$SIGNING_CONFIG" || fail "Signing.xcconfig must optionally include Local.xcconfig"
+grep -q 'DEVELOPMENT_TEAM = <team id>' "$LOCAL_SIGNING_EXAMPLE" || fail "Local.xcconfig.example must use a placeholder team id"
+! grep -Eq 'DEVELOPMENT_TEAM = "?[A-Z0-9]+' "$PROJECT_FILE" || fail "project.pbxproj must not contain a concrete DEVELOPMENT_TEAM; use Local.xcconfig or BTQ_DEVELOPMENT_TEAM"
 grep -q 'applinks:fc.gregstoltz.com' "$IOS_ENTITLEMENTS" || fail "missing associated domain"
 grep -q 'verify_macos_app.sh' "$READINESS_DOC" || fail "release readiness doc does not mention macOS verifier"
 grep -q 'verify_mock_api_submit.sh' "$READINESS_DOC" || fail "release readiness doc does not mention mock API verifier"
@@ -70,9 +79,5 @@ grep -q 'verify_universal_links.sh' "$READINESS_DOC" || fail "release readiness 
 grep -q 'field_pilot_readiness.sh' "$READINESS_DOC" || fail "release readiness doc does not mention field pilot readiness verifier"
 ! grep -q 'sh script/verify_' "$READINESS_DOC" || fail "release readiness doc should execute Bash verifiers directly"
 ! grep -q 'sh script/verify_' "$FIELD_PILOT_READINESS" || fail "field pilot readiness should execute Bash verifiers directly"
-
-if grep -q 'DEVELOPMENT_TEAM = "";' "$PROJECT_FILE"; then
-  printf 'release-readiness: warning: DEVELOPMENT_TEAM is still empty; set it in Xcode after signing into the Apple Developer account.\n' >&2
-fi
 
 printf 'release-readiness: checks passed\n'

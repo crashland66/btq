@@ -6,4 +6,5 @@ dist/
 DerivedData/
 xcuserdata/
 *.xcuserstate
+Local.xcconfig
 script/ios_device.env

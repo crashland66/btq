@@ -24,6 +24,8 @@
 		10A000000000000000000016 /* BTQ Capture.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "BTQ Capture.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 		10A000000000000000000017 /* BTQ Capture Mac.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "BTQ Capture Mac.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 		10A000000000000000000018 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
+		10A000000000000000000019 /* Signing.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Signing.xcconfig; sourceTree = "<group>"; };
+		10A00000000000000000001A /* Local.xcconfig.example */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Local.xcconfig.example; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -49,6 +51,8 @@
 		10A000000000000000000030 = {
 			isa = PBXGroup;
 			children = (
+				10A000000000000000000019 /* Signing.xcconfig */,
+				10A00000000000000000001A /* Local.xcconfig.example */,
 				10A000000000000000000031 /* AppTargets */,
 				10A000000000000000000034 /* AppResources */,
 				10A000000000000000000035 /* Products */,
@@ -241,11 +245,11 @@
 /* Begin XCBuildConfiguration section */
 		10A0000000000000000000A1 /* Debug */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = 10A000000000000000000019 /* Signing.xcconfig */;
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = AppResources/iOS/BTQFieldCapture.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = "";
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = AppResources/iOS/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
@@ -260,11 +264,11 @@
 		};
 		10A0000000000000000000A2 /* Release */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = 10A000000000000000000019 /* Signing.xcconfig */;
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = AppResources/iOS/BTQFieldCapture.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = "";
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = AppResources/iOS/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
@@ -279,11 +283,11 @@
 		};
 		10A0000000000000000000A3 /* Debug */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = 10A000000000000000000019 /* Signing.xcconfig */;
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = AppResources/BTQFieldCapture.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = "";
 				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = AppResources/macOS/Info.plist;
@@ -297,11 +301,11 @@
 		};
 		10A0000000000000000000A4 /* Release */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = 10A000000000000000000019 /* Signing.xcconfig */;
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = AppResources/BTQFieldCapture.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = "";
 				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = AppResources/macOS/Info.plist;

@@ -114,7 +114,9 @@ struct BTQFieldCaptureShell: View {
         case .queue:
             QueueView(model: model)
         case .settings:
-            SettingsView(model: model)
+            SettingsView(model: model) {
+                self.section = .capture
+            }
         }
     }
 }

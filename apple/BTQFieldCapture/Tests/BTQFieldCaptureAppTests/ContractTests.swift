@@ -188,7 +188,22 @@ import UniformTypeIdentifiers
     #expect(projectFile.contains("PRODUCT_BUNDLE_IDENTIFIER = com.btq.fieldcapture;"))
     #expect(projectFile.contains("PRODUCT_BUNDLE_IDENTIFIER = com.btq.fieldcapture.mac;"))
     #expect(projectFile.contains("SUPPORTED_PLATFORMS = \"iphoneos iphonesimulator\";"))
-    #expect(projectFile.contains("DEVELOPMENT_TEAM = \"\";"))
+    #expect(projectFile.components(separatedBy: "baseConfigurationReference = 10A000000000000000000019 /* Signing.xcconfig */;").count - 1 == 4)
+    #expect(!projectFile.contains("DEVELOPMENT_TEAM = "))
+
+    let signingConfig = try String(
+        contentsOf: packageRoot().appendingPathComponent("Signing.xcconfig"),
+        encoding: .utf8
+    )
+    #expect(signingConfig.contains("DEVELOPMENT_TEAM =\n"))
+    #expect(signingConfig.contains("#include? \"Local.xcconfig\""))
+
+    let localSigningExample = try String(
+        contentsOf: packageRoot().appendingPathComponent("Local.xcconfig.example"),
+        encoding: .utf8
+    )
+    #expect(localSigningExample.contains("DEVELOPMENT_TEAM = <team id>"))
+    #expect(localSigningExample.range(of: #"DEVELOPMENT_TEAM = [A-Z0-9]{10}"#, options: .regularExpression) == nil)
 
     let packageManifest = try String(
         contentsOf: packageRoot().appendingPathComponent("Package.swift"),
@@ -222,7 +237,7 @@ import UniformTypeIdentifiers
     #expect(deviceVerifier.contains("xcrun devicectl device info details"))
     #expect(deviceVerifier.contains("developerModeStatus: disabled"))
     #expect(deviceVerifier.contains("Developer Mode"))
-    #expect(!deviceVerifier.contains("RKGF2ZYLJP"))
+    #expect(deviceVerifier.range(of: #"DEVELOPMENT_TEAM=[A-Z0-9]{10}"#, options: .regularExpression) == nil)
 
     let deviceEnvExample = try String(
         contentsOf: packageRoot().appendingPathComponent("script/ios_device.env.example"),
@@ -230,13 +245,14 @@ import UniformTypeIdentifiers
     )
     #expect(deviceEnvExample.contains("BTQ_DEVELOPMENT_TEAM=\"<team id>\""))
     #expect(deviceEnvExample.contains("BTQ_DEVICE_NAME=\"<device name>\""))
-    #expect(!deviceEnvExample.contains("RKGF2ZYLJP"))
+    #expect(deviceEnvExample.range(of: #"BTQ_DEVELOPMENT_TEAM=\"[A-Z0-9]{10}\""#, options: .regularExpression) == nil)
 
     let gitignore = try String(
         contentsOf: packageRoot().appendingPathComponent(".gitignore"),
         encoding: .utf8
     )
     #expect(gitignore.contains("script/ios_device.env"))
+    #expect(gitignore.contains("Local.xcconfig"))
 
     let macOSVerifier = try String(
         contentsOf: packageRoot().appendingPathComponent("script/verify_macos_app.sh"),
@@ -274,7 +290,6 @@ import UniformTypeIdentifiers
     #expect(liveAPIVerifier.contains("BTQ_LIVE_SUBMIT=1"))
     #expect(liveAPIVerifier.contains("BTQFieldCaptureLiveAPIVerifier"))
     #expect(liveAPIVerifier.contains("mySubmissions"))
-    #expect(!liveAPIVerifier.contains("RKGF2ZYLJP"))
 
     let liveAPISource = try String(
         contentsOf: packageRoot().appendingPathComponent("Sources/BTQFieldCaptureLiveAPIVerifier/main.swift"),
@@ -370,6 +385,10 @@ import UniformTypeIdentifiers
         contentsOf: packageRoot().appendingPathComponent("Sources/BTQFieldCaptureApp/Views/SettingsView.swift"),
         encoding: .utf8
     )
+    let rootView = try String(
+        contentsOf: packageRoot().appendingPathComponent("Sources/BTQFieldCaptureApp/Views/BTQFieldCaptureRootView.swift"),
+        encoding: .utf8
+    )
     #expect(settingsView.contains("\"settings.notifications.status\""))
     #expect(settingsView.contains("\"settings.notifications.enable\""))
     #expect(settingsView.contains("showingRemoveAccountConfirmation"))
@@ -382,6 +401,9 @@ import UniformTypeIdentifiers
     #expect(settingsView.contains(".privacySensitive()"))
     #expect(settingsView.contains("if didConnect"))
     #expect(settingsView.contains("tokenOrLink = \"\""))
+    #expect(settingsView.contains("onConnected()"))
+    #expect(rootView.contains("SettingsView(model: model)"))
+    #expect(rootView.contains("self.section = .capture"))
     #expect(settingsView.contains("connectButtonLabel"))
     #expect(settingsView.contains("model.isConnecting ? \"Connecting\" : \"Connect\""))
     #expect(settingsView.contains(".disabled(model.isConnecting || tokenOrLink.trimmingCharacters"))

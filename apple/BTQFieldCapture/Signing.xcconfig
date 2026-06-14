@@ -1,0 +1,5 @@
+// Public-safe signing defaults.
+// Copy Local.xcconfig.example to Local.xcconfig for local Xcode device runs.
+
+DEVELOPMENT_TEAM =
+#include? "Local.xcconfig"

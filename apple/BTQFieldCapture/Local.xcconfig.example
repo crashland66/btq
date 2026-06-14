@@ -1,0 +1,4 @@
+// Copy this file to Local.xcconfig for local Xcode device runs.
+// Keep Local.xcconfig untracked; it may contain personal Apple account details.
+
+DEVELOPMENT_TEAM = <team id>

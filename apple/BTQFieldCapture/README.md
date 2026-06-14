@@ -72,6 +72,12 @@ For repeated physical-iPhone checks, copy
 values. The real env file is gitignored and is also read by
 `./script/field_pilot_readiness.sh`.
 
+For Xcode GUI device runs, copy `Local.xcconfig.example` to `Local.xcconfig`
+and set `DEVELOPMENT_TEAM` there. The shared project references
+`Signing.xcconfig`, which keeps the public team empty and optionally includes
+the ignored local file. Do not use Xcode project edits to store a personal Team
+ID in `BTQFieldCapture.xcodeproj/project.pbxproj`.
+
 The macOS verifier builds the real Xcode `BTQ Capture Mac` app target and
 checks the generated bundle metadata. Add `--launch` to perform a local process
 smoke test:
