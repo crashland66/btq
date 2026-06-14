@@ -83,6 +83,7 @@ class FieldPhotoAsset:
     size_bytes: int
     intake_json_path: Path
     captured_at: str
+    note: str = ""
 
 
 @dataclass(frozen=True)
@@ -212,6 +213,7 @@ def discover_photo_assets(
                     size_bytes=int(photo.get("size_bytes") or media_path.stat().st_size) if media_path.exists() and media_path.is_file() else 0,
                     intake_json_path=job_path,
                     captured_at=captured_at,
+                    note=str(photo.get("note") or "").strip(),
                 ),
             )
     return sorted(assets.values(), key=lambda asset: (asset.capture_id, asset.filename, asset.photo_asset_id))

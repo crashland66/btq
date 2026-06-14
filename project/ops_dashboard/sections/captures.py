@@ -7,7 +7,6 @@ import re
 from pathlib import Path
 from urllib.parse import quote
 
-from field_capture.site_viewer import UnsafeMediaPath, resolve_media_path, upload_id_for_path
 from field_capture import approved_job_drafts, audio_semantics, audio_transcription
 from field_capture import photo_vision as field_photo_vision
 from ops_dashboard.common import (
@@ -32,7 +31,6 @@ from ops_dashboard.common import (
     submitters_by_capture,
 )
 from ops_dashboard.layout import html_page
-from processing_core.ids import deterministic_artifact_id
 
 
 def intake_records(root: Path) -> dict[str, dict[str, object]]:
@@ -232,80 +230,6 @@ def _missing_sidecar_record(asset: field_photo_vision.FieldPhotoAsset, submitter
     }
 
 
-def _photo_note_lookup(root: Path, capture_id: str) -> dict[str, dict[str, str]]:
-    intake_dir = field_photo_vision.default_intake_dir(root)
-    upload_dir = field_photo_vision.default_upload_dir(root)
-    upload_root = upload_dir.expanduser().resolve(strict=False)
-    lookup: dict[str, dict[str, str]] = {"asset": {}, "photo": {}, "filename": {}}
-    if not intake_dir.exists():
-        return lookup
-    for path in sorted(intake_dir.glob("**/*.json")):
-        payload, _error = read_json_artifact(path)
-        if not payload or payload.get("job_type") != "photo_capture":
-            continue
-        metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
-        body = payload.get("payload") if isinstance(payload.get("payload"), dict) else {}
-        job_capture_id = str(metadata.get("capture_id") or body.get("capture_id") or "").strip()
-        if job_capture_id != capture_id:
-            continue
-        photos = body.get("photos")
-        if not isinstance(photos, list):
-            continue
-        for photo in photos:
-            if not isinstance(photo, dict):
-                continue
-            note = str(photo.get("note") or "").strip()
-            if not note:
-                continue
-            filename = str(photo.get("filename") or "").strip()
-            upload_id = str(photo.get("upload_id") or "").strip()
-            stored_path = str(photo.get("stored_path") or "").strip()
-            if filename:
-                lookup["filename"].setdefault(filename, note)
-            if upload_id:
-                lookup["photo"].setdefault(upload_id, note)
-            if not stored_path or not filename:
-                continue
-            try:
-                media_path = resolve_media_path(stored_path, upload_root)
-            except UnsafeMediaPath:
-                continue
-            if not upload_id and media_path.exists() and media_path.is_file():
-                upload_id = upload_id_for_path(media_path, upload_root)
-                lookup["photo"].setdefault(upload_id, note)
-            photo_id = upload_id or f"{job_capture_id}/{filename}"
-            lookup["photo"].setdefault(photo_id, note)
-            asset_id = deterministic_artifact_id("fcp", job_capture_id or photo_id, filename, str(media_path))
-            lookup["asset"].setdefault(asset_id, note)
-    return lookup
-
-
-def _photo_note_for_asset(asset: field_photo_vision.FieldPhotoAsset, lookup: dict[str, dict[str, str]]) -> str:
-    return (
-        lookup["asset"].get(asset.photo_asset_id)
-        or lookup["photo"].get(asset.photo_id)
-        or lookup["filename"].get(asset.filename)
-        or ""
-    )
-
-
-def _photo_note_for_record(record: dict[str, object], lookup: dict[str, dict[str, str]]) -> str:
-    existing = str(record.get("note") or "").strip()
-    if existing:
-        return existing
-    asset_id = str(record.get("photo_asset_id") or "").strip()
-    photo_id = str(record.get("photo_id") or "").strip()
-    source_path = str(record.get("source_image_path") or "").strip()
-    media_url = str(record.get("image_media_url") or "").strip()
-    filename = Path(source_path or media_url).name if source_path or media_url else ""
-    return (
-        lookup["asset"].get(asset_id)
-        or lookup["photo"].get(photo_id)
-        or lookup["filename"].get(filename)
-        or ""
-    )
-
-
 def photo_card_records_for_capture(root: Path, capture_id: str) -> list[dict[str, object]]:
     """Build one photo-vision record per photo asset in a capture, merging
     sidecar fields when available and surfacing 'missing' status when not.
@@ -319,7 +243,6 @@ def photo_card_records_for_capture(root: Path, capture_id: str) -> list[dict[str
     submitter = submitters_by_capture(root).get(capture_id, safe_submitter({}))
     sidecars = load_photo_vision_sidecars(photo_vision_dir)
     sidecars_by_asset = {str(s.get("photo_asset_id") or ""): s for s in sidecars if s.get("photo_asset_id")}
-    photo_notes = _photo_note_lookup(root, capture_id)
 
     records: list[dict[str, object]] = []
     seen_asset_ids: set[str] = set()
@@ -344,7 +267,7 @@ def photo_card_records_for_capture(root: Path, capture_id: str) -> list[dict[str
             )
         else:
             record = _missing_sidecar_record(asset, submitter)
-        note = _photo_note_for_asset(asset, photo_notes)
+        note = asset.note.strip()
         if note:
             record["note"] = note
         records.append(record)
@@ -357,9 +280,6 @@ def photo_card_records_for_capture(root: Path, capture_id: str) -> list[dict[str
         record = dict(sidecar)
         record.setdefault("submitter_name", submitter["submitter_name"])
         record.setdefault("submitter_id", submitter["submitter_id"])
-        note = _photo_note_for_record(record, photo_notes)
-        if note:
-            record["note"] = note
         records.append(record)
     records.sort(key=lambda item: (str(item.get("captured_at") or ""), str(item.get("photo_asset_id") or "")))
     return records
