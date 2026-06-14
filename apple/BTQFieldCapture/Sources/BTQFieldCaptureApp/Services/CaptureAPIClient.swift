@@ -204,14 +204,14 @@ public enum MultipartCaptureBuilder {
         for photo in capture.photos {
             try handle.write(contentsOf: fileHeaderData(name: "photos", filename: photo.filename, mimeType: photo.mimeType, boundary: boundary))
             if let fileURL = photo.fileURL {
-                try handle.write(contentsOf: Data(contentsOf: fileURL))
+                try writeFileContents(from: fileURL, to: handle)
             }
             try handle.write(contentsOf: Data("\r\n".utf8))
         }
         if let audio = capture.audio {
             try handle.write(contentsOf: fileHeaderData(name: "audio", filename: audio.filename, mimeType: audio.mimeType, boundary: boundary))
             if let fileURL = audio.fileURL {
-                try handle.write(contentsOf: Data(contentsOf: fileURL))
+                try writeFileContents(from: fileURL, to: handle)
             }
             try handle.write(contentsOf: Data("\r\n".utf8))
             try handle.write(contentsOf: formFieldData(name: "audio_duration_seconds", value: String(audio.durationSeconds), boundary: boundary))
@@ -225,6 +225,15 @@ public enum MultipartCaptureBuilder {
 
     private static func fileHeaderData(name: String, filename: String, mimeType: String, boundary: String) -> Data {
         Data("--\(boundary)\r\nContent-Disposition: form-data; name=\"\(name)\"; filename=\"\(filename)\"\r\nContent-Type: \(mimeType)\r\n\r\n".utf8)
+    }
+
+    private static func writeFileContents(from sourceURL: URL, to output: FileHandle) throws {
+        let input = try FileHandle(forReadingFrom: sourceURL)
+        defer { try? input.close() }
+
+        while let chunk = try input.read(upToCount: 256 * 1024), !chunk.isEmpty {
+            try output.write(contentsOf: chunk)
+        }
     }
 
     private static func photoNotesJSON(for photos: [CapturePhoto]) -> String? {

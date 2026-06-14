@@ -580,6 +580,13 @@ import UniformTypeIdentifiers
     #expect(body.contains("name=\"audio\"; filename=\"voice.m4a\""))
     #expect(body.contains("fake-audio"))
     #expect(body.contains("name=\"audio_duration_seconds\""))
+
+    let apiClientSource = try String(
+        contentsOf: packageRoot().appendingPathComponent("Sources/BTQFieldCaptureApp/Services/CaptureAPIClient.swift"),
+        encoding: .utf8
+    )
+    #expect(apiClientSource.contains("writeFileContents(from: fileURL, to: handle)"))
+    #expect(apiClientSource.contains("read(upToCount: 256 * 1024)"))
 }
 
 @Test func sqliteStoreRoundTripsOfflineSnapshot() async throws {
