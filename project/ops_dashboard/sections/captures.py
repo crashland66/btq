@@ -288,10 +288,10 @@ def render_photo_preview(record: dict[str, object]) -> str:
         js_arg = html.escape(json.dumps(media_url), quote=True)
         escaped = html.escape(media_url, quote=True)
         return (
-            f'<div><a href="#" onclick="openLb({js_arg});return false" title="View full size" style="cursor:zoom-in">'
+            f'<a href="#" onclick="openLb({js_arg});return false" title="View full size" style="cursor:zoom-in;display:block">'
             f'<img src="{escaped}" alt="Field capture photo preview"'
-            f' style="max-width:220px;max-height:180px;object-fit:contain;border:1px solid #d9e2ec;border-radius:6px;background:#f8fafc;">'
-            f'</a></div>'
+            f' loading="lazy" class="site-gallery-thumb">'
+            f"</a>"
         )
     if record.get("source_image_path"):
         return '<p class="muted">Image path available locally.</p>'
@@ -314,49 +314,284 @@ def _vision_description_label(value: object) -> object:
     return "Awaiting analysis." if str(value or "").strip() == "No vision description yet." else value
 
 
-def render_photo_card(record: dict[str, object]) -> str:
+def _status_slug(value: object) -> str:
+    return re.sub(r"[^a-z0-9_-]+", "_", str(value or "").strip().lower()).strip("_")
+
+
+def _pill(label: str, *, status: str = "") -> str:
+    status_class = f" status-{html.escape(_status_slug(status), quote=True)}" if status else ""
+    return f'<span class="pill{status_class}">{html.escape(label)}</span>'
+
+
+def _photo_status(record: dict[str, object]) -> tuple[str, str]:
+    status = str(record.get("status") or "").strip().lower()
+    if not status or status == "missing":
+        return "Awaiting analysis", "pending"
+    if status in {"completed", "complete", "processed", "succeeded", "success"}:
+        return "Analyzed", "resolved"
+    if status in {"failed", "malformed", "error"}:
+        return humanize_key(status), "failed"
+    return humanize_key(status), status
+
+
+def _overall_capture_status(photo_records: list[dict[str, object]], *, photo_count: int = 0) -> tuple[str, str]:
+    if not photo_records:
+        if photo_count:
+            return "Awaiting analysis", "pending"
+        return "No photos", "no_action_needed"
+    statuses = [_photo_status(record)[0].lower() for record in photo_records]
+    if any(status in {"failed", "malformed", "error"} for status in statuses):
+        return "Needs review", "failed"
+    if any(status == "awaiting analysis" for status in statuses):
+        return "Awaiting analysis", "pending"
+    return "Analyzed", "resolved"
+
+
+def _photo_description(record: dict[str, object]) -> str:
     error = record.get("error") if isinstance(record.get("error"), dict) else {}
-    failure = ""
-    if record.get("status") in {"failed", "malformed"}:
-        failure = render_kv(
-            {
-                "error_type": error.get("type", ""),
-                "error_message": error.get("message", ""),
-                "can_retry": error.get("can_retry", ""),
-            }
-        )
-    details = render_kv(
-        _without_empty_values(
-            {
-                "photo_asset_id": record.get("photo_asset_id", ""),
-                "submitter": record.get("submitter_name", UNKNOWN_SUBMITTER),
-                "submitter_id": record.get("submitter_id", ""),
-                "submitted_area": record.get("submitted_area", ""),
-                "submitted_phase": record.get("submitted_phase", ""),
-                "captured_at": record.get("captured_at", ""),
-                "image_media_url": safe_media_url(record.get("image_media_url")) or "",
-                "site_context": record.get("site_context_summary", ""),
-                "vision_status": _vision_status_label(record.get("status", "")),
-                "area_guess": record.get("area_guess", ""),
-                "description": _vision_description_label(record.get("description", "")),
-                "visible_objects": ", ".join(string_list(record.get("visible_objects"))),
-                "possible_conditions": ", ".join(string_list(record.get("possible_conditions"))),
-                "possible_issues": ", ".join(string_list(record.get("possible_issues"))),
-                "warnings": ", ".join(significant_warnings(record.get("warnings"))),
-                "model_name": record.get("model_name", ""),
-                "confidence": record.get("confidence", ""),
-            }
-        )
+    status = str(record.get("status") or "").strip().lower()
+    if status in {"failed", "malformed"}:
+        message = str(error.get("message") or "").strip()
+        return f"Vision analysis did not complete: {message}" if message else "Vision analysis did not complete."
+    description = str(_vision_description_label(record.get("description", "")) or "").strip()
+    if description and description != "Awaiting analysis.":
+        return description
+    return "Awaiting analysis." if not status or status == "missing" else "No vision description available."
+
+
+def render_photo_card(record: dict[str, object]) -> str:
+    title = (
+        str(record.get("area_guess") or "").strip()
+        or str(record.get("submitted_area") or "").strip()
+        or "Photo"
     )
-    title = str(record.get("area_guess") or "").strip() or "Photo"
+    description = _photo_description(record)
+    status_label, status_kind = _photo_status(record)
+    meta_parts = [
+        html.escape(str(record.get("submitted_phase") or "").strip()),
+        render_relative_time(str(record.get("captured_at") or "")),
+    ]
+    meta = " &middot; ".join(part for part in meta_parts if part)
+    meta_html = (
+        f'<p class="subline site-gallery-meta">{meta}</p>'
+        if meta
+        else '<p class="subline site-gallery-meta">&mdash;</p>'
+    )
     return f"""
-    <article>
-      <h3>{html.escape(title)}</h3>
+    <article class="site-gallery-card">
       {render_photo_preview(record)}
-      {details}
-      {failure}
+      <span class="site-gallery-card-body">
+        <strong>{html.escape(title)}</strong>
+        {meta_html}
+        <p>{html.escape(description)}</p>
+        {_pill(status_label, status=status_kind)}
+      </span>
     </article>
     """
+
+
+def render_photo_processing_details(record: dict[str, object]) -> str:
+    error = record.get("error") if isinstance(record.get("error"), dict) else {}
+    values = _without_empty_values(
+        {
+            "photo_asset_id": record.get("photo_asset_id", ""),
+            "submitter": record.get("submitter_name", UNKNOWN_SUBMITTER),
+            "submitter_id": record.get("submitter_id", ""),
+            "submitted_area": record.get("submitted_area", ""),
+            "submitted_phase": record.get("submitted_phase", ""),
+            "captured_at": record.get("captured_at", ""),
+            "image_media_url": safe_media_url(record.get("image_media_url")) or "",
+            "site_context": record.get("site_context_summary", ""),
+            "vision_status": _vision_status_label(record.get("status", "")),
+            "area_guess": record.get("area_guess", ""),
+            "description": _vision_description_label(record.get("description", "")),
+            "visible_objects": ", ".join(string_list(record.get("visible_objects"))),
+            "possible_conditions": ", ".join(string_list(record.get("possible_conditions"))),
+            "possible_issues": ", ".join(string_list(record.get("possible_issues"))),
+            "warnings": ", ".join(significant_warnings(record.get("warnings"))),
+            "model_name": record.get("model_name", ""),
+            "confidence": record.get("confidence", ""),
+            "error_type": error.get("type", ""),
+            "error_message": error.get("message", ""),
+            "can_retry": error.get("can_retry", ""),
+        }
+    )
+    title = (
+        str(record.get("area_guess") or "").strip()
+        or str(record.get("submitted_area") or "").strip()
+        or str(record.get("photo_asset_id") or "").strip()
+        or "Photo"
+    )
+    return f"""
+    <article>
+      <h4>{html.escape(title)}</h4>
+      {render_kv(values)}
+    </article>
+    """
+
+
+def render_photo_processing_section(photo_records: list[dict[str, object]]) -> str:
+    if not photo_records:
+        return '<section><h3>Photo vision details</h3><p class="muted">No photos discovered for this capture.</p></section>'
+    return f'<section><h3>Photo vision details</h3>{"".join(render_photo_processing_details(record) for record in photo_records)}</section>'
+
+
+def _capture_meta_chips(detail_record: dict[str, object], photo_records: list[dict[str, object]]) -> str:
+    photo_count = int(detail_record.get("photo_count") or 0)
+    photo_label = f"{photo_count} photo" if photo_count == 1 else f"{photo_count} photos"
+    captured_at = str(detail_record.get("captured_at") or "").strip()
+    date_label = render_relative_time(captured_at) or html.escape(captured_at or "Date unknown")
+    status_label, status_kind = _overall_capture_status(photo_records, photo_count=photo_count)
+    return (
+        '<p class="subline">'
+        f'{_pill(photo_label)}'
+        f'<span class="pill">{date_label}</span>'
+        f'{_pill(status_label, status=status_kind)}'
+        "</p>"
+    )
+
+
+def _details_block(title: str, body: str, *, count: int | None = None) -> str:
+    count_html = ""
+    if count is not None:
+        count_html = (
+            '<span class="details-count">'
+            f'{html.escape(str(count))} {html.escape("record" if count == 1 else "records")}'
+            "</span>"
+        )
+    return (
+        '<details class="detail-block">'
+        f'<summary><span>{html.escape(title)}</span>{count_html}</summary>'
+        f'<div class="detail-block-body">{body}</div>'
+        "</details>"
+    )
+
+
+def _friendly_extraction_summary(
+    candidates: list[dict[str, object]],
+    drafts_by_candidate: dict[str, list[dict[str, object]]],
+) -> str:
+    if not candidates:
+        return '<section><h3>Extraction summary</h3><p>No issues flagged - routine QC.</p></section>'
+
+    candidate_count = len(candidates)
+    draft_count = sum(len(drafts_by_candidate.get(str(candidate.get("candidate_id") or ""), [])) for candidate in candidates)
+    candidate_word = "follow-up" if candidate_count == 1 else "follow-ups"
+    if draft_count:
+        state_counts: dict[str, int] = {}
+        for candidate in candidates:
+            for draft in drafts_by_candidate.get(str(candidate.get("candidate_id") or ""), []):
+                state = humanize_key(draft.get("queue_state") or "not_staged").lower()
+                state_counts[state] = state_counts.get(state, 0) + 1
+        states = ", ".join(f"{count} {state}" for state, count in sorted(state_counts.items()))
+        tail = f"{draft_count} draft{'s' if draft_count != 1 else ''} {states}"
+    else:
+        statuses = sorted(
+            {
+                humanize_key(candidate.get("status") or "in_review").lower()
+                for candidate in candidates
+            }
+        )
+        tail = ", ".join(statuses) or "in review"
+    return (
+        '<section><h3>Extraction summary</h3>'
+        f'<p>Extracted: {candidate_count} {candidate_word} proposed &rarr; {html.escape(tail)}.</p>'
+        "</section>"
+    )
+
+
+def _candidate_links(candidates: list[dict[str, object]]) -> str:
+    return "".join(
+        f'<li><a href="/candidates?candidate_id={quote(str(item.get("candidate_id") or ""))}">{html.escape(str(item.get("summary") or item.get("candidate_id") or ""))}</a></li>'
+        for item in candidates
+    ) or "<li>No candidates.</li>"
+
+
+def _draft_links(candidates: list[dict[str, object]], drafts: dict[str, list[dict[str, object]]]) -> str:
+    links = []
+    for candidate in candidates:
+        for draft in drafts.get(str(candidate.get("candidate_id") or ""), []):
+            links.append(f'<li><a href="/drafts?draft_id={quote(str(draft.get("draft_id") or ""))}">{html.escape(str(draft.get("draft_id") or ""))}</a> {html.escape(humanize_key(draft.get("queue_state") or ""))}</li>')
+    return "".join(links) or "<li>No drafts.</li>"
+
+
+def _other_uploads_section(root: Path, upload_dir: Path | None) -> str:
+    other_uploads = ""
+    if upload_dir:
+        for item in sorted(upload_dir.glob("*")):
+            if not item.is_file():
+                continue
+            if (mimetypes.guess_type(item.name)[0] or "").startswith("image/"):
+                continue
+            media_url = f"/media/{item.relative_to(root / 'uploads')}"
+            other_uploads += f'<li><a href="{html.escape(media_url)}">{html.escape(item.name)}</a></li>'
+    return f"<section><h3>Other uploads</h3><ul>{other_uploads or '<li>No other uploads.</li>'}</ul></section>"
+
+
+def render_voice_processing_section(root: Path, audio_assets: list[audio_transcription.FieldAudioAsset]) -> str:
+    if not audio_assets:
+        return '<section><h3>Voice note processing</h3><p class="muted">No voice note.</p></section>'
+
+    transcript_dir = audio_transcription.default_transcript_dir(root)
+    cards = []
+    for asset in audio_assets:
+        transcript_path = audio_transcription.transcript_path_for(transcript_dir, asset.audio_asset_id)
+        transcript, _error = read_json_artifact(transcript_path)
+        details = render_kv(
+            {
+                "audio_asset_id": asset.audio_asset_id,
+                "filename": asset.audio_filename,
+                "transcript_status": str(transcript.get("status") or "pending") if transcript else "pending",
+            }
+        )
+        cards.append(
+            f"""
+            <article>
+              <h4>{html.escape(asset.audio_filename or asset.audio_asset_id)}</h4>
+              {details}
+            </article>
+            """
+        )
+    return f'<section><h3>Voice note processing</h3>{"".join(cards)}</section>'
+
+
+def _processing_details_section(
+    root: Path,
+    upload_dir: Path | None,
+    detail_record: dict[str, object],
+    photo_records: list[dict[str, object]],
+    audio_assets: list[audio_transcription.FieldAudioAsset],
+    candidates: list[dict[str, object]],
+    drafts: dict[str, list[dict[str, object]]],
+) -> str:
+    capture_details = record_section(
+        "Capture details",
+        detail_record,
+        (
+            "capture_id",
+            "site",
+            "area",
+            "submitter",
+            "captured_at",
+            "vision_status",
+            "photo_count",
+            "candidate_count",
+            "sidecar_count",
+        ),
+    )
+    candidate_links = _candidate_links(candidates)
+    draft_links = _draft_links(candidates, drafts)
+    body = f"""
+    {capture_details}
+    {render_photo_processing_section(photo_records)}
+    {_other_uploads_section(root, upload_dir)}
+    {render_voice_processing_section(root, audio_assets)}
+    {render_semantic_results_section(root, audio_assets)}
+    <section><h3>Action candidates</h3><ul>{candidate_links}</ul></section>
+    <section><h3>Drafts and queue state</h3><ul>{draft_links}</ul></section>
+    """
+    count = int(detail_record.get("sidecar_count") or 0) + len(candidates)
+    return _details_block("Processing details", body, count=count)
 
 
 def capture_detail_record(
@@ -427,19 +662,14 @@ def render_voice_transcript_section(root: Path, audio_assets: list[audio_transcr
         transcript, _error = read_json_artifact(transcript_path)
         raw_text = str(transcript.get("raw_text") or "").strip() if transcript else ""
         transcript_html = _plain_text_block(raw_text) if raw_text else f'<p class="muted">{html.escape(_transcript_status_text(transcript))}</p>'
-        details = render_kv(
-            {
-                "audio_asset_id": asset.audio_asset_id,
-                "filename": asset.audio_filename,
-                "transcript_status": str(transcript.get("status") or "pending") if transcript else "pending",
-            }
-        )
+        transcript_status = str(transcript.get("status") or "pending") if transcript else "pending"
+        status_html = f'<p class="subline">{html.escape(_transcript_status_text({"status": transcript_status}))}</p>' if raw_text else ""
         cards.append(
             f"""
             <article>
               <h3>{html.escape(asset.audio_filename or asset.audio_asset_id)}</h3>
+              {status_html}
               {audio_player(asset.audio_media_url)}
-              {details}
               {transcript_html}
             </article>
             """
@@ -504,26 +734,14 @@ def render_detail(ctx: object, capture_id: str) -> str:
     drafts = draft_map(root)
 
     photo_records = photo_card_records_for_capture(root, capture_id)
-    photos_html = "".join(render_photo_card(record) for record in photo_records) or "<p>No photos in this capture.</p>"
+    photos_html = (
+        f'<div class="site-gallery">{"".join(render_photo_card(record) for record in photo_records)}</div>'
+        if photo_records
+        else '<p class="zero-state">No photos in this capture.</p>'
+    )
     audio_assets = audio_assets_for_capture(root, capture_id)
     voice_transcript_html = render_voice_transcript_section(root, audio_assets)
-    semantic_results_html = render_semantic_results_section(root, audio_assets)
     detail_record = capture_detail_record(root, capture_id, upload_dir, candidates, photo_records)
-    capture_details = record_section(
-        "Capture details",
-        detail_record,
-        (
-            "capture_id",
-            "site",
-            "area",
-            "submitter",
-            "captured_at",
-            "vision_status",
-            "photo_count",
-            "candidate_count",
-            "sidecar_count",
-        ),
-    )
     vault_dir = getattr(getattr(ctx, "config", None), "vault_dir", root)
     site_label = html.unescape(plain_site_label(str(detail_record.get("site") or ""), vault_dir))
     raw_site = str(detail_record.get("site") or "")
@@ -532,32 +750,15 @@ def render_detail(ctx: object, capture_id: str) -> str:
     submitter_label = str(detail_record.get("submitter") or UNKNOWN_SUBMITTER)
     header_parts = [part for part in (site_label, submitter_label) if part]
     header_title = " &mdash; ".join(html.escape(part) for part in header_parts) or "Capture Detail"
-
-    other_uploads = ""
-    if upload_dir:
-        for item in sorted(upload_dir.glob("*")):
-            if not item.is_file():
-                continue
-            if (mimetypes.guess_type(item.name)[0] or "").startswith("image/"):
-                continue
-            media_url = f"/media/{item.relative_to(root / 'uploads')}"
-            other_uploads += f'<li><a href="{html.escape(media_url)}">{html.escape(item.name)}</a></li>'
-
-    candidate_links = "".join(f'<li><a href="/candidates?candidate_id={quote(str(item.get("candidate_id") or ""))}">{html.escape(str(item.get("summary") or item.get("candidate_id") or ""))}</a></li>' for item in candidates) or "<li>No candidates.</li>"
-    draft_links = []
-    for candidate in candidates:
-        for draft in drafts.get(str(candidate.get("candidate_id") or ""), []):
-            draft_links.append(f'<li><a href="/drafts?draft_id={quote(str(draft.get("draft_id") or ""))}">{html.escape(str(draft.get("draft_id") or ""))}</a> {html.escape(humanize_key(draft.get("queue_state") or ""))}</li>')
+    processing_details_html = _processing_details_section(root, upload_dir, detail_record, photo_records, audio_assets, candidates, drafts)
+    extraction_summary_html = _friendly_extraction_summary(candidates, drafts)
     body = f"""
-    <header><h1>{header_title}</h1><p class="muted"><code>{render_short_id(capture_id)}</code></p></header>
+    <header><h1>{header_title}</h1><p class="muted"><code>{render_short_id(capture_id)}</code></p>{_capture_meta_chips(detail_record, photo_records)}</header>
     {render_back_link("/captures", "Back to Captures")}
-    {capture_details}
     <section><h3>Photos</h3>{photos_html}</section>
-    <section><h3>Other uploads</h3><ul>{other_uploads or '<li>No other uploads.</li>'}</ul></section>
     {voice_transcript_html}
-    {semantic_results_html}
-    <section><h3>Action candidates</h3><ul>{candidate_links}</ul></section>
-    <section><h3>Drafts and queue state</h3><ul>{''.join(draft_links) or '<li>No drafts.</li>'}</ul></section>
+    {extraction_summary_html}
+    {processing_details_html}
     """
     return html_page("Capture Detail", body, active_section="captures")
 

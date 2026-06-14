@@ -74,17 +74,24 @@ def test_console_tab_bar_renders_live_badges_from_shared_counts(monkeypatch: pyt
         assert f"<span>{label}</span><span class=\"console-tab-badge\">{count}</span>" in body
 
 
-def test_console_default_landing_renders_review_panel(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_console_default_landing_links_to_each_queue(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    # Redesign (372): the landing no longer embeds the inline console. The four
+    # console queues are now promoted to the "Needs you" metric-card row, each
+    # card LINKING to its queue (don't-lose-info — every queue stays reachable).
+    # The inline console swipe panel itself is exercised by the direct
+    # console.render_console tests above and lives on /swipe.
     install_console_counts(monkeypatch, {"review": 0, "issues": 0, "supplies": 0, "equipment": 0})
 
     status, _content_type, body = request_text("GET", "/", tmp_path / "runtime")
 
     assert status == HTTPStatus.OK
-    assert 'data-console-tab="review"' in body
-    assert "One proposed job at a time" in body
-    assert "needs approval" in body
-    assert "Nothing waiting for approval" in body
-    assert "<kbd>U</kbd> mark unknown" in body
+    # "Needs you" metric cards, each an <a> linking to its queue surface.
+    assert "Needs you" in body
+    assert 'class="metric-grid"' in body
+    assert 'href="/candidates?status=pending_approval"' in body  # review queue
+    assert 'href="/field-capture/issues"' in body                # issues queue
+    assert 'href="/supplies?status=open"' in body                # supplies queue
+    assert 'href="/equipment?status=open"' in body               # equipment queue
 
 
 def test_console_issues_tab_renders_full_list_and_active_state(
@@ -113,16 +120,19 @@ def test_console_issues_tab_renders_full_list_and_active_state(
     assert 'data-console-tab="review"' in body
 
 
-def test_home_query_tab_renders_issues_panel(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_issues_queue_renders_site_filtered_panel(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    # Redesign (372): the landing's old "/?tab=issues" inline console view moved
+    # to the dedicated issues queue at /field-capture/issues, which the "Open
+    # issues" metric card links to. The site-filtered issue list is unchanged and
+    # still reachable (don't-lose-info) — just at its own route now.
     install_console_counts(monkeypatch, {"review": 0, "issues": 11, "supplies": 0, "equipment": 0})
     vault = tmp_path / "vault"
     write_vault_site_issue(vault)
     monkeypatch.setattr("ops_dashboard.app.get_config", lambda: SimpleNamespace(vault_dir=vault, vault_root=vault))
 
-    status, _content_type, body = request_text("GET", "/?tab=issues&site_id=7050", tmp_path / "runtime")
+    status, _content_type, body = request_text("GET", "/field-capture/issues?site_id=7050", tmp_path / "runtime")
 
     assert status == HTTPStatus.OK
-    assert 'data-console-tab="issues"' in body
     assert '<h1>Site Issues for 7050</h1>' in body
     assert "Restroom drain backup" in body
 

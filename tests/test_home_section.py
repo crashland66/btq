@@ -62,11 +62,15 @@ def test_home_section_renders_account_grouped_site_table(monkeypatch: pytest.Mon
 
 
 def test_home_section_renders_operational_sections(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Redesign (372): the two-up "needs attention" lists are now sentence-case
+    # named panels ("No visit in 30 days · N" / "Open opportunities · N"), not
+    # the old title-case "Sites With ..." headings. Behavioral intent — both
+    # operational lists are present on the landing — is unchanged.
     install_fake_home_views(monkeypatch)
     ctx = section_ctx(Path("."))
     html = home.render(ctx)
-    assert "Sites With No Visit In 30 Days" in html
-    assert "Sites With Open Opportunities" in html
+    assert "No visit in 30 days" in html
+    assert "Open opportunities" in html
 
 
 # NOTE (320/A): the home page is now the tabbed console. The old inline candidate/capture preview
@@ -116,7 +120,11 @@ def test_voice_memo_card_appears_in_home_render(monkeypatch):
     monkeypatch.setattr(home, "query_view", lambda *a, **kw: [])
     ctx = section_ctx(Path("."))
     html = home.render(ctx)
-    assert "Capture Observation" in html
+    # Redesign (372): the capture quick-action heading is sentence-case
+    # ("Capture observation") and the voice card lives behind the promoted
+    # Capture button / quick-capture <details>; the form still posts to the
+    # same action (don't-lose-info).
+    assert "Capture observation" in html
     assert 'action="/vault-home/voice-memo"' in html
 
 

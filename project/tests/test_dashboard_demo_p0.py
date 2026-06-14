@@ -164,9 +164,11 @@ def test_home_directory_unavailable_message_softened(tmp_path: Path, monkeypatch
     runtime_root = tmp_path / "runtime"
 
     # Force the directory build to raise ProjectorError so we hit the fallback
-    # branch deterministically, and stub the console + voice card so the render
-    # doesn't depend on a live CouchDB.
-    monkeypatch.setattr(home_section._console_mod, "render_console", lambda ctx: "<div>console</div>")
+    # branch deterministically. Redesign (372): the landing no longer embeds the
+    # console (its queues are now linked from the "Needs you" metric cards), so
+    # stub the action-card counts + voice card instead so the render doesn't
+    # depend on a live CouchDB. The softened-copy invariant is unchanged.
+    monkeypatch.setattr(home_section._inbox_mod, "console_counts", lambda ctx: {})
     monkeypatch.setattr(home_section, "_render_voice_card", lambda *a, **k: "<section>voice</section>")
 
     def _boom(*a, **k):
@@ -227,22 +229,35 @@ def test_unprocessed_photo_card_shows_awaiting_analysis_not_raw_placeholder():
 
 
 def test_unprocessed_photo_card_title_is_never_missing_or_raw_asset_id():
-    card = captures_section.render_photo_card(_missing_photo_record())
-    title = re.search(r"<h3>(.*?)</h3>", card, re.S).group(1).strip()
+    # Redesign (374): the photos-first card titles via <strong> (not <h3>) and the
+    # raw render_kv dump moved into the collapsed "Processing details" block. With
+    # no area_guess/submitted_area on the missing record the title falls back to
+    # "Photo" — never the raw status "missing" or the raw photo_asset_id.
+    record = _missing_photo_record()
+    record["submitted_area"] = ""  # force the title fallback (record has no area_guess)
+    card = captures_section.render_photo_card(record)
+    title = re.search(r"<strong>(.*?)</strong>", card, re.S).group(1).strip()
     assert title == "Photo", f"title fell back to {title!r}; expected 'Photo'"
     assert title != "missing"
     assert "fcp_rawassetid" not in title
 
 
 def test_unprocessed_photo_card_suppresses_empty_labeled_rows():
-    card = captures_section.render_photo_card(_missing_photo_record())
+    # Redesign (374): the raw key/value rows live in the "Processing details" pane
+    # (render_photo_processing_details), one click away from the card face. The
+    # don't-lose-info + empty-row-suppression invariant is asserted there.
+    details = captures_section.render_photo_processing_details(_missing_photo_record())
     # Empty-valued fields must not produce a labeled row with a blank value.
     for empty_field in ("confidence", "model_name", "area_guess"):
-        assert f"<th>{empty_field}</th><td></td>" not in card, f"{empty_field} rendered an empty row"
-    # And present fields still render.
-    assert "<th>submitter</th>" in card
-    assert "Alice Example" in card
-    assert "<th>captured_at</th>" in card
+        assert f"<th>{empty_field}</th><td></td>" not in details, f"{empty_field} rendered an empty row"
+    # And present fields still render (reachable, not dropped).
+    assert "<th>submitter</th>" in details
+    assert "Alice Example" in details
+    assert "<th>captured_at</th>" in details
+    # The card face itself carries NO raw render_kv dump (names-not-ids / no raw key dump).
+    card = captures_section.render_photo_card(_missing_photo_record())
+    assert "kv-table" not in card
+    assert "Awaiting analysis." in card
 
 
 def test_fully_populated_photo_card_renders_all_real_fields():
@@ -269,26 +284,31 @@ def test_fully_populated_photo_card_renders_all_real_fields():
         "error": {},
     }
     card = captures_section.render_photo_card(record)
+    details = captures_section.render_photo_processing_details(record)
 
-    # Title comes from the real area_guess, not "Photo".
-    assert "<h3>lobby</h3>" in card
-    # Real values present and NOT remapped.
+    # Redesign (374): card face shows the prose — title from the real area_guess
+    # (not "Photo"), the vision description, and the real status pill. ALL the raw
+    # fields still render (don't-lose-info) in the Processing details pane.
+    assert "<strong>lobby</strong>" in card
     assert "Awaiting analysis." not in card
     assert "A clean lobby with a polished floor and a front desk." in card
-    assert "fcp_done_1" in card
-    assert "Sandy Field" in card
-    assert "per_sandy" in card
-    assert "Lobby" in card
-    assert "reset" in card
-    assert "2026-06-10T08:30:00Z" in card
-    assert "Summit Wire; industrial wire facility" in card
-    assert "front desk" in card and "polished floor" in card
-    assert "recently mopped" in card
-    assert "scuff near entrance" in card
-    assert "ollama:qwen2.5vl:7b" in card
-    assert "0.82" in card
+    assert "Analyzed" in card  # real completed status surfaced as a friendly pill
+    # Every real field is preserved one click away in Processing details.
+    assert "A clean lobby with a polished floor and a front desk." in details
+    assert "fcp_done_1" in details
+    assert "Sandy Field" in details
+    assert "per_sandy" in details
+    assert "Lobby" in details
+    assert "reset" in details
+    assert "2026-06-10T08:30:00Z" in details
+    assert "Summit Wire; industrial wire facility" in details
+    assert "front desk" in details and "polished floor" in details
+    assert "recently mopped" in details
+    assert "scuff near entrance" in details
+    assert "ollama:qwen2.5vl:7b" in details
+    assert "0.82" in details
     # vision_status for a completed record is its real status (not remapped).
-    assert "<th>vision_status</th><td>completed</td>" in card
+    assert "<th>vision_status</th><td>completed</td>" in details
 
 
 def test_partial_sidecar_present_fields_show_empty_fields_suppressed():
@@ -314,15 +334,19 @@ def test_partial_sidecar_present_fields_show_empty_fields_suppressed():
         "error": {},
     }
     card = captures_section.render_photo_card(record)
+    details = captures_section.render_photo_processing_details(record)
 
-    # Present fields render.
-    assert "<th>submitter</th>" in card and "Jordan" in card
-    assert "<th>submitted_area</th>" in card and "Kitchen" in card
+    # Redesign (374): the prose description shows on the card; the raw fields with
+    # empty-row suppression are asserted on the Processing details pane.
     assert "Partial description present." in card
-    assert "wet floor" in card
+    # Present fields render in the details pane.
+    assert "<th>submitter</th>" in details and "Jordan" in details
+    assert "<th>submitted_area</th>" in details and "Kitchen" in details
+    assert "Partial description present." in details
+    assert "wet floor" in details
     # Empty fields suppressed (no blank labeled rows).
     for empty_field in ("submitter_id", "submitted_phase", "image_media_url", "visible_objects", "model_name", "confidence", "possible_issues"):
-        assert f"<th>{empty_field}</th><td></td>" not in card
+        assert f"<th>{empty_field}</th><td></td>" not in details
 
 
 def test_capture_detail_record_section_suppresses_empty_rows(tmp_path: Path):

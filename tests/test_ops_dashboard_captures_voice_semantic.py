@@ -225,13 +225,23 @@ def test_capture_details_panel_precedes_other_sections(tmp_path: Path) -> None:
 
     body = captures.render_detail(_make_ctx(runtime_root), "cap_order2")
 
-    # Panel sits above Photos / Voice / Semantic, all of which still render.
-    details_idx = body.index("<h3>Capture details</h3>")
+    # Redesign (374): photos-FIRST. The "Capture details" field-group is no longer
+    # the lead panel — it now lives inside the collapsed "Processing details"
+    # <details>, one click away (still present: don't-lose-info). The new order is
+    # Photos -> Voice -> Semantic, with the pipeline internals (Capture details,
+    # Action candidates) collapsed below.
     photos_idx = body.index("<h3>Photos</h3>")
     voice_idx = body.index("Voice note & transcript")
     semantic_idx = body.index("Semantic results")
+    processing_idx = body.index("Processing details")
+    details_idx = body.index("<h3>Capture details</h3>")
     candidates_idx = body.index("<h3>Action candidates</h3>")
-    assert details_idx < photos_idx < voice_idx < semantic_idx < candidates_idx
+    # Photos lead; the capture-details field-group is inside Processing details.
+    assert photos_idx < voice_idx
+    assert photos_idx < processing_idx < details_idx
+    assert processing_idx < candidates_idx
+    # Capture details is collapsed inside the Processing details block.
+    assert "Processing details" in body
     # Section headers normalized to <h3>, none left as <h2>.
     assert "<h2>Photos</h2>" not in body
     assert "<h2>Voice note &amp; transcript</h2>" not in body

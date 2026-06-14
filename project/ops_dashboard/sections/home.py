@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 import yaml
 from collections import defaultdict
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 from event_pipeline import couchdb_config
@@ -45,7 +45,6 @@ from btq_vault.projector import (
 )
 import ops_dashboard.sections.inbox as _inbox_mod
 import ops_dashboard.sections.field_photos as _field_photos_mod
-import ops_dashboard.sections.console as _console_mod
 
 from ops_dashboard.common import render_table
 from ops_dashboard.layout import html_page
@@ -218,7 +217,7 @@ def _collapsible_directory(dom_id: str, title: str, inner_html: str, storage_key
     block. `dom_id` and `storage_key` are caller-controlled literals; `title` is
     escaped."""
     return (
-        f'<details class="home-collapsible" id="{dom_id}" open>'
+        f'<details class="home-collapsible" id="{dom_id}">'
         f"<summary>{_esc(title)}</summary>"
         f"{inner_html}"
         "</details>"
@@ -226,7 +225,9 @@ def _collapsible_directory(dom_id: str, title: str, inner_html: str, storage_key
         "(function(){"
         f"const details=document.getElementById('{dom_id}');"
         "if(!details)return;"
-        f"try{{if(localStorage.getItem('{storage_key}')==='1'){{details.open=false;}}}}catch(_error){{}}"
+        f"try{{const saved=localStorage.getItem('{storage_key}');"
+        "if(saved==='0'){details.open=true;}"
+        "else if(saved==='1'){details.open=false;}}catch(_error){}"
         "details.addEventListener('toggle',function(){"
         f"try{{localStorage.setItem('{storage_key}',details.open?'0':'1');}}catch(_error){{}}"
         "});"
@@ -303,11 +304,242 @@ def _render_employee_directory(employee_rows: list[dict], site_records: dict[str
 
     columns = [
         {"key": "name", "label": "Name", "format": employee_name_link},
-        {"key": "primary_site", "label": "Primary Site", "format": primary_site_link},
+        {"key": "primary_site", "label": "Primary site", "format": primary_site_link},
         {"key": "phone", "label": "Phone"},
         {"key": "email", "label": "Email"},
     ]
     return render_table(items, columns, empty_text="No employee records.")
+
+
+def _active_employee_count(employee_rows: list[dict]) -> int:
+    seen_ids: set[str] = set()
+    for row in employee_rows:
+        doc = row.get("doc")
+        if not isinstance(doc, dict):
+            continue
+        if _string(doc.get("status")).lower() not in ("", "active"):
+            continue
+        employee_id = _string(doc.get("_id"))
+        if not employee_id or employee_id in seen_ids:
+            continue
+        seen_ids.add(employee_id)
+    return len(seen_ids)
+
+
+def _greeting() -> str:
+    hour = datetime.now().hour
+    if hour < 12:
+        daypart = "morning"
+    elif hour < 17:
+        daypart = "afternoon"
+    else:
+        daypart = "evening"
+    return f"Good {daypart}, Greg"
+
+
+def _count_bucket(count: int) -> str:
+    if count == 0:
+        return "empty"
+    if count <= 5:
+        return "low"
+    if count <= 20:
+        return "warn"
+    return "high"
+
+
+def _home_action_cards(ctx: object) -> tuple[list[dict[str, object]], str]:
+    notice = ""
+    try:
+        counts = _inbox_mod.console_counts(ctx)
+    except Exception as exc:  # noqa: BLE001 - homepage must degrade instead of 500ing.
+        counts = {}
+        notice = f'<p class="muted">Needs-you counts temporarily unavailable: {_esc(str(exc))}</p>'
+    cards: list[dict[str, object]] = [
+        {
+            "id": "pending_candidates",
+            "title": "Needs approval",
+            "count": int(counts.get("review", 0) or 0),
+            "see_all": "/candidates?status=pending_approval",
+            "subline": "Job drafts awaiting operator review",
+        },
+        {
+            "id": "open_site_issues",
+            "title": "Open issues",
+            "count": int(counts.get("issues", 0) or 0),
+            "see_all": "/field-capture/issues",
+            "subline": "Site issues still open",
+        },
+        {
+            "id": "open_supply_needs",
+            "title": "Supply needs",
+            "count": int(counts.get("supplies", 0) or 0),
+            "see_all": "/supplies?status=open",
+            "subline": "Open supply requests",
+        },
+        {
+            "id": "open_equipment_requests",
+            "title": "Equipment",
+            "count": int(counts.get("equipment", 0) or 0),
+            "see_all": "/equipment?status=open",
+            "subline": "Open equipment requests",
+        },
+    ]
+    return cards, notice
+
+
+def _render_home_header() -> str:
+    return (
+        '<header class="site-detail-header">'
+        "<div>"
+        f"<h1>{_esc(_greeting())}</h1>"
+        '<p class="subline">What needs attention first, with the rest kept close.</p>'
+        "</div>"
+        '<p class="site-header-actions">'
+        '<a class="button" href="#quick-capture" '
+        "onclick=\"var el=document.getElementById('quick-capture');if(el){el.open=true;}\">Capture</a>"
+        "</p>"
+        "</header>"
+    )
+
+
+def _render_action_center(cards: list[dict[str, object]], notice: str = "") -> str:
+    card_html = []
+    for card in cards:
+        count = int(card.get("count") or 0)
+        card_id = str(card.get("id") or "")
+        count_class = "count-neutral" if count <= 0 else "count-pending"
+        status = ""
+        if count > 0 and card_id == "open_site_issues":
+            status = '<p><em class="pill warning">Needs attention</em></p>'
+        card_html.append(
+            f'<a class="metric-card stat-badge" data-stat-id="{_esc(card_id)}" '
+            f'data-count-bucket="{_count_bucket(count)}" href="{_esc(str(card.get("see_all") or "#"))}">'
+            f'<strong class="{count_class}">{_esc(str(count))}</strong>'
+            f'<span>{_esc(str(card.get("title") or ""))}</span>'
+            f'<p class="subline">{_esc(str(card.get("subline") or ""))}</p>'
+            f"{status}"
+            "</a>"
+        )
+    action_section = (
+        '<section>'
+        '<div class="section-heading-row"><h2>Needs you</h2></div>'
+        f"{notice}"
+        f'<div class="metric-grid" aria-label="Needs you queues">{"".join(card_html)}</div>'
+        "</section>"
+    )
+    all_clear = _render_empty_strip(cards) if cards and all(int(card.get("count") or 0) == 0 for card in cards) else ""
+    return action_section + all_clear
+
+
+def _render_capture_surface(voice_card_html: str) -> str:
+    return (
+        '<details class="detail-block" id="quick-capture">'
+        '<summary>Capture observation <span class="details-count">Text or voice</span></summary>'
+        f'<div class="detail-block-body">{voice_card_html}</div>'
+        "</details>"
+    )
+
+
+def _site_link(site_id: str, label: str) -> str:
+    return f'<a href="/sites/{_url_path(site_id)}">{_esc(label)}</a>'
+
+
+def _sorted_locations(locations: list[_Location]) -> list[_Location]:
+    return sorted(locations, key=lambda loc: (loc.name.lower(), loc.site_id))
+
+
+def _location_list_html(locations: list[_Location], *, empty: str, limit: int | None = None) -> str:
+    rows = _sorted_locations(locations)
+    if limit is not None:
+        rows = rows[:limit]
+    if not rows:
+        return f'<p class="zero-state">{_esc(empty)}</p>'
+    items = []
+    for loc in rows:
+        account = f'<p class="subline">{_esc(loc.account)}</p>' if loc.account else ""
+        items.append(f"<li>{_site_link(loc.site_id, loc.name)}{account}</li>")
+    return f"<ul>{''.join(items)}</ul>"
+
+
+def _render_named_location_panel(
+    *,
+    title: str,
+    locations: list[_Location],
+    empty: str,
+    details_id: str,
+    full_body: str | None = None,
+) -> str:
+    count = len(locations)
+    view_all = ""
+    details = ""
+    if count:
+        view_all = (
+            f'<a href="#{_esc(details_id)}" '
+            f"onclick=\"var el=document.getElementById('{_esc(details_id)}');if(el){{el.open=true;}}\">View all</a>"
+        )
+        details = (
+            f'<details class="detail-block" id="{_esc(details_id)}">'
+            f'<summary>View all <span class="details-count">{_esc(str(count))} site{"s" if count != 1 else ""}</span></summary>'
+            f'<div class="detail-block-body">{full_body or _location_list_html(locations, empty=empty)}</div>'
+            "</details>"
+        )
+    return (
+        "<section>"
+        '<div class="section-heading-row">'
+        f"<h2>{_esc(title)} &middot; {_esc(str(count))}</h2>"
+        f"{view_all}"
+        "</div>"
+        f'{_location_list_html(locations, empty=empty, limit=6)}'
+        f"{details}"
+        "</section>"
+    )
+
+
+def _render_recent_visits_section(
+    recent_visits: dict[str, list[dict]],
+    locations: list[_Location],
+) -> str:
+    site_names = {loc.site_id: loc.name for loc in locations}
+    rows = [row for site_rows in recent_visits.values() for row in site_rows]
+    rows.sort(key=lambda row: (_row_date(row) or date.min), reverse=True)
+    count = len(rows)
+
+    def row_html(row: dict) -> str:
+        site_id = _site_id(row)
+        label = site_names.get(site_id, site_id or "Unknown site")
+        return (
+            "<li>"
+            f"{_site_link(site_id, label) if site_id else _esc(label)}"
+            f'<p class="subline">{_esc(_visit_label(row) or "Visit")}</p>'
+            "</li>"
+        )
+
+    if rows:
+        compact = f"<ul>{''.join(row_html(row) for row in rows[:6])}</ul>"
+        view_all = (
+            '<a href="#recent-visits-all" '
+            "onclick=\"var el=document.getElementById('recent-visits-all');if(el){el.open=true;}\">View all</a>"
+        )
+        details = (
+            '<details class="detail-block" id="recent-visits-all">'
+            f'<summary>View all <span class="details-count">{_esc(str(count))} visit{"s" if count != 1 else ""}</span></summary>'
+            f'<div class="detail-block-body">{_grouped_rows(recent_visits, locations, _visit_label)}</div>'
+            "</details>"
+        )
+    else:
+        compact = '<p class="zero-state">No visits in the last 14 days.</p>'
+        view_all = ""
+        details = ""
+    return (
+        "<section>"
+        '<div class="section-heading-row">'
+        f"<h2>Recent visits &middot; {_esc(str(count))}</h2>"
+        f"{view_all}"
+        "</div>"
+        f"{compact}"
+        f"{details}"
+        "</section>"
+    )
 
 
 def _make_couchdb_put(cfg: object):
@@ -561,7 +793,7 @@ def _render_voice_card(site_records: dict, employee_records: list[dict[str, str]
 
     return (
         "<section>"
-        "<h2>Capture Observation</h2>"
+        "<h2>Capture observation</h2>"
         '<form id="captureForm" method="POST" action="/vault-home/voice-memo" enctype="multipart/form-data">'
         '<input type="hidden" name="capture_id" value="">'
         f'<p><label>Site<br><select name="site_id">{options}</select></label></p>'
@@ -604,24 +836,23 @@ def _render_voice_card(site_records: dict, employee_records: list[dict[str, str]
 def _render_photos_home_group(ctx: object) -> str:
     cards_html, fallback = _field_photos_mod.latest_photo_cards(ctx, limit=4)
     if fallback:
-        filter_form = ""
         strip_html = '<p class="muted">Photos unavailable.</p>'
     elif cards_html:
-        filter_form = _field_photos_mod.render_filter_form()
         strip_html = (
-            '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:16px;margin-top:12px">'
+            '<div class="site-gallery">'
             f"{cards_html}"
             "</div>"
         )
     else:
-        filter_form = ""
         strip_html = '<p class="zero-state">No photos yet.</p>'
-    return _group(
-        "photos",
-        _section(
-            "Recent Field Photos",
-            filter_form + strip_html + '<p><a href="/field-photos">See all photos →</a></p>',
-        ),
+    return (
+        "<section>"
+        '<div class="section-heading-row">'
+        "<h2>Recent field photos</h2>"
+        '<a href="/field-photos">View all</a>'
+        "</div>"
+        f"{strip_html}"
+        "</section>"
     )
 
 
@@ -741,8 +972,7 @@ def _handoff_home_voice_memo_to_transcription(runtime_root: Path, record: dict) 
 
 
 def render(ctx: object) -> str:
-    runtime_root = ctx.runtime_root
-    console_html = _console_mod.render_console(ctx)
+    action_cards, action_notice = _home_action_cards(ctx)
 
     try:
         cfg = couchdb_config.from_env()
@@ -799,66 +1029,56 @@ def render(ctx: object) -> str:
         except Exception:
             employee_picker_rows = []
         voice_card_html = _render_voice_card(site_records, employee_picker_rows)
-        console_group_html = _group("console", console_html)
-        capture_html = _group("capture", voice_card_html)
-        reference_html = _group(
-            "reference",
-            _section(
-                "Sites With No Visit In 30 Days",
-                _location_list(
-                    inactive_locations,
-                    site_prefix="/sites/",
-                    site_suffix="",
-                    empty="All sites have a visit in the last 30 days.",
-                ),
+        capture_html = _group("capture", _render_capture_surface(voice_card_html))
+        attention_html = _group(
+            "operational",
+            _render_named_location_panel(
+                title="No visit in 30 days",
+                locations=inactive_locations,
+                empty="All sites have a visit in the last 30 days.",
+                details_id="no-visit-sites-all",
             )
-            + _section(
-                "Sites With Open Opportunities",
-                _location_list(
-                    sites_with_open_opportunities,
-                    site_prefix="/sites/",
-                    site_suffix="",
-                    empty="No sites have open opportunities.",
-                ),
+            + _render_named_location_panel(
+                title="Open opportunities",
+                locations=sites_with_open_opportunities,
+                empty="No sites have open opportunities.",
+                details_id="open-opportunities-all",
+                full_body=_grouped_rows(open_opportunities, locations_list, _opportunity_label),
             ),
         )
         directory_html = _group(
             "directory",
             _collapsible_directory(
                 "site-directory",
-                "Site Directory",
+                f"Site directory · {len(site_records)}",
                 _render_account_directory(by_account),
                 "btq-home-sites-collapsed",
             )
             + _collapsible_directory(
                 "employee-directory",
-                "Employee Directory",
+                f"Employee directory · {_active_employee_count(employee_rows)}",
                 _render_employee_directory(employee_rows, site_records),
                 "btq-home-employees-collapsed",
             ),
         )
-        photos_html = _render_photos_home_group(ctx)
-        operational_html = _group(
+        recent_activity_html = _group(
             "operational",
-            _section("Open Opportunities By Site", _grouped_rows(open_opportunities, locations_list, _opportunity_label))
-            + _section("Recent Visits By Site", _grouped_rows(recent_visits, locations_list, _visit_label)),
+            _render_photos_home_group(ctx)
+            + _render_recent_visits_section(recent_visits, locations_list),
         )
 
-        main_html = (
-            '<div class="home-main">'
-            + console_group_html
-            + directory_html
-            + "</div>"
-        )
         body = (
             '<div class="home-grid">'
-            + main_html
-            + '<div class="home-rail">'
+            + _render_home_header()
+            + _render_action_center(action_cards, action_notice)
             + capture_html
-            + reference_html
-            + "</div>"
-            + photos_html
-            + operational_html
+            + '<section><div class="section-heading-row"><h2>Needs attention</h2></div>'
+            + attention_html
+            + "</section>"
+            + '<section><div class="section-heading-row"><h2>Recent activity</h2></div>'
+            + recent_activity_html
+            + "</section>"
+            + directory_html
             + "</div>"
         )
         return html_page("BTQ", body, active_section="home")
@@ -866,11 +1086,10 @@ def render(ctx: object) -> str:
     except ProjectorError:
         body = (
             '<div class="home-grid">'
-            + _group("console", console_html)
-            + '<div class="home-rail">'
-            + _group("capture", _render_voice_card({}, []))
-            + "</div>"
-            + "</div>"
+            + _render_home_header()
+            + _render_action_center(action_cards, action_notice)
+            + _group("capture", _render_capture_surface(_render_voice_card({}, [])))
             + "<p>Directory temporarily unavailable.</p>"
+            + "</div>"
         )
         return html_page("BTQ", body, active_section="home")

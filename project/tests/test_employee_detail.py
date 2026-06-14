@@ -67,8 +67,12 @@ def test_employee_detail_summary_section_wraps_groups(monkeypatch: pytest.Monkey
 
     html = employee_detail.render(SimpleNamespace(query={}), "jordan")
 
-    assert html.count("<h2>Summary</h2>") == 1
-    summary_html = html.split("<h2>Summary</h2>", 1)[1].split("<h3>About</h3>", 1)[0]
+    # Redesign (373): the grouped summary is now the compact "Quick facts" grid.
+    # Behavioral intent is unchanged — one grouping heading wrapping the Identity
+    # and Assignment fact groups, phone/email consolidated into Identity, and no
+    # standalone Contact section.
+    assert html.count(">Quick facts</h2>") == 1
+    summary_html = html.split(">Quick facts</h2>", 1)[1].split("<h3>About</h3>", 1)[0]
     assert "<h3>Identity</h3>" in summary_html
     assert "<h3>Assignment</h3>" in summary_html
     # Phone/email are consolidated into Identity; no standalone Contact section.

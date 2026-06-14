@@ -20,18 +20,13 @@ def home_group(body: str, group_class: str) -> str:
     return body[start:end]
 
 
+# Redesign (372): the home landing no longer embeds the inline console or a
+# photos filter form. The "Needs you" queues are metric cards linking out, and
+# the recent-photos strip is a named thumbnail strip. install_full_home now
+# stubs only what the redesigned render() actually calls: the action-card
+# counts (console_counts), the projector views (query_view), the employee
+# picker, and the latest-photo cards.
 def install_full_home(monkeypatch: pytest.MonkeyPatch) -> dict[str, list[dict]]:
-    cards = [
-        {
-            "id": card_id,
-            "title": card_id.replace("_", " ").title(),
-            "count": 0,
-            "top": [],
-            "see_all": f"/inbox?card={card_id}",
-            "shape": "capture",
-        }
-        for card_id in sorted(home.HOME_CARD_IDS)
-    ]
     view_rows: dict[str, list[dict]] = {
         "by_type": [
             {
@@ -62,32 +57,9 @@ def install_full_home(monkeypatch: pytest.MonkeyPatch) -> dict[str, list[dict]]:
     ) -> list[dict]:
         return view_rows[view]
 
-    monkeypatch.setattr(home, "inbox_cards", lambda _runtime_root: cards)
-    monkeypatch.setattr(
-        home._console_mod,
-        "render_console",
-        lambda _ctx: (
-            '<section class="ops-console">'
-            '<nav class="console-tabs" role="tablist" aria-label="Operational console">'
-            '<a class="console-tab is-active" href="/?tab=review" role="tab" aria-current="page" aria-selected="true">'
-            '<span>Review</span><span class="console-tab-badge">0</span></a>'
-            '<a class="console-tab" href="/?tab=issues" role="tab" aria-selected="false">'
-            '<span>Issues</span><span class="console-tab-badge">0</span></a>'
-            '<a class="console-tab" href="/?tab=supplies" role="tab" aria-selected="false">'
-            '<span>Supplies</span><span class="console-tab-badge">0</span></a>'
-            '<a class="console-tab" href="/?tab=equipment" role="tab" aria-selected="false">'
-            '<span>Equipment</span><span class="console-tab-badge">0</span></a>'
-            '</nav><div class="console-panel" role="tabpanel" data-console-tab="review">'
-            '<header class="swipe-header"><h1>Review</h1><p>One proposed job at a time.</p></header>'
-            '</div></section>'
-        ),
-    )
+    monkeypatch.setattr(home._inbox_mod, "console_counts", lambda _ctx: {"review": 0, "issues": 0, "supplies": 0, "equipment": 0})
     monkeypatch.setattr(home, "query_view", fake_query_view)
-    monkeypatch.setattr(
-        home._field_photos_mod,
-        "render_filter_form",
-        lambda: '<form method="get" action="/field-photos" data-submit-on-change></form>',
-    )
+    monkeypatch.setattr(home, "_voice_memo_employees_lookup", lambda: [])
     monkeypatch.setattr(home._field_photos_mod, "latest_photo_cards", lambda _runtime_root, limit: ("", False))
     return view_rows
 
@@ -108,7 +80,8 @@ def home_card_titles(cards: list[dict]) -> list[str]:
 
 
 def capture_observation_card(body: str) -> str:
-    start = body.index("<section><h2>Capture Observation</h2>")
+    # Redesign (372): the voice-card heading is sentence-case.
+    start = body.index("<section><h2>Capture observation</h2>")
     end = body.index("</section>", start)
     return body[start:end]
 
@@ -162,7 +135,7 @@ def test_capture_card_inline_init_uses_dom_content_loaded(tmp_path: Path) -> Non
     status, _content_type, body = request_text("GET", "/", tmp_path / "runtime")
 
     assert status == HTTPStatus.OK
-    assert '<section><h2>Capture Observation</h2>' in body
+    assert '<section><h2>Capture observation</h2>' in body
     assert 'document.addEventListener("DOMContentLoaded"' in body
 
 
@@ -521,17 +494,27 @@ def test_handle_voice_memo_post_idempotent_replay_redirects_without_rewrite(monk
     assert exists_checks == [(cfg, "btq_voice_memos", "cap-tapedeck-1234567890-abc123xy")]
 
 
-def test_home_renders_console_group_with_review_tab(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_home_renders_needs_you_metric_row_linking_to_queues(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    # Redesign (372): the old inline console group is replaced by the "Needs you"
+    # metric-card row — four cards each LINKING to its queue (don't-lose-info).
     install_full_home(monkeypatch)
 
     status, _content_type, body = request_text("GET", "/", tmp_path / "runtime")
-    console = home_group(body, "home-group--console")
 
     assert status == HTTPStatus.OK
-    assert '<div class="home-group home-group--console">' in body
-    assert 'class="console-tabs"' in console
-    assert 'data-console-tab="review"' in console
-    assert "One proposed job at a time" in console
+    assert "<h2>Needs you</h2>" in body
+    metric_grid_start = body.index('<div class="metric-grid"')
+    metric_grid = body[metric_grid_start:body.index("</section>", metric_grid_start)]
+    for stat_id, href in (
+        ("pending_candidates", "/candidates?status=pending_approval"),
+        ("open_site_issues", "/field-capture/issues"),
+        ("open_supply_needs", "/supplies?status=open"),
+        ("open_equipment_requests", "/equipment?status=open"),
+    ):
+        assert f'data-stat-id="{stat_id}"' in metric_grid
+        assert f'href="{href}"' in metric_grid
+    # Each metric card is an anchor (the whole card links to its queue).
+    assert metric_grid.count('<a class="metric-card stat-badge"') == 4
 
 
 def test_home_cards_all_zero_render_one_empty_strip() -> None:
@@ -595,14 +578,17 @@ def test_empty_strip_pill_titles_escape_html() -> None:
     assert "<script>alert(1)</script>" not in html
 
 
-def test_home_console_replaces_old_stacked_triage(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_home_metric_row_replaces_old_stacked_triage(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    # Redesign (372): neither the old stacked-triage group nor the inline console
+    # group survives — the queues are promoted to the "Needs you" metric row.
     install_full_home(monkeypatch)
 
     status, _content_type, body = request_text("GET", "/", tmp_path / "runtime")
 
     assert status == HTTPStatus.OK
-    assert "home-group--console" in body
+    assert 'class="metric-grid"' in body
     assert "home-group--triage" not in body
+    assert "home-group--console" not in body
 
 
 def test_home_renders_capture_group_around_voice_card(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -613,7 +599,10 @@ def test_home_renders_capture_group_around_voice_card(monkeypatch: pytest.Monkey
 
     assert status == HTTPStatus.OK
     assert '<div class="home-group home-group--capture">' in body
-    assert "<h2>Capture Observation</h2>" in capture
+    # Redesign (372): the voice card is promoted behind the "Capture" button /
+    # quick-capture <details>; the heading is sentence-case.
+    assert '<summary>Capture observation' in capture
+    assert "<h2>Capture observation</h2>" in capture
 
 
 def test_home_renders_directory_group_full_width(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -628,7 +617,11 @@ def test_home_renders_directory_group_full_width(monkeypatch: pytest.MonkeyPatch
     assert '<tr class="acct-divider"><th colspan="2" scope="rowgroup">TestCo</th></tr>' in directory
 
 
-def test_home_includes_field_photos_preview_group(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_home_includes_field_photos_preview_strip(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    # Redesign (372): recent photos are now a NAMED thumbnail strip linking out
+    # ("View all" -> /field-photos), inside the Recent activity operational group.
+    # The old inline filter form on the landing is GONE (an explicit invariant —
+    # no filter form on the landing; filtering lives on /field-photos).
     install_full_home(monkeypatch)
     monkeypatch.setattr(
         home._field_photos_mod,
@@ -639,25 +632,27 @@ def test_home_includes_field_photos_preview_group(monkeypatch: pytest.MonkeyPatc
     status, _content_type, body = request_text("GET", "/", tmp_path / "runtime")
 
     assert status == HTTPStatus.OK
-    assert 'class="home-group home-group--photos"' in body
-    assert '<form method="get" action="/field-photos"' in body
-    assert (
-        'style="display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:16px;margin-top:12px"'
-        in body
-    )
-    assert '<a href="/field-photos">See all photos →</a>' in body
+    assert "<h2>Recent field photos</h2>" in body
+    photos_start = body.index("<h2>Recent field photos</h2>")
+    photos = body[photos_start:body.index("</section>", photos_start)]
+    assert '<a href="/field-photos">View all</a>' in photos
+    assert '<div class="site-gallery">' in photos
+    assert "<article>Photo</article>" in photos
+    # No inline photos filter form on the landing.
+    assert '<form method="get" action="/field-photos"' not in body
 
 
-def test_home_photos_group_renders_unavailable_notice_when_couchdb_down(
+def test_home_photos_strip_renders_unavailable_notice_when_couchdb_down(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    # Degrade-gracefully: a CouchDB-down photos read shows a muted notice, no 500.
     install_full_home(monkeypatch)
     monkeypatch.setattr(home._field_photos_mod, "latest_photo_cards", lambda _runtime_root, limit: ("", True))
 
     status, _content_type, body = request_text("GET", "/", tmp_path / "runtime")
 
     assert status == HTTPStatus.OK
-    assert 'class="home-group home-group--photos"' in body
+    assert "<h2>Recent field photos</h2>" in body
     assert '<p class="muted">Photos unavailable.</p>' in body
 
 
@@ -755,7 +750,8 @@ def test_home_directory_group_includes_employee_directory(
     directory = home_group(body, "home-group--directory")
 
     assert status == HTTPStatus.OK
-    assert "<summary>Employee Directory</summary>" in directory
+    # Redesign (372): the directory <summary> is sentence-case with a count badge.
+    assert "<summary>Employee directory · 2</summary>" in directory
     assert "Zephyr, Alice" in directory
     assert "(814) 555-0100" in directory
     assert "alice@example.com" in directory
@@ -789,12 +785,15 @@ def test_employee_directory_is_collapsible(monkeypatch: pytest.MonkeyPatch, tmp_
 
     status, _content_type, body = request_text("GET", "/", tmp_path / "runtime")
     directory = home_group(body, "home-group--directory")
-    details_start = directory.index('<details class="home-collapsible" id="employee-directory" open>')
+    # Redesign (372): collapsibles persist their open/closed state in localStorage
+    # and render closed by default (no hardcoded `open`); state is restored client
+    # side from the storage key.
+    details_start = directory.index('<details class="home-collapsible" id="employee-directory">')
     details_end = directory.index("</details>", details_start)
     employee_details = directory[details_start:details_end]
 
     assert status == HTTPStatus.OK
-    assert "<summary>Employee Directory</summary>" in employee_details
+    assert "<summary>Employee directory · 1</summary>" in employee_details
     assert '<table class="data-table">' in employee_details
     assert "Zephyr, Alice" in employee_details
     assert "(814) 555-0100" in employee_details
@@ -806,11 +805,12 @@ def test_site_directory_is_collapsible_like_employee_directory(monkeypatch: pyte
 
     status, _content_type, body = request_text("GET", "/", tmp_path / "runtime")
     directory = home_group(body, "home-group--directory")
-    start = directory.index('<details class="home-collapsible" id="site-directory" open>')
+    start = directory.index('<details class="home-collapsible" id="site-directory">')
     site_details = directory[start:directory.index("</details>", start)]
 
     assert status == HTTPStatus.OK
-    assert "<summary>Site Directory</summary>" in site_details
+    # Redesign (372): sentence-case summary with a count badge.
+    assert "<summary>Site directory · 1</summary>" in site_details
     # the account/site table is now nested inside the collapsible block
     assert '<table class="account-directory">' in site_details
     assert "btq-home-sites-collapsed" in directory
@@ -825,8 +825,8 @@ def test_site_directory_precedes_employee_directory(monkeypatch: pytest.MonkeyPa
 
     status, _content_type, body = request_text("GET", "/", tmp_path / "runtime")
     directory = home_group(body, "home-group--directory")
-    site_details_start = directory.index('<details class="home-collapsible" id="site-directory" open>')
-    employee_details_start = directory.index('<details class="home-collapsible" id="employee-directory" open>')
+    site_details_start = directory.index('<details class="home-collapsible" id="site-directory">')
+    employee_details_start = directory.index('<details class="home-collapsible" id="employee-directory">')
     account_table_start = directory.index('<table class="account-directory">')
 
     assert status == HTTPStatus.OK
@@ -941,7 +941,7 @@ def test_home_employee_directory_empty_state(monkeypatch: pytest.MonkeyPatch, tm
     directory = home_group(body, "home-group--directory")
 
     assert status == HTTPStatus.OK
-    assert "<summary>Employee Directory</summary>" in directory
+    assert "<summary>Employee directory · 0</summary>" in directory
     assert '<p class="zero-state">No employee records.</p>' in directory
 
 
@@ -953,12 +953,18 @@ def test_home_renders_operational_group_for_grouped_rows(monkeypatch: pytest.Mon
     install_full_home(monkeypatch)
 
     status, _content_type, body = request_text("GET", "/", tmp_path / "runtime")
-    operational = home_group(body, "home-group--operational")
 
     assert status == HTTPStatus.OK
     assert '<div class="home-group home-group--operational">' in body
-    assert "<h2>Open Opportunities By Site</h2>" in operational
-    assert "<h2>Recent Visits By Site</h2>" in operational
+    # Redesign (372): the two-up "needs attention" panel and the recent-activity
+    # panel are both operational groups with sentence-case, named, counted lists.
+    # First operational group: the "needs attention" two-up.
+    first_op = home_group(body, "home-group--operational")
+    assert "No visit in 30 days &middot;" in first_op
+    assert "Open opportunities &middot;" in first_op
+    # The recent-activity operational group carries recent field photos + visits.
+    assert "<h2>Recent field photos</h2>" in body
+    assert "Recent visits &middot;" in body
 
 
 def test_home_grid_shell_wraps_all_groups(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -970,36 +976,37 @@ def test_home_grid_shell_wraps_all_groups(monkeypatch: pytest.MonkeyPatch, tmp_p
 
     assert status == HTTPStatus.OK
     assert body.count('<div class="home-grid">') == 1
+    # Redesign (372): the grid shell wraps the redesigned groups — the capture
+    # surface, the operational "needs attention" + "recent activity" groups, and
+    # the directory group. (Console/photos groups were folded into the metric row
+    # and the operational recent-activity group respectively.)
     for group_class in (
-        "home-group--console",
         "home-group--capture",
         "home-group--directory",
-        "home-group--photos",
         "home-group--operational",
     ):
         assert group_class in grid
+    # The promoted "Needs you" metric row also lives inside the grid.
+    assert 'class="metric-grid"' in grid
 
 
-def test_home_main_wrapper_contains_console_and_directory(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_home_grid_orders_metric_row_before_directory(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    # Redesign (372): the old home-main / home-rail two-column split is gone — the
+    # page is a single home-grid. The "Needs you" metric row leads; the directory
+    # (full-width collapsibles) comes after. No leftover rail wrapper.
     install_full_home(monkeypatch)
 
     status, _content_type, body = request_text("GET", "/", tmp_path / "runtime")
-    main_marker = '<div class="home-main">'
-    main_end_marker = '</div><div class="home-rail">'
-    assert main_marker in body
+    grid_start = body.index('<div class="home-grid">')
+    grid = body[grid_start:body.index("</main>", grid_start)]
 
-    main_start = body.index('<div class="home-main">')
-    main_end = body.index(main_end_marker, main_start)
-    rail_start = main_end + len("</div>")
-    main = body[main_start:main_end]
-    console_start = main.index("home-group--console")
-    directory_start = main.index("home-group--directory")
+    metric_start = grid.index('class="metric-grid"')
+    directory_start = grid.index("home-group--directory")
 
     assert status == HTTPStatus.OK
-    assert console_start < directory_start
-    assert main_start < rail_start
-    assert directory_start < rail_start
-    assert "home-rail" not in main
+    assert metric_start < directory_start
+    assert "home-main" not in body
+    assert "home-rail" not in body
 
 
 def test_admin_css_defines_home_grid(tmp_path: Path) -> None:
