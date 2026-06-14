@@ -73,6 +73,48 @@ PUBLIC_CONTENT_TYPES = {
     ".png": "image/png",
     ".svg": "image/svg+xml",
 }
+IOS_BUNDLE_ID = "com.btq.fieldcapture"
+AASA_CONTENT_TYPE = "application/json"
+
+
+def apple_app_site_association_payload(environ: dict[str, str] | None = None) -> dict[str, object] | None:
+    """Build the Apple App Site Association payload for native onboarding.
+
+    The Apple Team ID is intentionally runtime configuration. The public repo
+    must not commit a personal team identifier, but the deployed server needs
+    the concrete appID so iOS can verify universal links for fc.gregstoltz.com.
+    """
+    environ = environ or os.environ
+    configured_app_id = str(environ.get("BTQ_APPLE_APP_ID") or "").strip()
+    if configured_app_id:
+        app_id = configured_app_id
+    else:
+        team_id = str(environ.get("BTQ_APPLE_TEAM_ID") or "").strip()
+        if not team_id:
+            return None
+        bundle_id = str(environ.get("BTQ_IOS_BUNDLE_ID") or IOS_BUNDLE_ID).strip() or IOS_BUNDLE_ID
+        app_id = f"{team_id}.{bundle_id}"
+
+    return {
+        "applinks": {
+            "apps": [],
+            "details": [
+                {
+                    "appID": app_id,
+                    "components": [
+                        {
+                            "/": "/",
+                            "comment": "BTQ tokenized onboarding links on the field-capture root.",
+                        },
+                        {
+                            "/": "/onboard/*",
+                            "comment": "BTQ native onboarding path reserved for future links.",
+                        },
+                    ],
+                }
+            ],
+        }
+    }
 
 
 class UnifiedCaptureServer(ThreadingHTTPServer):
@@ -117,6 +159,9 @@ class UnifiedCaptureHandler(BaseHTTPRequestHandler):
         if path == "/api/my-submissions":
             self.handle_my_submissions()
             return
+        if path in ("/.well-known/apple-app-site-association", "/apple-app-site-association"):
+            self.handle_apple_app_site_association()
+            return
         if path == "/sw.js":
             self.write_bytes(
                 render_service_worker_bytes("unified_capture"),
@@ -135,6 +180,20 @@ class UnifiedCaptureHandler(BaseHTTPRequestHandler):
         if self.try_serve_public(path):
             return
         self.write_json({"error": "not_found"}, HTTPStatus.NOT_FOUND)
+
+    def handle_apple_app_site_association(self) -> None:
+        payload = apple_app_site_association_payload()
+        if payload is None:
+            self.write_json(
+                {
+                    "error": "apple_app_site_association_not_configured",
+                    "message": "Set BTQ_APPLE_TEAM_ID or BTQ_APPLE_APP_ID on the deployed server.",
+                },
+                HTTPStatus.SERVICE_UNAVAILABLE,
+            )
+            return
+        body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+        self.write_bytes(body, AASA_CONTENT_TYPE, cache_control="public, max-age=3600")
 
     def do_POST(self) -> None:
         path = urlsplit(self.path).path
@@ -750,6 +809,8 @@ class UnifiedCaptureHandler(BaseHTTPRequestHandler):
             limits=self.media_record_limits(audio_files),
             audio_duration_seconds=fields.get("audio_duration_seconds", "").strip(),
         )
+        self.apply_photo_notes(media_paths.photo_records, fields.get("photo_notes_json", ""))
+        client_metadata = self.parse_client_metadata(fields.get("metadata_json", ""))
         attribution = resolve_submission_attribution(session, fields)
         domain_fields: dict[str, object] = {
             "site": site,
@@ -766,6 +827,8 @@ class UnifiedCaptureHandler(BaseHTTPRequestHandler):
             "captured_at": captured_at,
             "exported_at": exported_at,
         }
+        if client_metadata:
+            domain_fields["client_metadata"] = client_metadata
         doc = build_capture_document_envelope(
             capture_id=capture_id,
             doc_type="field_capture",
@@ -774,6 +837,47 @@ class UnifiedCaptureHandler(BaseHTTPRequestHandler):
             audio=media_paths.audio_records,
         )
         return doc, media_paths.photo_records + media_paths.audio_records
+
+    def apply_photo_notes(self, photo_records: list[dict[str, str]], raw_photo_notes: str) -> None:
+        raw = str(raw_photo_notes or "").strip()
+        if not raw:
+            return
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise SubmissionError(HTTPStatus.BAD_REQUEST, "invalid_photo_notes", "Invalid photo note metadata") from exc
+        if not isinstance(payload, list):
+            raise SubmissionError(HTTPStatus.BAD_REQUEST, "invalid_photo_notes", "Invalid photo note metadata")
+
+        notes_by_index: dict[int, str] = {}
+        for item in payload:
+            if not isinstance(item, dict):
+                raise SubmissionError(HTTPStatus.BAD_REQUEST, "invalid_photo_notes", "Invalid photo note metadata")
+            try:
+                index = int(item.get("index"))
+            except (TypeError, ValueError) as exc:
+                raise SubmissionError(HTTPStatus.BAD_REQUEST, "invalid_photo_notes", "Invalid photo note metadata") from exc
+            note = str(item.get("note") or "").strip()
+            if index >= 0 and note:
+                notes_by_index[index] = note[:2000]
+
+        for index, record in enumerate(photo_records):
+            if index in notes_by_index:
+                record["note"] = notes_by_index[index]
+
+    def parse_client_metadata(self, raw_metadata: str) -> dict[str, object]:
+        raw = str(raw_metadata or "").strip()
+        if not raw:
+            return {}
+        if len(raw) > 10_000:
+            raise SubmissionError(HTTPStatus.BAD_REQUEST, "invalid_metadata", "Invalid client metadata")
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise SubmissionError(HTTPStatus.BAD_REQUEST, "invalid_metadata", "Invalid client metadata") from exc
+        if not isinstance(payload, dict):
+            raise SubmissionError(HTTPStatus.BAD_REQUEST, "invalid_metadata", "Invalid client metadata")
+        return payload
 
     def media_record_limits(self, audio_files: list[UploadedFile]) -> IngestLimits:
         audio_mime_extensions = dict(AUDIO_CONTENT_TYPES)

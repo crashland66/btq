@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import re
 import tempfile
 import unittest
@@ -318,6 +319,34 @@ class ScaffoldTests(unittest.TestCase):
         self.assertEqual(resp.status, 200)
         self.assertIn("javascript", resp.headers.get("Content-Type", ""))
         self.assertTrue(len(resp.body) > 0)
+
+    def test_apple_app_site_association_requires_deployment_app_id(self) -> None:
+        with mock.patch.dict(os.environ, {}, clear=True):
+            resp = self.get("/.well-known/apple-app-site-association")
+
+        self.assertEqual(resp.status, HTTPStatus.SERVICE_UNAVAILABLE)
+        self.assertEqual(resp.json()["error"], "apple_app_site_association_not_configured")
+
+    def test_apple_app_site_association_serves_native_onboarding_contract(self) -> None:
+        with mock.patch.dict(os.environ, {"BTQ_APPLE_TEAM_ID": "TEAM123456"}, clear=True):
+            resp = self.get("/.well-known/apple-app-site-association")
+
+        self.assertEqual(resp.status, 200)
+        self.assertEqual(resp.headers.get("Content-Type"), "application/json")
+        self.assertIn("public", resp.headers.get("Cache-Control", ""))
+        payload = resp.json()
+        details = payload["applinks"]["details"]
+        self.assertEqual(details[0]["appID"], "TEAM123456.com.btq.fieldcapture")
+        self.assertIn({"apps": [], "details": details}, [payload["applinks"]])
+        components = details[0]["components"]
+        self.assertTrue(any(component.get("/") == "/" for component in components))
+
+    def test_apple_app_site_association_root_path_is_supported(self) -> None:
+        with mock.patch.dict(os.environ, {"BTQ_APPLE_APP_ID": "TEAM123456.com.btq.fieldcapture"}, clear=True):
+            resp = self.get("/apple-app-site-association")
+
+        self.assertEqual(resp.status, 200)
+        self.assertEqual(resp.json()["applinks"]["details"][0]["appID"], "TEAM123456.com.btq.fieldcapture")
 
     def test_unknown_route_404(self) -> None:
         resp = self.get("/api/does-not-exist")
@@ -1825,7 +1854,23 @@ class SubmitBehaviorTests(unittest.TestCase):
 
     def test_photo_only_writes_one_field_capture_doc(self) -> None:
         resp = self.submit(
-            _valid_submit_fields(),
+            _valid_submit_fields(
+                extra={
+                    "photo_notes_json": json.dumps(
+                        [{"index": 0, "filename": "a.png", "note": "Overflowing restroom trash"}]
+                    ),
+                    "metadata_json": json.dumps(
+                        {
+                            "schema_version": 1,
+                            "client": "btq_native_apple",
+                            "visit_id": "visit-123",
+                            "asset_kind": "photo",
+                            "photo_count": 1,
+                            "has_audio": False,
+                        }
+                    ),
+                }
+            ),
             photos=[("a.png", "image/png", _TINY_PNG)],
         )
         self.assertEqual(resp.status, 201, resp.text)
@@ -1837,6 +1882,7 @@ class SubmitBehaviorTests(unittest.TestCase):
         # single capture_id, shared with _id
         self.assertEqual(doc["capture_id"], doc["_id"])
         self.assertEqual(len(doc["photos"]), 1)
+        self.assertEqual(doc["photos"][0].get("note"), "Overflowing restroom trash")
         # audio absent or empty
         self.assertFalse(doc.get("audio"))
         # domain fields present
@@ -1845,6 +1891,9 @@ class SubmitBehaviorTests(unittest.TestCase):
         self.assertEqual(doc["site_id"], "7060")
         self.assertEqual(doc["person_id"], "per_unified01")
         self.assertEqual(doc["qc_category"], "report_an_issue")
+        self.assertEqual(doc["client_metadata"]["client"], "btq_native_apple")
+        self.assertEqual(doc["client_metadata"]["visit_id"], "visit-123")
+        self.assertEqual(doc["client_metadata"]["photo_count"], 1)
         # media actually persisted (one photo file on disk)
         self.assertEqual(len(self._uploaded_files()), 1)
 
@@ -1899,6 +1948,16 @@ class SubmitBehaviorTests(unittest.TestCase):
         # Whitespace-only note is not a real note -> still 400, no doc.
         resp = self.submit(_valid_submit_fields(extra={"note": "   \t\n "}))
         self.assertEqual(resp.status, 400, resp.text)
+        self.assertEqual(len(self.writer.put_calls), 0)
+        self.assertEqual(self._uploaded_files(), [])
+
+    def test_invalid_metadata_json_is_400_no_doc_no_media(self) -> None:
+        resp = self.submit(
+            _valid_submit_fields(extra={"metadata_json": "not-json"}),
+            photos=[("a.png", "image/png", _TINY_PNG)],
+        )
+        self.assertEqual(resp.status, 400, resp.text)
+        self.assertIn("invalid_metadata", resp.text)
         self.assertEqual(len(self.writer.put_calls), 0)
         self.assertEqual(self._uploaded_files(), [])
 
