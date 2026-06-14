@@ -32,6 +32,36 @@ import UniformTypeIdentifiers
     #expect(session.maxImages == 6)
 }
 
+@Test func sessionDecodesLiveDisplayCategoryVariants() throws {
+    let json = """
+    {
+      "person": {"person_id": "employee_1", "name": "Field Person"},
+      "token": {"token_id": "token_1", "label": "Pilot"},
+      "sites": [
+        {
+          "site_id": "site_1",
+          "label": "Site One",
+          "display_categories": [
+            {"canonical": "general_note", "label": "General note"},
+            {"label": "Supply request"},
+            "incident"
+          ]
+        }
+      ],
+      "can_submit": true,
+      "can_review": false,
+      "max_images": 6,
+      "inbox_count": 0
+    }
+    """.data(using: .utf8)!
+
+    let session = try JSONDecoder().decode(BTQSession.self, from: json)
+    let categories = try #require(session.sites.first?.displayCategories)
+
+    #expect(categories.map(\.value) == ["general_note", "Supply request", "incident"])
+    #expect(categories.map(\.label) == ["General note", "Supply request", "incident"])
+}
+
 @Test func mySubmissionsDecodesBackendShape() throws {
     let json = """
     {

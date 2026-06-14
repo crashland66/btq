@@ -299,6 +299,69 @@ public struct BTQDisplayCategory: Identifiable, Codable, Equatable, Sendable {
         self.value = value
         self.label = label
     }
+
+    enum CodingKeys: String, CodingKey {
+        case value
+        case label
+        case canonical
+        case slug
+        case id
+        case key
+        case name
+    }
+
+    public init(from decoder: Decoder) throws {
+        if let singleValueContainer = try? decoder.singleValueContainer(),
+           let text = try? singleValueContainer.decode(String.self) {
+            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            self.value = trimmed
+            self.label = trimmed
+            return
+        }
+
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let labelCandidate = Self.firstPresentString(
+            in: container,
+            keys: [.label, .name, .value, .canonical, .slug, .id, .key]
+        )
+        let valueCandidate = Self.firstPresentString(
+            in: container,
+            keys: [.value, .canonical, .slug, .id, .key, .name, .label]
+        )
+
+        guard let resolvedValue = valueCandidate ?? labelCandidate else {
+            throw DecodingError.keyNotFound(
+                CodingKeys.value,
+                DecodingError.Context(
+                    codingPath: decoder.codingPath,
+                    debugDescription: "Display category requires a value, canonical, slug, id, key, name, or label."
+                )
+            )
+        }
+
+        self.value = resolvedValue
+        self.label = labelCandidate ?? resolvedValue
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(value, forKey: .value)
+        try container.encode(label, forKey: .label)
+    }
+
+    private static func firstPresentString(
+        in container: KeyedDecodingContainer<CodingKeys>,
+        keys: [CodingKeys]
+    ) -> String? {
+        for key in keys {
+            if let value = try? container.decodeIfPresent(String.self, forKey: key)?
+                .trimmingCharacters(in: .whitespacesAndNewlines),
+               !value.isEmpty {
+                return value
+            }
+        }
+        return nil
+    }
 }
 
 public struct Visit: Identifiable, Codable, Equatable, Sendable {
