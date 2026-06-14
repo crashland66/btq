@@ -87,6 +87,7 @@ public final class VoiceRecorder {
     @ObservationIgnored private let permissionChecker: any VoiceRecordingPermissionChecking
     private var recorder: AVAudioRecorder?
     private var player: AVAudioPlayer?
+    private var playbackObserver: VoicePlaybackObserver?
     private var playbackTask: Task<Void, Never>?
     private var durationTask: Task<Void, Never>?
     private var currentURL: URL?
@@ -210,19 +211,29 @@ public final class VoiceRecorder {
             try AVAudioSession.sharedInstance().setActive(true)
             #endif
             let player = try AVAudioPlayer(contentsOf: url)
+            let playbackObserver = VoicePlaybackObserver(
+                onFinish: { [weak self] in
+                    Task { @MainActor in
+                        self?.finishPlayback()
+                    }
+                },
+                onError: { [weak self] error in
+                    Task { @MainActor in
+                        self?.finishPlayback(errorMessage: error?.localizedDescription ?? "Voice memo playback failed.")
+                    }
+                }
+            )
             player.prepareToPlay()
+            player.delegate = playbackObserver
             player.play()
             self.player = player
+            self.playbackObserver = playbackObserver
             isPlaying = true
             let duration = max(player.duration, 0.25)
             playbackTask = Task { [weak self] in
-                try? await Task.sleep(nanoseconds: UInt64(duration * 1_000_000_000))
+                try? await Task.sleep(nanoseconds: UInt64((duration + 0.5) * 1_000_000_000))
                 await MainActor.run {
-                    guard let self else { return }
-                    if self.player?.isPlaying != true {
-                        self.isPlaying = false
-                        self.player = nil
-                    }
+                    self?.finishPlaybackIfCompleted()
                 }
             }
         } catch {
@@ -235,6 +246,7 @@ public final class VoiceRecorder {
         playbackTask = nil
         player?.stop()
         player = nil
+        playbackObserver = nil
         isPlaying = false
     }
 
@@ -272,6 +284,22 @@ public final class VoiceRecorder {
     private func stopDurationTimer() {
         durationTask?.cancel()
         durationTask = nil
+    }
+
+    private func finishPlaybackIfCompleted() {
+        guard isPlaying, player?.isPlaying != true else { return }
+        finishPlayback()
+    }
+
+    private func finishPlayback(errorMessage: String? = nil) {
+        playbackTask?.cancel()
+        playbackTask = nil
+        player = nil
+        playbackObserver = nil
+        isPlaying = false
+        if let errorMessage {
+            self.errorMessage = errorMessage
+        }
     }
 
     #if os(iOS)
@@ -336,5 +364,27 @@ private extension VoiceRecordingPermissionStatus {
         @unknown default:
             self = .unknown
         }
+    }
+}
+
+private final class VoicePlaybackObserver: NSObject, AVAudioPlayerDelegate {
+    private let onFinish: () -> Void
+    private let onError: (Error?) -> Void
+
+    init(onFinish: @escaping () -> Void, onError: @escaping (Error?) -> Void) {
+        self.onFinish = onFinish
+        self.onError = onError
+    }
+
+    func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
+        if flag {
+            onFinish()
+        } else {
+            onError(nil)
+        }
+    }
+
+    func audioPlayerDecodeErrorDidOccur(_ player: AVAudioPlayer, error: (any Error)?) {
+        onError(error)
     }
 }
