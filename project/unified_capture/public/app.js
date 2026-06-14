@@ -52,6 +52,7 @@
     categoryInput: document.querySelector("#categoryInput"),
     canvas: document.querySelector("#captureCanvas"),
     thumbnailGrid: document.querySelector("#thumbnailGrid"),
+    photoNoteTemplate: document.querySelector("#photoNoteTemplate"),
     photoCount: document.querySelector("#photoCount"),
     cameraInput: document.querySelector("#cameraInput"),
     fileInput: document.querySelector("#fileInput"),
@@ -932,7 +933,13 @@
       mimeType: "image/jpeg",
       blob,
       previewUrl: "",
+      note: "",
     };
+  }
+
+  function autoGrowPhotoNote(textarea) {
+    textarea.style.height = "auto";
+    textarea.style.height = `${textarea.scrollHeight}px`;
   }
 
   async function addFiles(files) {
@@ -973,6 +980,8 @@
     state.photos.forEach((photo, index) => {
       const card = document.createElement("div");
       card.className = "thumbnail-card";
+      const preview = document.createElement("div");
+      preview.className = "thumbnail-preview";
       const image = document.createElement("img");
       if (!photo.previewUrl) photo.previewUrl = URL.createObjectURL(photo.blob);
       image.src = photo.previewUrl;
@@ -989,8 +998,18 @@
         renderPhotos();
         setStatus("Photo removed.");
       });
-      card.append(image, remove);
+      const noteField = elements.photoNoteTemplate.content.firstElementChild.cloneNode(true);
+      const noteInput = noteField.querySelector(".photo-note-input");
+      noteInput.value = photo.note || "";
+      noteInput.disabled = !state.formEnabled || state.isSubmitting;
+      noteInput.addEventListener("input", () => {
+        photo.note = noteInput.value || "";
+        autoGrowPhotoNote(noteInput);
+      });
+      preview.append(image, remove);
+      card.append(preview, noteField);
       elements.thumbnailGrid.append(card);
+      autoGrowPhotoNote(noteInput);
     });
     elements.photoCount.textContent = `${state.photos.length} of ${state.maxPhotos}`;
     updateSubmitState();
@@ -1210,6 +1229,7 @@
         state.photos.map(async (photo) => ({
           filename: photo.filename,
           mimeType: photo.mimeType,
+          note: photo.note || "",
           bytes: await photo.blob.arrayBuffer(),
         })),
       ),
@@ -1292,6 +1312,16 @@
     return part ? part.blob : null;
   }
 
+  function photoNotesJSON(photos) {
+    const notes = [];
+    photos.forEach((photo, index) => {
+      const note = (photo.note || "").trim();
+      if (!note) return;
+      notes.push({ index, filename: photo.filename, note });
+    });
+    return notes.length ? JSON.stringify(notes) : null;
+  }
+
   async function uploadOneCapture(record) {
     const form = new FormData();
     const fields = record.fields || {};
@@ -1301,6 +1331,8 @@
     for (const photo of record.photos || []) {
       form.append("photos", partBlob(photo), photo.filename);
     }
+    const photoNotes = photoNotesJSON(record.photos || []);
+    if (photoNotes) form.append("photo_notes_json", photoNotes);
     if (record.audio) {
       form.append("audio", partBlob(record.audio), record.audio.filename);
       form.append("audio_duration_seconds", String(record.audio.durationSeconds || 0));

@@ -119,6 +119,12 @@
       <div id="siteGuidance" class="site-guidance" role="note" aria-live="polite" hidden></div>
       <canvas id="captureCanvas" hidden></canvas>
       <div id="thumbnailGrid" class="thumbnail-grid" aria-label="Attached photos"></div>
+      <template id="photoNoteTemplate">
+        <label class="photo-note-label">
+          <span class="photo-note-label-text">Photo note</span>
+          <textarea class="photo-note-input" rows="1" aria-label="Note for this photo" placeholder="Photo note"></textarea>
+        </label>
+      </template>
       <div class="photo-button-row">
         <label class="add-photo-button add-photo-button--primary">
           <svg class="photo-glyph" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M3 7h4l2-2h6l2 2h4v12H3z"/><circle cx="12" cy="13" r="3.5"/></svg>
