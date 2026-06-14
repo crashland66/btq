@@ -781,6 +781,9 @@ import UniformTypeIdentifiers
 
     #expect(loaded.session?.person.name == "Demo Employee")
     #expect(loaded.sites.count == BTQSession.demo.sites.count)
+    #expect(loaded.sites.first?.siteID == "site_sandy_sandbox")
+    #expect(loaded.sites.first?.label == "Sandy Sandbox")
+    #expect(!loaded.sites.contains { $0.label == "Dickinson Center" })
     #expect(loaded.visits.count == 1)
     #expect(loaded.captures.first?.captureID == "cap-unified-sqlite")
     #expect(loaded.captures.first?.retryAfter != nil)
@@ -1661,7 +1664,7 @@ import UniformTypeIdentifiers
     #expect(enabledModel.statusMessage == "Test upload failure alert sent.")
     #expect(await enabledScheduler.failedUploads.count == 1)
     #expect(await enabledScheduler.failedUploads.first?.captureID.hasPrefix("test-upload-failure-") == true)
-    #expect(await enabledScheduler.failedUploads.first?.siteLabel == "Dickinson Center")
+    #expect(await enabledScheduler.failedUploads.first?.siteLabel == "Sandy Sandbox")
     #expect(await enabledScheduler.failedUploads.first?.reason == "Test upload failure alert from Settings.")
 }
 

@@ -6,8 +6,8 @@ public extension BTQSession {
         token: BTQToken(tokenID: "demo-token", label: "Demo Field Token"),
         sites: [
             BTQSite(
-                siteID: "site_dickinson",
-                label: "Dickinson Center",
+                siteID: "site_sandy_sandbox",
+                label: "Sandy Sandbox",
                 captureGuidance: "Capture reality quickly: photos first, voice if details matter.",
                 displayCategories: [
                     BTQDisplayCategory(value: "cleaning_quality", label: "Cleaning quality"),
