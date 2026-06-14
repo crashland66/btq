@@ -128,6 +128,14 @@ private struct LocalCaptureQueueRow: View {
                     .lineLimit(2)
             }
 
+            if let failureRecoveryHint = capture.failureRecoveryHint {
+                Label(failureRecoveryHint, systemImage: "lightbulb")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(3)
+                    .accessibilityLabel("Recovery guidance: \(failureRecoveryHint)")
+            }
+
             if capture.status == .failed {
                 Button {
                     Task { await model.retryCapture(capture.captureID) }

@@ -364,6 +364,8 @@ import UniformTypeIdentifiers
     #expect(queueView.contains("\"queue.server.capture.\\(submission.captureID)\""))
     #expect(queueView.contains("Retry upload for"))
     #expect(queueView.contains("Moves this failed capture back to pending."))
+    #expect(queueView.contains("failureRecoveryHint"))
+    #expect(queueView.contains("Recovery guidance:"))
     #expect(queueView.contains(".disabled(model.isSyncing || !model.canSubmitCaptures)"))
     #expect(queueView.contains("accessibilitySummary"))
     #expect(queueView.contains("Flags:"))
@@ -1698,6 +1700,60 @@ import UniformTypeIdentifiers
     #expect(model.captures.first?.lastError == "Previous failure")
     #expect(model.captures.first?.retryAfter == nil)
     #expect(model.statusMessage == "Wait for sync to finish before retrying.")
+}
+
+@Test func failedCaptureRecoveryHintsExplainFieldActions() {
+    let missingPhoto = LocalCapture(
+        captureID: "capture-missing-photo",
+        jobID: "job-missing-photo",
+        visitID: nil,
+        siteID: "site_1",
+        siteLabel: "Site One",
+        targetID: "site_1",
+        qcCategory: "general_note",
+        note: "Missing photo",
+        capturedAt: .now,
+        exportedAt: .now,
+        status: .failed,
+        lastError: "Missing photo file: missing.jpg"
+    )
+    #expect(missingPhoto.failureRecoveryHint == "Delete this local capture and capture it again; the saved media file is no longer on this device.")
+
+    let tooManyPhotos = LocalCapture(
+        captureID: "capture-too-many",
+        jobID: "job-too-many",
+        visitID: nil,
+        siteID: "site_1",
+        siteLabel: "Site One",
+        targetID: "site_1",
+        qcCategory: "general_note",
+        note: "Too many photos",
+        capturedAt: .now,
+        exportedAt: .now,
+        status: .failed,
+        lastError: "At most one photo may be submitted"
+    )
+    #expect(tooManyPhotos.failureRecoveryHint == "Delete and resave this capture with fewer photos.")
+
+    let backendIssue = LocalCapture(
+        captureID: "capture-backend",
+        jobID: "job-backend",
+        visitID: nil,
+        siteID: "site_1",
+        siteLabel: "Site One",
+        targetID: "site_1",
+        qcCategory: "general_note",
+        note: "Backend issue",
+        capturedAt: .now,
+        exportedAt: .now,
+        status: .failed,
+        lastError: "Operator fixed the site assignment"
+    )
+    #expect(backendIssue.failureRecoveryHint == "Retry after the issue is fixed, or delete and capture it again.")
+
+    var pending = backendIssue
+    pending.status = .pending
+    #expect(pending.failureRecoveryHint == nil)
 }
 
 @Test @MainActor func modelCanConnectAndSwitchBetweenCachedAccounts() async {

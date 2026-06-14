@@ -455,6 +455,18 @@ public struct LocalCapture: Identifiable, Codable, Equatable, Sendable {
         self.photos = photos
         self.audio = audio
     }
+
+    public var failureRecoveryHint: String? {
+        guard status == .failed, let lastError, !lastError.isEmpty else { return nil }
+        let normalized = lastError.localizedLowercase
+        if normalized.contains("missing photo file") || normalized.contains("missing audio file") {
+            return "Delete this local capture and capture it again; the saved media file is no longer on this device."
+        }
+        if normalized.contains("too many") || normalized.contains("at most") || normalized.contains("max images") {
+            return "Delete and resave this capture with fewer photos."
+        }
+        return "Retry after the issue is fixed, or delete and capture it again."
+    }
 }
 
 public struct CapturePhoto: Identifiable, Codable, Equatable, Sendable {
