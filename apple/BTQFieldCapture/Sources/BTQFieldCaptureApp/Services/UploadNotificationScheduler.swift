@@ -39,6 +39,7 @@ public enum NotificationPermissionStatus: String, Sendable, Equatable {
 public protocol UploadNotificationScheduling: Sendable {
     func authorizationStatus() async -> NotificationPermissionStatus
     func requestAuthorization() async -> NotificationPermissionStatus
+    func notifyTestAlert() async
     func notifyUploadFailed(capture: LocalCapture, reason: String) async
     func notifySyncRecovered(pendingCount: Int) async
 }
@@ -58,6 +59,14 @@ public actor UploadNotificationScheduler: UploadNotificationScheduling {
         } catch {
             return await authorizationStatus()
         }
+    }
+
+    public func notifyTestAlert() async {
+        let content = UNMutableNotificationContent()
+        content.title = "BTQ test alert"
+        content.body = "Sync alerts are ready on this device."
+        content.sound = .default
+        await schedule(content: content, identifier: "btq-test-alert-\(UUID().uuidString)")
     }
 
     public func notifyUploadFailed(capture: LocalCapture, reason: String) async {
@@ -105,6 +114,7 @@ public actor NoopUploadNotificationScheduler: UploadNotificationScheduling {
         return status
     }
 
+    public func notifyTestAlert() async {}
     public func notifyUploadFailed(capture: LocalCapture, reason: String) async {}
     public func notifySyncRecovered(pendingCount: Int) async {}
 }

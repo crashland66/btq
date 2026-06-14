@@ -165,6 +165,9 @@ import UniformTypeIdentifiers
     )
     #expect(iOSApp.contains("IOSBackgroundSyncTaskHandler.register"))
     #expect(iOSApp.contains("IOSBackgroundSyncScheduler()"))
+    #expect(iOSApp.contains("UNUserNotificationCenter.current().delegate"))
+    #expect(iOSApp.contains("willPresent notification"))
+    #expect(iOSApp.contains("[.banner, .list, .sound]"))
 
     let associatedDomains = try #require(iOSEntitlements["com.apple.developer.associated-domains"] as? [String])
     #expect(associatedDomains.contains("applinks:fc.gregstoltz.com"))
@@ -397,6 +400,10 @@ import UniformTypeIdentifiers
     )
     #expect(settingsView.contains("\"settings.notifications.status\""))
     #expect(settingsView.contains("\"settings.notifications.enable\""))
+    #expect(settingsView.contains("\"settings.notifications.test\""))
+    #expect(settingsView.contains("Send Test Alert"))
+    #expect(settingsView.contains("model.sendTestNotification()"))
+    #expect(settingsView.contains(".disabled(!model.notificationPermissionStatus.allowsScheduling)"))
     #expect(settingsView.contains("showingRemoveAccountConfirmation"))
     #expect(settingsView.contains(".confirmationDialog("))
     #expect(settingsView.contains("Remove this account?"))
@@ -1371,6 +1378,34 @@ import UniformTypeIdentifiers
     #expect(model.notificationPermissionStatus == .authorized)
     #expect(model.statusMessage == "Sync alerts enabled.")
     #expect(await notificationScheduler.authorizationRequestCount == 1)
+}
+
+@Test @MainActor func testNotificationRequiresAndUsesPermission() async {
+    let disabledScheduler = RecordingUploadNotificationScheduler(status: .notDetermined)
+    let disabledModel = FieldCaptureModel(
+        store: MemoryFieldCaptureStore(),
+        apiClient: MockCaptureAPIClient(),
+        tokenStore: MemoryTokenStore(),
+        notificationScheduler: disabledScheduler
+    )
+
+    await disabledModel.sendTestNotification()
+
+    #expect(disabledModel.statusMessage == "Enable sync alerts before sending a test.")
+    #expect(await disabledScheduler.testAlertCount == 0)
+
+    let enabledScheduler = RecordingUploadNotificationScheduler(status: .authorized)
+    let enabledModel = FieldCaptureModel(
+        store: MemoryFieldCaptureStore(),
+        apiClient: MockCaptureAPIClient(),
+        tokenStore: MemoryTokenStore(),
+        notificationScheduler: enabledScheduler
+    )
+
+    await enabledModel.sendTestNotification()
+
+    #expect(enabledModel.statusMessage == "Test sync alert sent.")
+    #expect(await enabledScheduler.testAlertCount == 1)
 }
 
 @Test @MainActor func syncCompleteNotificationDoesNotFireWhenPendingBecomesFailed() async {
@@ -2908,6 +2943,7 @@ private actor RecordingUploadNotificationScheduler: UploadNotificationScheduling
     private(set) var failedUploads: [RecordingUploadFailure] = []
     private(set) var syncRecoveredPendingCounts: [Int] = []
     private(set) var authorizationRequestCount = 0
+    private(set) var testAlertCount = 0
     private var status: NotificationPermissionStatus
     private let requestedStatus: NotificationPermissionStatus
 
@@ -2924,6 +2960,10 @@ private actor RecordingUploadNotificationScheduler: UploadNotificationScheduling
         authorizationRequestCount += 1
         status = requestedStatus
         return status
+    }
+
+    func notifyTestAlert() async {
+        testAlertCount += 1
     }
 
     func notifyUploadFailed(capture: LocalCapture, reason: String) async {

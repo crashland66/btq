@@ -53,6 +53,13 @@ struct SettingsView: View {
                 }
                 .disabled(model.notificationPermissionStatus.allowsScheduling)
                 .accessibilityIdentifier("settings.notifications.enable")
+                Button {
+                    Task { await model.sendTestNotification() }
+                } label: {
+                    Label("Send Test Alert", systemImage: "bell.and.waves.left.and.right")
+                }
+                .disabled(!model.notificationPermissionStatus.allowsScheduling)
+                .accessibilityIdentifier("settings.notifications.test")
                 if model.notificationPermissionStatus == .denied {
                     Text("Enable notifications in system Settings to receive sync alerts.")
                         .font(.caption)

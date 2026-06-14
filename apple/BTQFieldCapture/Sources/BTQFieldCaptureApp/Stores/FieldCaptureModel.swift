@@ -189,6 +189,16 @@ public final class FieldCaptureModel {
         }
     }
 
+    public func sendTestNotification() async {
+        await refreshNotificationPermissionStatus()
+        guard notificationPermissionStatus.allowsScheduling else {
+            statusMessage = "Enable sync alerts before sending a test."
+            return
+        }
+        await notificationScheduler.notifyTestAlert()
+        statusMessage = "Test sync alert sent."
+    }
+
     @discardableResult
     public func connectWithOnboardingURL(_ url: URL) async -> Bool {
         guard let token = OnboardingLinkParser.token(from: url) else {
