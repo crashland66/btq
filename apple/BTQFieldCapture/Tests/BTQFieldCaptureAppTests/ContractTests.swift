@@ -368,6 +368,14 @@ import UniformTypeIdentifiers
     #expect(captureView.contains("unsaved photos and voice memo from the current draft"))
     #expect(captureView.contains("Photo note for"))
     #expect(captureView.contains("Starts recording a voice memo."))
+    #expect(captureView.contains("\"voice.record\""))
+    #expect(captureView.contains("\"voice.pause\""))
+    #expect(captureView.contains("\"voice.resume\""))
+    #expect(captureView.contains("\"voice.stop\""))
+    #expect(captureView.contains("\"voice.playback.play\""))
+    #expect(captureView.contains("Play Voice Memo"))
+    #expect(captureView.contains("Voice memo ready"))
+    #expect(captureView.contains("\"voice.status\""))
     #expect(captureView.contains(".accessibilityElement(children: .combine)"))
 
     let queueView = try String(

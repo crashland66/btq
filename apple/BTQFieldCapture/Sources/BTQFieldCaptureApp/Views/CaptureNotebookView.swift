@@ -531,12 +531,14 @@ struct VoiceRecorderView: View {
                     } label: {
                         Label(recorder.isPaused ? "Resume" : "Pause", systemImage: recorder.isPaused ? "play.fill" : "pause.fill")
                     }
+                    .accessibilityIdentifier(recorder.isPaused ? "voice.resume" : "voice.pause")
                     .accessibilityHint(recorder.isPaused ? "Continues the current voice memo." : "Pauses the current voice memo.")
                     Button {
                         _ = recorder.stop()
                     } label: {
                         Label("Stop", systemImage: "stop.fill")
                     }
+                    .accessibilityIdentifier("voice.stop")
                     .accessibilityHint("Finishes this voice memo and keeps it with the draft.")
                 } else {
                     Button {
@@ -544,14 +546,16 @@ struct VoiceRecorderView: View {
                     } label: {
                         Label(recorder.lastAudio == nil ? "Voice" : "Re-record", systemImage: "mic")
                     }
+                    .accessibilityIdentifier(recorder.lastAudio == nil ? "voice.record" : "voice.rerecord")
                     .accessibilityHint(recorder.lastAudio == nil ? "Starts recording a voice memo." : "Replaces the current voice memo.")
 
                     if recorder.lastAudio != nil {
                         Button {
                             recorder.isPlaying ? recorder.stopPlayback() : recorder.play()
                         } label: {
-                            Label(recorder.isPlaying ? "Stop Playback" : "Play", systemImage: recorder.isPlaying ? "stop.fill" : "play.fill")
+                            Label(recorder.isPlaying ? "Stop Playback" : "Play Voice Memo", systemImage: recorder.isPlaying ? "stop.fill" : "play.fill")
                         }
+                        .accessibilityIdentifier(recorder.isPlaying ? "voice.playback.stop" : "voice.playback.play")
                         .accessibilityHint(recorder.isPlaying ? "Stops voice memo playback." : "Plays the saved voice memo.")
                     }
                 }
@@ -559,13 +563,15 @@ struct VoiceRecorderView: View {
             .buttonStyle(.bordered)
 
             if recorder.isRecording {
-                Text(recorder.isPaused ? "Recording paused" : "Recording...")
+                Text(recorder.isPaused ? "Voice memo paused" : "Recording voice memo...")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                    .accessibilityIdentifier("voice.status")
             } else if let audio = recorder.lastAudio {
-                Text("Voice memo \(VoiceRecorder.formatDuration(audio.durationSeconds))")
+                Text("Voice memo ready \(VoiceRecorder.formatDuration(audio.durationSeconds))")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                    .accessibilityIdentifier("voice.status")
             }
 
             if let errorMessage = recorder.errorMessage {
