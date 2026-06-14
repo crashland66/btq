@@ -199,6 +199,34 @@ public final class FieldCaptureModel {
         statusMessage = "Test sync alert sent."
     }
 
+    public func sendTestUploadFailureNotification() async {
+        await refreshNotificationPermissionStatus()
+        guard notificationPermissionStatus.allowsScheduling else {
+            statusMessage = "Enable sync alerts before sending a failure test."
+            return
+        }
+        let site = selectedSite
+        let siteID = site?.siteID ?? "test-site"
+        let now = Date()
+        let capture = LocalCapture(
+            captureID: "test-upload-failure-\(UUID().uuidString)",
+            jobID: "test-upload-failure",
+            visitID: nil,
+            siteID: siteID,
+            siteLabel: site?.label ?? "Test Site",
+            targetID: siteID,
+            qcCategory: "notification_test",
+            note: "Test upload failure alert",
+            capturedAt: now,
+            exportedAt: now
+        )
+        await notificationScheduler.notifyUploadFailed(
+            capture: capture,
+            reason: "Test upload failure alert from Settings."
+        )
+        statusMessage = "Test upload failure alert sent."
+    }
+
     @discardableResult
     public func connectWithOnboardingURL(_ url: URL) async -> Bool {
         guard let token = OnboardingLinkParser.token(from: url) else {

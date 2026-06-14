@@ -494,6 +494,9 @@ import UniformTypeIdentifiers
     #expect(settingsView.contains("\"settings.notifications.test\""))
     #expect(settingsView.contains("Send Test Alert"))
     #expect(settingsView.contains("model.sendTestNotification()"))
+    #expect(settingsView.contains("Send Failure Alert"))
+    #expect(settingsView.contains("model.sendTestUploadFailureNotification()"))
+    #expect(settingsView.contains("\"settings.notifications.test.failure\""))
     #expect(settingsView.contains(".disabled(!model.notificationPermissionStatus.allowsScheduling)"))
     #expect(settingsView.contains("Section(\"Screen mode\")"))
     #expect(settingsView.contains("Picker(\"Screen mode\", selection: $screenMode)"))
@@ -1540,6 +1543,38 @@ import UniformTypeIdentifiers
     #expect(await enabledScheduler.testAlertCount == 1)
 }
 
+@Test @MainActor func uploadFailureTestNotificationRequiresAndUsesPermission() async {
+    let disabledScheduler = RecordingUploadNotificationScheduler(status: .notDetermined)
+    let disabledModel = FieldCaptureModel(
+        store: MemoryFieldCaptureStore(),
+        apiClient: MockCaptureAPIClient(),
+        tokenStore: MemoryTokenStore(),
+        notificationScheduler: disabledScheduler
+    )
+
+    await disabledModel.sendTestUploadFailureNotification()
+
+    #expect(disabledModel.statusMessage == "Enable sync alerts before sending a failure test.")
+    #expect(await disabledScheduler.failedUploads.isEmpty)
+
+    let enabledScheduler = RecordingUploadNotificationScheduler(status: .authorized)
+    let enabledModel = FieldCaptureModel(
+        store: MemoryFieldCaptureStore(),
+        apiClient: MockCaptureAPIClient(),
+        tokenStore: MemoryTokenStore(),
+        notificationScheduler: enabledScheduler
+    )
+    await enabledModel.load()
+
+    await enabledModel.sendTestUploadFailureNotification()
+
+    #expect(enabledModel.statusMessage == "Test upload failure alert sent.")
+    #expect(await enabledScheduler.failedUploads.count == 1)
+    #expect(await enabledScheduler.failedUploads.first?.captureID.hasPrefix("test-upload-failure-") == true)
+    #expect(await enabledScheduler.failedUploads.first?.siteLabel == "Dickinson Center")
+    #expect(await enabledScheduler.failedUploads.first?.reason == "Test upload failure alert from Settings.")
+}
+
 @Test @MainActor func syncCompleteNotificationDoesNotFireWhenPendingBecomesFailed() async {
     let account = BTQAccount.defaultProduction
     let missingPhotoURL = FileManager.default.temporaryDirectory
@@ -1573,7 +1608,7 @@ import UniformTypeIdentifiers
     #expect(model.queueSummary.failed == 1)
     #expect(await notificationScheduler.syncRecoveredPendingCounts.isEmpty)
     #expect(await notificationScheduler.failedUploads == [
-        RecordingUploadFailure(captureID: "capture-notify-missing-photo", reason: "Missing photo file: missing.jpg")
+        RecordingUploadFailure(captureID: "capture-notify-missing-photo", reason: "Missing photo file: missing.jpg", siteLabel: "Site One")
     ])
 }
 
@@ -1723,7 +1758,7 @@ import UniformTypeIdentifiers
     #expect(await apiClient.submittedCount == 1)
     #expect(await apiClient.submittedCaptureIDs == ["capture-valid"])
     #expect(await notificationScheduler.failedUploads == [
-        RecordingUploadFailure(captureID: "capture-rejected", reason: "Capture is not valid for this site")
+        RecordingUploadFailure(captureID: "capture-rejected", reason: "Capture is not valid for this site", siteLabel: "Site One")
     ])
     #expect(await notificationScheduler.syncRecoveredPendingCounts.isEmpty)
 }
@@ -3080,6 +3115,7 @@ private actor ReentrantSubmittedHistoryAPIClient: CaptureAPIClient {
 private struct RecordingUploadFailure: Equatable, Sendable {
     var captureID: String
     var reason: String
+    var siteLabel: String = ""
 }
 
 private actor RecordingUploadNotificationScheduler: UploadNotificationScheduling {
@@ -3110,7 +3146,7 @@ private actor RecordingUploadNotificationScheduler: UploadNotificationScheduling
     }
 
     func notifyUploadFailed(capture: LocalCapture, reason: String) async {
-        failedUploads.append(RecordingUploadFailure(captureID: capture.captureID, reason: reason))
+        failedUploads.append(RecordingUploadFailure(captureID: capture.captureID, reason: reason, siteLabel: capture.siteLabel))
     }
 
     func notifySyncRecovered(pendingCount: Int) async {

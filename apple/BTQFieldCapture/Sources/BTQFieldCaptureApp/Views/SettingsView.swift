@@ -81,6 +81,13 @@ struct SettingsView: View {
                 }
                 .disabled(!model.notificationPermissionStatus.allowsScheduling)
                 .accessibilityIdentifier("settings.notifications.test")
+                Button {
+                    Task { await model.sendTestUploadFailureNotification() }
+                } label: {
+                    Label("Send Failure Alert", systemImage: "exclamationmark.triangle")
+                }
+                .disabled(!model.notificationPermissionStatus.allowsScheduling)
+                .accessibilityIdentifier("settings.notifications.test.failure")
                 if model.notificationPermissionStatus == .denied {
                     Text("Enable notifications in system Settings to receive sync alerts.")
                         .font(.caption)

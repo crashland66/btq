@@ -108,6 +108,9 @@ submission.
   playback.
 - Verify poor-connectivity capture and automatic sync recovery.
 - Verify local notification permission request and upload failure alerts.
+  Use Settings > Send Failure Alert after sync alerts are enabled to validate
+  the upload-failed notification presentation without corrupting a real queued
+  capture.
 - Verify associated-domain universal link configuration on
   `fc.gregstoltz.com`.
 
