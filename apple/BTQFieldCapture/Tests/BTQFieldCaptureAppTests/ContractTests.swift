@@ -231,6 +231,21 @@ import UniformTypeIdentifiers
         encoding: .utf8
     )
     #expect(captureNotebookView.contains("FieldCaptureBrandHeader()"))
+    #expect(captureNotebookView.contains("private var captureHeader"))
+    #expect(captureNotebookView.contains("\"capture.header.sync\""))
+    #expect(captureNotebookView.contains(".toolbar(.hidden, for: .navigationBar)"))
+    #expect(captureNotebookView.contains(".padding(.top, 8)"))
+    #expect(captureNotebookView.contains(".safeAreaInset(edge: .bottom)"))
+    #expect(captureNotebookView.contains("TextField(\"Observation note\", text: $model.observationText, axis: .vertical)"))
+    #expect(captureNotebookView.contains(".lineLimit(3...5)"))
+
+    let paletteSource = try String(
+        contentsOf: packageRoot().appendingPathComponent("Sources/BTQFieldCaptureApp/Support/BTQPalette.swift"),
+        encoding: .utf8
+    )
+    #expect(paletteSource.contains("static let btqAccent"))
+    #expect(paletteSource.contains("static let btqNavy"))
+    #expect(paletteSource.contains("static let btqUploading"))
 
     let brandHeaderCatalog = try String(
         contentsOf: packageRoot().appendingPathComponent("Sources/BTQFieldCaptureApp/Resources/Brand.xcassets/FieldCaptureHeader.imageset/Contents.json"),
@@ -401,6 +416,13 @@ import UniformTypeIdentifiers
     #expect(captureView.contains(".navigationTitle(captureNavigationTitle)"))
     #expect(captureView.contains("private var captureNavigationTitle: String"))
     #expect(captureView.contains(".navigationBarTitleDisplayMode(.inline)"))
+    #expect(captureView.contains(".toolbar(.hidden, for: .navigationBar)"))
+    #expect(captureView.contains("HeaderIconButtonStyle"))
+    #expect(captureView.contains("\"capture.header.sync\""))
+    #expect(captureView.contains(".padding(.top, 8)"))
+    #expect(captureView.contains(".safeAreaInset(edge: .bottom)"))
+    #expect(captureView.contains("TextField(\"Observation note\", text: $model.observationText, axis: .vertical)"))
+    #expect(captureView.contains(".lineLimit(3...5)"))
     #expect(captureView.contains("\"capture.save.local\""))
     #expect(captureView.contains("isImportingPhotos"))
     #expect(captureView.contains("photoImportMessage"))
@@ -440,6 +462,10 @@ import UniformTypeIdentifiers
     #expect(captureView.contains("TapeRecordButtonStyle"))
     #expect(captureView.contains("TapeStopButtonStyle"))
     #expect(captureView.contains("TapeClearButtonStyle"))
+    #expect(captureView.contains(".tint(.btqAccent)"))
+    #expect(captureView.contains("case .done: .btqAccent"))
+    #expect(captureView.contains("case .uploading: .btqUploading"))
+    #expect(!captureView.contains("case .uploading: .blue"))
     #expect(captureView.contains("Text(\"●\")"))
     #expect(captureView.contains("Text(\"■\")"))
     #expect(captureView.contains("Text(\"×\")"))
@@ -528,6 +554,7 @@ import UniformTypeIdentifiers
     #expect(screenModeSource.contains("ScreenMode(rawValue: rawValue) ?? .system"))
     #expect(rootView.contains("@AppStorage(\"btq.screenMode\")"))
     #expect(rootView.contains(".preferredColorScheme(ScreenMode.normalized(screenModeRaw).preferredColorScheme)"))
+    #expect(rootView.contains(".tint(.btqAccent)"))
     #expect(rootView.contains("BTQFieldCaptureShell(model: model, screenMode: screenMode)"))
     #expect(rootView.contains(".onOpenURL { url in"))
     #expect(rootView.contains("Task { await handleOnboardingURL(url) }"))

@@ -32,7 +32,7 @@ struct SitesView: View {
                         if site.siteID == model.selectedSiteID {
                             Label("Selected", systemImage: "checkmark.circle.fill")
                                 .labelStyle(.iconOnly)
-                                .foregroundStyle(.tint)
+                                .foregroundStyle(Color.btqAccent)
                         }
                     }
                 }
@@ -49,6 +49,7 @@ struct SitesView: View {
                     Image(systemName: site.isFavorite ? "star.fill" : "star")
                 }
                 .buttonStyle(.plain)
+                .foregroundStyle(site.isFavorite ? Color.btqAccent : Color.secondary)
                 .accessibilityLabel(site.isFavorite ? "Remove \(site.label) from favorites" : "Add \(site.label) to favorites")
                 .accessibilityHint("Favorites appear first in the site list.")
             }

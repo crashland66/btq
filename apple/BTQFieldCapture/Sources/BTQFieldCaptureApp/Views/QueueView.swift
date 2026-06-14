@@ -196,8 +196,8 @@ private struct LocalCaptureQueueRow: View {
     private func color(for status: CaptureQueueStatus) -> Color {
         switch status {
         case .failed: .red
-        case .done: .green
-        case .uploading: .blue
+        case .done: .btqAccent
+        case .uploading: .btqUploading
         default: .primary
         }
     }

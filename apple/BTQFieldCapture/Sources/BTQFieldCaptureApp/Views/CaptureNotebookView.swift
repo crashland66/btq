@@ -51,20 +51,30 @@ struct CaptureNotebookView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
-                FieldCaptureBrandHeader()
+                captureHeader
                 statusHeader
                 siteCard
                 captureTools
                 noteEditor
                 timeline
             }
-            .padding()
+            .padding(.horizontal, 16)
+            .padding(.top, 8)
+            .padding(.bottom, 24)
             .frame(maxWidth: 760, alignment: .center)
             .frame(maxWidth: .infinity)
         }
+        #if os(iOS)
+        .safeAreaInset(edge: .bottom) {
+            Color.clear
+                .frame(height: 112)
+                .allowsHitTesting(false)
+        }
+        #endif
         .navigationTitle(captureNavigationTitle)
         #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar(.hidden, for: .navigationBar)
         #endif
         .toolbar {
             captureToolbar
@@ -115,6 +125,7 @@ struct CaptureNotebookView: View {
 
     @ToolbarContentBuilder
     private var captureToolbar: some ToolbarContent {
+        #if os(macOS)
         ToolbarItem(placement: .primaryAction) {
             Button {
                 Task { await model.syncPending() }
@@ -123,6 +134,7 @@ struct CaptureNotebookView: View {
             }
             .disabled(model.isSyncing || !model.canSubmitCaptures)
         }
+        #endif
 
         #if os(iOS)
         ToolbarItemGroup(placement: .keyboard) {
@@ -132,6 +144,23 @@ struct CaptureNotebookView: View {
             }
         }
         #endif
+    }
+
+    private var captureHeader: some View {
+        HStack(alignment: .center, spacing: 12) {
+            FieldCaptureBrandHeader()
+            Button {
+                Task { await model.syncPending() }
+            } label: {
+                Image(systemName: "arrow.trianglehead.2.clockwise")
+                    .font(.headline)
+                    .frame(width: 44, height: 44)
+            }
+            .buttonStyle(HeaderIconButtonStyle())
+            .disabled(model.isSyncing || !model.canSubmitCaptures)
+            .accessibilityLabel("Sync")
+            .accessibilityIdentifier("capture.header.sync")
+        }
     }
 
     private var statusHeader: some View {
@@ -339,14 +368,11 @@ struct CaptureNotebookView: View {
 
     private var noteEditor: some View {
         VStack(alignment: .leading, spacing: 10) {
-            TextEditor(text: $model.observationText)
-                .frame(minHeight: 120)
+            TextField("Observation note", text: $model.observationText, axis: .vertical)
+                .textFieldStyle(.roundedBorder)
+                .lineLimit(3...5)
                 .accessibilityIdentifier("capture.observation.text")
                 .disabled(!canEditDraft)
-                .overlay {
-                    RoundedRectangle(cornerRadius: 8)
-                        .stroke(.quaternary)
-                }
 
             Button {
                 Task { await saveCurrentDraft() }
@@ -632,8 +658,8 @@ struct CaptureNotebookView: View {
     private func color(for status: CaptureQueueStatus) -> Color {
         switch status {
         case .failed: .red
-        case .done: .green
-        case .uploading: .blue
+        case .done: .btqAccent
+        case .uploading: .btqUploading
         default: .secondary
         }
     }
@@ -678,6 +704,7 @@ struct VoiceRecorderView: View {
                         Label(recorder.isPaused ? "Resume" : "Pause", systemImage: recorder.isPaused ? "play.fill" : "pause.fill")
                     }
                     .buttonStyle(.bordered)
+                    .tint(.btqAccent)
                     .accessibilityIdentifier(recorder.isPaused ? "voice.resume" : "voice.pause")
                     .accessibilityHint(recorder.isPaused ? "Continues the current voice memo." : "Pauses the current voice memo.")
                 } else if recorder.lastAudio != nil {
@@ -687,6 +714,7 @@ struct VoiceRecorderView: View {
                         Label(recorder.isPlaying ? "Stop Playback" : "Play Voice Memo", systemImage: recorder.isPlaying ? "stop.fill" : "play.fill")
                     }
                     .buttonStyle(.bordered)
+                    .tint(.btqAccent)
                     .accessibilityIdentifier(recorder.isPlaying ? "voice.playback.stop" : "voice.playback.play")
                     .accessibilityHint(recorder.isPlaying ? "Stops voice memo playback." : "Plays the saved voice memo.")
                 }
@@ -878,6 +906,16 @@ private struct TapeClearButtonStyle: ButtonStyle {
     }
 }
 
-private extension Color {
-    static let btqAccent = Color(red: 0.44, green: 0.82, blue: 0.39)
+private struct HeaderIconButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .foregroundStyle(.primary)
+            .background(.background)
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .overlay {
+                RoundedRectangle(cornerRadius: 8)
+                    .stroke(.quaternary, lineWidth: 1)
+            }
+            .opacity(configuration.isPressed ? 0.72 : 1)
+    }
 }

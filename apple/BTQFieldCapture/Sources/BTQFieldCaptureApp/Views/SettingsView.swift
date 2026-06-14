@@ -212,7 +212,7 @@ private struct AccountSwitchRow: View {
             Spacer()
             if isSelected {
                 Image(systemName: "checkmark")
-                    .foregroundStyle(.tint)
+                    .foregroundStyle(Color.btqAccent)
             }
         }
     }

@@ -47,6 +47,7 @@ public struct BTQFieldCaptureRootView: View {
     public var body: some View {
         BTQFieldCaptureShell(model: model, screenMode: screenMode)
             .preferredColorScheme(ScreenMode.normalized(screenModeRaw).preferredColorScheme)
+            .tint(.btqAccent)
             .task {
                 await model.load()
             }
