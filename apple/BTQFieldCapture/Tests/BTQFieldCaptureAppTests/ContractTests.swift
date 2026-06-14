@@ -301,6 +301,7 @@ import UniformTypeIdentifiers
     #expect(FileManager.default.fileExists(atPath: packageRoot().appendingPathComponent("Sources/BTQFieldCaptureApp/Resources/Brand.xcassets/FieldCaptureHeader.imageset/field-capture-header-light@3x.png").path))
     #expect(try imagePixelSize(at: "Sources/BTQFieldCaptureApp/Resources/Brand.xcassets/FieldCaptureHeader.imageset/field-capture-header-light@3x.png") == CGSize(width: 828, height: 168))
     #expect(try imagePixelSize(at: "AppResources/Assets.xcassets/AppIcon.appiconset/app-icon-1024.png") == CGSize(width: 1_024, height: 1_024))
+    #expect(try !imageHasAlpha(at: "AppResources/Assets.xcassets/AppIcon.appiconset/app-icon-1024.png"))
 
     let simulatorVerifier = try String(
         contentsOf: packageRoot().appendingPathComponent("script/verify_ios_simulator.sh"),
@@ -2778,6 +2779,20 @@ private func imagePixelSize(at relativePath: String) throws -> CGSize {
         throw ImageNormalizerError.decodeFailed
     }
     return CGSize(width: width, height: height)
+}
+
+private func imageHasAlpha(at relativePath: String) throws -> Bool {
+    let url = packageRoot().appendingPathComponent(relativePath)
+    guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+          let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else {
+        throw ImageNormalizerError.decodeFailed
+    }
+    switch image.alphaInfo {
+    case .none, .noneSkipFirst, .noneSkipLast:
+        return false
+    default:
+        return true
+    }
 }
 
 private func captureSnapshot(account: BTQAccount = .defaultProduction, captures: [LocalCapture]) -> FieldCaptureSnapshot {

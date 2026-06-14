@@ -20,6 +20,7 @@ UNIVERSAL_LINK_VERIFIER="$ROOT_DIR/script/verify_universal_links.sh"
 FIELD_PILOT_READINESS="$ROOT_DIR/script/field_pilot_readiness.sh"
 TESTFLIGHT_BUILDER="$ROOT_DIR/script/build_testflight.sh"
 TESTFLIGHT_ENV_EXAMPLE="$ROOT_DIR/script/testflight.env.example"
+APP_ICON_DIR="$ROOT_DIR/AppResources/Assets.xcassets/AppIcon.appiconset"
 
 fail() {
   printf 'release-readiness: %s\n' "$1" >&2
@@ -52,8 +53,13 @@ require_file "$UNIVERSAL_LINK_VERIFIER"
 require_file "$FIELD_PILOT_READINESS"
 require_file "$TESTFLIGHT_BUILDER"
 require_file "$TESTFLIGHT_ENV_EXAMPLE"
+require_file "$APP_ICON_DIR/app-icon-1024.png"
 
 plutil -lint "$IOS_INFO" "$MAC_INFO" "$IOS_ENTITLEMENTS" "$MAC_ENTITLEMENTS" "$PRIVACY_MANIFEST" "$EXPORT_OPTIONS_EXAMPLE" >/dev/null
+
+for icon in "$APP_ICON_DIR"/*.png; do
+  file "$icon" | grep -q 'RGB, non-interlaced' || fail "App Store app icons must be opaque RGB PNGs without alpha: $icon"
+done
 
 require_plist_key "$IOS_INFO" NSCameraUsageDescription
 require_plist_key "$IOS_INFO" NSMicrophoneUsageDescription
