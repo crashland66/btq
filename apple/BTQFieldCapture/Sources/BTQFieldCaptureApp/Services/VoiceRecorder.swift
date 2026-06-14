@@ -82,11 +82,13 @@ public final class VoiceRecorder {
     public private(set) var lastAudio: CaptureAudio?
     public private(set) var errorMessage: String?
     public private(set) var permissionStatus: VoiceRecordingPermissionStatus = .unknown
+    public private(set) var elapsedSeconds: Double = 0
 
     @ObservationIgnored private let permissionChecker: any VoiceRecordingPermissionChecking
     private var recorder: AVAudioRecorder?
     private var player: AVAudioPlayer?
     private var playbackTask: Task<Void, Never>?
+    private var durationTask: Task<Void, Never>?
     private var currentURL: URL?
     private var interruptionPolicy = VoiceRecordingInterruptionPolicy()
     #if os(iOS)
@@ -121,6 +123,7 @@ public final class VoiceRecorder {
             stopPlayback()
             deleteTemporaryAudio(lastAudio)
             lastAudio = nil
+            elapsedSeconds = 0
             permissionStatus = await permissionChecker.requestAuthorization()
             guard permissionStatus.allowsRecording else {
                 errorMessage = "Microphone access is required for voice notes."
@@ -148,13 +151,16 @@ public final class VoiceRecorder {
             isRecording = true
             isPaused = false
             errorMessage = nil
+            startDurationTimer()
         } catch {
+            stopDurationTimer()
             errorMessage = error.localizedDescription
         }
     }
 
     public func pause() {
         guard isRecording, !isPaused else { return }
+        elapsedSeconds = recorder?.currentTime ?? elapsedSeconds
         recorder?.pause()
         isPaused = true
     }
@@ -171,6 +177,8 @@ public final class VoiceRecorder {
         guard let recorder, let currentURL else { return nil }
         let duration = recorder.currentTime
         recorder.stop()
+        stopDurationTimer()
+        elapsedSeconds = duration
         isRecording = false
         isPaused = false
         let audio = CaptureAudio(
@@ -237,12 +245,33 @@ public final class VoiceRecorder {
         stopPlayback()
         deleteTemporaryAudio(lastAudio)
         lastAudio = nil
+        elapsedSeconds = 0
         errorMessage = nil
     }
 
     nonisolated public static func formatDuration(_ duration: Double) -> String {
         let seconds = max(0, Int(duration.rounded()))
         return "\(seconds / 60):\(String(format: "%02d", seconds % 60))"
+    }
+
+    private func startDurationTimer() {
+        stopDurationTimer()
+        elapsedSeconds = recorder?.currentTime ?? 0
+        durationTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 250_000_000)
+                guard let self else { break }
+                await MainActor.run {
+                    guard let recorder = self.recorder else { return }
+                    self.elapsedSeconds = recorder.currentTime
+                }
+            }
+        }
+    }
+
+    private func stopDurationTimer() {
+        durationTask?.cancel()
+        durationTask = nil
     }
 
     #if os(iOS)

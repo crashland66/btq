@@ -853,6 +853,7 @@ import UniformTypeIdentifiers
 @Test func voiceRecorderFormatsDurationsForFieldUi() {
     #expect(VoiceRecorder.formatDuration(0) == "0:00")
     #expect(VoiceRecorder.formatDuration(65.2) == "1:05")
+    #expect(VoiceRecorder.formatDuration(599.6) == "10:00")
 }
 
 @Test func voiceRecordingInterruptionPolicyResumesOnlyWhenItPausedActiveRecording() {
@@ -949,9 +950,17 @@ import UniformTypeIdentifiers
     #expect(recorderSource.contains("AVAudioApplication.requestRecordPermission"))
     #expect(recorderSource.contains("Microphone access is required for voice notes."))
     #expect(recorderSource.contains("setCategory(.playAndRecord"))
+    #expect(recorderSource.contains("public private(set) var elapsedSeconds"))
+    #expect(recorderSource.contains("private var durationTask"))
+    #expect(recorderSource.contains("startDurationTimer()"))
+    #expect(recorderSource.contains("stopDurationTimer()"))
+    #expect(recorderSource.contains("recorder.currentTime"))
     #expect(!captureViewSource.contains("AVAudioSession.interruptionNotification"))
     #expect(!captureViewSource.contains("handleAudioSessionInterruption(notification)"))
     #expect(captureViewSource.contains("Task { await recorder.start() }"))
+    #expect(captureViewSource.contains("recorder.elapsedSeconds"))
+    #expect(captureViewSource.contains("Voice memo paused \\(VoiceRecorder.formatDuration(recorder.elapsedSeconds))"))
+    #expect(captureViewSource.contains("Recording voice memo \\(VoiceRecorder.formatDuration(recorder.elapsedSeconds))"))
     let draftValidationRange = try #require(captureViewSource.range(of: "model.validateQuickObservationDraft(photoCount: pendingPhotos.count, hasAudio: hasPendingAudio)"))
     let pendingAudioRange = try #require(captureViewSource.range(of: "let hadPendingAudio = hasPendingAudio"))
     let persistAudioRange = try #require(captureViewSource.range(of: "let audio = persistPendingAudio()"))

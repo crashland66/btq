@@ -420,6 +420,9 @@ struct CaptureNotebookView: View {
     }
 
     private var voiceDurationLabel: String {
+        if recorder.isRecording || recorder.isPaused {
+            return VoiceRecorder.formatDuration(recorder.elapsedSeconds)
+        }
         if let audio = recorder.lastAudio {
             return VoiceRecorder.formatDuration(audio.durationSeconds)
         }
@@ -710,7 +713,11 @@ struct VoiceRecorderView: View {
             }
 
             if recorder.isRecording {
-                Text(recorder.isPaused ? "Voice memo paused" : "Recording voice memo...")
+                Text(
+                    recorder.isPaused
+                        ? "Voice memo paused \(VoiceRecorder.formatDuration(recorder.elapsedSeconds))"
+                        : "Recording voice memo \(VoiceRecorder.formatDuration(recorder.elapsedSeconds))"
+                )
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .accessibilityIdentifier("voice.status")

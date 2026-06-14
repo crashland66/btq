@@ -56,6 +56,7 @@ if ! xcodebuild \
   -destination "$XCODE_DESTINATION" \
   -derivedDataPath "$DERIVED_DATA" \
   -allowProvisioningUpdates \
+  -allowProvisioningDeviceRegistration \
   DEVELOPMENT_TEAM="$TEAM_ID" \
   build; then
   echo "verify-ios-device: device build failed." >&2
