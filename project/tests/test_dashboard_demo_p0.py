@@ -47,9 +47,14 @@ def _demo_off_by_default(monkeypatch):
 # Contract 1 — Demo flag (env BTQ_DASHBOARD_DEMO)
 # ===========================================================================
 
-def test_demo_unset_keeps_admin_nav_and_version_footer(monkeypatch):
-    """Default (env unset): today's behavior unchanged — Admin nav entry present,
-    version/SHA footer present."""
+def test_demo_unset_keeps_admin_nav(monkeypatch):
+    """Default (env unset): today's behavior unchanged — Admin nav entry present.
+
+    QA fix (375, #1): the nav footer no longer emits a dev-build version
+    (`vdev`) or a bare SHA — it renders a clean version span ONLY when a genuine
+    package version is available, otherwise nothing. So when demo is off the
+    footer is present iff `_VERSION` is truthy; either way there is never a
+    `vdev`."""
     monkeypatch.delenv("BTQ_DASHBOARD_DEMO", raising=False)
 
     nav = nav_html("home")
@@ -57,13 +62,21 @@ def test_demo_unset_keeps_admin_nav_and_version_footer(monkeypatch):
     assert ">Admin<" in nav
 
     page = html_page("T", "<p>body</p>", active_section="home")
-    assert layout._VERSION in page, "version string must be present when demo is off"
-    # The version footer is a labeled <span>; confirm it actually rendered.
-    assert "font-size:0.75em" in page
+    assert "vdev" not in page, "no dev-build version may be emitted"
+    if layout._VERSION:
+        # A genuine version is available -> the labeled footer span renders it.
+        assert layout._VERSION in page
+        assert "font-size:0.75em" in page
+    else:
+        # No genuine version -> emit nothing rather than a dev/SHA placeholder.
+        assert "font-size:0.75em" not in page
 
 
 def test_demo_set_drops_admin_nav_and_version_footer(monkeypatch):
-    """Demo ON ('1'): Admin nav entry removed AND version string omitted."""
+    """Demo ON ('1'): Admin nav entry removed AND the version footer omitted.
+
+    QA fix (375, #1): in demo mode the footer span is never emitted; and there
+    is never a `vdev` dev-build readout regardless of mode."""
     monkeypatch.setenv("BTQ_DASHBOARD_DEMO", "1")
 
     nav = nav_html("home")
@@ -71,9 +84,9 @@ def test_demo_set_drops_admin_nav_and_version_footer(monkeypatch):
     assert ">Admin<" not in nav
 
     page = html_page("T", "<p>body</p>", active_section="home")
-    assert layout._VERSION not in page, "version string must be omitted in demo mode"
-    # The version footer markup is gone entirely.
+    # The version footer markup is gone entirely in demo mode.
     assert "font-size:0.75em" not in page
+    assert "vdev" not in page
 
 
 def test_demo_set_keeps_all_other_nav_items(monkeypatch):
@@ -99,7 +112,10 @@ def test_demo_falsey_or_unknown_values_treated_as_off(monkeypatch, value):
     assert layout._demo_mode() is False, f"{value!r} should be OFF"
     nav = nav_html("home")
     assert 'href="/admin"' in nav
-    assert layout._VERSION in html_page("T", "<p>b</p>", active_section="home")
+    page = html_page("T", "<p>b</p>", active_section="home")
+    assert "vdev" not in page
+    if layout._VERSION:
+        assert layout._VERSION in page
 
 
 def test_demo_off_on_admin_section_still_marks_active(monkeypatch):

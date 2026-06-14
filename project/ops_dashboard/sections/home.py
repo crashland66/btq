@@ -169,6 +169,8 @@ def _inactive_location_site_ids(by_type_rows: list[dict]) -> set[str]:
         if doc.get("type") != "location" or doc.get("active") is not False:
             continue
         site_id = _string(doc.get("job") or doc.get("site_id"))
+        if not site_id:
+            site_id = _string(doc.get("_id")).removeprefix("location_")
         if site_id:
             site_ids.add(site_id)
     return site_ids
@@ -396,7 +398,7 @@ def _render_home_header() -> str:
         "</div>"
         '<p class="site-header-actions">'
         '<a class="button" href="#quick-capture" '
-        "onclick=\"var el=document.getElementById('quick-capture');if(el){el.open=true;}\">Capture</a>"
+        "onclick=\"var el=document.getElementById('quick-capture');if(el){el.open=true;}\">Capture observation</a>"
         "</p>"
         "</header>"
     )
@@ -434,7 +436,7 @@ def _render_action_center(cards: list[dict[str, object]], notice: str = "") -> s
 def _render_capture_surface(voice_card_html: str) -> str:
     return (
         '<details class="detail-block" id="quick-capture">'
-        '<summary>Capture observation <span class="details-count">Text or voice</span></summary>'
+        '<summary>Text or voice note</summary>'
         f'<div class="detail-block-body">{voice_card_html}</div>'
         "</details>"
     )
@@ -470,17 +472,22 @@ def _render_named_location_panel(
     full_body: str | None = None,
 ) -> str:
     count = len(locations)
+    preview_limit = 6
+    sorted_locations = _sorted_locations(locations)
+    preview_locations = sorted_locations[:preview_limit]
+    remaining_locations = sorted_locations[preview_limit:]
     view_all = ""
     details = ""
-    if count:
+    if count and (remaining_locations or full_body):
         view_all = (
             f'<a href="#{_esc(details_id)}" '
             f"onclick=\"var el=document.getElementById('{_esc(details_id)}');if(el){{el.open=true;}}\">View all</a>"
         )
+        details_body = full_body or _location_list_html(remaining_locations, empty=empty)
         details = (
             f'<details class="detail-block" id="{_esc(details_id)}">'
             f'<summary>View all <span class="details-count">{_esc(str(count))} site{"s" if count != 1 else ""}</span></summary>'
-            f'<div class="detail-block-body">{full_body or _location_list_html(locations, empty=empty)}</div>'
+            f'<div class="detail-block-body">{details_body}</div>'
             "</details>"
         )
     return (
@@ -489,7 +496,7 @@ def _render_named_location_panel(
         f"<h2>{_esc(title)} &middot; {_esc(str(count))}</h2>"
         f"{view_all}"
         "</div>"
-        f'{_location_list_html(locations, empty=empty, limit=6)}'
+        f'{_location_list_html(preview_locations, empty=empty)}'
         f"{details}"
         "</section>"
     )
@@ -793,7 +800,6 @@ def _render_voice_card(site_records: dict, employee_records: list[dict[str, str]
 
     return (
         "<section>"
-        "<h2>Capture observation</h2>"
         '<form id="captureForm" method="POST" action="/vault-home/voice-memo" enctype="multipart/form-data">'
         '<input type="hidden" name="capture_id" value="">'
         f'<p><label>Site<br><select name="site_id">{options}</select></label></p>'

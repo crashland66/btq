@@ -306,9 +306,20 @@ def test_nav_version_readout_renders_at_bottom_after_links(tmp_path: Path) -> No
     nav_bottom = body.index('<div class="nav-bottom">')
 
     assert '<span class="nav-label">BTQ Ops</span>' in nav_brand
-    assert html.escape(_VERSION) not in nav_brand
     assert nav_bottom > last_nav_link
-    assert f'<span class="nav-label muted" style="font-size:0.75em">{html.escape(_VERSION)}</span>' in body
+    # QA fix (375, #1): no dev-build readout (`vdev`) anywhere in the nav.
+    assert "vdev" not in body
+    if _VERSION:
+        # A genuine version renders as the labeled footer span (after the links).
+        version_span = (
+            f'<span class="nav-label muted" style="font-size:0.75em">{html.escape(_VERSION)}</span>'
+        )
+        assert version_span in body
+        assert body.index(version_span) > last_nav_link
+        assert html.escape(_VERSION) not in nav_brand
+    else:
+        # No genuine version -> no footer version span is emitted at all.
+        assert 'style="font-size:0.75em"' not in body
 
 
 def test_static_admin_css_served_with_cache_header(tmp_path: Path) -> None:

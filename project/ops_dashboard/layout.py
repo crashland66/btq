@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import html
 import os
-import subprocess
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as pkg_version
 
@@ -27,21 +26,12 @@ ADMIN_SECTIONS = frozenset({
 
 def _dashboard_version() -> str:
     try:
-        ver = pkg_version("btq")
+        ver = pkg_version("btq").strip()
     except PackageNotFoundError:
-        ver = "dev"
+        return ""
     except Exception:
-        ver = "dev"
-    try:
-        sha = subprocess.run(
-            ["git", "rev-parse", "--short", "HEAD"],
-            capture_output=True,
-            text=True,
-            timeout=2,
-        ).stdout.strip()
-    except Exception:
-        sha = ""
-    return f"v{ver} · {sha}" if sha else f"v{ver}"
+        return ""
+    return f"v{ver}" if ver and ver.lower() != "dev" else ""
 
 
 _VERSION = _dashboard_version()
@@ -104,7 +94,7 @@ def html_page(title: str, body: str, *, active_section: str, refresh: bool = Fal
             <span class="theme-glyph nav-glyph" aria-hidden="true">◐</span>
             <span class="nav-label">System</span>
           </button>
-          {f'<span class="nav-label muted" style="font-size:0.75em">{html.escape(_VERSION)}</span>' if not _demo_mode() else ''}
+          {f'<span class="nav-label muted" style="font-size:0.75em">{html.escape(_VERSION)}</span>' if not _demo_mode() and _VERSION else ''}
         </div>
       </nav>
       <main class="admin-content">

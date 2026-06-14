@@ -80,8 +80,11 @@ def home_card_titles(cards: list[dict]) -> list[str]:
 
 
 def capture_observation_card(body: str) -> str:
-    # Redesign (372): the voice-card heading is sentence-case.
-    start = body.index("<section><h2>Capture observation</h2>")
+    # QA fix (375, #4): single capture affordance — the landing shows the
+    # "Capture observation" label ONCE (the header button). The full voice
+    # card lives behind the "#quick-capture" <details> ("Text or voice note"),
+    # rendered as the <section> wrapping the captureForm. Slice that section.
+    start = body.index('<section><form id="captureForm"')
     end = body.index("</section>", start)
     return body[start:end]
 
@@ -135,7 +138,12 @@ def test_capture_card_inline_init_uses_dom_content_loaded(tmp_path: Path) -> Non
     status, _content_type, body = request_text("GET", "/", tmp_path / "runtime")
 
     assert status == HTTPStatus.OK
-    assert '<section><h2>Capture observation</h2>' in body
+    # QA fix (375, #4): the capture surface is reached via the single
+    # "Capture observation" header button + the quick-capture <details>; the
+    # voice card is the captureForm <section> behind it. The recorder still
+    # initializes on DOMContentLoaded.
+    assert '<section><form id="captureForm"' in body
+    assert '>Capture observation</a>' in body
     assert 'document.addEventListener("DOMContentLoaded"' in body
 
 
@@ -599,10 +607,14 @@ def test_home_renders_capture_group_around_voice_card(monkeypatch: pytest.Monkey
 
     assert status == HTTPStatus.OK
     assert '<div class="home-group home-group--capture">' in body
-    # Redesign (372): the voice card is promoted behind the "Capture" button /
-    # quick-capture <details>; the heading is sentence-case.
-    assert '<summary>Capture observation' in capture
-    assert "<h2>Capture observation</h2>" in capture
+    # QA fix (375, #4): the voice card is promoted behind the quick-capture
+    # <details> ("Text or voice note"); the single "Capture observation" label
+    # is the header button (asserted once below — not duplicated inside the
+    # capture group). The voice card is the captureForm <section>.
+    assert '<summary>Text or voice note</summary>' in capture
+    assert '<section><form id="captureForm"' in capture
+    assert capture.count("Capture observation") == 0
+    assert body.count("Capture observation") == 1
 
 
 def test_home_renders_directory_group_full_width(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
