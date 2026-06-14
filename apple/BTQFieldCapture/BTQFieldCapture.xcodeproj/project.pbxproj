@@ -13,6 +13,8 @@
 		10A000000000000000000004 /* BTQFieldCaptureApp in Frameworks */ = {isa = PBXBuildFile; productRef = 10A000000000000000000091 /* BTQFieldCaptureApp */; };
 		10A000000000000000000005 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 10A000000000000000000018 /* PrivacyInfo.xcprivacy */; };
 		10A000000000000000000006 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 10A000000000000000000018 /* PrivacyInfo.xcprivacy */; };
+		10A000000000000000000007 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 10A00000000000000000001B /* Assets.xcassets */; };
+		10A000000000000000000008 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 10A00000000000000000001B /* Assets.xcassets */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -26,6 +28,7 @@
 		10A000000000000000000018 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		10A000000000000000000019 /* Signing.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Signing.xcconfig; sourceTree = "<group>"; };
 		10A00000000000000000001A /* Local.xcconfig.example */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Local.xcconfig.example; sourceTree = "<group>"; };
+		10A00000000000000000001B /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -89,6 +92,7 @@
 			children = (
 				10A000000000000000000036 /* iOS */,
 				10A000000000000000000037 /* macOS */,
+				10A00000000000000000001B /* Assets.xcassets */,
 				10A000000000000000000015 /* BTQFieldCapture.entitlements */,
 				10A000000000000000000018 /* PrivacyInfo.xcprivacy */,
 			);
@@ -210,6 +214,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				10A000000000000000000005 /* PrivacyInfo.xcprivacy in Resources */,
+				10A000000000000000000007 /* Assets.xcassets in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -218,6 +223,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				10A000000000000000000006 /* PrivacyInfo.xcprivacy in Resources */,
+				10A000000000000000000008 /* Assets.xcassets in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -247,6 +253,7 @@
 			isa = XCBuildConfiguration;
 			baseConfigurationReference = 10A000000000000000000019 /* Signing.xcconfig */;
 			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = AppResources/iOS/BTQFieldCapture.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
@@ -266,6 +273,7 @@
 			isa = XCBuildConfiguration;
 			baseConfigurationReference = 10A000000000000000000019 /* Signing.xcconfig */;
 			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = AppResources/iOS/BTQFieldCapture.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
@@ -285,6 +293,7 @@
 			isa = XCBuildConfiguration;
 			baseConfigurationReference = 10A000000000000000000019 /* Signing.xcconfig */;
 			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = AppResources/BTQFieldCapture.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
@@ -303,6 +312,7 @@
 			isa = XCBuildConfiguration;
 			baseConfigurationReference = 10A000000000000000000019 /* Signing.xcconfig */;
 			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = AppResources/BTQFieldCapture.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;

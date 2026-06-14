@@ -30,6 +30,7 @@ public enum AppSection: String, CaseIterable, Identifiable {
 public struct BTQFieldCaptureRootView: View {
     @State private var model: FieldCaptureModel
     @State private var connectivityMonitor: any ConnectivityMonitoring
+    @AppStorage("btq.screenMode") private var screenModeRaw = ScreenMode.system.rawValue
     private let backgroundSyncScheduler: any BackgroundSyncScheduling
     @Environment(\.scenePhase) private var scenePhase
 
@@ -44,7 +45,8 @@ public struct BTQFieldCaptureRootView: View {
     }
 
     public var body: some View {
-        BTQFieldCaptureShell(model: model)
+        BTQFieldCaptureShell(model: model, screenMode: screenMode)
+            .preferredColorScheme(ScreenMode.normalized(screenModeRaw).preferredColorScheme)
             .task {
                 await model.load()
             }
@@ -66,10 +68,19 @@ public struct BTQFieldCaptureRootView: View {
                 }
             }
     }
+
+    private var screenMode: Binding<ScreenMode> {
+        Binding {
+            ScreenMode.normalized(screenModeRaw)
+        } set: { mode in
+            screenModeRaw = mode.rawValue
+        }
+    }
 }
 
 struct BTQFieldCaptureShell: View {
     @Bindable var model: FieldCaptureModel
+    @Binding var screenMode: ScreenMode
     @State private var section: AppSection = .capture
 
     var body: some View {
@@ -119,7 +130,7 @@ struct BTQFieldCaptureShell: View {
         case .queue:
             QueueView(model: model)
         case .settings:
-            SettingsView(model: model, onConnected: routeToCapture)
+            SettingsView(model: model, screenMode: $screenMode, onConnected: routeToCapture)
         }
     }
 

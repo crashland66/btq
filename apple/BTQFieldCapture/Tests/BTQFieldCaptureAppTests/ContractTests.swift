@@ -188,6 +188,8 @@ import UniformTypeIdentifiers
     #expect(iOSEntitlementReferences == 2)
     #expect(macEntitlementReferences == 2)
     #expect(projectFile.contains("PrivacyInfo.xcprivacy in Resources"))
+    #expect(projectFile.contains("Assets.xcassets in Resources"))
+    #expect(projectFile.components(separatedBy: "ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;").count - 1 == 4)
     #expect(projectFile.contains("PRODUCT_BUNDLE_IDENTIFIER = com.btq.fieldcapture;"))
     #expect(projectFile.contains("PRODUCT_BUNDLE_IDENTIFIER = com.btq.fieldcapture.mac;"))
     #expect(projectFile.contains("SUPPORTED_PLATFORMS = \"iphoneos iphonesimulator\";"))
@@ -214,6 +216,41 @@ import UniformTypeIdentifiers
     )
     #expect(packageManifest.contains("BTQFieldCaptureAPISmoke"))
     #expect(packageManifest.contains("BTQFieldCaptureLiveAPIVerifier"))
+    #expect(packageManifest.contains(".process(\"Resources\")"))
+
+    let brandHeaderView = try String(
+        contentsOf: packageRoot().appendingPathComponent("Sources/BTQFieldCaptureApp/Views/FieldCaptureBrandHeader.swift"),
+        encoding: .utf8
+    )
+    #expect(brandHeaderView.contains("Image(\"FieldCaptureHeader\", bundle: .module)"))
+    #expect(brandHeaderView.contains(".frame(width: 276, height: 56"))
+    #expect(brandHeaderView.contains("\"brand.field-capture.header\""))
+
+    let captureNotebookView = try String(
+        contentsOf: packageRoot().appendingPathComponent("Sources/BTQFieldCaptureApp/Views/CaptureNotebookView.swift"),
+        encoding: .utf8
+    )
+    #expect(captureNotebookView.contains("FieldCaptureBrandHeader()"))
+
+    let brandHeaderCatalog = try String(
+        contentsOf: packageRoot().appendingPathComponent("Sources/BTQFieldCaptureApp/Resources/Brand.xcassets/FieldCaptureHeader.imageset/Contents.json"),
+        encoding: .utf8
+    )
+    #expect(brandHeaderCatalog.contains("field-capture-header-light@3x.png"))
+    #expect(brandHeaderCatalog.contains("field-capture-header-dark@3x.png"))
+    #expect(brandHeaderCatalog.contains("\"appearance\": \"luminosity\""))
+
+    let appIconCatalog = try String(
+        contentsOf: packageRoot().appendingPathComponent("AppResources/Assets.xcassets/AppIcon.appiconset/Contents.json"),
+        encoding: .utf8
+    )
+    #expect(appIconCatalog.contains("app-icon-1024.png"))
+    #expect(appIconCatalog.contains("\"idiom\": \"ios-marketing\""))
+    #expect(appIconCatalog.contains("\"idiom\": \"mac\""))
+
+    #expect(FileManager.default.fileExists(atPath: packageRoot().appendingPathComponent("Sources/BTQFieldCaptureApp/Resources/Brand.xcassets/FieldCaptureHeader.imageset/field-capture-header-light@3x.png").path))
+    #expect(try imagePixelSize(at: "Sources/BTQFieldCaptureApp/Resources/Brand.xcassets/FieldCaptureHeader.imageset/field-capture-header-light@3x.png") == CGSize(width: 828, height: 168))
+    #expect(try imagePixelSize(at: "AppResources/Assets.xcassets/AppIcon.appiconset/app-icon-1024.png") == CGSize(width: 1_024, height: 1_024))
 
     let simulatorVerifier = try String(
         contentsOf: packageRoot().appendingPathComponent("script/verify_ios_simulator.sh"),
@@ -361,6 +398,9 @@ import UniformTypeIdentifiers
     #expect(captureView.contains("ToolbarItemGroup(placement: .keyboard)"))
     #expect(captureView.contains("dismissKeyboard()"))
     #expect(captureView.contains("UIApplication.shared.sendAction"))
+    #expect(captureView.contains(".navigationTitle(captureNavigationTitle)"))
+    #expect(captureView.contains("private var captureNavigationTitle: String"))
+    #expect(captureView.contains(".navigationBarTitleDisplayMode(.inline)"))
     #expect(captureView.contains("\"capture.save.local\""))
     #expect(captureView.contains("isImportingPhotos"))
     #expect(captureView.contains("photoImportMessage"))
@@ -384,8 +424,25 @@ import UniformTypeIdentifiers
     #expect(captureView.contains("\"voice.pause\""))
     #expect(captureView.contains("\"voice.resume\""))
     #expect(captureView.contains("\"voice.stop\""))
+    #expect(captureView.contains("\"voice.clear\""))
     #expect(captureView.contains("\"voice.playback.play\""))
     #expect(captureView.contains("Play Voice Memo"))
+    #expect(captureView.contains("Text(\"Photos\")"))
+    #expect(captureView.contains("\"capture.photos.count\""))
+    #expect(captureView.contains("Text(\"Voice Note\")"))
+    #expect(captureView.contains("Text(\"Optional \\(voiceDurationLabel)\")"))
+    #expect(captureView.contains("\"voice.duration\""))
+    #expect(captureView.contains("CaptureToolLabel(title: \"Take Photo\", icon: .camera)"))
+    #expect(captureView.contains("CaptureToolLabel(title: photoPickerTitle, icon: .library)"))
+    #expect(captureView.contains("\"Camera Roll\""))
+    #expect(captureView.contains("PWACameraGlyph"))
+    #expect(captureView.contains("PWAPhotoLibraryGlyph"))
+    #expect(captureView.contains("TapeRecordButtonStyle"))
+    #expect(captureView.contains("TapeStopButtonStyle"))
+    #expect(captureView.contains("TapeClearButtonStyle"))
+    #expect(captureView.contains("Text(\"●\")"))
+    #expect(captureView.contains("Text(\"■\")"))
+    #expect(captureView.contains("Text(\"×\")"))
     #expect(captureView.contains("Voice memo ready"))
     #expect(captureView.contains("\"voice.status\""))
     #expect(captureView.contains(".accessibilityElement(children: .combine)"))
@@ -438,6 +495,10 @@ import UniformTypeIdentifiers
     #expect(settingsView.contains("Send Test Alert"))
     #expect(settingsView.contains("model.sendTestNotification()"))
     #expect(settingsView.contains(".disabled(!model.notificationPermissionStatus.allowsScheduling)"))
+    #expect(settingsView.contains("Section(\"Screen mode\")"))
+    #expect(settingsView.contains("Picker(\"Screen mode\", selection: $screenMode)"))
+    #expect(settingsView.contains("ForEach(ScreenMode.allCases)"))
+    #expect(settingsView.contains("\"settings.screen.mode\""))
     #expect(settingsView.contains("showingRemoveAccountConfirmation"))
     #expect(settingsView.contains(".confirmationDialog("))
     #expect(settingsView.contains("Remove this account?"))
@@ -453,9 +514,21 @@ import UniformTypeIdentifiers
     #expect(settingsView.contains("if didConnect"))
     #expect(settingsView.contains("tokenOrLink = \"\""))
     #expect(settingsView.contains("onConnected()"))
+    let screenModeSource = try String(
+        contentsOf: packageRoot().appendingPathComponent("Sources/BTQFieldCaptureApp/Support/ScreenMode.swift"),
+        encoding: .utf8
+    )
+    #expect(screenModeSource.contains("case system"))
+    #expect(screenModeSource.contains("case light"))
+    #expect(screenModeSource.contains("case dark"))
+    #expect(screenModeSource.contains("preferredColorScheme"))
+    #expect(screenModeSource.contains("ScreenMode(rawValue: rawValue) ?? .system"))
+    #expect(rootView.contains("@AppStorage(\"btq.screenMode\")"))
+    #expect(rootView.contains(".preferredColorScheme(ScreenMode.normalized(screenModeRaw).preferredColorScheme)"))
+    #expect(rootView.contains("BTQFieldCaptureShell(model: model, screenMode: screenMode)"))
     #expect(rootView.contains(".onOpenURL { url in"))
     #expect(rootView.contains("Task { await handleOnboardingURL(url) }"))
-    #expect(rootView.contains("SettingsView(model: model, onConnected: routeToCapture)"))
+    #expect(rootView.contains("SettingsView(model: model, screenMode: $screenMode, onConnected: routeToCapture)"))
     #expect(rootView.contains("SitesView(model: model, onSiteSelected: routeToCapture)"))
     #expect(rootView.contains("private func handleOnboardingURL(_ url: URL) async"))
     #expect(rootView.contains("if await model.connectWithOnboardingURL(url)"))
@@ -2542,6 +2615,17 @@ private func loadProjectPlist(_ relativePath: String) throws -> [String: Any] {
     let data = try Data(contentsOf: packageRoot().appendingPathComponent(relativePath))
     let plist = try PropertyListSerialization.propertyList(from: data, options: [], format: nil)
     return try #require(plist as? [String: Any])
+}
+
+private func imagePixelSize(at relativePath: String) throws -> CGSize {
+    let url = packageRoot().appendingPathComponent(relativePath)
+    guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+          let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+          let width = properties[kCGImagePropertyPixelWidth] as? CGFloat,
+          let height = properties[kCGImagePropertyPixelHeight] as? CGFloat else {
+        throw ImageNormalizerError.decodeFailed
+    }
+    return CGSize(width: width, height: height)
 }
 
 private func captureSnapshot(account: BTQAccount = .defaultProduction, captures: [LocalCapture]) -> FieldCaptureSnapshot {

@@ -29,6 +29,9 @@ let package = Package(
     targets: [
         .target(
             name: "BTQFieldCaptureApp",
+            resources: [
+                .process("Resources"),
+            ],
             linkerSettings: [
                 .linkedLibrary("sqlite3"),
             ]

@@ -51,6 +51,7 @@ struct CaptureNotebookView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
+                FieldCaptureBrandHeader()
                 statusHeader
                 siteCard
                 captureTools
@@ -61,7 +62,10 @@ struct CaptureNotebookView: View {
             .frame(maxWidth: 760, alignment: .center)
             .frame(maxWidth: .infinity)
         }
-        .navigationTitle("Field Capture")
+        .navigationTitle(captureNavigationTitle)
+        #if os(iOS)
+        .navigationBarTitleDisplayMode(.inline)
+        #endif
         .toolbar {
             captureToolbar
         }
@@ -149,6 +153,14 @@ struct CaptureNotebookView: View {
         }
     }
 
+    private var captureNavigationTitle: String {
+        #if os(iOS)
+        ""
+        #else
+        "Field Capture"
+        #endif
+    }
+
     private var siteCard: some View {
         VStack(alignment: .leading, spacing: 12) {
             Picker("Site", selection: siteSelection) {
@@ -189,8 +201,6 @@ struct CaptureNotebookView: View {
 
     private var captureTools: some View {
         VStack(alignment: .leading, spacing: 12) {
-            let photoPickerTitle = isImportingPhotos ? "Importing" : "Photos"
-
             Picker("Observation", selection: categorySelection) {
                 ForEach(model.selectedSite?.displayCategories ?? []) { category in
                     Text(category.label).tag(Optional(category.value))
@@ -199,27 +209,8 @@ struct CaptureNotebookView: View {
             .pickerStyle(.menu)
             .disabled(!canEditDraft)
 
-            HStack(spacing: 12) {
-                #if os(iOS)
-                Button {
-                    Task { await openCameraIfAllowed() }
-                } label: {
-                    Label("Camera", systemImage: "camera")
-                }
-                .buttonStyle(.borderedProminent)
-                .disabled(!canEditDraft || isAtPhotoLimit)
-                #endif
-
-                PhotosPicker(selection: $selectedPhotoItems, maxSelectionCount: max(1, remainingPhotoSlots), matching: .images) {
-                    Label(photoPickerTitle, systemImage: "photo.on.rectangle")
-                }
-                .buttonStyle(.bordered)
-                .disabled(!canEditDraft || isAtPhotoLimit || isImportingPhotos)
-                .accessibilityIdentifier("capture.photos.picker")
-
-                VoiceRecorderView(recorder: recorder)
-                    .disabled(!canEditDraft)
-            }
+            photoTools
+            voiceTools
 
             if !model.canSubmitCaptures {
                 Label("This account can view BTQ but cannot submit captures.", systemImage: "lock")
@@ -250,6 +241,58 @@ struct CaptureNotebookView: View {
             if !pendingPhotos.isEmpty || recorder.lastAudio != nil {
                 mediaStrip
             }
+        }
+    }
+
+    private var photoTools: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            let photoPickerTitle = isImportingPhotos ? "Importing" : "Camera Roll"
+
+            HStack {
+                Text("Photos")
+                    .font(.headline)
+                Spacer()
+                Text("\(pendingPhotos.count) of \(model.maxImagesPerCapture)")
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(.secondary)
+                    .accessibilityIdentifier("capture.photos.count")
+            }
+
+            HStack(spacing: 12) {
+                #if os(iOS)
+                Button {
+                    Task { await openCameraIfAllowed() }
+                } label: {
+                    CaptureToolLabel(title: "Take Photo", icon: .camera)
+                }
+                .buttonStyle(CaptureToolButtonStyle(kind: .primary))
+                .disabled(!canEditDraft || isAtPhotoLimit)
+                #endif
+
+                PhotosPicker(selection: $selectedPhotoItems, maxSelectionCount: max(1, remainingPhotoSlots), matching: .images) {
+                    CaptureToolLabel(title: photoPickerTitle, icon: .library)
+                }
+                .buttonStyle(CaptureToolButtonStyle(kind: .secondary))
+                .disabled(!canEditDraft || isAtPhotoLimit || isImportingPhotos)
+                .accessibilityIdentifier("capture.photos.picker")
+            }
+        }
+    }
+
+    private var voiceTools: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("Voice Note")
+                    .font(.headline)
+                Spacer()
+                Text("Optional \(voiceDurationLabel)")
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(.secondary)
+                    .accessibilityIdentifier("voice.duration")
+            }
+
+            VoiceRecorderView(recorder: recorder)
+                .disabled(!canEditDraft)
         }
     }
 
@@ -374,6 +417,13 @@ struct CaptureNotebookView: View {
 
     private var hasPendingAudio: Bool {
         recorder.lastAudio != nil || recorder.isRecording || recorder.isPaused
+    }
+
+    private var voiceDurationLabel: String {
+        if let audio = recorder.lastAudio {
+            return VoiceRecorder.formatDuration(audio.durationSeconds)
+        }
+        return VoiceRecorder.formatDuration(0)
     }
 
     private var canEditDraft: Bool {
@@ -590,44 +640,74 @@ struct VoiceRecorderView: View {
     @Bindable var recorder: VoiceRecorder
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .center, spacing: 10) {
+                HStack(spacing: 10) {
+                    Button {
+                        Task { await recorder.start() }
+                    } label: {
+                        Text("●")
+                            .font(.system(size: 22, weight: .heavy))
+                    }
+                    .buttonStyle(TapeRecordButtonStyle())
+                    .disabled(recorder.isRecording)
+                    .accessibilityLabel(recorder.lastAudio == nil ? "Record Voice Memo" : "Re-record Voice Memo")
+                    .accessibilityIdentifier(recorder.lastAudio == nil ? "voice.record" : "voice.rerecord")
+                    .accessibilityHint(recorder.lastAudio == nil ? "Starts recording a voice memo." : "Replaces the current voice memo.")
+
+                    Button {
+                        _ = recorder.stop()
+                    } label: {
+                        Text("■")
+                            .font(.system(size: 18, weight: .heavy))
+                    }
+                    .buttonStyle(TapeStopButtonStyle())
+                    .disabled(!recorder.isRecording)
+                    .accessibilityLabel("Stop Voice Memo")
+                    .accessibilityIdentifier("voice.stop")
+                    .accessibilityHint("Finishes this voice memo and keeps it with the draft.")
+                }
+
                 if recorder.isRecording {
                     Button {
                         recorder.isPaused ? recorder.resume() : recorder.pause()
                     } label: {
                         Label(recorder.isPaused ? "Resume" : "Pause", systemImage: recorder.isPaused ? "play.fill" : "pause.fill")
                     }
+                    .buttonStyle(.bordered)
                     .accessibilityIdentifier(recorder.isPaused ? "voice.resume" : "voice.pause")
                     .accessibilityHint(recorder.isPaused ? "Continues the current voice memo." : "Pauses the current voice memo.")
+                } else if recorder.lastAudio != nil {
                     Button {
-                        _ = recorder.stop()
+                        recorder.isPlaying ? recorder.stopPlayback() : recorder.play()
                     } label: {
-                        Label("Stop", systemImage: "stop.fill")
+                        Label(recorder.isPlaying ? "Stop Playback" : "Play Voice Memo", systemImage: recorder.isPlaying ? "stop.fill" : "play.fill")
                     }
-                    .accessibilityIdentifier("voice.stop")
-                    .accessibilityHint("Finishes this voice memo and keeps it with the draft.")
-                } else {
-                    Button {
-                        Task { await recorder.start() }
-                    } label: {
-                        Label(recorder.lastAudio == nil ? "Voice" : "Re-record", systemImage: "mic")
-                    }
-                    .accessibilityIdentifier(recorder.lastAudio == nil ? "voice.record" : "voice.rerecord")
-                    .accessibilityHint(recorder.lastAudio == nil ? "Starts recording a voice memo." : "Replaces the current voice memo.")
-
-                    if recorder.lastAudio != nil {
-                        Button {
-                            recorder.isPlaying ? recorder.stopPlayback() : recorder.play()
-                        } label: {
-                            Label(recorder.isPlaying ? "Stop Playback" : "Play Voice Memo", systemImage: recorder.isPlaying ? "stop.fill" : "play.fill")
-                        }
-                        .accessibilityIdentifier(recorder.isPlaying ? "voice.playback.stop" : "voice.playback.play")
-                        .accessibilityHint(recorder.isPlaying ? "Stops voice memo playback." : "Plays the saved voice memo.")
-                    }
+                    .buttonStyle(.bordered)
+                    .accessibilityIdentifier(recorder.isPlaying ? "voice.playback.stop" : "voice.playback.play")
+                    .accessibilityHint(recorder.isPlaying ? "Stops voice memo playback." : "Plays the saved voice memo.")
                 }
+
+                Spacer(minLength: 0)
+
+                Button {
+                    recorder.clear()
+                } label: {
+                    Text("×")
+                        .font(.system(size: 18, weight: .bold))
+                }
+                .buttonStyle(TapeClearButtonStyle())
+                .disabled(!recorder.isRecording && recorder.lastAudio == nil)
+                .accessibilityLabel("Erase Voice Memo")
+                .accessibilityIdentifier("voice.clear")
+                .accessibilityHint("Erases the current recording from the draft.")
             }
-            .buttonStyle(.bordered)
+            .padding(10)
+            .background(.quaternary.opacity(0.28))
+            .overlay {
+                RoundedRectangle(cornerRadius: 2)
+                    .stroke(.quaternary)
+            }
 
             if recorder.isRecording {
                 Text(recorder.isPaused ? "Voice memo paused" : "Recording voice memo...")
@@ -649,4 +729,148 @@ struct VoiceRecorderView: View {
             }
         }
     }
+}
+
+private enum CaptureToolIcon {
+    case camera
+    case library
+}
+
+private struct CaptureToolLabel: View {
+    let title: String
+    let icon: CaptureToolIcon
+
+    var body: some View {
+        VStack(spacing: 8) {
+            switch icon {
+            case .camera:
+                PWACameraGlyph()
+            case .library:
+                PWAPhotoLibraryGlyph()
+            }
+            Text(title)
+                .font(.headline)
+        }
+        .frame(maxWidth: .infinity, minHeight: 104)
+    }
+}
+
+private enum CaptureToolButtonKind {
+    case primary
+    case secondary
+}
+
+private struct CaptureToolButtonStyle: ButtonStyle {
+    let kind: CaptureToolButtonKind
+
+    func makeBody(configuration: Configuration) -> some View {
+        let strokeStyle: AnyShapeStyle = kind == .primary ? AnyShapeStyle(Color.btqAccent) : AnyShapeStyle(.quaternary)
+
+        configuration.label
+            .foregroundStyle(kind == .primary ? Color.btqAccent : .primary)
+            .background(.background)
+            .overlay {
+                RoundedRectangle(cornerRadius: 8)
+                    .stroke(strokeStyle, lineWidth: kind == .primary ? 1.5 : 1)
+            }
+            .opacity(configuration.isPressed ? 0.78 : 1)
+    }
+}
+
+private struct PWACameraGlyph: View {
+    var body: some View {
+        ZStack {
+            Path { path in
+                path.move(to: CGPoint(x: 3, y: 7))
+                path.addLine(to: CGPoint(x: 7, y: 7))
+                path.addLine(to: CGPoint(x: 9, y: 5))
+                path.addLine(to: CGPoint(x: 15, y: 5))
+                path.addLine(to: CGPoint(x: 17, y: 7))
+                path.addLine(to: CGPoint(x: 21, y: 7))
+                path.addLine(to: CGPoint(x: 21, y: 19))
+                path.addLine(to: CGPoint(x: 3, y: 19))
+                path.closeSubpath()
+            }
+            .stroke(style: StrokeStyle(lineWidth: 1.5, lineJoin: .round))
+
+            Circle()
+                .stroke(lineWidth: 1.5)
+                .frame(width: 7, height: 7)
+                .offset(y: 1)
+        }
+        .frame(width: 24, height: 24)
+    }
+}
+
+private struct PWAPhotoLibraryGlyph: View {
+    var body: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 2)
+                .stroke(lineWidth: 1.5)
+                .frame(width: 18, height: 14)
+                .offset(y: 1)
+
+            Path { path in
+                path.move(to: CGPoint(x: 3, y: 17))
+                path.addLine(to: CGPoint(x: 8, y: 12))
+                path.addLine(to: CGPoint(x: 13, y: 17))
+            }
+            .stroke(style: StrokeStyle(lineWidth: 1.5, lineCap: .round, lineJoin: .round))
+
+            Circle()
+                .fill(.primary)
+                .frame(width: 3, height: 3)
+                .offset(x: 4, y: -2)
+        }
+        .frame(width: 24, height: 24)
+    }
+}
+
+private struct TapeRecordButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .foregroundStyle(.white)
+            .frame(width: 48, height: 48)
+            .background(Color(red: 0.75, green: 0.22, blue: 0.17))
+            .clipShape(Circle())
+            .overlay {
+                Circle()
+                    .stroke(Color(red: 0.91, green: 0.30, blue: 0.24), lineWidth: 2)
+            }
+            .scaleEffect(configuration.isPressed ? 1.04 : 1)
+    }
+}
+
+private struct TapeStopButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .foregroundStyle(.primary)
+            .frame(width: 44, height: 44)
+            .background(.background)
+            .clipShape(RoundedRectangle(cornerRadius: 3))
+            .overlay {
+                RoundedRectangle(cornerRadius: 3)
+                    .stroke(.quaternary, lineWidth: 2)
+            }
+            .scaleEffect(configuration.isPressed ? 1.03 : 1)
+    }
+}
+
+private struct TapeClearButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .foregroundStyle(.secondary)
+            .frame(width: 36, height: 36)
+            .background(.clear)
+            .clipShape(Circle())
+            .overlay {
+                Circle()
+                    .stroke(.quaternary)
+            }
+            .scaleEffect(configuration.isPressed ? 1.03 : 1)
+    }
+}
+
+private extension Color {
+    static let btqAccent = Color(red: 0.44, green: 0.82, blue: 0.39)
 }

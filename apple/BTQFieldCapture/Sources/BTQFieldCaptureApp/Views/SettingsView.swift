@@ -2,13 +2,34 @@ import SwiftUI
 
 struct SettingsView: View {
     @Bindable var model: FieldCaptureModel
+    @Binding var screenMode: ScreenMode
     var onConnected: () -> Void = {}
     @State private var tokenOrLink = ""
     @State private var showingRemoveAccountConfirmation = false
     @FocusState private var isTokenInputFocused: Bool
 
+    init(
+        model: FieldCaptureModel,
+        screenMode: Binding<ScreenMode> = .constant(.system),
+        onConnected: @escaping () -> Void = {}
+    ) {
+        self.model = model
+        _screenMode = screenMode
+        self.onConnected = onConnected
+    }
+
     var body: some View {
         Form {
+            Section("Screen mode") {
+                Picker("Screen mode", selection: $screenMode) {
+                    ForEach(ScreenMode.allCases) { mode in
+                        Text(mode.title).tag(mode)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .accessibilityIdentifier("settings.screen.mode")
+            }
+
             Section("Account") {
                 LabeledContent("Server", value: model.account.baseURL.absoluteString)
                 LabeledContent("Person", value: model.session?.person.name ?? "Not connected")
