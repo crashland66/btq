@@ -17,6 +17,8 @@ struct CaptureNotebookView: View {
     @State private var showCamera = false
     @State private var cameraDraftContext: DraftContext?
     @State private var cameraMessage: String?
+    @State private var isImportingPhotos = false
+    @State private var photoImportMessage: String?
     @State private var isSavingDraft = false
     @State private var showingClearDraftMediaConfirmation = false
     private let mediaStore = LocalMediaStore()
@@ -171,6 +173,8 @@ struct CaptureNotebookView: View {
 
     private var captureTools: some View {
         VStack(alignment: .leading, spacing: 12) {
+            let photoPickerTitle = isImportingPhotos ? "Importing" : "Photos"
+
             Picker("Observation", selection: categorySelection) {
                 ForEach(model.selectedSite?.displayCategories ?? []) { category in
                     Text(category.label).tag(Optional(category.value))
@@ -191,10 +195,11 @@ struct CaptureNotebookView: View {
                 #endif
 
                 PhotosPicker(selection: $selectedPhotoItems, maxSelectionCount: max(1, remainingPhotoSlots), matching: .images) {
-                    Label("Photos", systemImage: "photo.on.rectangle")
+                    Label(photoPickerTitle, systemImage: "photo.on.rectangle")
                 }
                 .buttonStyle(.bordered)
-                .disabled(!canEditDraft || isAtPhotoLimit)
+                .disabled(!canEditDraft || isAtPhotoLimit || isImportingPhotos)
+                .accessibilityIdentifier("capture.photos.picker")
 
                 VoiceRecorderView(recorder: recorder)
                     .disabled(!canEditDraft)
@@ -211,6 +216,19 @@ struct CaptureNotebookView: View {
                     .font(.caption)
                     .foregroundStyle(.red)
                     .lineLimit(2)
+            }
+
+            if isImportingPhotos {
+                Label("Importing selected photos...", systemImage: "hourglass")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .accessibilityIdentifier("capture.photos.importing")
+            } else if let photoImportMessage {
+                Text(photoImportMessage)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                    .accessibilityIdentifier("capture.photos.import.message")
             }
 
             if !pendingPhotos.isEmpty || recorder.lastAudio != nil {
@@ -343,7 +361,7 @@ struct CaptureNotebookView: View {
     }
 
     private var canEditDraft: Bool {
-        model.canSubmitCaptures && !isSavingDraft
+        model.canSubmitCaptures && !isSavingDraft && !isImportingPhotos
     }
 
     private var currentDraftContext: DraftContext {
@@ -426,14 +444,37 @@ struct CaptureNotebookView: View {
     private func loadPhotos(_ items: [PhotosPickerItem], context: DraftContext) async {
         defer { selectedPhotoItems = [] }
         guard canAttachMedia(to: context) else { return }
+        guard !items.isEmpty else { return }
 
+        isImportingPhotos = true
+        photoImportMessage = nil
+        defer { isImportingPhotos = false }
+
+        var importedCount = 0
+        var failedCount = 0
         for item in items {
             guard pendingPhotos.count < model.maxImagesPerCapture else { break }
             guard canAttachMedia(to: context) else { break }
-            guard let data = try? await item.loadTransferable(type: Data.self) else { continue }
+            guard let data = try? await item.loadTransferable(type: Data.self) else {
+                failedCount += 1
+                await Task.yield()
+                continue
+            }
             guard canAttachMedia(to: context) else { break }
-            guard let photo = savePhoto(data: data, prefix: "photo") else { continue }
+            guard let photo = savePhoto(data: data, prefix: "photo") else {
+                failedCount += 1
+                await Task.yield()
+                continue
+            }
             pendingPhotos.append(photo)
+            importedCount += 1
+            await Task.yield()
+        }
+
+        if failedCount > 0 {
+            photoImportMessage = "Imported \(importedCount) photo\(importedCount == 1 ? "" : "s"). \(failedCount) could not be added."
+        } else if importedCount > 0 {
+            photoImportMessage = "Imported \(importedCount) photo\(importedCount == 1 ? "" : "s")."
         }
     }
 
