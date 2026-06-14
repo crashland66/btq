@@ -67,6 +67,73 @@ submission.
    `BTQ_APPLE_APP_ID` so `fc.gregstoltz.com` can serve the Apple App Site
    Association payload for universal-link onboarding.
 
+## App Store Connect And TestFlight
+
+### One-Time Manual Setup
+
+1. In Apple Developer Certificates, Identifiers & Profiles, verify that the
+   explicit App ID `com.btq.fieldcapture` exists with the required capabilities.
+2. In App Store Connect, create an app record for the iOS app:
+   - Name: `BTQ Capture`, or another globally available name if Apple reports
+     that this name is unavailable.
+   - Bundle ID: `com.btq.fieldcapture`
+   - SKU: a stable internal value such as `btq-field-capture-ios`
+   - Primary language: choose the production default for the account.
+3. Create an App Store Connect API key with access to manage the app. App
+   Manager access is sufficient for this lane.
+4. Download the API key `.p8` file once and keep it untracked. Copy
+   `script/testflight.env.example` to `script/testflight.env`, then fill in:
+   - `BTQ_DEVELOPMENT_TEAM`
+   - `BTQ_ASC_KEY_ID`
+   - `BTQ_ASC_ISSUER_ID`
+   - `BTQ_ASC_KEY_PATH`
+5. Use internal TestFlight first for the field-lead pilot. Internal testers do
+   not require beta app review. External TestFlight testers require Apple's beta
+   review before distribution.
+
+### Build And Upload Lane
+
+The TestFlight lane keeps tracked files public-safe:
+
+- `Release/ExportOptions.plist.example` documents the App Store Connect export
+  shape without a Team ID.
+- `script/build_testflight.sh` generates the real export options under
+  `.build/testflight/ExportOptions.plist`.
+- `script/testflight.env` and `script/AuthKey_*.p8` are gitignored.
+- dSYM symbol upload defaults to off for the first lane because local Xcode
+  packaging can fail while copying `Symbols`; set `BTQ_UPLOAD_SYMBOLS="YES"`
+  later when symbol upload is required and the local packaging path supports it.
+
+Run a local archive/export check without uploading:
+
+```sh
+./script/build_testflight.sh --check
+```
+
+Upload to App Store Connect/TestFlight. The preferred path is to configure
+`script/testflight.env` with an App Store Connect API key; if no API key values
+are present, the script falls back to the Apple account signed into Xcode:
+
+```sh
+./script/build_testflight.sh --upload
+```
+
+If upload fails with `Error Downloading App Information` and the distribution
+log reports `missingApp(bundleId: "com.btq.fieldcapture")`, create the App Store
+Connect app record from the one-time setup list above, wait a minute for App
+Store Connect to index the new record, then rerun the upload command.
+
+App Store Connect rejects duplicate build numbers. The script uses a UTC
+timestamp build number by default. To pin a build number explicitly:
+
+```sh
+BTQ_BUILD_NUMBER="2026061401" ./script/build_testflight.sh --upload
+```
+
+By default, the lane marks uploaded builds as internal-TestFlight-only. Set
+`BTQ_TESTFLIGHT_INTERNAL_ONLY="NO"` for an external beta or public App Store
+candidate.
+
 ## Before TestFlight
 
 ### Physical Device Validation Log

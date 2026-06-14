@@ -136,6 +136,8 @@ import UniformTypeIdentifiers
         #expect(schemes.contains("btq-field-capture"))
         #expect(schemes.contains("btq"))
         #expect(info["CFBundleExecutable"] as? String == "$(EXECUTABLE_NAME)")
+        #expect(info["CFBundleShortVersionString"] as? String == "$(MARKETING_VERSION)")
+        #expect(info["CFBundleVersion"] as? String == "$(CURRENT_PROJECT_VERSION)")
         #expect(nonEmptyString(info["NSCameraUsageDescription"]))
         #expect(nonEmptyString(info["NSMicrophoneUsageDescription"]))
         #expect(nonEmptyString(info["NSPhotoLibraryUsageDescription"]))
@@ -195,6 +197,7 @@ import UniformTypeIdentifiers
     #expect(projectFile.components(separatedBy: "ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;").count - 1 == 4)
     #expect(projectFile.contains("PRODUCT_BUNDLE_IDENTIFIER = com.btq.fieldcapture;"))
     #expect(projectFile.contains("PRODUCT_BUNDLE_IDENTIFIER = com.btq.fieldcapture.mac;"))
+    #expect(projectFile.components(separatedBy: "MARKETING_VERSION = 1.0;").count - 1 == 4)
     #expect(projectFile.contains("SUPPORTED_PLATFORMS = \"iphoneos iphonesimulator\";"))
     #expect(projectFile.components(separatedBy: "baseConfigurationReference = 10A000000000000000000019 /* Signing.xcconfig */;").count - 1 == 4)
     #expect(!projectFile.contains("DEVELOPMENT_TEAM = "))
@@ -212,6 +215,35 @@ import UniformTypeIdentifiers
     )
     #expect(localSigningExample.contains("DEVELOPMENT_TEAM = <team id>"))
     #expect(localSigningExample.range(of: #"DEVELOPMENT_TEAM = [A-Z0-9]{10}"#, options: .regularExpression) == nil)
+
+    let testFlightBuilder = try String(
+        contentsOf: packageRoot().appendingPathComponent("script/build_testflight.sh"),
+        encoding: .utf8
+    )
+    let testFlightEnvExample = try String(
+        contentsOf: packageRoot().appendingPathComponent("script/testflight.env.example"),
+        encoding: .utf8
+    )
+    let exportOptionsExample = try String(
+        contentsOf: packageRoot().appendingPathComponent("Release/ExportOptions.plist.example"),
+        encoding: .utf8
+    )
+    #expect(testFlightBuilder.contains("xcodebuild"))
+    #expect(testFlightBuilder.contains("ARCHIVE_CMD=("))
+    #expect(testFlightBuilder.contains("EXPORT_CMD=("))
+    #expect(testFlightBuilder.contains("-exportArchive"))
+    #expect(testFlightBuilder.contains("--upload"))
+    #expect(testFlightBuilder.contains("BTQ_ASC_KEY_ID"))
+    #expect(testFlightBuilder.contains("BTQ_ASC_ISSUER_ID"))
+    #expect(testFlightBuilder.contains("BTQ_ASC_KEY_PATH"))
+    #expect(testFlightBuilder.contains("CURRENT_PROJECT_VERSION=\"$BUILD_NUMBER\""))
+    #expect(testFlightBuilder.contains("MARKETING_VERSION=\"$MARKETING_VERSION\""))
+    #expect(testFlightEnvExample.contains("BTQ_ASC_KEY_ID"))
+    #expect(testFlightEnvExample.contains("BTQ_ASC_ISSUER_ID"))
+    #expect(testFlightEnvExample.contains("BTQ_ASC_KEY_PATH"))
+    #expect(testFlightEnvExample.contains("BTQ_TESTFLIGHT_INTERNAL_ONLY"))
+    #expect(exportOptionsExample.contains("<string>app-store-connect</string>"))
+    #expect(exportOptionsExample.contains("<string>export</string>"))
 
     let packageManifest = try String(
         contentsOf: packageRoot().appendingPathComponent("Package.swift"),
@@ -397,6 +429,14 @@ import UniformTypeIdentifiers
     #expect(releaseReadiness.contains("./script/verify_universal_links.sh"))
     #expect(releaseReadiness.contains("Local.xcconfig.example"))
     #expect(releaseReadiness.contains("DEVELOPMENT_TEAM"))
+    #expect(releaseReadiness.contains("App Store Connect And TestFlight"))
+    #expect(releaseReadiness.contains("script/testflight.env.example"))
+    #expect(releaseReadiness.contains("./script/build_testflight.sh --check"))
+    #expect(releaseReadiness.contains("./script/build_testflight.sh --upload"))
+    #expect(releaseReadiness.contains("App Store Connect API key"))
+    #expect(releaseReadiness.contains("missingApp(bundleId: \"com.btq.fieldcapture\")"))
+    #expect(releaseReadiness.contains("Internal testers do"))
+    #expect(releaseReadiness.contains("duplicate build numbers"))
     #expect(!releaseReadiness.contains("set the Development Team"))
     #expect(releaseReadiness.contains("Do not store a personal Team ID by editing"))
     #expect(releaseReadiness.contains("Physical Device Validation Log"))

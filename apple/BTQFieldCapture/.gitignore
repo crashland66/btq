@@ -8,3 +8,5 @@ xcuserdata/
 *.xcuserstate
 Local.xcconfig
 script/ios_device.env
+script/testflight.env
+script/AuthKey_*.p8
