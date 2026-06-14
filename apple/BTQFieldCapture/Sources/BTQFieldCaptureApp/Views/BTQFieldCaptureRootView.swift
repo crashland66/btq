@@ -53,9 +53,6 @@ public struct BTQFieldCaptureRootView: View {
                     await model.handleConnectivityChange(status)
                 }
             }
-            .onOpenURL { url in
-                Task { await model.connectWithOnboardingURL(url) }
-            }
             .onChange(of: scenePhase) { _, phase in
                 switch phase {
                 case .active:
@@ -76,6 +73,14 @@ struct BTQFieldCaptureShell: View {
     @State private var section: AppSection = .capture
 
     var body: some View {
+        shellContent
+            .onOpenURL { url in
+                Task { await handleOnboardingURL(url) }
+            }
+    }
+
+    @ViewBuilder
+    private var shellContent: some View {
         #if os(macOS)
         NavigationSplitView {
             List(AppSection.allCases, selection: $section) { item in
@@ -114,9 +119,17 @@ struct BTQFieldCaptureShell: View {
         case .queue:
             QueueView(model: model)
         case .settings:
-            SettingsView(model: model) {
-                self.section = .capture
-            }
+            SettingsView(model: model, onConnected: routeToCapture)
         }
+    }
+
+    private func handleOnboardingURL(_ url: URL) async {
+        if await model.connectWithOnboardingURL(url) {
+            routeToCapture()
+        }
+    }
+
+    private func routeToCapture() {
+        section = .capture
     }
 }
