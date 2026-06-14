@@ -2,16 +2,27 @@ import Foundation
 
 public protocol BackgroundSyncScheduling: Sendable {
     func scheduleSyncIfNeeded(pendingCount: Int)
+    @MainActor func beginExpiringSyncIfNeeded(
+        pendingCount: Int,
+        operation: @escaping @MainActor @Sendable () async -> Void
+    )
 }
 
 public struct NoopBackgroundSyncScheduler: BackgroundSyncScheduling {
     public init() {}
 
     public func scheduleSyncIfNeeded(pendingCount: Int) {}
+
+    @MainActor
+    public func beginExpiringSyncIfNeeded(
+        pendingCount: Int,
+        operation: @escaping @MainActor @Sendable () async -> Void
+    ) {}
 }
 
 #if os(iOS)
 import BackgroundTasks
+import UIKit
 
 @MainActor
 public enum IOSBackgroundSyncTaskHandler {
@@ -56,6 +67,34 @@ public struct IOSBackgroundSyncScheduler: BackgroundSyncScheduling {
             try BGTaskScheduler.shared.submit(request)
         } catch {
             // Background scheduling is opportunistic; foreground and reachability sync remain authoritative.
+        }
+    }
+
+    @MainActor
+    public func beginExpiringSyncIfNeeded(
+        pendingCount: Int,
+        operation: @escaping @MainActor @Sendable () async -> Void
+    ) {
+        guard pendingCount > 0 else { return }
+
+        var backgroundTask: UIBackgroundTaskIdentifier = .invalid
+        var syncTask: Task<Void, Never>?
+        backgroundTask = UIApplication.shared.beginBackgroundTask(withName: "BTQ Capture Sync") {
+            syncTask?.cancel()
+            Task { @MainActor in
+                if backgroundTask != .invalid {
+                    UIApplication.shared.endBackgroundTask(backgroundTask)
+                    backgroundTask = .invalid
+                }
+            }
+        }
+
+        syncTask = Task { @MainActor in
+            await operation()
+            if backgroundTask != .invalid {
+                UIApplication.shared.endBackgroundTask(backgroundTask)
+                backgroundTask = .invalid
+            }
         }
     }
 }

@@ -158,6 +158,9 @@ import UniformTypeIdentifiers
     #expect(backgroundSyncScheduler.contains("BGProcessingTaskRequest"))
     #expect(backgroundSyncScheduler.contains("BackgroundUploadSupport.sessionIdentifier"))
     #expect(backgroundSyncScheduler.contains("requiresNetworkConnectivity = true"))
+    #expect(backgroundSyncScheduler.contains("beginExpiringSyncIfNeeded"))
+    #expect(backgroundSyncScheduler.contains("beginBackgroundTask(withName: \"BTQ Capture Sync\")"))
+    #expect(backgroundSyncScheduler.contains("endBackgroundTask(backgroundTask)"))
 
     let iOSApp = try String(
         contentsOf: packageRoot().appendingPathComponent("AppTargets/iOS/BTQFieldCaptureiOSApp.swift"),
@@ -1058,6 +1061,8 @@ import UniformTypeIdentifiers
     #expect(captureViewSource.contains(".disabled(!canEditDraft)"))
     #expect(captureViewSource.contains("Draft cleared because this account cannot submit captures."))
     #expect(rootViewSource.contains("case .background:"))
+    #expect(rootViewSource.contains("beginExpiringSyncIfNeeded(pendingCount: model.queueSummary.pending)"))
+    #expect(rootViewSource.contains("await model.syncPending()"))
     #expect(!rootViewSource.contains("recorder.pause()"))
     #expect(!rootViewSource.contains("VoiceRecorder().pause()"))
 }
