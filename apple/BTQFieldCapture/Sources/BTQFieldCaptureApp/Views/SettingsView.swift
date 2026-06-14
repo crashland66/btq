@@ -5,6 +5,7 @@ struct SettingsView: View {
     var onConnected: () -> Void = {}
     @State private var tokenOrLink = ""
     @State private var showingRemoveAccountConfirmation = false
+    @FocusState private var isTokenInputFocused: Bool
 
     var body: some View {
         Form {
@@ -73,6 +74,16 @@ struct SettingsView: View {
         }
         .formStyle(.grouped)
         .navigationTitle("Settings")
+        #if os(iOS)
+        .toolbar {
+            ToolbarItemGroup(placement: .keyboard) {
+                Spacer()
+                Button("Done") {
+                    isTokenInputFocused = false
+                }
+            }
+        }
+        #endif
         .task {
             await model.refreshNotificationPermissionStatus()
         }
@@ -93,6 +104,7 @@ struct SettingsView: View {
     private var tokenInputField: some View {
         #if os(iOS)
         TextField("Token or onboarding link", text: $tokenOrLink)
+            .focused($isTokenInputFocused)
             .textInputAutocapitalization(.never)
             .autocorrectionDisabled()
             .privacySensitive()
@@ -135,6 +147,7 @@ struct SettingsView: View {
 
     private func connect() async {
         let value = tokenOrLink.trimmingCharacters(in: .whitespacesAndNewlines)
+        isTokenInputFocused = false
         let didConnect: Bool
         if let url = URL(string: value), url.scheme != nil {
             didConnect = await model.connectWithOnboardingURL(url)

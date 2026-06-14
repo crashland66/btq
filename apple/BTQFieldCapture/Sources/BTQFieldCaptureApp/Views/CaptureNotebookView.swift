@@ -1,5 +1,8 @@
 import PhotosUI
 import SwiftUI
+#if os(iOS)
+import UIKit
+#endif
 
 private struct DraftContext: Equatable {
     let accountID: UUID
@@ -42,12 +45,7 @@ struct CaptureNotebookView: View {
         }
         .navigationTitle("Field Capture")
         .toolbar {
-            Button {
-                Task { await model.syncPending() }
-            } label: {
-                Label("Sync", systemImage: "arrow.trianglehead.2.clockwise")
-            }
-            .disabled(model.isSyncing || !model.canSubmitCaptures)
+            captureToolbar
         }
         .onChange(of: selectedPhotoItems) { _, items in
             let context = currentDraftContext
@@ -91,6 +89,27 @@ struct CaptureNotebookView: View {
         } message: {
             Text("This removes unsaved photos and voice memo from the current draft.")
         }
+    }
+
+    @ToolbarContentBuilder
+    private var captureToolbar: some ToolbarContent {
+        ToolbarItem(placement: .primaryAction) {
+            Button {
+                Task { await model.syncPending() }
+            } label: {
+                Label("Sync", systemImage: "arrow.trianglehead.2.clockwise")
+            }
+            .disabled(model.isSyncing || !model.canSubmitCaptures)
+        }
+
+        #if os(iOS)
+        ToolbarItemGroup(placement: .keyboard) {
+            Spacer()
+            Button("Done") {
+                dismissKeyboard()
+            }
+        }
+        #endif
     }
 
     private var statusHeader: some View {
@@ -431,6 +450,9 @@ struct CaptureNotebookView: View {
 
     private func discardDraftAfterSiteChange() {
         guard hasDraftContent else { return }
+        #if os(iOS)
+        dismissKeyboard()
+        #endif
         discardPendingMedia()
         selectedPhotoItems = []
         model.observationText = ""
@@ -440,6 +462,9 @@ struct CaptureNotebookView: View {
 
     private func discardDraftAfterSubmitPermissionRevoked() {
         guard hasDraftContent else { return }
+        #if os(iOS)
+        dismissKeyboard()
+        #endif
         discardPendingMedia()
         selectedPhotoItems = []
         model.observationText = ""
@@ -449,6 +474,9 @@ struct CaptureNotebookView: View {
 
     private func discardDraftAfterAccountChange() {
         guard hasDraftContent else { return }
+        #if os(iOS)
+        dismissKeyboard()
+        #endif
         discardPendingMedia()
         selectedPhotoItems = []
         model.observationText = ""
@@ -464,6 +492,12 @@ struct CaptureNotebookView: View {
     private var mediaBucketID: String {
         model.activeVisit(forSiteID: model.selectedSite?.siteID)?.id.uuidString ?? "loose-capture"
     }
+
+    #if os(iOS)
+    private func dismissKeyboard() {
+        UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+    }
+    #endif
 
     private func icon(for status: CaptureQueueStatus) -> String {
         switch status {
