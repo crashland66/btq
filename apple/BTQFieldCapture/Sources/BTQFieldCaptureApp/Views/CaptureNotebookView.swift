@@ -3,6 +3,8 @@ import PhotosUI
 import SwiftUI
 #if os(iOS)
 import UIKit
+#elseif os(macOS)
+import AppKit
 #endif
 
 private struct DraftContext: Equatable {
@@ -230,13 +232,7 @@ struct CaptureNotebookView: View {
 
     private var captureTools: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Picker("Observation", selection: categorySelection) {
-                ForEach(model.selectedSite?.displayCategories ?? []) { category in
-                    Text(category.label).tag(Optional(category.value))
-                }
-            }
-            .pickerStyle(.menu)
-            .disabled(!canEditDraft)
+            categoryPicker
 
             photoTools
             voiceTools
@@ -271,6 +267,40 @@ struct CaptureNotebookView: View {
                 mediaStrip
             }
         }
+    }
+
+    private var categoryPicker: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Label("Area / QC", systemImage: "tag")
+                    .font(.headline)
+                Spacer()
+                Text(selectedCategoryLabel)
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(model.selectedCategoryValue == nil ? .secondary : Color.btqNavy)
+                    .lineLimit(1)
+            }
+
+            Picker("Area / QC", selection: categorySelection) {
+                Text("Select category...").tag(Optional<String>.none)
+                ForEach(model.selectedSite?.displayCategories ?? []) { category in
+                    Text(category.label).tag(Optional(category.value))
+                }
+            }
+            .pickerStyle(.menu)
+            .tint(.btqNavy)
+            .disabled(!canEditDraft)
+            .accessibilityIdentifier("capture.category.picker")
+        }
+        .padding(14)
+        .background(
+            RoundedRectangle(cornerRadius: 8)
+                .fill(model.selectedCategoryValue == nil ? Color.btqAccent.opacity(0.08) : Color.clear)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(model.selectedCategoryValue == nil ? Color.btqAccent : Color.secondary.opacity(0.25), lineWidth: 1.5)
+        )
     }
 
     private var photoTools: some View {
@@ -345,12 +375,10 @@ struct CaptureNotebookView: View {
 
             ForEach($pendingPhotos) { $photo in
                 HStack(alignment: .top, spacing: 10) {
-                    Image(systemName: "photo")
-                        .foregroundStyle(.secondary)
-                        .frame(width: 24)
+                    DraftPhotoThumbnail(photo: photo)
                     VStack(alignment: .leading, spacing: 4) {
-                        Text(photo.filename)
-                            .font(.caption)
+                        Text("Photo")
+                            .font(.caption.weight(.semibold))
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
                         TextField("Photo note", text: $photo.note, axis: .vertical)
@@ -415,7 +443,7 @@ struct CaptureNotebookView: View {
             model.selectedSiteID
         } set: { newValue in
             model.selectedSiteID = newValue
-            model.selectedCategoryValue = model.selectedSite?.displayCategories.first?.value
+            model.selectedCategoryValue = nil
         }
     }
 
@@ -429,6 +457,14 @@ struct CaptureNotebookView: View {
 
     private var remainingPhotoSlots: Int {
         max(0, model.maxImagesPerCapture - pendingPhotos.count)
+    }
+
+    private var selectedCategoryLabel: String {
+        guard let selectedCategoryValue = model.selectedCategoryValue,
+              let category = model.selectedSite?.displayCategories.first(where: { $0.value == selectedCategoryValue }) else {
+            return "Not selected"
+        }
+        return category.label
     }
 
     private var isAtPhotoLimit: Bool {
@@ -662,6 +698,50 @@ struct CaptureNotebookView: View {
         case .uploading: .btqUploading
         default: .secondary
         }
+    }
+}
+
+private struct DraftPhotoThumbnail: View {
+    let photo: CapturePhoto
+
+    var body: some View {
+        Group {
+            if let image = thumbnailImage {
+                image
+                    .resizable()
+                    .scaledToFill()
+            } else {
+                Image(systemName: "photo")
+                    .font(.title2)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+        }
+        .frame(width: 64, height: 64)
+        .background(Color.secondary.opacity(0.10))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .overlay(
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(Color.secondary.opacity(0.25), lineWidth: 1)
+        )
+        .accessibilityLabel("Selected photo thumbnail")
+    }
+
+    private var thumbnailImage: Image? {
+        guard let fileURL = photo.fileURL,
+              let data = try? Data(contentsOf: fileURL) else {
+            return nil
+        }
+
+        #if os(iOS)
+        guard let image = UIImage(data: data) else { return nil }
+        return Image(uiImage: image)
+        #elseif os(macOS)
+        guard let image = NSImage(data: data) else { return nil }
+        return Image(nsImage: image)
+        #else
+        return nil
+        #endif
     }
 }
 

@@ -68,7 +68,7 @@ public final class FieldCaptureModel {
         }
         set {
             selectedSiteID = newValue?.siteID
-            selectedCategoryValue = newValue?.displayCategories.first?.value
+            selectedCategoryValue = nil
         }
     }
 
@@ -456,7 +456,7 @@ public final class FieldCaptureModel {
             statusMessage = "Choose a site before saving."
             return false
         }
-        let category = selectedCategoryValue ?? site.displayCategories.first?.value ?? "general_note"
+        let category = selectedCategoryValue ?? "general_note"
         let note = observationText.trimmingCharacters(in: .whitespacesAndNewlines)
         let now = Date()
         let suffix = String(UUID().uuidString.prefix(8)).lowercased()
@@ -649,14 +649,14 @@ public final class FieldCaptureModel {
         submittedCaptures = []
         submissionQualitySummary = nil
         selectedSiteID = prioritizedSites.first?.siteID
-        selectedCategoryValue = selectedSite?.displayCategories.first?.value
+        selectedCategoryValue = nil
     }
 
     private func applyDemoSession() {
         session = .demo
         sites = BTQSession.demo.sites
         selectedSiteID = sites.first?.siteID
-        selectedCategoryValue = sites.first?.displayCategories.first?.value
+        selectedCategoryValue = nil
         upsertCurrentWorkspace()
     }
 
@@ -732,7 +732,7 @@ public final class FieldCaptureModel {
            selectedSite?.displayCategories.contains(where: { $0.value == previousCategoryValue }) == true {
             selectedCategoryValue = previousCategoryValue
         } else {
-            selectedCategoryValue = selectedSite?.displayCategories.first?.value
+            selectedCategoryValue = nil
         }
     }
 

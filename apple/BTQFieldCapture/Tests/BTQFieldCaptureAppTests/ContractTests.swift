@@ -1093,7 +1093,9 @@ import UniformTypeIdentifiers
     #expect(captureViewSource.contains("Button(\"Clear\")"))
     #expect(captureViewSource.contains(".disabled(activeVisit == nil || !canEditDraft)"))
     #expect(captureViewSource.contains("Picker(\"Site\", selection: siteSelection)"))
-    #expect(captureViewSource.contains("Picker(\"Observation\", selection: categorySelection)"))
+    #expect(captureViewSource.contains("Picker(\"Area / QC\", selection: categorySelection)"))
+    #expect(captureViewSource.contains("Text(\"Select category...\").tag(Optional<String>.none)"))
+    #expect(captureViewSource.contains("DraftPhotoThumbnail(photo: photo)"))
     #expect(captureViewSource.contains(".disabled(!canEditDraft)\n\n                    Button"))
     #expect(captureViewSource.contains(".disabled(!canEditDraft)\n                .accessibilityLabel(\"Clear pending media\")"))
     #expect(captureViewSource.contains(".disabled(!canEditDraft)\n                            .accessibilityLabel(\"Photo note for"))
@@ -1225,9 +1227,48 @@ import UniformTypeIdentifiers
     #expect(model.session?.person.name == "Saved Token User")
     #expect(model.sites.map(\.siteID) == ["site_saved"])
     #expect(model.selectedSiteID == "site_saved")
+    #expect(model.selectedCategoryValue == nil)
     #expect(model.maxImagesPerCapture == 4)
     #expect(model.isOfflineMode == false)
     #expect(model.statusMessage == "Session refreshed")
+}
+
+@Test @MainActor func categoryStartsEmptyAndDoesNotFallBackToFirstSiteCategory() async {
+    let site = BTQSite(
+        siteID: "site_1",
+        label: "Site One",
+        displayCategories: [
+            BTQDisplayCategory(value: "cleaning_quality", label: "Cleaning quality"),
+            BTQDisplayCategory(value: "supplies", label: "Supplies"),
+        ]
+    )
+    let snapshot = FieldCaptureSnapshot(
+        account: .defaultProduction,
+        session: BTQSession(
+            person: BTQPerson(personID: "person_field", name: "Field User"),
+            token: BTQToken(tokenID: "token_field", label: "Pilot"),
+            sites: [site],
+            canSubmit: true,
+            canReview: false,
+            maxImages: 6
+        ),
+        sites: [site]
+    )
+    let model = FieldCaptureModel(
+        store: MemoryFieldCaptureStore(snapshot: snapshot),
+        apiClient: MockCaptureAPIClient(),
+        tokenStore: MemoryTokenStore(),
+        notificationScheduler: NoopUploadNotificationScheduler()
+    )
+
+    await model.load()
+    model.observationText = "Uncategorized field note"
+
+    let didSave = await model.saveQuickObservation()
+
+    #expect(model.selectedCategoryValue == nil)
+    #expect(didSave)
+    #expect(model.captures.first?.qcCategory == "general_note")
 }
 
 @Test @MainActor func sessionRefreshPreservesValidSelectedCategory() async {
