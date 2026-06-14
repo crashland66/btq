@@ -82,10 +82,13 @@ submission.
 - 2026-06-14: Settings test alert displayed successfully on the iPhone. This
   verifies local notification permission/presentation for the app-level alert
   path.
+- 2026-06-14: Heavy Photos picker capture succeeded on the iPhone: selected 6
+  photos, recorded audio, typed an observation, and submitted without the app
+  closing. This verifies the Photos picker import path and combined
+  photo/audio/text submission path for the current pilot limit.
 
 ### Remaining Physical Device Checks
 
-- Photos picker import.
 - Voice pause/resume and playback.
 - Lock/background voice recording continuation.
 - Upload-failure alert behavior.

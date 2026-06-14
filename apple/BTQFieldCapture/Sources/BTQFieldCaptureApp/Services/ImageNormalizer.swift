@@ -45,6 +45,13 @@ public struct ImageUploadPolicy: Equatable, Sendable {
 }
 
 public enum ImageNormalizer {
+    public static func normalizedData(from fileURL: URL, policy: ImageUploadPolicy = .fieldCapture) throws -> Data {
+        switch policy.format {
+        case .jpeg:
+            try jpegData(from: fileURL, quality: policy.quality, maxPixelDimension: CGFloat(policy.maxPixelDimension))
+        }
+    }
+
     public static func normalizedData(from data: Data, policy: ImageUploadPolicy = .fieldCapture) throws -> Data {
         switch policy.format {
         case .jpeg:
@@ -52,9 +59,24 @@ public enum ImageNormalizer {
         }
     }
 
+    public static func jpegData(from fileURL: URL, quality: Double = 0.86, maxPixelDimension: CGFloat = 2_048) throws -> Data {
+        guard let source = CGImageSourceCreateWithURL(fileURL as CFURL, nil) else {
+            throw ImageNormalizerError.decodeFailed
+        }
+
+        return try jpegData(from: source, quality: quality, maxPixelDimension: maxPixelDimension)
+    }
+
     public static func jpegData(from data: Data, quality: Double = 0.86, maxPixelDimension: CGFloat = 2_048) throws -> Data {
-        guard let source = CGImageSourceCreateWithData(data as CFData, nil),
-              let image = CGImageSourceCreateImageAtIndex(
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil) else {
+            throw ImageNormalizerError.decodeFailed
+        }
+
+        return try jpegData(from: source, quality: quality, maxPixelDimension: maxPixelDimension)
+    }
+
+    private static func jpegData(from source: CGImageSource, quality: Double, maxPixelDimension: CGFloat) throws -> Data {
+        guard let image = CGImageSourceCreateImageAtIndex(
                 source,
                 0,
                 [

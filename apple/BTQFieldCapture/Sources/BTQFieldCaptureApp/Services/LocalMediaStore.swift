@@ -22,6 +22,15 @@ public struct LocalMediaStore: Sendable {
         return CapturePhoto(filename: filename, mimeType: imagePolicy.format.mimeType, fileURL: url)
     }
 
+    public func savePhotoFile(_ sourceURL: URL, preferredStem: String = "photo", bucketID: String = UUID().uuidString) throws -> CapturePhoto {
+        let filename = "\(safeStem(preferredStem))-\(UUID().uuidString).\(imagePolicy.format.fileExtension)"
+        let url = mediaDirectory(bucketID: bucketID).appendingPathComponent(filename)
+        let normalizedData = try ImageNormalizer.normalizedData(from: sourceURL, policy: imagePolicy)
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try normalizedData.write(to: url, options: [.atomic])
+        return CapturePhoto(filename: filename, mimeType: imagePolicy.format.mimeType, fileURL: url)
+    }
+
     public func persistAudio(_ audio: CaptureAudio, bucketID: String = UUID().uuidString, removeSourceAfterCopy: Bool = false) throws -> CaptureAudio {
         guard let sourceURL = audio.fileURL, FileManager.default.fileExists(atPath: sourceURL.path) else {
             throw LocalMediaStoreError.missingSourceFile

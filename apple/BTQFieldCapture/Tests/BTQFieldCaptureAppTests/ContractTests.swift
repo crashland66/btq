@@ -348,6 +348,7 @@ import UniformTypeIdentifiers
     #expect(releaseReadiness.contains("Live image capture submitted from the native iPhone app"))
     #expect(releaseReadiness.contains("Live audio recording submitted from the native iPhone app"))
     #expect(releaseReadiness.contains("Settings test alert displayed successfully"))
+    #expect(releaseReadiness.contains("Heavy Photos picker capture succeeded on the iPhone"))
     #expect(releaseReadiness.contains("Remaining Physical Device Checks"))
 
     let captureView = try String(
@@ -363,6 +364,10 @@ import UniformTypeIdentifiers
     #expect(captureView.contains("\"capture.save.local\""))
     #expect(captureView.contains("isImportingPhotos"))
     #expect(captureView.contains("photoImportMessage"))
+    #expect(captureView.contains("PickedPhotoFile"))
+    #expect(captureView.contains("FileRepresentation(importedContentType: .image)"))
+    #expect(captureView.contains("savePhoto(fileURL: pickedPhoto.fileURL, prefix: \"photo\")"))
+    #expect(!captureView.contains("item.loadTransferable(type: Data.self)"))
     #expect(captureView.contains("\"capture.photos.picker\""))
     #expect(captureView.contains("\"capture.photos.importing\""))
     #expect(captureView.contains("\"capture.photos.import.message\""))
@@ -731,6 +736,21 @@ import UniformTypeIdentifiers
     #expect(type == UTType.jpeg.identifier)
 }
 
+@Test func imageNormalizerConvertsFileURLToJpeg() throws {
+    let temp = FileManager.default.temporaryDirectory.appendingPathComponent("btq-image-url-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: temp, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: temp) }
+
+    let sourceURL = temp.appendingPathComponent("picker-source.png")
+    try makeTestImageData(type: .png).write(to: sourceURL)
+
+    let jpeg = try ImageNormalizer.normalizedData(from: sourceURL, policy: .fieldCapture)
+    let source = CGImageSourceCreateWithData(jpeg as CFData, nil)
+    let type = source.flatMap { CGImageSourceGetType($0) as String? }
+
+    #expect(type == UTType.jpeg.identifier)
+}
+
 @Test func fieldCaptureImagePolicyUploadsBackendCompatibleJpegs() throws {
     let policy = ImageUploadPolicy.fieldCapture
     let temp = FileManager.default.temporaryDirectory.appendingPathComponent("btq-image-policy-\(UUID().uuidString)", isDirectory: true)
@@ -738,7 +758,9 @@ import UniformTypeIdentifiers
     defer { try? FileManager.default.removeItem(at: temp) }
 
     let store = LocalMediaStore(rootDirectory: temp, imagePolicy: policy)
-    let photo = try store.savePhotoData(makeTestImageData(type: .png), preferredStem: "heic-source", bucketID: "visit-one")
+    let sourceURL = temp.appendingPathComponent("heic-source.png")
+    try makeTestImageData(type: .png).write(to: sourceURL)
+    let photo = try store.savePhotoFile(sourceURL, preferredStem: "heic-source", bucketID: "visit-one")
 
     #expect(policy.format == .jpeg)
     #expect(policy.format.fileExtension == "jpg")

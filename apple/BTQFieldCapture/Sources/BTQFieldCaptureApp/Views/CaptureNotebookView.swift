@@ -1,3 +1,4 @@
+import CoreTransferable
 import PhotosUI
 import SwiftUI
 #if os(iOS)
@@ -7,6 +8,21 @@ import UIKit
 private struct DraftContext: Equatable {
     let accountID: UUID
     let siteID: String?
+}
+
+private struct PickedPhotoFile: Transferable {
+    let fileURL: URL
+
+    static var transferRepresentation: some TransferRepresentation {
+        FileRepresentation(importedContentType: .image) { received in
+            let sourceExtension = received.file.pathExtension
+            let fileExtension = sourceExtension.isEmpty ? "image" : sourceExtension
+            let destination = FileManager.default.temporaryDirectory
+                .appendingPathComponent("btq-picked-photo-\(UUID().uuidString).\(fileExtension)")
+            try FileManager.default.copyItem(at: received.file, to: destination)
+            return PickedPhotoFile(fileURL: destination)
+        }
+    }
 }
 
 struct CaptureNotebookView: View {
@@ -455,17 +471,22 @@ struct CaptureNotebookView: View {
         for item in items {
             guard pendingPhotos.count < model.maxImagesPerCapture else { break }
             guard canAttachMedia(to: context) else { break }
-            guard let data = try? await item.loadTransferable(type: Data.self) else {
+            guard let pickedPhoto = try? await item.loadTransferable(type: PickedPhotoFile.self) else {
                 failedCount += 1
                 await Task.yield()
                 continue
             }
-            guard canAttachMedia(to: context) else { break }
-            guard let photo = savePhoto(data: data, prefix: "photo") else {
+            guard canAttachMedia(to: context) else {
+                try? FileManager.default.removeItem(at: pickedPhoto.fileURL)
+                break
+            }
+            guard let photo = savePhoto(fileURL: pickedPhoto.fileURL, prefix: "photo") else {
+                try? FileManager.default.removeItem(at: pickedPhoto.fileURL)
                 failedCount += 1
                 await Task.yield()
                 continue
             }
+            try? FileManager.default.removeItem(at: pickedPhoto.fileURL)
             pendingPhotos.append(photo)
             importedCount += 1
             await Task.yield()
@@ -481,6 +502,11 @@ struct CaptureNotebookView: View {
     private func savePhoto(data: Data, prefix: String) -> CapturePhoto? {
         guard pendingPhotos.count < model.maxImagesPerCapture else { return nil }
         return try? mediaStore.savePhotoData(data, preferredStem: prefix, bucketID: mediaBucketID)
+    }
+
+    private func savePhoto(fileURL: URL, prefix: String) -> CapturePhoto? {
+        guard pendingPhotos.count < model.maxImagesPerCapture else { return nil }
+        return try? mediaStore.savePhotoFile(fileURL, preferredStem: prefix, bucketID: mediaBucketID)
     }
 
     private func discardPendingMedia() {
