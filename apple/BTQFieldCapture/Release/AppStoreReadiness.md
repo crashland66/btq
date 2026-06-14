@@ -53,8 +53,9 @@ submission.
 
 1. Install the iOS platform in Xcode if it is missing.
 2. Sign into the Apple Developer account in Xcode.
-3. In Xcode, set the Development Team for both `BTQ Capture` and
-   `BTQ Capture Mac`.
+3. Copy `Local.xcconfig.example` to `Local.xcconfig` and set your local
+   `DEVELOPMENT_TEAM` there. Do not store a personal Team ID by editing the
+   Xcode project's Signing & Capabilities pane.
 4. On physical iPhones used for testing, enable Developer Mode in
    Settings > Privacy & Security > Developer Mode, then restart/confirm when
    prompted.
@@ -67,6 +68,22 @@ submission.
    Association payload for universal-link onboarding.
 
 ## Before TestFlight
+
+### Physical Device Validation Log
+
+- 2026-06-14: Live image capture submitted from the native iPhone app and
+  appeared in the BTQ dashboard with vision context. This verifies the real
+  device photo capture, upload path, backend ingestion, and dashboard/vision
+  handoff for a test capture.
+
+### Remaining Physical Device Checks
+
+- Photos picker import.
+- Voice recording, pause/resume, save, and playback.
+- Lock/background voice recording continuation.
+- Local notification test alert visibility and upload-failure alert behavior.
+- Poor-connectivity capture with automatic sync recovery.
+- Background sync behavior after app backgrounding.
 
 - Run the aggregate field-pilot readiness script:
 

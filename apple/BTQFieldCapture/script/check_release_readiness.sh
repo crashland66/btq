@@ -77,6 +77,9 @@ grep -q 'verify_mock_api_submit.sh' "$READINESS_DOC" || fail "release readiness 
 grep -q 'verify_live_api.sh' "$READINESS_DOC" || fail "release readiness doc does not mention live API verifier"
 grep -q 'verify_universal_links.sh' "$READINESS_DOC" || fail "release readiness doc does not mention universal link verifier"
 grep -q 'field_pilot_readiness.sh' "$READINESS_DOC" || fail "release readiness doc does not mention field pilot readiness verifier"
+grep -q 'Local.xcconfig.example' "$READINESS_DOC" || fail "release readiness doc must direct local signing through Local.xcconfig.example"
+grep -q 'DEVELOPMENT_TEAM' "$READINESS_DOC" || fail "release readiness doc must mention local DEVELOPMENT_TEAM injection"
+! grep -q 'set the Development Team' "$READINESS_DOC" || fail "release readiness doc must not tell users to set Development Team in Xcode"
 ! grep -q 'sh script/verify_' "$READINESS_DOC" || fail "release readiness doc should execute Bash verifiers directly"
 ! grep -q 'sh script/verify_' "$FIELD_PILOT_READINESS" || fail "field pilot readiness should execute Bash verifiers directly"
 

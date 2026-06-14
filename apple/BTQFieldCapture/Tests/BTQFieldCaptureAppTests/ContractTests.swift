@@ -340,6 +340,13 @@ import UniformTypeIdentifiers
     #expect(!releaseReadiness.contains("sh script/verify_"))
     #expect(releaseReadiness.contains("./script/verify_live_api.sh"))
     #expect(releaseReadiness.contains("./script/verify_universal_links.sh"))
+    #expect(releaseReadiness.contains("Local.xcconfig.example"))
+    #expect(releaseReadiness.contains("DEVELOPMENT_TEAM"))
+    #expect(!releaseReadiness.contains("set the Development Team"))
+    #expect(releaseReadiness.contains("Do not store a personal Team ID by editing"))
+    #expect(releaseReadiness.contains("Physical Device Validation Log"))
+    #expect(releaseReadiness.contains("Live image capture submitted from the native iPhone app"))
+    #expect(releaseReadiness.contains("Remaining Physical Device Checks"))
 
     let captureView = try String(
         contentsOf: packageRoot().appendingPathComponent("Sources/BTQFieldCaptureApp/Views/CaptureNotebookView.swift"),
