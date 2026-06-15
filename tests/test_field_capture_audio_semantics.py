@@ -1117,15 +1117,12 @@ def test_field_capture_default_approved_candidate_maps_to_site_note_draft(tmp_pa
     assert proposed_payload["path"] == "Accounts/Summitsteel/Locations/7050 - Summit Wire/about.md"
     assert proposed_payload["destination"] == "site_note"
     assert validate_job({"job_type": draft["proposed_job_type"], "payload": proposed_payload})
-    assert proposed_payload["content"].startswith("---\n\n## Field Capture Reviews\n\n### Field Capture Review - ")
-    assert "- site_id: 7050" in proposed_payload["content"]
-    assert "- area: Restrooms" in proposed_payload["content"]
-    assert "- capture_id: cap-audio" in proposed_payload["content"]
-    assert "- audio_asset_id: fca_test" in proposed_payload["content"]
-    assert "Summary: Reviewed against uploaded photo and field note." in proposed_payload["content"]
-    assert "Review rationale: Reviewed against uploaded photo and field note." in proposed_payload["content"]
-    assert "/runtime/field_capture/audio_semantics/fca_test.json" in proposed_payload["content"]
-    assert "/runtime/field_capture/audio_transcripts/fca_test.json" in proposed_payload["content"]
+    assert "- Field capture: Reviewed against uploaded photo and field note." in proposed_payload["content"]
+    assert "## Field Capture Reviews" not in proposed_payload["content"]
+    assert "### Field Capture Review -" not in proposed_payload["content"]
+    assert "- site_id:" not in proposed_payload["content"]
+    assert "- area:" not in proposed_payload["content"]
+    assert "/runtime/" not in proposed_payload["content"]
     assert not draft_dir.exists()
     assert not (runtime_root / "queue").exists()
     assert sentinel.read_text(encoding="utf-8") == "do not touch\n"
@@ -1151,6 +1148,7 @@ def test_field_capture_completion_candidate_without_site_id_falls_through() -> N
         **dict(candidate["channel_metadata"]),
         "site_id": "",
     }
+    candidate["review_rationale"] = "Logged completion follow-up for the uncovered morning shift."
 
     draft = field_approved_job_drafts.draft_payload_from_candidate(Path("/runtime/reviews/action_candidates/ac.json"), candidate)
 
@@ -1166,6 +1164,7 @@ def test_field_capture_non_completion_candidate_does_not_propose_visit() -> None
         "visit_proposed": False,
         "issue_type": "other",
     }
+    candidate["review_rationale"] = "Logged a non-visit field follow-up note for the site record."
 
     draft = field_approved_job_drafts.draft_payload_from_candidate(Path("/runtime/reviews/action_candidates/ac.json"), candidate)
 
@@ -1283,10 +1282,10 @@ def test_field_capture_default_draft_uses_review_rationale_over_generic_candidat
     proposed_payload = result["draft"]["proposed_payload"]
     assert validate_job({"job_type": result["draft"]["proposed_job_type"], "payload": proposed_payload})
     content = proposed_payload["content"]
-    assert "Summary: Summit Wire is out of fresh mop heads and needs supply follow-up." in content
-    assert "Review rationale: Operational supply note: Summit Wire is out of fresh mop heads and needs supply follow-up." in content
+    assert "- Field capture: Summit Wire is out of fresh mop heads and needs supply follow-up." in content
     assert "Candidate label:" not in content
-    assert "Summary: Capture after photo once corrected." not in content
+    assert "Capture after photo once corrected." not in content
+    assert "## Field Capture Reviews" not in content
     assert not draft_dir.exists()
     assert not (runtime_root / "queue").exists()
 
@@ -1310,7 +1309,7 @@ def test_field_capture_default_draft_falls_back_to_candidate_summary_without_rev
     [result] = report["results"]
     proposed_payload = result["draft"]["proposed_payload"]
     assert validate_job({"job_type": result["draft"]["proposed_job_type"], "payload": proposed_payload})
-    assert "Summary: Preserve administrative office map photo for site reference." in proposed_payload["content"]
+    assert "- Field capture: Preserve administrative office map photo for site reference." in proposed_payload["content"]
     assert not draft_dir.exists()
     assert not (runtime_root / "queue").exists()
 
@@ -1335,7 +1334,8 @@ def test_field_capture_default_draft_uses_unknown_area_when_area_is_missing(tmp_
 
     [result] = report["results"]
     content = result["draft"]["proposed_payload"]["content"]
-    assert "- area: Unknown" in content
+    assert "- area:" not in content
+    assert "- Field capture: Summit Wire administrative office map photo should be preserved for site reference." in content
     assert validate_job({"job_type": result["draft"]["proposed_job_type"], "payload": result["draft"]["proposed_payload"]})
     assert not draft_dir.exists()
     assert not (runtime_root / "queue").exists()
@@ -1362,10 +1362,10 @@ def test_field_capture_default_draft_does_not_carry_supply_area_for_reference_no
 
     [result] = report["results"]
     content = result["draft"]["proposed_payload"]["content"]
-    assert "- area: Unknown" in content
+    assert "- area:" not in content
     assert "- area: Supply Levels" not in content
     assert "Candidate label:" not in content
-    assert "Summary: Summit Wire administrative office map photo should be preserved for site reference." in content
+    assert "- Field capture: Summit Wire administrative office map photo should be preserved for site reference." in content
     assert validate_job({"job_type": result["draft"]["proposed_job_type"], "payload": result["draft"]["proposed_payload"]})
     assert not draft_dir.exists()
     assert not (runtime_root / "queue").exists()
@@ -1393,9 +1393,8 @@ def test_field_capture_generated_notes_have_separators_when_combined(tmp_path: P
 
     contents = [result["draft"]["proposed_payload"]["content"] for result in report["results"]]
     combined = "".join(contents)
-    assert combined.count("---\n\n## Field Capture Reviews") == 2
+    assert combined.count("- Field capture:") == 2
     assert "First reviewed note." in combined
-    assert "---\n\n## Field Capture Reviews" in combined.split("First reviewed note.", 1)[1]
     assert "Second reviewed note." in combined
     assert not draft_dir.exists()
     assert not (runtime_root / "queue").exists()

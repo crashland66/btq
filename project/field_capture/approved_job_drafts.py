@@ -13,7 +13,7 @@ from config import get_config
 from event_pipeline import couchdb_config
 from event_pipeline.site_registry_data import load_brand_keywords
 from field_capture import client_notifications
-from field_capture.action_candidates import normalize_vault_relative_path
+from field_capture.action_candidates import GENERIC_REVIEW_ACTION, normalize_vault_relative_path
 from event_pipeline.sites import SITES
 from processing_core.action_candidates import STATUS_APPROVED
 from processing_core.approved_job_drafts import (
@@ -202,15 +202,17 @@ def proposed_queue_job(candidate: dict[str, object], *, runtime_root: Path | Non
         # cannot resolve.
         note_path = normalize_vault_relative_path(channel_metadata.get("proposed_note_path"))
         if note_path:
-            return (
-                JOB_APPEND_TO_NOTE,
-                {
-                    "path": note_path,
-                    "destination": "site_note",
-                    "content": draft_note_content(candidate),
-                },
-                "",
-            )
+            content = draft_note_content(candidate)
+            if content.strip():
+                return (
+                    JOB_APPEND_TO_NOTE,
+                    {
+                        "path": note_path,
+                        "destination": "site_note",
+                        "content": content,
+                    },
+                    "",
+                )
 
     if candidate.get("candidate_type") == FIELD_CAPTURE_CANDIDATE_TYPE:
         job_type, payload, error = default_field_capture_job(candidate, runtime_root=runtime_root)
@@ -504,10 +506,13 @@ def default_field_capture_append_job(candidate: dict[str, object]) -> tuple[str,
     note_path = site_note_path_for_site_id(site_id)
     if not note_path:
         return "", {}, f"could not resolve site note path for field_capture site_id: {site_id}"
+    content = draft_note_content(candidate)
+    if not content.strip():
+        return "", {}, "field_capture has no non-generic site-note finding"
     payload = {
         "path": note_path,
         "destination": "site_note",
-        "content": draft_note_content(candidate),
+        "content": content,
     }
     if not validate_job({"job_type": JOB_APPEND_TO_NOTE, "payload": payload}):
         return "", {}, "generated field_capture append_to_note payload failed queue_spec validation"
@@ -1044,50 +1049,15 @@ def site_note_path_for_site_id(site_id: str) -> str:
 
 def draft_note_content(candidate: dict[str, object]) -> str:
     channel_metadata = candidate.get("channel_metadata") if isinstance(candidate.get("channel_metadata"), dict) else {}
-    provenance = candidate.get("provenance") if isinstance(candidate.get("provenance"), dict) else {}
     candidate_summary = str(candidate.get("summary") or "").strip()
     review_rationale = str(candidate.get("review_rationale") or "").strip()
     source_context = str(candidate.get("source_context") or "").strip()
     rationale = str(candidate.get("rationale") or "").strip()
     primary_summary = note_primary_summary(candidate_summary, review_rationale, source_context, rationale)
-    lines = ["---", "", "## Field Capture Reviews", "", f"### Field Capture Review - {field_capture_entry_label(channel_metadata, candidate)}"]
-    field_timestamp = str(channel_metadata.get("captured_at") or candidate.get("created_at") or "").strip()
-    if field_timestamp:
-        lines.append(f"- field_capture_timestamp: {field_timestamp}")
-    site_id = resolve_candidate_site_id(candidate)
-    if site_id:
-        lines.append(f"- site_id: {site_id}")
-    area = note_area_value(channel_metadata, primary_summary, review_rationale, source_context)
-    lines.append(f"- area: {area}")
-    for key, label in (("phase", "phase"), ("upload_id", "capture_id")):
-        value = str(channel_metadata.get(key) or "").strip()
-        if value:
-            lines.append(f"- {label}: {value}")
-    audio_asset_id = str(provenance.get("audio_asset_id") or "").strip()
-    if audio_asset_id:
-        lines.append(f"- audio_asset_id: {audio_asset_id}")
-    reviewer = str(candidate.get("reviewer") or "").strip()
-    if reviewer:
-        lines.append(f"- reviewer: {reviewer}")
-    if primary_summary:
-        lines.extend(["", f"Summary: {primary_summary}"])
-    if review_rationale:
-        lines.extend(["", f"Review rationale: {review_rationale}"])
-    elif source_context:
-        lines.extend(["", f"Reviewed context: {source_context}"])
-    elif rationale:
-        lines.extend(["", f"Reviewed context: {rationale}"])
-    if candidate_summary and candidate_summary != primary_summary and not is_generic_candidate_label(candidate_summary):
-        lines.append(f"Candidate label: {candidate_summary}")
-    semantic_path = str(provenance.get("semantic_artifact_path") or "").strip()
-    transcript_path = str(provenance.get("source_transcript_path") or "").strip()
-    if semantic_path or transcript_path:
-        lines.append("")
-    if semantic_path:
-        lines.append(f"Source semantic artifact: {semantic_path}")
-    if transcript_path:
-        lines.append(f"Source transcript artifact: {transcript_path}")
-    return "\n".join(lines).rstrip() + "\n"
+    if is_generic_note_finding(primary_summary):
+        return ""
+    field_date = field_capture_entry_label(channel_metadata, candidate)[:10]
+    return f"## {field_date} - Field capture: {primary_summary}\n"
 
 
 def note_primary_summary(candidate_summary: str, review_rationale: str, source_context: str, rationale: str) -> str:
@@ -1108,6 +1078,18 @@ def operational_summary_from_review_rationale(review_rationale: str) -> str:
 
 def is_generic_candidate_label(summary: str) -> bool:
     return summary.strip().lower() in GENERIC_CANDIDATE_LABELS
+
+
+def is_generic_note_finding(summary: str) -> bool:
+    text = normalized_text(summary)
+    if not text:
+        return True
+    return (
+        is_generic_candidate_label(summary)
+        or text == normalized_text(GENERIC_REVIEW_ACTION)
+        or text == normalized_text("Reviewed context: Complete")
+        or text == "complete"
+    )
 
 
 def field_capture_entry_label(channel_metadata: dict[str, object], candidate: dict[str, object]) -> str:
