@@ -18,7 +18,7 @@ MIXED_LOG = """# Acme Facility
 
 ## Field Capture Review
 - field_capture_timestamp: 2026-05-01T00:00:00Z
-- site_id: 1337
+- site_id: SANDBOX
 Source semantic artifact: /runtime/field_capture/audio_semantics/a.json
 Source transcript artifact: /runtime/field_capture/audio_transcripts/a.json
 
@@ -40,7 +40,7 @@ Keep this recognition entry.
 
 ## Field Capture Review
 - field_capture_timestamp: 2026-05-04T00:00:00Z
-- site_id: 1337
+- site_id: SANDBOX
 Source semantic artifact: /runtime/field_capture/semantics/c.json
 
 ---
@@ -53,7 +53,7 @@ reason: "event_without_visit"
 ## Field Capture Reviews
 
 ### Field Capture Review - 2026-05-16T04:10:54Z
-- site_id: 1337
+- site_id: SANDBOX
 - area: Restrooms
 Summary: Review the field audio note and decide whether follow-up is needed.
 Source semantic artifact: /runtime/field_capture/semantics/b.json
@@ -87,7 +87,7 @@ class StripReviewBlocksTest(unittest.TestCase):
 
     def test_visit_gap_between_review_blocks_preserved(self) -> None:
         # regression: a headingless visit_gap frontmatter sandwiched between two review
-        # blocks must NOT be swallowed (the dry-run caught this on real 1337).
+        # blocks must NOT be swallowed (the dry-run caught this on real production data).
         self.assertIn("type: visit_gap", self.cleaned)
         self.assertIn('reason: "event_without_visit"', self.cleaned)
         self.assertIn("date: 2026-05-05", self.cleaned)

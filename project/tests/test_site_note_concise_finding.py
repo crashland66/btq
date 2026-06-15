@@ -7,7 +7,7 @@
      with the date taken from captured_at/created_at. No verbose
      "## Field Capture Reviews" block, no "### Field Capture Review -"
      header, no field-list bullets, and CRITICALLY no absolute
-     filesystem paths (the /Users/ and /btq_runtime/ leak regression).
+     filesystem paths (the /runtime/ and /btq_runtime/ leak regression).
   3. The two job builders (proposed_queue_job ~:210 and
      default_field_capture_append_job ~:510) must NOT emit an
      append_to_note job when draft_note_content is empty, and must emit
@@ -32,8 +32,8 @@ REAL_SITE_ID = "7020"
 REAL_NOTE_PATH = "Accounts/RHN/Locations/7020 - Lakeshore Community Health Center - RHN/about.md"
 
 # Absolute paths that MUST NEVER leak into note content under any input.
-LEAKY_SEMANTIC_PATH = "/Users/gregstoltz/development/btq/btq_runtime/reviews/x/semantic.json"
-LEAKY_TRANSCRIPT_PATH = "/Users/gregstoltz/btq_runtime/reviews/x/transcript.json"
+LEAKY_SEMANTIC_PATH = "/runtime/gregstoltz/development/btq/btq_runtime/reviews/x/semantic.json"
+LEAKY_TRANSCRIPT_PATH = "/runtime/reviews/x/transcript.json"
 
 REAL_SUMMARY = "Replaced the broken paper towel dispenser bracket in the east restroom."
 
@@ -72,7 +72,7 @@ def _base_candidate(**overrides) -> dict:
 
 
 def _assert_no_path_leak(content: str) -> None:
-    assert "/Users/" not in content, f"absolute /Users/ path leaked into note content: {content!r}"
+    assert "/runtime/" not in content, f"absolute /runtime/ path leaked into note content: {content!r}"
     assert "/btq_runtime/" not in content, f"runtime path leaked into note content: {content!r}"
 
 
@@ -164,7 +164,7 @@ def test_review_rationale_drives_summary_concise_and_pathfree() -> None:
 
 
 def test_no_path_leak_across_many_inputs() -> None:
-    # Sweep a matrix of summary sources to prove /Users/ and /btq_runtime/ can
+    # Sweep a matrix of summary sources to prove /runtime/ and /btq_runtime/ can
     # never reach the note content via any field, generic or real.
     summaries = [
         REAL_SUMMARY,
