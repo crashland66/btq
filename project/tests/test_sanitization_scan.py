@@ -27,7 +27,7 @@ class SanitizationScanTest(unittest.TestCase):
         # string value passed to scan() has no such comment, so it still rejects.
         leaks = [
             'x = "/Users/jdoe/secret/file.json"',  # sanitization-ok: scanner gate test fixture
-            'TOKEN = "fc_-R4ElZRx0sXeanwbIoYgDkJ6BZW6k9h"',  # sanitization-ok: scanner gate test fixture
+            'TOKEN = "fc_EXAMPLEexampleEXAMPLEexample00"',  # sanitization-ok: scanner gate test fixture
             'host = "bt-gateway-01.deer-fujita.ts.net"',  # sanitization-ok: scanner gate test fixture
             'peer = "100.124.107.7"',  # sanitization-ok: scanner gate test fixture
         ]
