@@ -1,0 +1,8 @@
+# Public-safe line allowlist for scripts/sanitization-scan.
+#
+# Each non-empty, non-comment line is a Python regular expression. If it matches
+# the full scanned line, sanitization findings on that line are suppressed.
+# Keep this file generic: placeholders and public examples only, never real
+# identifiers, secrets, internal hostnames, or private paths.
+
+.*\/Users\/example\/.*
