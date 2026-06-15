@@ -472,7 +472,8 @@ def _site_capture_records(ctx: object, site_id: str) -> tuple[list[dict[str, obj
         ]
 
     sidecars.sort(key=_capture_sort_key, reverse=True)
-    return sidecars[:_CAPTURE_GALLERY_LIMIT], fallback, len(sidecars)
+    capture_count = len({str(s.get("capture_id") or "") for s in sidecars if s.get("capture_id")})
+    return sidecars[:_CAPTURE_GALLERY_LIMIT], fallback, capture_count
 
 
 def _vision_status_chip(sidecar: dict[str, object]) -> str:
