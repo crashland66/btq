@@ -111,8 +111,8 @@ def test_swipe_reviewer_name_has_no_blocking_prompt_loop(tmp_path):
 def test_plain_site_label_strips_html_markup():
     from ops_dashboard.sections import swipe
 
-    label = '<span class="site-label">Liberty Wire <span class="site-id">(1337)</span></span>'
-    assert swipe._plain_site_label(label) == "Liberty Wire (1337)"
+    label = '<span class="site-label">Sandbox Site <span class="site-id">(SANDBOX)</span></span>'
+    assert swipe._plain_site_label(label) == "Sandbox Site (SANDBOX)"
     assert swipe._plain_site_label("B&amp;T") == "B&T"
     assert swipe._plain_site_label("") == ""
 

@@ -65,7 +65,7 @@ def _confidence_label(value: object) -> str:
 
 def _plain_site_label(html_label: str) -> str:
     """resolve_site_label returns HTML (<span> markup); the swipe card renders the
-    site through JS esc(), so it needs the plain text ("Liberty Wire (1337)")."""
+    site through JS esc(), so it needs the plain text ("Sandbox Site (SANDBOX)")."""
     return html.unescape(re.sub(r"<[^>]+>", "", html_label or "")).strip()
 
 
