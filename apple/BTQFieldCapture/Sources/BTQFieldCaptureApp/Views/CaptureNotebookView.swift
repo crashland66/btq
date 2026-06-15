@@ -192,38 +192,14 @@ struct CaptureNotebookView: View {
 
     private var siteCard: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Picker("Site", selection: siteSelection) {
-                ForEach(model.prioritizedSites) { site in
-                    Text(site.label).tag(Optional(site.siteID))
-                }
-            }
-            .pickerStyle(.menu)
-            .disabled(!canEditDraft)
+            sitePicker
 
             if let site = model.selectedSite {
-                let activeVisit = model.activeVisit(forSiteID: site.siteID)
                 if !site.captureGuidance.isEmpty {
                     Text(site.captureGuidance)
                         .font(.callout)
                         .foregroundStyle(.secondary)
                 }
-
-                HStack {
-                    Button {
-                        Task { await model.startVisit(site: site) }
-                    } label: {
-                        Label(activeVisit == nil ? "Start Visit" : "Restart Visit", systemImage: "play.circle")
-                    }
-                    .disabled(!canEditDraft)
-
-                    Button {
-                        Task { await model.endVisit(site: site) }
-                    } label: {
-                        Label("End Visit", systemImage: "stop.circle")
-                    }
-                    .disabled(activeVisit == nil || !canEditDraft)
-                }
-                .buttonStyle(.bordered)
             }
         }
     }
@@ -305,6 +281,45 @@ struct CaptureNotebookView: View {
         .accessibilityIdentifier("capture.category.picker")
         .accessibilityLabel("Area / QC")
         .accessibilityValue(selectedCategoryLabel)
+    }
+
+    private var sitePicker: some View {
+        Picker(selection: siteSelection) {
+            ForEach(model.prioritizedSites) { site in
+                Text(site.label).tag(Optional(site.siteID))
+            }
+        } label: {
+            HStack(spacing: 10) {
+                Image(systemName: "mappin.and.ellipse")
+                    .font(.headline)
+                    .foregroundStyle(.primary)
+                Text("Site")
+                    .font(.headline)
+                    .foregroundStyle(.primary)
+                Spacer(minLength: 12)
+                Text(selectedSiteLabel)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(Color.btqAccent)
+                    .lineLimit(1)
+                Image(systemName: "chevron.up.chevron.down")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(Color.btqAccent)
+            }
+        }
+        .pickerStyle(.menu)
+        .tint(.btqAccent)
+        .disabled(!canEditDraft)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 14)
+        .frame(minHeight: 56)
+        .contentShape(RoundedRectangle(cornerRadius: 8))
+        .overlay(
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(Color.secondary.opacity(0.25), lineWidth: 1.25)
+        )
+        .accessibilityIdentifier("capture.site.picker")
+        .accessibilityLabel("Site")
+        .accessibilityValue(selectedSiteLabel)
     }
 
     private var photoTools: some View {
@@ -445,6 +460,10 @@ struct CaptureNotebookView: View {
             return "Not selected"
         }
         return category.label
+    }
+
+    private var selectedSiteLabel: String {
+        model.selectedSite?.label ?? "No site selected"
     }
 
     private var isAtPhotoLimit: Bool {

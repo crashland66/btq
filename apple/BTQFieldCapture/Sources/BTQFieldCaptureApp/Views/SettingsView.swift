@@ -153,16 +153,21 @@ struct SettingsView: View {
     }
 
     private func accountSwitchButton(for account: BTQAccount) -> some View {
-        Button {
+        let isSelected = account.id == model.account.id
+
+        return Button {
+            guard !isSelected else { return }
             Task { await model.switchAccount(account.id) }
         } label: {
             AccountSwitchRow(
                 title: account.personName ?? account.label,
                 subtitle: account.baseURL.host() ?? account.baseURL.absoluteString,
-                isSelected: account.id == model.account.id
+                isSelected: isSelected
             )
         }
-        .disabled(model.isSyncing || model.isConnecting || account.id == model.account.id)
+        .buttonStyle(.plain)
+        .disabled(model.isSyncing || model.isConnecting)
+        .accessibilityValue(isSelected ? "Active account" : "Inactive account")
     }
 
     private var notificationButtonLabel: String {
@@ -203,15 +208,18 @@ private struct AccountSwitchRow: View {
 
     var body: some View {
         HStack {
-            VStack(alignment: .leading) {
+            VStack(alignment: .leading, spacing: 3) {
                 Text(title)
+                    .fontWeight(isSelected ? .semibold : .regular)
+                    .foregroundStyle(isSelected ? Color.btqAccent : Color.primary)
                 Text(subtitle)
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(isSelected ? Color.btqAccent.opacity(0.8) : Color.secondary)
             }
             Spacer()
             if isSelected {
-                Image(systemName: "checkmark")
+                Label("Active", systemImage: "checkmark.circle.fill")
+                    .font(.caption.weight(.semibold))
                     .foregroundStyle(Color.btqAccent)
             }
         }
