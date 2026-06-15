@@ -1,0 +1,242 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+import difflib
+import sys
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+PROJECT_ROOT = REPO_ROOT / "project"
+sys.path.insert(0, str(PROJECT_ROOT))
+
+from btq_vault.couch_store import CouchDBEntityStore, CouchDBEntityStoreError  # type: ignore  # noqa: E402
+from field_capture.site_note_review_cleanup import (  # type: ignore  # noqa: E402
+    PATH_LINE,
+    _is_review_head,
+    strip_review_blocks,
+)
+from queue_processor.canonical_rmw import (  # type: ignore  # noqa: E402
+    CanonicalEntityState,
+    CanonicalMutation,
+    CanonicalTarget,
+    apply_canonical_rmw,
+)
+
+
+LOCATION_QUERY_LIMIT = 100000
+
+
+@dataclass(frozen=True)
+class SiteCleanup:
+    doc: dict[str, Any]
+    doc_id: str
+    site_id: str
+    before: str
+    after: str
+    review_blocks_removed: int
+    users_path_lines_removed: int
+
+    @property
+    def changed(self) -> bool:
+        return self.after != self.before
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="Strip auto Field Capture Review blocks and path leaks from canonical location.content.",
+    )
+    parser.add_argument("--apply", action="store_true", help="Write cleaned content through canonical RMW. Default is dry-run.")
+    parser.add_argument("--show-diff", action="store_true", help="Print unified diffs for changed docs.")
+    parser.add_argument("--site", help="Limit cleanup to one site id, with or without the location_ prefix.")
+    return parser
+
+
+def site_doc_id(site: str) -> str:
+    normalized = site.strip()
+    if not normalized:
+        raise ValueError("--site cannot be empty")
+    if normalized.startswith("location_"):
+        return normalized
+    return f"location_{normalized}"
+
+
+def site_id_from_doc(doc: dict[str, Any]) -> str:
+    explicit = str(doc.get("site_id") or doc.get("job") or "").strip()
+    if explicit:
+        return explicit
+    return str(doc.get("_id") or "").removeprefix("location_")
+
+
+def candidate_docs(store: CouchDBEntityStore, *, site: str | None) -> list[dict[str, Any]]:
+    if site is not None:
+        doc_id = site_doc_id(site)
+        doc = store.get_optional(doc_id)
+        if doc is None:
+            raise CouchDBEntityStoreError(f"CouchDB location document not found: {doc_id}")
+        if doc.get("type") != "location":
+            raise CouchDBEntityStoreError(f"CouchDB document is not type=location: {doc_id}")
+        return [doc]
+
+    response = store._request_json(  # noqa: SLF001 - migration query; writes still go through canonical RMW.
+        "POST",
+        "_find",
+        {
+            "selector": {
+                "type": "location",
+                "$or": [
+                    {"content": {"$regex": "## Field Capture Review"}},
+                    {"content": {"$regex": "(Source semantic artifact|Source transcript artifact|raw_transcript)\\s*:\\s*/"}},
+                ],
+            },
+            "fields": ["_id", "_rev", "type", "site_id", "job", "location", "name", "content", "btq_job_ids"],
+            "limit": LOCATION_QUERY_LIMIT,
+        },
+    )
+    docs = response.get("docs")
+    if not isinstance(docs, list):
+        raise CouchDBEntityStoreError("CouchDB location cleanup query returned no docs list")
+    return [doc for doc in docs if isinstance(doc, dict)]
+
+
+def content_text(doc: dict[str, Any]) -> str:
+    content = doc.get("content", "")
+    return content if isinstance(content, str) else str(content)
+
+
+def count_review_blocks_removed(content: str) -> int:
+    return sum(1 for line in content.split("\n") if _is_review_head(line))
+
+
+def count_users_path_lines_removed(content: str) -> int:
+    return sum(1 for line in content.split("\n") if PATH_LINE.match(line) and "/Users/" in line)
+
+
+def cleanup_for_doc(doc: dict[str, Any]) -> SiteCleanup:
+    doc_id = str(doc.get("_id") or "").strip()
+    before = content_text(doc)
+    after = strip_review_blocks(before)
+    return SiteCleanup(
+        doc=doc,
+        doc_id=doc_id,
+        site_id=site_id_from_doc(doc),
+        before=before,
+        after=after,
+        review_blocks_removed=count_review_blocks_removed(before),
+        users_path_lines_removed=count_users_path_lines_removed(before),
+    )
+
+
+def print_cleanup(cleanup: SiteCleanup, *, show_diff: bool) -> None:
+    before_chars = len(cleanup.before)
+    after_chars = len(cleanup.after)
+    if not cleanup.changed:
+        print(
+            f"{cleanup.site_id}: already clean / skipped "
+            f"before_chars={before_chars} after_chars={after_chars} "
+            f"review_blocks_removed=0 users_path_lines_removed=0"
+        )
+        return
+
+    print(
+        f"{cleanup.site_id}: would clean "
+        f"before_chars={before_chars} after_chars={after_chars} "
+        f"review_blocks_removed={cleanup.review_blocks_removed} "
+        f"users_path_lines_removed={cleanup.users_path_lines_removed}"
+    )
+    if show_diff:
+        diff = difflib.unified_diff(
+            cleanup.before.splitlines(keepends=True),
+            cleanup.after.splitlines(keepends=True),
+            fromfile=f"{cleanup.doc_id}:before",
+            tofile=f"{cleanup.doc_id}:after",
+        )
+        sys.stdout.writelines(diff)
+        if cleanup.after and not cleanup.after.endswith("\n"):
+            print()
+
+
+def apply_cleanup(store: CouchDBEntityStore, cleanup: SiteCleanup) -> str:
+    target = CanonicalTarget(
+        doc_id=cleanup.doc_id,
+        doc_type="location",
+        allow_create=False,
+        require_existing=True,
+    )
+    job_id = f"cleanup-site-note-{cleanup.site_id}"
+
+    def transform(state: CanonicalEntityState) -> CanonicalMutation:
+        outgoing = dict(state.doc) if state.doc is not None else {}
+        current = content_text(outgoing)
+        cleaned = strip_review_blocks(current)
+        if cleaned == current:
+            return CanonicalMutation(doc=outgoing, skip=True)
+        outgoing["content"] = cleaned
+        return CanonicalMutation(doc=outgoing, evidence_text=f"cleaned site note review blocks for {cleanup.site_id}")
+
+    canonical_doc = apply_canonical_rmw(store, target, job_id, transform)
+    return "skipped" if canonical_doc is None else "updated"
+
+
+def run(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
+    mode = "apply" if args.apply else "dry-run"
+    store = CouchDBEntityStore.from_env()
+
+    try:
+        cleanups = [cleanup_for_doc(doc) for doc in candidate_docs(store, site=args.site)]
+    except (CouchDBEntityStoreError, ValueError) as exc:
+        print(f"cleanup-site-note-review-blocks: {exc}", file=sys.stderr)
+        return 2
+
+    changed = 0
+    skipped = 0
+    updated = 0
+    failed = 0
+    total_before = 0
+    total_after = 0
+    total_review_blocks = 0
+    total_users_path_lines = 0
+
+    print(f"cleanup-site-note-review-blocks ({mode})")
+    for cleanup in sorted(cleanups, key=lambda item: item.site_id):
+        total_before += len(cleanup.before)
+        total_after += len(cleanup.after)
+        if not cleanup.changed:
+            skipped += 1
+            print_cleanup(cleanup, show_diff=args.show_diff)
+            continue
+
+        changed += 1
+        total_review_blocks += cleanup.review_blocks_removed
+        total_users_path_lines += cleanup.users_path_lines_removed
+        print_cleanup(cleanup, show_diff=args.show_diff)
+
+        if args.apply:
+            try:
+                result = apply_cleanup(store, cleanup)
+            except Exception as exc:
+                failed += 1
+                print(f"{cleanup.site_id}: failed apply: {exc}", file=sys.stderr)
+                continue
+            if result == "updated":
+                updated += 1
+                print(f"{cleanup.site_id}: updated")
+            else:
+                skipped += 1
+                print(f"{cleanup.site_id}: already clean / skipped during apply")
+
+    print(
+        "Summary: "
+        f"mode={mode} candidates={len(cleanups)} changed={changed} skipped={skipped} "
+        f"updated={updated} failed={failed} before_chars={total_before} after_chars={total_after} "
+        f"review_blocks_removed={total_review_blocks} users_path_lines_removed={total_users_path_lines}"
+    )
+    return 1 if failed else 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(run())
