@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import html
+import threading
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import quote
 
+from event_pipeline import couchdb_config
 from field_capture import action_candidates as field_action_candidates
 from field_capture import job_draft_review
 from field_capture.review_status import review_status_report
@@ -15,6 +18,7 @@ from ops_dashboard.common import (
     latest_uploads,
     load_photo_vision_sidecars,
     pending_candidate_counts_by_capture,
+    query_couchdb_find,
     read_json_artifact,
     render_capture_candidate_signal,
     render_table,
@@ -32,6 +36,13 @@ from site_supplies import discover_site_supplies, urgency_sort
 INBOX_SHAPE_CAPTURE = "capture"
 INBOX_SHAPE_STRUCTURED = "structured"
 INBOX_SHAPE_GAP = "gap"
+FAILED_CAPTURE_COUNT_PAGE_SIZE = 5000
+FAILED_CAPTURE_COUNT_PAGE_CAP = 20
+FAILED_CAPTURE_COUNT_CACHE_TTL_SECONDS = 60.0
+FAILED_CAPTURE_ROW_LIMIT = 5
+FAILED_CAPTURE_REASON_PLACEHOLDER = "reason not recorded"
+_failed_capture_count_cache: dict[str, tuple[float, int | None]] = {}
+_failed_capture_count_lock = threading.Lock()
 
 
 def render(request_ctx: object) -> str:
@@ -167,6 +178,131 @@ def failed_photo_sidecar_rows(runtime_root: Path, limit: int = 5) -> tuple[int, 
             }
         )
     return len(failed_sidecars), rows
+
+
+def _query_failed_capture_count(cfg: object, db: str) -> int:
+    total = 0
+    bookmark: object = None
+    for _ in range(FAILED_CAPTURE_COUNT_PAGE_CAP):
+        mango: dict[str, object] = {
+            "selector": {
+                "type": "field_capture",
+                "processing_state": "failed",
+            },
+            "fields": ["_id"],
+            "limit": FAILED_CAPTURE_COUNT_PAGE_SIZE,
+        }
+        if bookmark:
+            mango["bookmark"] = bookmark
+        response = query_couchdb_find(cfg, db, mango)
+        docs = response.get("docs") if isinstance(response, dict) else None
+        if not isinstance(docs, list):
+            raise RuntimeError("CouchDB _find returned no docs list")
+        total += len([doc for doc in docs if isinstance(doc, dict)])
+        bookmark = response.get("bookmark")
+        if len(docs) < FAILED_CAPTURE_COUNT_PAGE_SIZE or not bookmark:
+            break
+    return total
+
+
+def failed_capture_count() -> int | None:
+    try:
+        cfg = couchdb_config.from_env()
+        db = couchdb_config.field_captures_database()
+        cache_key = f"{cfg.base_url.rstrip('/')}/{db}"
+    except Exception:  # noqa: BLE001 - count is best-effort for home.
+        cfg = None
+        db = ""
+        cache_key = "unavailable"
+    now = time.monotonic()
+    with _failed_capture_count_lock:
+        cached = _failed_capture_count_cache.get(cache_key)
+        if cached is not None and now - cached[0] < FAILED_CAPTURE_COUNT_CACHE_TTL_SECONDS:
+            return cached[1]
+    try:
+        if cfg is None:
+            raise RuntimeError("CouchDB config unavailable")
+        count = _query_failed_capture_count(cfg, db)
+    except Exception:  # noqa: BLE001 - home/inbox should not 500 on CouchDB trouble.
+        count = None
+    with _failed_capture_count_lock:
+        _failed_capture_count_cache[cache_key] = (time.monotonic(), count)
+    return count
+
+
+def _failed_capture_photo_count(doc: dict[str, object]) -> int:
+    photos = doc.get("photos")
+    if isinstance(photos, list):
+        return len(photos)
+    for key in ("photo_count", "image_count"):
+        try:
+            return max(0, int(doc.get(key) or 0))
+        except (TypeError, ValueError):
+            continue
+    return 0
+
+
+def failed_capture_rows(limit: int = FAILED_CAPTURE_ROW_LIMIT) -> tuple[int | None, list[dict[str, object]]]:
+    count = failed_capture_count()
+    if count is None:
+        return None, []
+    try:
+        cfg = couchdb_config.from_env()
+        db = couchdb_config.field_captures_database()
+        response = query_couchdb_find(
+            cfg,
+            db,
+            {
+                "selector": {
+                    "type": "field_capture",
+                    "processing_state": "failed",
+                },
+                "fields": [
+                    "_id",
+                    "capture_id",
+                    "site_id",
+                    "target_id",
+                    "target_type",
+                    "captured_at",
+                    "created_at",
+                    "exported_at",
+                    "error_reason",
+                    "photos",
+                    "photo_count",
+                    "image_count",
+                ],
+                "limit": max(limit, 1) * 10,
+            },
+        )
+        docs = response.get("docs") if isinstance(response, dict) else None
+        if not isinstance(docs, list):
+            return count, []
+    except Exception:  # noqa: BLE001 - the card is advisory only.
+        return count, []
+
+    rows: list[dict[str, object]] = []
+    for doc in docs:
+        if not isinstance(doc, dict):
+            continue
+        capture_id = str(doc.get("capture_id") or doc.get("_id") or "").strip()
+        site = str(doc.get("site_id") or "").strip()
+        if not site and str(doc.get("target_type") or "").strip() == "location":
+            site = str(doc.get("target_id") or "").strip()
+        reason = str(doc.get("error_reason") or "").strip() or FAILED_CAPTURE_REASON_PLACEHOLDER
+        photo_count = _failed_capture_photo_count(doc)
+        summary = f"{reason} ({photo_count} photo{'s' if photo_count != 1 else ''})"
+        rows.append(
+            {
+                "site": site,
+                "area": "",
+                "submitter": "",
+                "summary": summary,
+                "age_seconds": str(doc.get("captured_at") or doc.get("created_at") or doc.get("exported_at") or ""),
+                "deep_link": f"/captures?capture_id={quote(capture_id)}" if capture_id else "/captures",
+            }
+        )
+    rows.sort(key=lambda item: str(item.get("age_seconds") or ""), reverse=True)
+    return count, rows[:limit]
 
 
 def unknown_capture_rows(ctx: object, limit: int = 5) -> tuple[int, list[dict[str, object]]]:
@@ -377,6 +513,9 @@ def console_counts(ctx: object) -> dict[str, int]:
         "supplies": int(cards["supplies"].get("count") or 0),
         "equipment": int(cards["equipment"].get("count") or 0),
     }
+    capture_failures = failed_capture_count()
+    if capture_failures is not None:
+        counts["failed_captures"] = capture_failures
     setattr(ctx, "_btq_console_counts", counts)
     return counts
 
@@ -400,6 +539,7 @@ def inbox_cards(ctx: object) -> list[dict[str, object]]:
     unstaged_drafts = [gap for gap in gaps if isinstance(gap, dict) and gap.get("type") == "approved_draft_missing_staging_status"]
     failed_count, failed_rows = failed_job_rows(runtime_resolved)
     failed_sidecar_count, failed_sidecar_top = failed_photo_sidecar_rows(runtime_resolved)
+    failed_capture_count_value, failed_capture_top = failed_capture_rows()
     unknown_count, unknown_rows = unknown_capture_rows(ctx)
     uploaded_count, uploaded_rows = uploads_without_candidate_rows(
         runtime_resolved, submitters=submitters, all_candidates=all_candidates
@@ -445,6 +585,7 @@ def inbox_cards(ctx: object) -> list[dict[str, object]]:
         {"id": "approved_missing_draft", "title": "Approved candidates missing a draft", "count": len(missing_draft), "top": missing_rows, "see_all": "/drafts", "shape": INBOX_SHAPE_CAPTURE},
         {"id": "approved_drafts_not_staged", "title": "Approved drafts not yet staged", "count": len(unstaged_drafts), "top": draft_rows, "see_all": "/drafts", "shape": INBOX_SHAPE_GAP},
         {"id": "failed_queue_jobs", "title": "Failed queue jobs", "count": failed_count, "top": failed_rows, "see_all": "/failed", "shape": INBOX_SHAPE_CAPTURE},
+        {"id": "failed_captures", "title": "Failed captures", "count": int(failed_capture_count_value or 0), "top": failed_capture_top, "see_all": "/failed", "shape": INBOX_SHAPE_CAPTURE},
         {"id": "failed_photo_vision_sidecars", "title": "Failed photo vision sidecars", "count": failed_sidecar_count, "top": failed_sidecar_top, "see_all": "/failed", "shape": INBOX_SHAPE_CAPTURE},
         {"id": "unknown_captures", "title": "Unknown captures", "count": unknown_count, "top": unknown_rows, "see_all": "/captures", "shape": INBOX_SHAPE_CAPTURE},
         {"id": "uploaded_without_candidate", "title": "Recently uploaded with no candidate yet", "count": uploaded_count, "top": uploaded_rows, "see_all": "/captures", "shape": INBOX_SHAPE_CAPTURE},
@@ -550,8 +691,8 @@ def render_inbox(ctx: object) -> str:
     payload = inbox_payload(ctx)
     vault_root = ctx.config.vault_dir
     cards = payload["cards"] if isinstance(payload["cards"], list) else []
-    stat_ids = ["captures_with_note", "pending_candidates", "failed_queue_jobs", "unknown_captures", "open_site_issues"]
-    primary_ids = ["captures_with_note", "pending_candidates", "failed_queue_jobs", "unknown_captures", "open_site_issues"]
+    stat_ids = ["captures_with_note", "pending_candidates", "failed_queue_jobs", "failed_captures", "unknown_captures", "open_site_issues"]
+    primary_ids = ["captures_with_note", "pending_candidates", "failed_queue_jobs", "failed_captures", "unknown_captures", "open_site_issues"]
     summary_specs = [
         ("approved_missing_draft", "Missing drafts"),
         ("approved_drafts_not_staged", "Unstaged drafts"),

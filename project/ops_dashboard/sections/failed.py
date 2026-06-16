@@ -9,13 +9,28 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import parse_qs, quote
 
+from event_pipeline import couchdb_config
 from ops_dashboard import audit
-from ops_dashboard.common import first_query_value, load_photo_vision_sidecars, read_json_artifact, render_back_link, render_collapsible_json, render_job_summary, render_relative_time, render_short_id, render_table, resolve_site_label
+from ops_dashboard.common import (
+    first_query_value,
+    load_photo_vision_sidecars,
+    query_couchdb_find,
+    read_json_artifact,
+    render_back_link,
+    render_collapsible_json,
+    render_job_summary,
+    render_relative_time,
+    render_short_id,
+    render_table,
+    resolve_site_label,
+)
 from ops_dashboard.layout import html_page
 from processing_core.artifacts import resolve_within_root, write_json_object
 
 
 PHOTO_ASSET_RE = re.compile(r"^fcp_[A-Za-z0-9_-]+$")
+FAILED_CAPTURE_LIMIT = 250
+FAILED_CAPTURE_REASON_PLACEHOLDER = "reason not recorded"
 
 
 def age_seconds(path: Path) -> int:
@@ -171,6 +186,79 @@ def sidecars(root: Path) -> list[dict[str, object]]:
     return out
 
 
+def _capture_when(doc: dict[str, object]) -> str:
+    return str(doc.get("captured_at") or doc.get("created_at") or doc.get("exported_at") or "")
+
+
+def _capture_photo_count(doc: dict[str, object]) -> int:
+    photos = doc.get("photos")
+    if isinstance(photos, list):
+        return len(photos)
+    for key in ("photo_count", "image_count"):
+        try:
+            return max(0, int(doc.get(key) or 0))
+        except (TypeError, ValueError):
+            continue
+    return 0
+
+
+def failed_captures(limit: int = FAILED_CAPTURE_LIMIT) -> tuple[list[dict[str, object]], str]:
+    selector = {
+        "selector": {
+            "type": "field_capture",
+            "processing_state": "failed",
+        },
+        "fields": [
+            "_id",
+            "capture_id",
+            "site_id",
+            "target_id",
+            "target_type",
+            "site",
+            "captured_at",
+            "created_at",
+            "exported_at",
+            "error_reason",
+            "photos",
+            "photo_count",
+            "image_count",
+        ],
+        "limit": limit,
+    }
+    try:
+        cfg = couchdb_config.from_env()
+        response = query_couchdb_find(cfg, couchdb_config.field_captures_database(), selector)
+    except Exception:  # noqa: BLE001 - /failed must stay available when CouchDB is down.
+        return [], "Failed captures unavailable: CouchDB read failed."
+    docs = response.get("docs") if isinstance(response, dict) else None
+    if not isinstance(docs, list):
+        return [], "Failed captures unavailable: CouchDB _find returned no docs list."
+
+    rows: list[dict[str, object]] = []
+    for doc in docs:
+        if not isinstance(doc, dict):
+            continue
+        if str(doc.get("processing_state") or "failed").strip().lower() not in ("", "failed"):
+            continue
+        capture_id = str(doc.get("capture_id") or doc.get("_id") or "").strip()
+        site = str(doc.get("site_id") or "").strip()
+        if not site and str(doc.get("target_type") or "").strip() == "location":
+            site = str(doc.get("target_id") or "").strip()
+        reason = str(doc.get("error_reason") or "").strip() or FAILED_CAPTURE_REASON_PLACEHOLDER
+        rows.append(
+            {
+                "capture_id": capture_id,
+                "site": site or str(doc.get("site") or "").strip(),
+                "when": _capture_when(doc),
+                "reason": reason,
+                "photo_count": _capture_photo_count(doc),
+                "deep_link": f"/captures?capture_id={quote(capture_id)}" if capture_id else "/captures",
+            }
+        )
+    rows.sort(key=lambda item: str(item.get("when") or ""), reverse=True)
+    return rows, ""
+
+
 def render_job_detail(root: Path, job_id: str) -> str:
     job = next((item for item in failed_jobs(root) if item["job_id"] == job_id), None)
     if not job:
@@ -268,9 +356,25 @@ def render(ctx: object) -> str:
         ],
         empty_text="No failed photo-vision sidecars.",
     )
+    capture_rows, capture_error = failed_captures()
+    if capture_error:
+        captures_html = f'<p class="muted">{html.escape(capture_error)}</p>'
+    else:
+        captures_html = render_table(
+            capture_rows,
+            [
+                {"key": "capture_id", "label": "Capture", "format": lambda value, row: f'<a href="{html.escape(str(row.get("deep_link") or "/captures"))}">{render_short_id(value)}</a>'},
+                {"key": "site", "label": "Site", "format": lambda value, _row: resolve_site_label(value, vault_dir)},
+                {"key": "when", "label": "When", "format": lambda value, _row: render_relative_time(value) or html.escape(str(value or ""))},
+                {"key": "reason", "label": "Failure reason"},
+                {"key": "photo_count", "label": "Photos"},
+            ],
+            empty_text="No failed captures.",
+        )
     body = f"""
-    <header><h1>Failed</h1><p class="muted">Inspect failed queue jobs and queue a single photo-vision retry intent. Coming in prompt sections for sites/tokens/system remain separate.</p></header>
+    <header><h1>Failed</h1><p class="muted">Inspect failed queue jobs, failed captures, and queue a single photo-vision retry intent. Coming in prompt sections for sites/tokens/system remain separate.</p></header>
     <section><h2>Failed queue jobs</h2>{jobs_html}</section>
+    <section><h2>Failed captures</h2><p class="muted">Canonical field-capture failures from CouchDB. Showing up to {FAILED_CAPTURE_LIMIT} docs.</p>{captures_html}</section>
     <section><h2>Failed photo-vision sidecars</h2>{sidecars_html}</section>
     """
     return html_page("Failed", body, active_section="failed")

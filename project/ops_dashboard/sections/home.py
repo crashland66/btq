@@ -386,6 +386,17 @@ def _home_action_cards(ctx: object) -> tuple[list[dict[str, object]], str]:
             "subline": "Open equipment requests",
         },
     ]
+    if "failed_captures" in counts:
+        cards.insert(
+            1,
+            {
+                "id": "failed_captures",
+                "title": "Captures failed",
+                "count": int(counts.get("failed_captures", 0) or 0),
+                "see_all": "/failed",
+                "subline": "Field captures that did not process",
+            },
+        )
     return cards, notice
 
 
