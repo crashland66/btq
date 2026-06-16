@@ -580,6 +580,21 @@ button.reject { background: var(--reject-bg); border-color: var(--reject-border)
   grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
   gap: 12px;
 }
+/* Home "Recent field photos": force a single even row instead of wrapping. */
+.site-gallery--strip {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+/* Home directories side by side (collapses to one column on narrow widths). */
+.dir-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+  align-items: start;
+}
+@media (max-width: 720px) {
+  .dir-grid { grid-template-columns: 1fr; }
+  .site-gallery--strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
 .site-gallery-card {
   display: block;
   color: var(--text);

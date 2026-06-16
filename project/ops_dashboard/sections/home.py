@@ -856,7 +856,7 @@ def _render_photos_home_group(ctx: object) -> str:
         strip_html = '<p class="muted">Photos unavailable.</p>'
     elif cards_html:
         strip_html = (
-            '<div class="site-gallery">'
+            '<div class="site-gallery site-gallery--strip">'
             f"{cards_html}"
             "</div>"
         )
@@ -1028,9 +1028,7 @@ def render(ctx: object) -> str:
         open_opportunities = _rows_by_site(_status_rows(opportunity_rows, {"open"}))
         for sid in inactive_site_ids:
             open_opportunities.pop(sid, None)
-        recent_cutoff = date.today() - timedelta(days=14)
         inactive_cutoff = date.today() - timedelta(days=30)
-        recent_visits = _rows_by_site(row for row in visit_rows if (_row_date(row) or date.min) >= recent_cutoff)
         visited_recently = {_site_id(row) for row in visit_rows if (_row_date(row) or date.min) >= inactive_cutoff}
 
         by_account: dict[str, list[_SiteRecord]] = defaultdict(list)
@@ -1065,7 +1063,8 @@ def render(ctx: object) -> str:
         )
         directory_html = _group(
             "directory",
-            _collapsible_directory(
+            '<div class="dir-grid">'
+            + _collapsible_directory(
                 "site-directory",
                 f"Site directory · {len(site_records)}",
                 _render_account_directory(by_account),
@@ -1076,12 +1075,12 @@ def render(ctx: object) -> str:
                 f"Employee directory · {_active_employee_count(employee_rows)}",
                 _render_employee_directory(employee_rows, site_records),
                 "btq-home-employees-collapsed",
-            ),
+            )
+            + "</div>",
         )
         recent_activity_html = _group(
             "operational",
-            _render_photos_home_group(ctx)
-            + _render_recent_visits_section(recent_visits, locations_list),
+            _render_photos_home_group(ctx),
         )
 
         body = (
@@ -1092,10 +1091,10 @@ def render(ctx: object) -> str:
             + '<section><div class="section-heading-row"><h2>Needs attention</h2></div>'
             + attention_html
             + "</section>"
+            + directory_html
             + '<section><div class="section-heading-row"><h2>Recent activity</h2></div>'
             + recent_activity_html
             + "</section>"
-            + directory_html
             + "</div>"
         )
         return html_page("BTQ", body, active_section="home")

@@ -203,7 +203,7 @@ def test_recent_photos_strip_links_out(monkeypatch: pytest.MonkeyPatch) -> None:
     photos = body[body.index("<h2>Recent field photos</h2>"):]
     photos = photos[:photos.index("</section>")]
     assert '<a href="/field-photos">View all</a>' in photos
-    assert '<div class="site-gallery">' in photos
+    assert '<div class="site-gallery site-gallery--strip">' in photos
     assert "Photo One" in photos
 
 
