@@ -202,7 +202,8 @@ def import_couchdb_capture(
     date = date_from_capture(captured_at)
     upload_dest_dir = upload_root / date / capture_id
     intake_dest_path = intake_root / f"{capture_id}.json"
-    existing_intake = read_json_object(intake_dest_path) if intake_dest_path.exists() else None
+    existing_intake_exists = intake_dest_path.exists()
+    existing_intake = read_json_object(intake_dest_path) if existing_intake_exists else None
     existing_payload = existing_intake.get("payload") if isinstance(existing_intake, dict) else None
     existing_exported_at = existing_payload.get("exported_at") if isinstance(existing_payload, dict) else None
     exported_at = str(existing_exported_at) if isinstance(existing_exported_at, str) and existing_exported_at else utc_now_iso()
@@ -237,15 +238,13 @@ def import_couchdb_capture(
         local_photos=local_photos,
         local_audio=local_audio,
     )
-    existing_intake_matches = intake_dest_path.exists() and read_json_object(intake_dest_path) == intake_job
+    existing_intake_matches = existing_intake_exists and existing_intake == intake_job
 
     results: list[dict[str, Any]] = []
     counts = {"copied": 0, "skipped": 0, "failed": 0, "would_copy": 0}
     try:
-        if intake_dest_path.exists() and not existing_intake_matches:
-            raise CaptureAdapterError(f"local field-capture intake JSON exists with different content: {intake_dest_path}")
         for remote_path, local_path in copy_plan:
-            if existing_intake_matches and local_path.exists():
+            if existing_intake_exists and local_path.exists():
                 action = "skipped"
             else:
                 action = copy_remote_file_idempotently(
@@ -257,12 +256,23 @@ def import_couchdb_capture(
                 )
             counts[action] += 1
             results.append({"type": "media", "action": action, "source": f"{remote_host}:{remote_path}", "destination": str(local_path)})
-        try:
-            action = pull_bundle.write_intake_json_idempotently(intake_dest_path, intake_job, dry_run=dry_run)
-        except pull_bundle.PullBundleError as exc:
-            raise CaptureAdapterError(str(exc)) from exc
+        if existing_intake_exists:
+            action = "skipped"
+        else:
+            try:
+                action = pull_bundle.write_intake_json_idempotently(intake_dest_path, intake_job, dry_run=dry_run)
+            except pull_bundle.PullBundleError as exc:
+                raise CaptureAdapterError(str(exc)) from exc
         counts[action] += 1
-        results.append({"type": "intake_json", "action": action, "source": f"couchdb:{capture_id}", "destination": str(intake_dest_path)})
+        intake_result = {
+            "type": "intake_json",
+            "action": action,
+            "source": f"couchdb:{capture_id}",
+            "destination": str(intake_dest_path),
+        }
+        if existing_intake_exists and not existing_intake_matches:
+            intake_result["note"] = "existing intake retained; regenerated content differed"
+        results.append(intake_result)
     except CaptureAdapterError as exc:
         counts["failed"] += 1
         results.append({"type": "error", "action": "failed", "error": str(exc)})
