@@ -1,0 +1,313 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+import re
+import sys
+from pathlib import Path
+from typing import Any
+from urllib.error import HTTPError
+
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+PROJECT_ROOT = REPO_ROOT / "project"
+sys.path.insert(0, str(PROJECT_ROOT))
+
+from config import get_config  # type: ignore  # noqa: E402
+from event_pipeline import couchdb_config  # type: ignore  # noqa: E402
+from field_capture import photo_vision  # type: ignore  # noqa: E402
+from field_capture.failed_capture_reconcile import (  # type: ignore  # noqa: E402
+    CaptureArtifactSnapshot,
+    CaptureReconcilePlan,
+    PhotoArtifact,
+    categorize_failed_captures,
+    capture_id_for_doc,
+    doc_photo_filenames,
+    intake_photo_filenames,
+)
+from field_capture.prospects import (  # type: ignore  # noqa: E402
+    CouchDBProspectError,
+    _get_doc,
+    _put_doc,
+)
+from field_capture.site_viewer import UnsafeMediaPath, resolve_media_path  # type: ignore  # noqa: E402
+from processing_core.artifacts import read_json_object  # type: ignore  # noqa: E402
+from voice_memo.couchdb import VoiceMemoCouchDBError, query_couchdb_find  # type: ignore  # noqa: E402
+
+
+DEFAULT_FIND_LIMIT = 1000
+CAPTURE_DATE_RE = re.compile(r"(\d{4}-\d{2}-\d{2})")
+
+
+def build_parser() -> argparse.ArgumentParser:
+    config = get_config()
+    parser = argparse.ArgumentParser(
+        description="Dry-run triage and gated reset of complete-on-disk failed field captures.",
+    )
+    parser.add_argument("--apply", action="store_true", help="Reset reconcilable failed captures to pending. Default is dry-run.")
+    parser.add_argument("--capture-id", help="Limit to one capture id.")
+    parser.add_argument("--limit", type=positive_int, default=DEFAULT_FIND_LIMIT, help=f"Max failed docs to inspect. Default: {DEFAULT_FIND_LIMIT}.")
+    parser.add_argument("--runtime-root", type=Path, default=config.runtime_root, help="Runtime root containing field_capture/ and uploads/.")
+    return parser
+
+
+def positive_int(value: str) -> int:
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"invalid positive integer: {value}") from exc
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError(f"invalid positive integer: {value}")
+    return parsed
+
+
+def failed_capture_docs(config: couchdb_config.CouchDBConfig, *, capture_id: str | None, limit: int) -> list[dict[str, Any]]:
+    selector: dict[str, Any] = {
+        "type": "field_capture",
+        "processing_state": "failed",
+    }
+    if capture_id:
+        selector["$or"] = [{"capture_id": capture_id}, {"_id": capture_id}]
+
+    docs: list[dict[str, Any]] = []
+    bookmark: object = None
+    while len(docs) < limit:
+        page_limit = min(250, limit - len(docs))
+        mango: dict[str, Any] = {
+            "selector": selector,
+            "limit": page_limit,
+        }
+        if bookmark:
+            mango["bookmark"] = bookmark
+        response = query_couchdb_find(config, couchdb_config.field_captures_database(), mango)
+        page = response.get("docs")
+        if not isinstance(page, list):
+            raise RuntimeError("CouchDB _find returned no docs list")
+        docs.extend(doc for doc in page if isinstance(doc, dict))
+        bookmark = response.get("bookmark")
+        if len(page) < page_limit or not bookmark:
+            break
+    return docs[:limit]
+
+
+def snapshot_for_doc(doc: dict[str, Any], runtime_root: Path) -> CaptureArtifactSnapshot:
+    capture_id = capture_id_for_doc(doc)
+    runtime = runtime_root.expanduser().resolve(strict=False)
+    intake_path = photo_vision.default_intake_dir(runtime) / f"{capture_id}.json"
+    intake_payload = read_json_object(intake_path) if intake_path.exists() else None
+    intake_present = intake_path.is_file()
+    intake_valid = isinstance(intake_payload, dict)
+    intake = intake_payload if isinstance(intake_payload, dict) else None
+    upload_root = photo_vision.default_upload_dir(runtime)
+    artifacts: list[PhotoArtifact] = []
+
+    intake_names = set(intake_photo_filenames(intake))
+    for filename in doc_photo_filenames(doc):
+        # Doc-referenced photos contribute a media-presence signal only. Sidecar
+        # completeness is evaluated on the intake-discovered assets below, which
+        # carry the real on-disk filenames. Demanding a sidecar here keyed on the
+        # *doc* filename mis-fires whenever the doc and intake filename forms
+        # diverge — which is precisely the condition behind these failures — and
+        # would push genuinely-complete captures into needs-attention.
+        artifacts.append(
+            PhotoArtifact(
+                filename=filename,
+                source="doc",
+                media_present=doc_photo_path(doc, filename, upload_root).is_file(),
+                expects_sidecar=False,
+            )
+        )
+
+    intake_assets = photo_vision.discover_photo_assets(
+        photo_vision.default_intake_dir(runtime),
+        upload_root,
+        capture_id=capture_id,
+    )
+    asset_names = {asset.filename for asset in intake_assets}
+    sidecar_root = photo_vision.default_photo_vision_dir(runtime)
+    for asset in intake_assets:
+        sidecar_path = photo_vision.photo_vision_path_for(sidecar_root, asset.photo_asset_id)
+        sidecar_payload = read_json_object(sidecar_path) if sidecar_path.exists() else None
+        artifacts.append(
+            PhotoArtifact(
+                filename=asset.filename,
+                source="intake",
+                media_present=asset.image_path.is_file(),
+                sidecar_present=sidecar_path.is_file(),
+                sidecar_capture_id=sidecar_capture_id(sidecar_path, sidecar_payload),
+                expects_sidecar=True,
+            )
+        )
+
+    for filename in sorted(intake_names - asset_names):
+        artifacts.append(
+            PhotoArtifact(
+                filename=filename,
+                source="intake",
+                media_present=intake_photo_path(intake, filename, upload_root).is_file() if intake else False,
+                sidecar_present=False,
+                expects_sidecar=True,
+            )
+        )
+
+    return CaptureArtifactSnapshot(
+        capture_id=capture_id,
+        intake_present=intake_present,
+        intake_valid=intake_valid,
+        photos=tuple(artifacts),
+    )
+
+
+def doc_photo_path(doc: dict[str, Any], filename: str, upload_root: Path) -> Path:
+    capture_id = capture_id_for_doc(doc)
+    date = capture_date(doc)
+    if date:
+        return upload_root / date / capture_id / filename
+    return upload_root / capture_id / filename
+
+
+def intake_photo_path(intake: dict[str, Any], filename: str, upload_root: Path) -> Path:
+    payload = intake.get("payload")
+    photos = payload.get("photos") if isinstance(payload, dict) else None
+    if not isinstance(photos, list):
+        return upload_root / filename
+    for record in photos:
+        if not isinstance(record, dict):
+            continue
+        record_filename = str(record.get("filename") or "").strip()
+        if not record_filename:
+            upload_id = str(record.get("upload_id") or "").strip()
+            record_filename = upload_id.rsplit("/", 1)[-1] if upload_id else ""
+        if record_filename != filename:
+            continue
+        stored_path = str(record.get("stored_path") or "").strip()
+        if stored_path:
+            try:
+                return resolve_media_path(stored_path, upload_root)
+            except UnsafeMediaPath:
+                return upload_root / filename
+        upload_id = str(record.get("upload_id") or "").strip()
+        if upload_id:
+            return upload_root / upload_id
+    return upload_root / filename
+
+
+def capture_date(doc: dict[str, Any]) -> str:
+    for key in ("captured_at", "created_at", "exported_at"):
+        date = date_prefix(str(doc.get(key) or ""))
+        if date:
+            return date
+    return date_prefix(capture_id_for_doc(doc))
+
+
+def date_prefix(value: str) -> str:
+    match = CAPTURE_DATE_RE.search(value)
+    if match:
+        return match.group(1)
+    return ""
+
+
+def sidecar_capture_id(sidecar_path: Path, sidecar_payload: dict[str, object] | None) -> str:
+    if not sidecar_path.is_file():
+        return ""
+    if not isinstance(sidecar_payload, dict):
+        return "__invalid_sidecar__"
+    return str(sidecar_payload.get("capture_id") or "__missing_capture_id__").strip()
+
+
+def reset_failed_capture_to_pending(config: couchdb_config.CouchDBConfig, doc: dict[str, Any]) -> str:
+    doc_id = str(doc.get("_id") or capture_id_for_doc(doc)).strip()
+    if not doc_id:
+        return "skipped_missing_id"
+    database = couchdb_config.field_captures_database()
+    current = _get_doc(config, database, doc_id)
+    if current is None:
+        return "skipped_missing"
+    if str(current.get("processing_state") or "").strip() != "failed":
+        return f"skipped_state_{str(current.get('processing_state') or 'unknown').strip() or 'empty'}"
+
+    outgoing = dict(current)
+    outgoing["processing_state"] = "pending"
+    try:
+        _put_doc(config, database, doc_id, outgoing)
+    except CouchDBProspectError as exc:
+        cause = exc.__cause__
+        if isinstance(cause, HTTPError) and cause.code == 409:
+            return "skipped_conflict"
+        raise
+    return "reset"
+
+
+def print_plan(plan: CaptureReconcilePlan, *, mode: str) -> None:
+    print(f"reconcile-failed-captures ({mode})")
+    print(f"Reconcilable: {len(plan.reconcilable)} would reset failed -> pending")
+    for item in sorted(plan.reconcilable, key=lambda value: value.capture_id):
+        print(
+            f"  {item.capture_id} site={item.site or '-'} "
+            f"reason={item.reason} error_reason={item.error_reason or '-'}"
+        )
+
+    print(f"Needs attention: {len(plan.needs_attention)}")
+    for item in sorted(plan.needs_attention, key=lambda value: value.capture_id):
+        missing = []
+        if item.missing_media:
+            missing.append(f"missing_media={','.join(item.missing_media)}")
+        if item.missing_sidecars:
+            missing.append(f"missing_sidecars={','.join(item.missing_sidecars)}")
+        suffix = f" {' '.join(missing)}" if missing else ""
+        print(
+            f"  {item.capture_id or '-'} site={item.site or '-'} "
+            f"reason={item.reason}{suffix} error_reason={item.error_reason or '-'}"
+        )
+
+
+def run(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
+    mode = "apply" if args.apply else "dry-run"
+    runtime_root = args.runtime_root.expanduser().resolve(strict=False)
+    config = couchdb_config.from_env()
+
+    try:
+        docs = failed_capture_docs(config, capture_id=args.capture_id, limit=args.limit)
+        snapshots = [(doc, snapshot_for_doc(doc, runtime_root)) for doc in docs]
+        plan = categorize_failed_captures(snapshots)
+    except (VoiceMemoCouchDBError, couchdb_config.CouchDBConfigError, RuntimeError, OSError) as exc:
+        print(f"reconcile-failed-captures: {exc}", file=sys.stderr)
+        return 2
+
+    print_plan(plan, mode=mode)
+    if not args.apply:
+        print(
+            "Summary: "
+            f"mode={mode} inspected={len(docs)} reconcilable={len(plan.reconcilable)} "
+            f"needs_attention={len(plan.needs_attention)} reset=0 skipped=0 failed=0"
+        )
+        return 0
+
+    reset = 0
+    skipped = 0
+    failed = 0
+    for item in sorted(plan.reconcilable, key=lambda value: value.capture_id):
+        try:
+            result = reset_failed_capture_to_pending(config, item.doc)
+        except Exception as exc:  # noqa: BLE001 - continue applying independent captures.
+            failed += 1
+            print(f"  {item.capture_id}: failed apply: {exc}", file=sys.stderr)
+            continue
+        if result == "reset":
+            reset += 1
+            print(f"  {item.capture_id}: reset to pending")
+        else:
+            skipped += 1
+            print(f"  {item.capture_id}: {result}")
+
+    print(
+        "Summary: "
+        f"mode={mode} inspected={len(docs)} reconcilable={len(plan.reconcilable)} "
+        f"needs_attention={len(plan.needs_attention)} reset={reset} skipped={skipped} failed={failed}"
+    )
+    return 1 if failed else 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(run())
