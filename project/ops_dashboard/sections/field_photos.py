@@ -22,6 +22,8 @@ logger = logging.getLogger(__name__)
 
 PAGE_LIMIT = 120
 PENDING_LIMIT = 12
+_TERMINAL_CAPTURE_STATES = frozenset({"failed", "complete", "completed"})
+_FIELD_CAPTURE_PAGE_SIZE = 5000
 
 
 def _photo_vision_couchdb_config() -> object:
@@ -105,6 +107,46 @@ def _query_processed_asset_ids(config: object) -> set[str] | None:
                 ids.add(aid)
         bookmark = response.get("bookmark")
         if len(docs) < page_size or not bookmark:
+            break
+    return ids
+
+
+def _query_terminal_capture_ids(config: object) -> set[str] | None:
+    from event_pipeline import couchdb_config
+    from voice_memo.couchdb import query_couchdb_find
+
+    ids: set[str] = set()
+    bookmark: object = None
+    for _ in range(400):  # safety cap (400 * 5000 = 2M docs)
+        mango: dict[str, object] = {
+            "selector": {
+                "type": "field_capture",
+                "processing_state": {"$in": sorted(_TERMINAL_CAPTURE_STATES)},
+            },
+            "fields": ["_id", "capture_id", "processing_state"],
+            "limit": _FIELD_CAPTURE_PAGE_SIZE,
+        }
+        if bookmark:
+            mango["bookmark"] = bookmark
+        try:
+            response = query_couchdb_find(config, couchdb_config.field_captures_database(), mango)
+        except Exception as exc:
+            logger.warning("field-capture terminal-id query failed; pending photos may include terminal captures: %s", exc)
+            return None
+        docs = response.get("docs")
+        if not isinstance(docs, list):
+            return None
+        for doc in docs:
+            if not isinstance(doc, dict):
+                continue
+            state = str(doc.get("processing_state") or "").strip().lower()
+            if state not in _TERMINAL_CAPTURE_STATES:
+                continue
+            capture_id = str(doc.get("capture_id") or doc.get("_id") or "").strip()
+            if capture_id:
+                ids.add(capture_id)
+        bookmark = response.get("bookmark")
+        if len(docs) < _FIELD_CAPTURE_PAGE_SIZE or not bookmark:
             break
     return ids
 
@@ -289,6 +331,7 @@ def _pending_photo_records(
     runtime_root: Path,
     *,
     processed_asset_ids: set[str],
+    terminal_capture_ids: set[str] | None = None,
     q: str,
     site_id: str,
     area_guess: str,
@@ -302,10 +345,13 @@ def _pending_photo_records(
     photo_vision_dir = field_photo_vision.default_photo_vision_dir(runtime_root)
     disk_sidecar_ids = {str(s.get("photo_asset_id") or "") for s in load_photo_vision_sidecars(photo_vision_dir)}
     submitters = submitters_by_capture(runtime_root)
+    terminal_capture_ids = terminal_capture_ids or set()
 
     records: list[dict[str, object]] = []
     for asset in field_photo_vision.discover_photo_assets(intake_dir, upload_dir):
         if asset.photo_asset_id in processed_asset_ids:
+            continue
+        if asset.capture_id in terminal_capture_ids:
             continue
         submitter_name = submitters.get(asset.capture_id, {}).get("submitter_name", "")
         if not _asset_matches_filters(
@@ -547,10 +593,13 @@ def render(ctx: object) -> str:
             fallback = True
 
     processed_asset_ids: set[str] | None = None
+    terminal_capture_ids: set[str] | None = None
     if cdb_config is not None and not fallback:
         processed_asset_ids = _query_processed_asset_ids(cdb_config)
         if processed_asset_ids is None:
             fallback = True
+        else:
+            terminal_capture_ids = _query_terminal_capture_ids(cdb_config)
 
     if cdb_config is None or fallback:
         from field_capture import photo_vision as field_photo_vision
@@ -564,6 +613,7 @@ def render(ctx: object) -> str:
     pending_records = _pending_photo_records(
         runtime_root,
         processed_asset_ids=processed_asset_ids or set(),
+        terminal_capture_ids=terminal_capture_ids,
         q=q,
         site_id=site_id,
         area_guess=area_guess,

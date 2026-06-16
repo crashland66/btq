@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import html
 import json
+import logging
 import re
 from datetime import date
 from typing import Any
@@ -117,10 +118,13 @@ _CLOSE_FENCE_RE = re.compile(r"^\s*```\s*$")
 _ACCESS_CONSTRAINT_RE = re.compile(r"(?im)^\s*#+\s*Access Constraints\b")
 _CAPTURE_GALLERY_LIMIT = 6
 _CAPTURE_COUNT_LIMIT = 5000
+_FIELD_CAPTURE_PAGE_SIZE = 5000
+_COMPLETE_CAPTURE_STATES = frozenset({"complete", "completed"})
 _EMPTY_ABOUT_SECTION = (
     '<section><h2>About &amp; operational notes</h2>'
     '<p class="zero-state">No operational notes yet.</p></section>'
 )
+logger = logging.getLogger(__name__)
 
 _BUILTIN_LOCATION_DOCS: dict[str, dict[str, Any]] = {
     "SANDBOX": {
@@ -408,6 +412,87 @@ def _metric_cards(
     return f'<section class="metric-grid" aria-label="Site metrics">{cards}</section>'
 
 
+def _site_capture_processing_counts(site_id: str) -> dict[str, int] | None:
+    try:
+        base, headers, _vault_database, timeout = _cdb()
+        database = couchdb_config.field_captures_database()
+    except Exception as exc:  # noqa: BLE001 - upload confirmation is best-effort.
+        logger.warning("site capture processing config unavailable for site_id=%s: %s", site_id, exc)
+        return None
+    docs: list[dict[str, Any]] = []
+    bookmark: object = None
+
+    for _ in range(400):  # safety cap (400 * 5000 = 2M docs)
+        payload: dict[str, object] = {
+            "selector": {"type": "field_capture", "site_id": site_id},
+            "fields": ["processing_state"],
+            "limit": _FIELD_CAPTURE_PAGE_SIZE,
+        }
+        if bookmark:
+            payload["bookmark"] = bookmark
+        url = f"{base.rstrip('/')}/{urlparse.quote(database, safe='')}/_find"
+        req = urlrequest.Request(
+            url,
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json", "Accept": "application/json", **headers},
+            method="POST",
+        )
+        try:
+            with urlrequest.urlopen(req, timeout=max(timeout, 30.0)) as response:
+                parsed = json.loads(response.read().decode("utf-8"))
+        except Exception as exc:  # noqa: BLE001 - upload confirmation is best-effort.
+            logger.warning("site capture processing counts unavailable for site_id=%s: %s", site_id, exc)
+            return None
+        page_docs = parsed.get("docs") if isinstance(parsed, dict) else None
+        if not isinstance(page_docs, list):
+            return None
+        docs.extend(doc for doc in page_docs if isinstance(doc, dict))
+        bookmark = parsed.get("bookmark")
+        if len(page_docs) < _FIELD_CAPTURE_PAGE_SIZE or not bookmark:
+            break
+
+    received = len(docs)
+    complete = 0
+    failed = 0
+    for doc in docs:
+        state = str(doc.get("processing_state") or "").strip().lower()
+        if state in _COMPLETE_CAPTURE_STATES:
+            complete += 1
+        elif state == "failed":
+            failed += 1
+    return {
+        "received": received,
+        "complete": complete,
+        "failed": failed,
+        "in_flight": max(0, received - complete - failed),
+    }
+
+
+def _capture_processing_breakdown(counts: dict[str, int] | None) -> str:
+    if counts is None:
+        return ""
+    metrics = (
+        ("Received", render_count_badge(counts.get("received", 0), kind="neutral")),
+        ("Complete", render_count_badge(counts.get("complete", 0), kind="neutral")),
+        ("In flight", render_count_badge(counts.get("in_flight", 0), kind="pending")),
+        ("Failed", render_count_badge(counts.get("failed", 0), kind="danger")),
+    )
+    cards = "".join(
+        (
+            '<div class="metric-card">'
+            f"<strong>{value}</strong>"
+            f"<span>{html.escape(label)}</span>"
+            "</div>"
+        )
+        for label, value in metrics
+    )
+    return (
+        '<section class="metric-grid" aria-label="Field capture upload confirmation">'
+        f"{cards}"
+        "</section>"
+    )
+
+
 def _details_block(title: str, count: int | None, body: str) -> str:
     count_html = ""
     if count is not None:
@@ -656,6 +741,7 @@ def render(ctx: object, site_id: str) -> str:
         escaped_id = html.escape(site_id, quote=True)
         related_data = _related_data(site_id)
         capture_records, capture_fallback, capture_count = _site_capture_records(ctx, site_id)
+        capture_processing_counts = _site_capture_processing_counts(site_id)
         raw_content = str(doc.get("content") or "")
         access_flags = len(_ACCESS_CONSTRAINT_RE.findall(raw_content))
         sections = [
@@ -679,6 +765,7 @@ def render(ctx: object, site_id: str) -> str:
                 last_visit=_last_visit_label(related_data["visit_rows"]),
             )
         )
+        sections.append(_capture_processing_breakdown(capture_processing_counts))
         sections.append(_quick_facts_section(doc, site_id, edit_section))
         if edit_section == "about":
             escaped_id = html.escape(site_id, quote=True)

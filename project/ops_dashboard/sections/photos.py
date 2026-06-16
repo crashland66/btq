@@ -21,6 +21,7 @@ from ops_dashboard.common import (
     submitters_by_capture,
 )
 from ops_dashboard.layout import html_page
+import ops_dashboard.sections.field_photos as field_photos
 
 logger = logging.getLogger(__name__)
 
@@ -143,6 +144,7 @@ def _pending_photo_records(
     runtime_root: Path,
     *,
     processed_asset_ids: set[str],
+    terminal_capture_ids: set[str] | None = None,
     q: str,
     site_id: str,
     area_guess: str,
@@ -156,10 +158,13 @@ def _pending_photo_records(
     photo_vision_dir = field_photo_vision.default_photo_vision_dir(runtime_root)
     disk_sidecar_ids = {str(s.get("photo_asset_id") or "") for s in load_photo_vision_sidecars(photo_vision_dir)}
     submitters = submitters_by_capture(runtime_root)
+    terminal_capture_ids = terminal_capture_ids or set()
 
     records: list[dict[str, object]] = []
     for asset in field_photo_vision.discover_photo_assets(intake_dir, upload_dir):
         if asset.photo_asset_id in processed_asset_ids:
+            continue
+        if asset.capture_id in terminal_capture_ids:
             continue
         submitter_name = submitters.get(asset.capture_id, {}).get("submitter_name", "")
         if not _pending_asset_matches_filters(
@@ -537,23 +542,13 @@ def render(ctx: object) -> str:
             fallback = True
 
     processed_asset_ids: set[str] | None = None
+    terminal_capture_ids: set[str] | None = None
     if cdb_config is not None and not fallback:
-        asset_docs = _query_couchdb(
-            cdb_config,
-            {
-                "selector": {"doc_type": "photo_vision_sidecar"},
-                "fields": ["photo_asset_id"],
-                "limit": 5000,
-            },
-        )
-        if asset_docs is None:
+        processed_asset_ids = field_photos._query_processed_asset_ids(cdb_config)  # noqa: SLF001 - keep legacy pending semantics aligned.
+        if processed_asset_ids is None:
             fallback = True
         else:
-            processed_asset_ids = {
-                str(doc.get("photo_asset_id") or "").strip()
-                for doc in asset_docs
-                if str(doc.get("photo_asset_id") or "").strip()
-            }
+            terminal_capture_ids = field_photos._query_terminal_capture_ids(cdb_config)  # noqa: SLF001 - canonical terminal-state filter.
 
     if cdb_config is None or fallback:
         from field_capture import photo_vision as field_photo_vision
@@ -583,6 +578,7 @@ def render(ctx: object) -> str:
         pending_records = _pending_photo_records(
             runtime_root,
             processed_asset_ids=processed_asset_ids or set(),
+            terminal_capture_ids=terminal_capture_ids,
             q=q,
             site_id=site_id,
             area_guess=area_guess,

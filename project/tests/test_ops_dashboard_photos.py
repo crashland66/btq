@@ -193,7 +193,19 @@ class PhotosSectionRenderTests(unittest.TestCase):
             ctx = _make_ctx(runtime_root=Path(tmp))
             with mock.patch("ops_dashboard.sections.photos._photo_vision_couchdb_config", return_value=object()):
                 with mock.patch("ops_dashboard.sections.photos._query_couchdb", return_value=docs):
-                    result = render(ctx)
+                    # photos.render now sources processed-asset-ids and terminal-capture-ids
+                    # via the field_photos helpers (paginated mango _find reads), not the
+                    # inline photos._query_couchdb call — mock those seams so the couch path
+                    # is exercised instead of falling back to disk.
+                    with mock.patch(
+                        "ops_dashboard.sections.field_photos._query_processed_asset_ids",
+                        return_value=set(),
+                    ):
+                        with mock.patch(
+                            "ops_dashboard.sections.field_photos._query_terminal_capture_ids",
+                            return_value=set(),
+                        ):
+                            result = render(ctx)
 
         self.assertIn("Field Photo Search", result)
         self.assertIn("fcp-cdb-001", result)
