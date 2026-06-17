@@ -266,18 +266,21 @@ def build_capture_document_envelope(
 
 
 def write_capture_media(media_records: list[object], uploads: list[UploadedFile], upload_dir: Path) -> None:
+    from media_store import get_media_store
+
     if len(media_records) != len(uploads):
         raise SubmissionError(HTTPStatus.BAD_REQUEST, "invalid_media", "Invalid media")
+    upload_root = upload_dir.expanduser().resolve(strict=False)
+    store = get_media_store(upload_root)
     for upload, record in zip(uploads, media_records):
         if not isinstance(record, dict):
             raise SubmissionError(HTTPStatus.BAD_REQUEST, "invalid_photo", "Invalid photo")
         stored_path = Path(str(record["stored_path"])).expanduser().resolve(strict=False)
-        upload_root = upload_dir.expanduser().resolve(strict=False)
         try:
-            stored_path.relative_to(upload_root)
+            key = stored_path.relative_to(upload_root).as_posix()
         except ValueError as exc:
             raise SubmissionError(HTTPStatus.BAD_REQUEST, "invalid_upload_path", "Invalid upload path") from exc
-        atomic_write_bytes(stored_path, upload.content)
+        store.write(key, upload.content)
 
 
 def atomic_write_bytes(path: Path, data: bytes) -> None:
