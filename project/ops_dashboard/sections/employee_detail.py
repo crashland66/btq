@@ -9,7 +9,7 @@ from urllib.parse import quote
 from urllib import parse as urlparse, request as urlrequest
 
 from event_pipeline import couchdb_config
-from ops_dashboard.common import first_query_value, humanize_key, render_count_badge, render_relative_time, render_short_id
+from ops_dashboard.common import HtmlFragment, first_query_value, humanize_key, record_section, render_count_badge, render_relative_time, render_short_id
 from ops_dashboard.layout import html_page
 import ops_dashboard.sections.entity_edit as entity_edit
 import ops_dashboard.sections.site_detail as site_detail
@@ -315,22 +315,10 @@ def _details_block(title: str, count: int | None, body: str) -> str:
     )
 
 
-def _fact_row(label: str, value_html: str) -> str:
-    if not value_html:
-        return ""
-    return (
-        '<div class="field-row">'
-        f"<dt>{html.escape(label)}</dt>"
-        f"<dd>{value_html}</dd>"
-        "</div>"
-    )
-
-
-def _fact_section(title: str, rows: list[tuple[str, str]]) -> str:
-    rendered = "".join(_fact_row(label, value_html) for label, value_html in rows if value_html)
-    if not rendered:
-        return ""
-    return f'<section><h3>{html.escape(title)}</h3><dl class="fields summary-fields">{rendered}</dl></section>'
+def _quick_fact_value(value: object) -> str:
+    if isinstance(value, HtmlFragment):
+        return str(value)
+    return html.escape(str(value))
 
 
 def _quick_facts(doc: dict[str, Any], person_id: str, primary_site_id: str, assigned_site_ids: list[str], site_names: dict[str, str]) -> str:
@@ -342,29 +330,47 @@ def _quick_facts(doc: dict[str, Any], person_id: str, primary_site_id: str, assi
     if email:
         contact_parts.append(f'<a href="mailto:{html.escape(email, quote=True)}">{html.escape(email)}</a>')
     first_seen = _first_seen(doc)
-    identity_rows = [
-        ("Role", html.escape(_role(doc))),
-        ("Status", html.escape(_clean(doc.get("status")))),
-        ("eHub ID", html.escape(_ehub_id(doc))),
-        ("Phone / Email", "<br>".join(contact_parts)),
-        ("First seen / tenure", _first_seen_label(first_seen) if first_seen else ""),
-        ("Person ID", render_short_id(person_id)),
-    ]
-    assignment_rows = [
-        ("Primary site", _site_link(primary_site_id, site_names) if primary_site_id else ""),
-        ("Assigned sites", html.escape(str(len(assigned_site_ids))) if assigned_site_ids else ""),
-    ]
+    identity = {
+        "role": _role(doc),
+        "status": _clean(doc.get("status")),
+        "eHub ID": _ehub_id(doc),
+        "Phone / Email": HtmlFragment("<br>".join(contact_parts)) if contact_parts else "",
+        "First seen / tenure": HtmlFragment(_first_seen_label(first_seen)) if first_seen else "",
+        "Person ID": HtmlFragment(render_short_id(person_id)) if person_id else "",
+    }
+    assignment = {
+        "primary_site": HtmlFragment(_site_link(primary_site_id, site_names)) if primary_site_id else "",
+        "assigned_sites": str(len(assigned_site_ids)) if assigned_site_ids else "",
+    }
     sections = "".join(
         part
         for part in (
-            _fact_section("Identity", identity_rows),
-            _fact_section("Assignment", assignment_rows),
+            record_section(
+                "Identity",
+                identity,
+                ("role", "status", "eHub ID", "Phone / Email", "First seen / tenure", "Person ID"),
+                value_formatter=_quick_fact_value,
+                dl_class="fields summary-fields",
+            ),
+            record_section(
+                "Assignment",
+                assignment,
+                ("primary_site", "assigned_sites"),
+                value_formatter=_quick_fact_value,
+                dl_class="fields summary-fields",
+            ),
         )
         if part
     )
+    sections = (
+        sections.replace("<dt>Ehub Id</dt>", "<dt>eHub ID</dt>")
+        .replace("<dt>Person Id</dt>", "<dt>Person ID</dt>")
+        .replace("<dt>Primary Site</dt>", "<dt>Primary site</dt>")
+        .replace("<dt>Assigned Sites</dt>", "<dt>Assigned sites</dt>")
+    )
     if not sections:
         sections = '<p class="zero-state">No quick facts yet.</p>'
-    return f'<section class="quick-facts grid"><h2 style="grid-column:1 / -1">Quick facts</h2>{sections}</section>'
+    return f'<section class="quick-facts"><h2>Quick facts</h2>{sections}</section>'
 
 
 def _event_pill(event: dict[str, Any]) -> str:

@@ -5,10 +5,11 @@ import json
 import mimetypes
 import re
 from pathlib import Path
-from urllib.parse import quote
+from urllib.parse import quote, unquote
 
 from field_capture import approved_job_drafts, audio_semantics, audio_transcription
 from field_capture import photo_vision as field_photo_vision
+from field_capture.site_viewer import UnsafeMediaPath, resolve_media_path, resolve_media_request
 from ops_dashboard.common import (
     UNKNOWN_SUBMITTER,
     audio_player,
@@ -54,11 +55,21 @@ def upload_capture_dirs(root: Path) -> list[Path]:
     uploads = root / "uploads"
     if not uploads.exists():
         return []
-    return sorted([path for path in uploads.glob("*/*") if path.is_dir()], key=lambda item: item.stat().st_mtime if item.exists() else 0, reverse=True)
+
+    def sort_mtime(item: Path) -> float:
+        try:
+            return item.stat().st_mtime
+        except OSError:
+            return 0.0
+
+    return sorted([path for path in uploads.glob("*/*") if path.is_dir()], key=sort_mtime, reverse=True)
 
 
 def media_counts(path: Path) -> dict[str, int]:
-    files = [item for item in path.glob("*") if item.is_file()]
+    try:
+        files = [item for item in path.glob("*") if item.is_file()]
+    except OSError:
+        files = []
     return {
         "files": len(files),
         "photos": sum(1 for item in files if (mimetypes.guess_type(item.name)[0] or "").startswith("image/")),
@@ -246,7 +257,11 @@ def photo_card_records_for_capture(root: Path, capture_id: str) -> list[dict[str
 
     records: list[dict[str, object]] = []
     seen_asset_ids: set[str] = set()
-    for asset in field_photo_vision.discover_photo_assets(intake_dir, upload_dir, capture_id=capture_id):
+    try:
+        discovered_assets = field_photo_vision.discover_photo_assets(intake_dir, upload_dir, capture_id=capture_id)
+    except Exception:  # noqa: BLE001 - capture detail should still render if a best-effort media scan races the filesystem.
+        discovered_assets = []
+    for asset in discovered_assets:
         seen_asset_ids.add(asset.photo_asset_id)
         sidecar = sidecars_by_asset.get(asset.photo_asset_id)
         if sidecar:
@@ -285,8 +300,104 @@ def photo_card_records_for_capture(root: Path, capture_id: str) -> list[dict[str
     return records
 
 
-def render_photo_preview(record: dict[str, object]) -> str:
-    media_url = safe_media_url(record.get("image_media_url"))
+def _is_image_file(path: Path) -> bool:
+    try:
+        return path.is_file() and (mimetypes.guess_type(path.name)[0] or "").startswith("image/")
+    except OSError:
+        return False
+
+
+def _served_media_url(media_url: object, upload_root: Path) -> str:
+    url = safe_media_url(media_url)
+    if not url:
+        relative = str(media_url or "").strip().lstrip("/")
+        if relative and ".." not in relative:
+            url = safe_media_url(f"/media/{quote(relative, safe='/')}")
+    if not url:
+        return ""
+    try:
+        media_path = resolve_media_request(url.removeprefix("/media/"), upload_root)
+    except (OSError, UnsafeMediaPath):
+        return ""
+    return url if _is_image_file(media_path) else ""
+
+
+def _upload_relative_from_text(value: str) -> Path | None:
+    parts = Path(value).parts
+    for index in range(len(parts) - 1, -1, -1):
+        if parts[index] == "uploads" and index + 1 < len(parts):
+            return Path(*parts[index + 1 :])
+    return None
+
+
+def _media_url_from_source_path(source_path: object, upload_root: Path) -> str:
+    raw_path = str(source_path or "").strip()
+    if not raw_path:
+        return ""
+    try:
+        media_path = resolve_media_path(raw_path, upload_root)
+    except (OSError, UnsafeMediaPath):
+        relative = _upload_relative_from_text(raw_path)
+        if relative is None:
+            return ""
+        try:
+            media_path = resolve_media_path(str(relative), upload_root)
+        except (OSError, UnsafeMediaPath):
+            return ""
+    if not _is_image_file(media_path):
+        return ""
+    try:
+        relative_path = media_path.resolve(strict=False).relative_to(upload_root.expanduser().resolve(strict=False))
+    except ValueError:
+        return ""
+    return safe_media_url(f"/media/{quote(relative_path.as_posix(), safe='/')}")
+
+
+def _media_url_from_capture_file(capture_id: object, filename: object, upload_root: Path) -> str:
+    capture = str(capture_id or "").strip()
+    name = Path(str(filename or "").strip().replace("\\", "/")).name
+    if not capture or not name:
+        return ""
+    try:
+        date_dirs = [path for path in upload_root.glob("*") if path.is_dir()]
+    except OSError:
+        return ""
+    for date_dir in date_dirs:
+        media_path = date_dir / capture / name
+        if not _is_image_file(media_path):
+            continue
+        try:
+            relative_path = media_path.resolve(strict=False).relative_to(upload_root)
+        except ValueError:
+            continue
+        return safe_media_url(f"/media/{quote(relative_path.as_posix(), safe='/')}")
+    return ""
+
+
+def _filename_from_media_reference(value: object) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    return Path(unquote(text.removeprefix("/media/")).replace("\\", "/")).name
+
+
+def resolved_photo_media_url(record: dict[str, object], root: Path | None = None) -> str:
+    if root is None:
+        return safe_media_url(record.get("image_media_url"))
+    upload_root = root.expanduser().resolve(strict=False) / "uploads"
+    for value in (record.get("image_media_url"), record.get("photo_id")):
+        media_url = _served_media_url(value, upload_root)
+        if media_url:
+            return media_url
+    filename = _filename_from_media_reference(record.get("image_media_url")) or _filename_from_media_reference(record.get("photo_id"))
+    media_url = _media_url_from_capture_file(record.get("capture_id"), filename, upload_root)
+    if media_url:
+        return media_url
+    return _media_url_from_source_path(record.get("source_image_path"), upload_root)
+
+
+def render_photo_preview(record: dict[str, object], root: Path | None = None) -> str:
+    media_url = resolved_photo_media_url(record, root)
     if media_url:
         js_arg = html.escape(json.dumps(media_url), quote=True)
         escaped = html.escape(media_url, quote=True)
@@ -296,8 +407,6 @@ def render_photo_preview(record: dict[str, object]) -> str:
             f' loading="lazy" class="site-gallery-thumb">'
             f"</a>"
         )
-    if record.get("source_image_path"):
-        return '<p class="muted">Image path available locally.</p>'
     return '<p class="muted">No safe image preview available.</p>'
 
 
@@ -370,7 +479,7 @@ def _photo_note_html(record: dict[str, object]) -> str:
     return f'<p class="subline site-gallery-meta"><b>Photo note</b><br>{escaped_note}</p>'
 
 
-def render_photo_card(record: dict[str, object]) -> str:
+def render_photo_card(record: dict[str, object], root: Path | None = None) -> str:
     title = (
         str(record.get("area_guess") or "").strip()
         or str(record.get("submitted_area") or "").strip()
@@ -390,7 +499,7 @@ def render_photo_card(record: dict[str, object]) -> str:
     )
     return f"""
     <article class="site-gallery-card">
-      {render_photo_preview(record)}
+      {render_photo_preview(record, root)}
       <span class="site-gallery-card-body">
         <strong>{html.escape(title)}</strong>
         {meta_html}
@@ -747,7 +856,7 @@ def render_detail(ctx: object, capture_id: str) -> str:
 
     photo_records = photo_card_records_for_capture(root, capture_id)
     photos_html = (
-        f'<div class="site-gallery">{"".join(render_photo_card(record) for record in photo_records)}</div>'
+        f'<div class="site-gallery">{"".join(render_photo_card(record, root) for record in photo_records)}</div>'
         if photo_records
         else '<p class="zero-state">No photos in this capture.</p>'
     )
