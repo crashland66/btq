@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any, List, Optional
 
 from btq_vault.couch_store import CANONICAL_EMPLOYEE_FIELDS
-from btq_vault.entity_types import OPERATOR_ID_GREG
+from btq_vault.entity_types import current_operator_id
 from queue_processor.canonical_rmw import (
     CanonicalEntityState,
     CanonicalMutation,
@@ -236,7 +236,7 @@ def _build_personnel_event_entity_doc(payload: dict, job: QueueJob, event_id: st
     return {
         "_id": f"personnel_event_{event_id}",
         "type": "personnel_event",
-        "operator": OPERATOR_ID_GREG,
+        "operator": current_operator_id(),
         "event_id": event_id,
         "btq_job_ids": [job.job_id],
         **{k: v for k, v in payload.items()},
@@ -269,7 +269,7 @@ def process_log_personnel_event_job(job_path: Path, job: QueueJob, context: RunC
             doc = {
                 "_id": target.doc_id,
                 "type": "personnel_event",
-                "operator": OPERATOR_ID_GREG,
+                "operator": current_operator_id(),
                 "event_id": event_id,
                 **{k: v for k, v in payload.items()},
                 "created_at": created_at,
@@ -279,7 +279,7 @@ def process_log_personnel_event_job(job_path: Path, job: QueueJob, context: RunC
             existing_created_at = doc.get("created_at") or created_at
             doc.update(payload)
             doc["created_at"] = existing_created_at
-            doc.setdefault("operator", OPERATOR_ID_GREG)
+            doc.setdefault("operator", current_operator_id())
             doc["event_id"] = event_id
         return CanonicalMutation(doc=doc, evidence_text=f"personnel_event {event_id}")
 
@@ -309,7 +309,7 @@ def _build_employee_entity_doc(payload: dict, job: QueueJob, person_id: str, cre
     doc = {
         "_id": f"employee_{person_id}",
         "type": "employee",
-        "operator": OPERATOR_ID_GREG,
+        "operator": current_operator_id(),
         "person_id": person_id,
         "name": payload["name"],
         "site_ids": payload.get("site_ids") or [],
@@ -458,7 +458,7 @@ def process_close_recruiting_job(job_path: Path, job: QueueJob, context: RunCont
         def gap_transform(state: CanonicalEntityState) -> CanonicalMutation:
             outgoing = dict(state.doc) if state.doc is not None else {}
             for key, value in (("site", site_name), ("site_id", site_id), ("date", event_date), ("reason", "event_without_visit")): outgoing.setdefault(key, value)
-            outgoing.setdefault("operator", OPERATOR_ID_GREG)
+            outgoing.setdefault("operator", current_operator_id())
             return CanonicalMutation(doc=outgoing, evidence_text=f"visit_gap {site_id} {event_date}")
         apply(gap_target, gap_transform)
     employee_doc: dict[str, Any] | None = None

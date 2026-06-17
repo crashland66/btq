@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from btq_vault.entity_types import OPERATOR_ID_GREG
+from btq_vault.entity_types import current_operator_id
 from field_capture.prospects import TERMINAL_PROSPECT_STATUSES
 from queue_processor.canonical_rmw import CanonicalEntityState, CanonicalMutation, CanonicalTarget, apply_canonical_rmw, resolve_employee_target, resolve_site_target
 from supply_orders import (
@@ -133,7 +133,7 @@ def _voice_memo_note_transform(content: str, capture_id: str, *, seed_inbox_scop
         _append_voice_memo_capture_id(outgoing, capture_id)
         if seed_inbox_scope:
             outgoing.setdefault("scope", "operational_inbox")
-            outgoing.setdefault("operator", OPERATOR_ID_GREG)
+            outgoing.setdefault("operator", current_operator_id())
         return CanonicalMutation(doc=outgoing, evidence_text=content)
     return transform
 
@@ -228,7 +228,7 @@ def process_personal_journal_entry_job(job_path: Path, job: QueueJob, context: R
     def transform(state: CanonicalEntityState) -> CanonicalMutation:
         outgoing = dict(state.doc) if state.doc is not None else {}
         outgoing["content"] = _shared.append_markdown_block(str(outgoing.get("content") or ""), content)
-        outgoing.setdefault("date", date); outgoing.setdefault("scope", "personal"); outgoing.setdefault("operator", OPERATOR_ID_GREG)
+        outgoing.setdefault("date", date); outgoing.setdefault("scope", "personal"); outgoing.setdefault("operator", current_operator_id())
         if capture_id: _append_voice_memo_capture_id(outgoing, capture_id)
         return CanonicalMutation(doc=outgoing, evidence_text=content)
     print(f"Job {job.job_id}: validated")
@@ -262,7 +262,7 @@ def process_record_shift_report_job(job_path: Path, job: QueueJob, context: RunC
         outgoing = dict(state.doc or {})
         outgoing["content"] = content
         outgoing["date"] = date
-        outgoing["operator"] = OPERATOR_ID_GREG
+        outgoing["operator"] = current_operator_id()
         outgoing["prepared_by"] = prepared_by
         return CanonicalMutation(doc=outgoing, evidence_text=f"shift report {date}")
     print(f"Job {job.job_id}: validated")
@@ -296,7 +296,7 @@ def process_record_day_record_job(job_path: Path, job: QueueJob, context: RunCon
         outgoing = dict(state.doc or {})
         outgoing["content"] = content
         outgoing["date"] = date
-        outgoing["operator"] = OPERATOR_ID_GREG
+        outgoing["operator"] = current_operator_id()
         return CanonicalMutation(doc=outgoing, evidence_text=f"day record {date}")
     print(f"Job {job.job_id}: validated")
     print(f"Job {job.job_id}: target {target.doc_id}")
@@ -528,7 +528,7 @@ def _supply_order_transform(resolved_order, created_at: str):
     def transform(state: CanonicalEntityState) -> CanonicalMutation:
         existing = state.doc or {}
         outgoing = dict(resolved_order.to_record())
-        outgoing["operator"] = str(existing.get("operator") or OPERATOR_ID_GREG)
+        outgoing["operator"] = str(existing.get("operator") or current_operator_id())
         outgoing["created_at"] = str(existing.get("created_at") or created_at)
         return CanonicalMutation(doc=outgoing, evidence_text=f"supply_order {resolved_order.order_number}")
 

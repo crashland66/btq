@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from btq_vault.entity_types import OPERATOR_ID_GREG
+from btq_vault.entity_types import current_operator_id
 from queue_processor.canonical_rmw import (
     CanonicalEntityState,
     CanonicalMutation,
@@ -62,7 +62,7 @@ def _build_site_issue_entity_doc(payload: dict, job: QueueJob, site_ctx: SiteCon
     return {
         "_id": f"site_issue_{issue_id}",
         "type": "site_issue",
-        "operator": OPERATOR_ID_GREG,
+        "operator": current_operator_id(),
         "issue_id": issue_id,
         "site_id": site_ctx.site_id,
         "site_name": site_ctx.name,
@@ -145,7 +145,7 @@ def process_log_site_issue_job(job_path: Path, job: QueueJob, context: RunContex
             doc.update(payload)
             doc["created_at"] = existing_created_at
             doc["btq_job_ids"] = existing_job_ids
-            doc.setdefault("operator", OPERATOR_ID_GREG)
+            doc.setdefault("operator", current_operator_id())
             doc["issue_id"] = issue_id
             doc["site_id"] = site_ctx.site_id
             doc["site_name"] = site_ctx.name
@@ -271,7 +271,7 @@ def process_append_to_note_job(job_path: Path, job: QueueJob, context: RunContex
             outgoing.setdefault("site_id", site_id)
             outgoing.setdefault("date", event_date)
             outgoing.setdefault("reason", "event_without_visit")
-            outgoing.setdefault("operator", OPERATOR_ID_GREG)
+            outgoing.setdefault("operator", current_operator_id())
             return CanonicalMutation(doc=outgoing, evidence_text=f"visit_gap {site_id} {event_date}")
 
         try:
@@ -288,7 +288,7 @@ def process_append_to_note_job(job_path: Path, job: QueueJob, context: RunContex
         outgoing = dict(state.doc) if state.doc else {}
         outgoing["content"] = new_content
         if target.doc_type == "note":
-            outgoing.setdefault("operator", OPERATOR_ID_GREG)
+            outgoing.setdefault("operator", current_operator_id())
             outgoing.setdefault("date", target_path.stem)
         return CanonicalMutation(doc=outgoing, evidence_text=normalized)
 
@@ -408,7 +408,7 @@ def process_location_content_append_job(
             outgoing.setdefault("site_id", site_id)
             outgoing.setdefault("date", event_date)
             outgoing.setdefault("reason", "event_without_visit")
-            outgoing.setdefault("operator", OPERATOR_ID_GREG)
+            outgoing.setdefault("operator", current_operator_id())
             return CanonicalMutation(doc=outgoing, evidence_text=f"visit_gap {site_id} {event_date}")
 
         try:

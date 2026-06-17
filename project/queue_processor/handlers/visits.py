@@ -5,7 +5,7 @@ import re
 from datetime import datetime, timezone
 from pathlib import Path
 
-from btq_vault.entity_types import OPERATOR_ID_GREG
+from btq_vault.entity_types import current_operator_id
 from queue_processor.canonical_rmw import (
     CanonicalEntityState,
     CanonicalMutation,
@@ -40,7 +40,7 @@ def _build_visit_entity_doc(
     return {
         "_id": f"visit_{site_id}_{visit_date}_{job.job_id[:8]}",
         "type": "visit",
-        "operator": OPERATOR_ID_GREG,
+        "operator": current_operator_id(),
         "site": str(payload["site"]).strip(),
         "site_id": site_id,
         "date": visit_date,
@@ -283,7 +283,7 @@ def process_photo_capture_job(job_path: Path, job: QueueJob, context: RunContext
         if is_create:
             outgoing["date"] = date
             outgoing["scope"] = "operational"
-            outgoing["operator"] = OPERATOR_ID_GREG
+            outgoing["operator"] = current_operator_id()
         return CanonicalMutation(doc=outgoing, evidence_text=capture_entry)
 
     try:

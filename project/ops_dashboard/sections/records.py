@@ -7,13 +7,13 @@ from urllib import parse as urlparse
 from urllib import request as urlrequest
 
 from event_pipeline import couchdb_config
+from btq_vault.entity_types import current_operator_id
 from ops_dashboard.common import render_back_link, render_table
 from ops_dashboard.layout import html_page
 import ops_dashboard.sections.sites as sites
 from btq_vault.projector import render_markdown
 
 
-RECORD_OPERATOR = "op_greg"
 SHIFT_REPORT_TYPE = "shift_report"
 DAY_RECORD_TYPE = "day_record"
 RECORD_TYPES = (SHIFT_REPORT_TYPE, DAY_RECORD_TYPE)
@@ -50,7 +50,7 @@ def _type_label(record_type: object) -> str:
 
 def _shift_report_docs() -> list[dict[str, Any]]:
     payload = {
-        "selector": {"type": SHIFT_REPORT_TYPE, "operator": RECORD_OPERATOR},
+        "selector": {"type": SHIFT_REPORT_TYPE, "operator": current_operator_id()},
         "fields": ["_id", "date", "type", "prepared_by"],
         "limit": 5000,
     }
@@ -62,7 +62,7 @@ def _shift_report_docs() -> list[dict[str, Any]]:
 
 def _day_record_docs() -> list[dict[str, Any]]:
     payload = {
-        "selector": {"type": DAY_RECORD_TYPE, "operator": RECORD_OPERATOR},
+        "selector": {"type": DAY_RECORD_TYPE, "operator": current_operator_id()},
         "fields": ["_id", "date", "type"],
         "limit": 5000,
     }
@@ -130,7 +130,7 @@ def _load_record(record_id: str) -> dict[str, Any] | None:
     if not docs:
         return None
     doc = docs[0]
-    if doc.get("type") not in RECORD_TYPES or doc.get("operator") != RECORD_OPERATOR:
+    if doc.get("type") not in RECORD_TYPES or doc.get("operator") != current_operator_id():
         return None
     return doc
 

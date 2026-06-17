@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+
 
 # Canonical entity type set. Mirrors the validate_doc_update whitelist in
 # design_btq_vault.json. Must be kept in sync.
@@ -21,6 +23,12 @@ DEPRECATED_TYPE_ALIASES: dict[str, str] = {
 # migrated documents.
 OPERATOR_ID_GREG = "op_greg"
 OPERATOR_PERSON_ID = "prs_01KSGY3B8A0CZT6ZB05VQ9HP32"
+
+
+def current_operator_id() -> str:
+    return os.environ.get("BTQ_OPERATOR_ID") or OPERATOR_ID_GREG
+
+
 # Operator step after deploy: set VOICE_MEMO_PERSON_ID=<this-value> in the
 # ops-dashboard launch agent plist, then run `btq migrate-vault` to ingest
 # People/Avery, Jordan.md into btq_vault CouchDB.

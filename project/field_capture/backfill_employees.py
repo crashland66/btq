@@ -5,7 +5,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from btq_vault.entity_types import OPERATOR_ID_GREG
+from btq_vault.entity_types import current_operator_id
 from event_pipeline.couchdb.migrate_vault import _employee_display_name, _employee_site_ids, _stable_id
 from field_capture.person_slugs import employee_slug_candidates, last_first_person_slug, person_slug
 from token_store import TokenRecord, TokenStore, normalize_site_ids
@@ -162,7 +162,7 @@ def employee_doc_for_token_person(person: ActiveTokenPerson, match: PeopleMatch)
     doc: dict[str, Any] = {
         "_id": _stable_id("employee", frontmatter, match.relative_path),
         "type": "employee",
-        "operator": OPERATOR_ID_GREG,
+        "operator": current_operator_id(),
         "content": match.body.strip(),
     }
     for key, value in match.frontmatter.items():
@@ -233,7 +233,7 @@ def employee_doc_for_people_file(match: PeopleMatch) -> dict[str, Any] | None:
     doc: dict[str, Any] = {
         "_id": f"employee_{person_id}",
         "type": "employee",
-        "operator": OPERATOR_ID_GREG,
+        "operator": current_operator_id(),
         "person_id": person_id,
         "content": match.body.strip(),
         "site_ids": _employee_site_ids(frontmatter),

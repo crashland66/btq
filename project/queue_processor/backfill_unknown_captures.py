@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from btq_vault.entity_types import OPERATOR_ID_GREG
+from btq_vault.entity_types import current_operator_id
 from queue_processor.handlers import _shared
 from queue_processor.handlers.unknowns import (
     derive_source_unknown_id,
@@ -83,7 +83,7 @@ def _canonical_doc(block: dict[str, Any]) -> dict[str, Any]:
     doc: dict[str, Any] = {
         "_id": f"unknown_capture_{block['source_unknown_id']}",
         "type": "unknown_capture",
-        "operator": OPERATOR_ID_GREG,
+        "operator": current_operator_id(),
         "source_unknown_id": block["source_unknown_id"],
         "timestamp": block["timestamp"],
         "audio_file": block["audio_file"],

@@ -6,7 +6,7 @@ import re
 from datetime import datetime, timezone
 from pathlib import Path
 
-from btq_vault.entity_types import OPERATOR_ID_GREG
+from btq_vault.entity_types import current_operator_id
 from queue_processor.canonical_rmw import (
     CanonicalEntityState,
     CanonicalMutation,
@@ -164,7 +164,7 @@ def _build_supply_need_entity_doc(payload: dict, job: QueueJob, site_ctx: SiteCo
     return {
         "_id": f"supply_need_{supply_id}",
         "type": "supply_need",
-        "operator": OPERATOR_ID_GREG,
+        "operator": current_operator_id(),
         "supply_id": supply_id,
         "site_id": site_ctx.site_id,
         "site_name": site_ctx.name,
@@ -178,7 +178,7 @@ def _build_equipment_request_entity_doc(payload: dict, job: QueueJob, site_ctx: 
     return {
         "_id": f"equipment_request_{equipment_id}",
         "type": "equipment_request",
-        "operator": OPERATOR_ID_GREG,
+        "operator": current_operator_id(),
         "equipment_id": equipment_id,
         "site_id": site_ctx.site_id,
         "site_name": site_ctx.name,
@@ -222,7 +222,7 @@ def process_log_supply_need_job(job_path: Path, job: QueueJob, context: RunConte
             doc.update(payload)
             doc["created_at"] = existing_created_at
             doc["btq_job_ids"] = existing_job_ids
-            doc.setdefault("operator", OPERATOR_ID_GREG)
+            doc.setdefault("operator", current_operator_id())
             doc["supply_id"] = supply_id
             doc["site_id"] = site_ctx.site_id
             doc["site_name"] = site_ctx.name
@@ -284,7 +284,7 @@ def process_log_equipment_request_job(job_path: Path, job: QueueJob, context: Ru
             doc.update(payload)
             doc["created_at"] = existing_created_at
             doc["btq_job_ids"] = existing_job_ids
-            doc.setdefault("operator", OPERATOR_ID_GREG)
+            doc.setdefault("operator", current_operator_id())
             doc["equipment_id"] = equipment_id
             doc["site_id"] = site_ctx.site_id
             doc["site_name"] = site_ctx.name

@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from btq_vault.entity_types import OPERATOR_ID_GREG
+from btq_vault.entity_types import current_operator_id
 from processing_core.slugs import lower_dash_slug
 from event_pipeline.enricher import enrich_events
 from event_pipeline.extractor import extract_events
@@ -51,7 +51,7 @@ def build_unknown_capture_doc_fields(payload: dict[str, Any]) -> dict[str, Any]:
     doc: dict[str, Any] = {
         "_id": f"unknown_capture_{source_unknown_id}",
         "type": "unknown_capture",
-        "operator": OPERATOR_ID_GREG,
+        "operator": current_operator_id(),
         "source_unknown_id": source_unknown_id,
         "timestamp": str(payload["timestamp"]),
         "audio_file": str(payload["audio_file"]),

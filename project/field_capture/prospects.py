@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from typing import Any
 from urllib import error, parse, request
 
-from btq_vault.entity_types import OPERATOR_ID_GREG
+from btq_vault.entity_types import current_operator_id
 from event_pipeline import couchdb_config
 
 
@@ -47,7 +47,7 @@ def build_prospect_document(
         "_id": f"prospect_{normalized_id}",
         "doc_type": "prospect",
         "type": "prospect",
-        "operator": OPERATOR_ID_GREG,
+        "operator": current_operator_id(),
         "prospect_id": normalized_id,
         "name": normalized_name,
         "address": address,
