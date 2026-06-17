@@ -135,9 +135,14 @@ def _load_r2_credentials(secrets_path: str | Path = "secrets/cloudflareR2") -> d
             continue
         if stripped.startswith("export "):
             stripped = stripped.removeprefix("export ").strip()
-        if "=" not in stripped:
+        # Accept either `key=value` (env-style) or `key: value` (colon-style),
+        # splitting on whichever separator appears first so the key is delimited
+        # correctly even if the value itself contains the other separator.
+        candidates = [i for i in (stripped.find("="), stripped.find(":")) if i != -1]
+        if not candidates:
             continue
-        key, value = stripped.split("=", 1)
+        idx = min(candidates)
+        key, value = stripped[:idx], stripped[idx + 1 :]
         value = value.strip().strip('"').strip("'")
         values[key.strip()] = value
     return {
