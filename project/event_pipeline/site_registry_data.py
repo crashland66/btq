@@ -15,9 +15,10 @@ Resolution order for the data file:
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 from typing import Any
+
+from instance_config import load_instance_config
 
 _DIR = Path(__file__).resolve().parent
 _REAL = _DIR / "site_registry.json"
@@ -44,12 +45,12 @@ _cache: dict[str, Any] | None = None
 
 
 def _resolve_path() -> Path:
-    override = os.environ.get("BTQ_SITE_REGISTRY_PATH", "").strip()
-    if override:
-        return Path(override)
-    if _REAL.exists():
-        return _REAL
-    return _EXAMPLE
+    return load_instance_config(
+        site_registry_real_path=_REAL,
+        site_registry_example_path=_EXAMPLE,
+        brand_keywords_real_path=_BRAND_REAL,
+        brand_keywords_example_path=_BRAND_EXAMPLE,
+    ).site_registry_path
 
 
 def _ensure_builtin_sandbox(data: dict[str, Any]) -> dict[str, Any]:
@@ -94,12 +95,12 @@ _brand_cache: dict[str, Any] | None = None
 
 
 def _resolve_brand_path() -> Path:
-    override = os.environ.get("BTQ_BRAND_KEYWORDS_PATH", "").strip()
-    if override:
-        return Path(override)
-    if _BRAND_REAL.exists():
-        return _BRAND_REAL
-    return _BRAND_EXAMPLE
+    return load_instance_config(
+        site_registry_real_path=_REAL,
+        site_registry_example_path=_EXAMPLE,
+        brand_keywords_real_path=_BRAND_REAL,
+        brand_keywords_example_path=_BRAND_EXAMPLE,
+    ).brand_keywords_path
 
 
 def load_brand_keywords(category: str, *, force_reload: bool = False) -> tuple[str, ...]:

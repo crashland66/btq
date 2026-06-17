@@ -24,5 +24,30 @@
   "queue_watch_launchd_stdout_log": "/path/to/runtime/logs/queue_watch_launchd_stdout.log",
   "queue_watch_launchd_stderr_log": "/path/to/runtime/logs/queue_watch_launchd_stderr.log",
   "whisper_model": "large-v3",
-  "ffmpeg_path_prefix": "/opt/homebrew/bin:/usr/local/bin"
+  "ffmpeg_path_prefix": "/opt/homebrew/bin:/usr/local/bin",
+  "instance": {
+    "couchdb": {
+      "url": "http://127.0.0.1:5984",
+      "user": "",
+      "password": "",
+      "sites_db": "btq_sites",
+      "field_captures_db": "btq_field_captures",
+      "people_db": "btq_people",
+      "photo_vision_db": "btq_photo_vision",
+      "queue_db": "btq_queue",
+      "vault_db": "btq_vault",
+      "personal_journal_db": "btq_personal_journal",
+      "voice_memos_db": "btq_voice_memos"
+    },
+    "site_registry_path": "project/event_pipeline/site_registry.example.json",
+    "brand_keywords_path": "project/event_pipeline/brand_keywords.example.json",
+    "media_store": "local",
+    "r2": {
+      "endpoint_url": "https://EXAMPLE_ACCOUNT.r2.cloudflarestorage.com",
+      "bucket": "btq-example",
+      "region": "auto",
+      "access_key_id": "",
+      "secret_access_key": ""
+    }
+  }
 }

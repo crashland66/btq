@@ -7,12 +7,14 @@ from dataclasses import dataclass, fields
 from functools import lru_cache
 from pathlib import Path
 
+from instance_config import InstanceConfig, get_instance_config, load_instance_config
+
 
 BASE_DIR_ENV = "BT_PIPELINE_BASE_DIR"
 CONFIG_PATH_ENV = "BT_PIPELINE_CONFIG_PATH"
 DEFAULT_CONFIG_NAME = "config.json"
 EXAMPLE_CONFIG_NAME = "config.example.json"
-ALLOWED_EXTRA_CONFIG_KEYS = frozenset()
+ALLOWED_EXTRA_CONFIG_KEYS = frozenset({"instance"})
 
 
 @dataclass(frozen=True)

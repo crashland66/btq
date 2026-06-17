@@ -7,19 +7,23 @@ import urllib.request
 from dataclasses import dataclass
 from typing import Mapping
 
+from instance_config import (
+    DEFAULT_COUCHDB_URL,
+    DEFAULT_FIELD_CAPTURES_DB,
+    DEFAULT_PEOPLE_DB,
+    DEFAULT_PERSONAL_JOURNAL_DB,
+    DEFAULT_PHOTO_VISION_DB,
+    DEFAULT_QUEUE_DB,
+    DEFAULT_SITES_DB,
+    DEFAULT_VAULT_DB,
+    DEFAULT_VOICE_MEMOS_DB,
+    load_instance_config,
+)
 
-DEFAULT_COUCHDB_URL = "http://127.0.0.1:5984"
+
 DEFAULT_TIMEOUT_SECONDS = 10.0
 DEFAULT_LISTENER_TIMEOUT_SECONDS = 60.0
 DEFAULT_HEARTBEAT_MS = 10000
-DEFAULT_SITES_DB = "btq_sites"
-DEFAULT_FIELD_CAPTURES_DB = "btq_field_captures"
-DEFAULT_PEOPLE_DB = "btq_people"
-DEFAULT_PHOTO_VISION_DB = "btq_photo_vision"
-DEFAULT_QUEUE_DB = "btq_queue"
-DEFAULT_VAULT_DB = "btq_vault"
-DEFAULT_PERSONAL_JOURNAL_DB = "btq_personal_journal"
-DEFAULT_VOICE_MEMOS_DB = "btq_voice_memos"
 
 
 class CouchDBConfigError(Exception):
@@ -64,16 +68,16 @@ class CouchDBConfig:
 
 
 def base_url(override: str | None = None) -> str:
-    raw = override if override is not None else os.environ.get("BTQ_COUCHDB_URL", DEFAULT_COUCHDB_URL)
+    raw = override if override is not None else load_instance_config().couchdb_url
     return raw.rstrip("/")
 
 
 def username(override: str | None = None) -> str:
-    return override if override is not None else os.environ.get("BTQ_COUCHDB_USER", "")
+    return override if override is not None else load_instance_config().couchdb_user
 
 
 def password(override: str | None = None) -> str:
-    return override if override is not None else os.environ.get("BTQ_COUCHDB_PASSWORD", "")
+    return override if override is not None else load_instance_config().couchdb_password
 
 
 def timeout(override: float | None = None, *, default: float = DEFAULT_TIMEOUT_SECONDS) -> float:
@@ -95,27 +99,35 @@ def heartbeat_ms(override: int | None = None, *, default: int = DEFAULT_HEARTBEA
 
 
 def sites_database(override: str | None = None) -> str:
-    return override if override is not None else os.environ.get("BTQ_COUCHDB_SITES_DB", DEFAULT_SITES_DB)
+    return override if override is not None else load_instance_config().couchdb_sites_db
 
 
 def field_captures_database(override: str | None = None) -> str:
-    return override if override is not None else os.environ.get("BTQ_COUCHDB_FIELD_CAPTURES_DB", DEFAULT_FIELD_CAPTURES_DB)
+    return override if override is not None else load_instance_config().couchdb_field_captures_db
 
 
 def people_database(override: str | None = None) -> str:
-    return override if override is not None else os.environ.get("BTQ_COUCHDB_PEOPLE_DB", DEFAULT_PEOPLE_DB)
+    return override if override is not None else load_instance_config().couchdb_people_db
 
 
 def photo_vision_database(override: str | None = None) -> str:
-    return override if override is not None else os.environ.get("BTQ_COUCHDB_PHOTO_VISION_DB", DEFAULT_PHOTO_VISION_DB)
+    return override if override is not None else load_instance_config().couchdb_photo_vision_db
+
+
+def queue_database(override: str | None = None) -> str:
+    return override if override is not None else load_instance_config().couchdb_queue_db
 
 
 def vault_database(override: str | None = None) -> str:
-    return override if override is not None else os.environ.get("BTQ_COUCHDB_VAULT_DB", DEFAULT_VAULT_DB)
+    return override if override is not None else load_instance_config().couchdb_vault_db
 
 
 def personal_journal_database(override: str | None = None) -> str:
-    return override if override is not None else os.environ.get("BTQ_COUCHDB_PERSONAL_JOURNAL_DB", DEFAULT_PERSONAL_JOURNAL_DB)
+    return override if override is not None else load_instance_config().couchdb_personal_journal_db
+
+
+def voice_memos_database(override: str | None = None) -> str:
+    return override if override is not None else load_instance_config().couchdb_voice_memos_db
 
 
 def from_env(

@@ -352,6 +352,43 @@ Environment override:
 
 If set, it overrides `base_dir` from `config.json` and re-resolves all derived `{base_dir}` paths. This is the intended way to move the repository without editing every path value immediately.
 
+### Engine vs Instance Configuration
+
+`project/config.py` keeps engine-agnostic machine settings in `PipelineConfig`.
+These are runtime paths, queue paths, log paths, `whisper_model`, and
+`ffmpeg_path_prefix`. Do not put company/operator-specific values in that
+dataclass.
+
+`project/instance_config.py` defines the instance-specific surface in
+`InstanceConfig`. It preserves the existing environment variable names and
+defaults, and `config.example.json` carries synthetic fallback values only.
+Real instance values belong in gitignored local config/data files or environment
+variables.
+
+Instance-specific fields:
+
+- CouchDB URL and credentials:
+  `BTQ_COUCHDB_URL`, `BTQ_COUCHDB_USER`, `BTQ_COUCHDB_PASSWORD`
+- CouchDB database-name overrides:
+  `BTQ_COUCHDB_SITES_DB`, `BTQ_COUCHDB_FIELD_CAPTURES_DB`,
+  `BTQ_COUCHDB_PEOPLE_DB`, `BTQ_COUCHDB_PHOTO_VISION_DB`,
+  `BTQ_COUCHDB_QUEUE_DB`, `BTQ_COUCHDB_VAULT_DB`,
+  `BTQ_COUCHDB_PERSONAL_JOURNAL_DB`, `BTQ_COUCHDB_VOICE_MEMOS_DB`
+- Instance data-file paths:
+  `BTQ_SITE_REGISTRY_PATH`, `BTQ_BRAND_KEYWORDS_PATH`
+- Media-store selection and inert R2 slots:
+  `BTQ_MEDIA_STORE` defaults to `local`; `BTQ_R2_ENDPOINT_URL`,
+  `BTQ_R2_BUCKET`, `BTQ_R2_REGION`, `BTQ_R2_ACCESS_KEY_ID`, and
+  `BTQ_R2_SECRET_ACCESS_KEY` are present for the future R2 backend but are not
+  used by current storage code.
+
+The committed examples are intentionally synthetic:
+`project/event_pipeline/site_registry.example.json`,
+`project/event_pipeline/brand_keywords.example.json`, and the `instance` block
+in `config.example.json`. Real site registry and brand keyword files remain
+gitignored as `project/event_pipeline/site_registry.json` and
+`project/event_pipeline/brand_keywords.json`.
+
 Startup validation:
 
 - `transcription_pipeline.main` fails clearly if the configured audio inbox does not exist, and creates local archive/runtime directories as needed.
