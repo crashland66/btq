@@ -17,7 +17,7 @@ from urllib.parse import parse_qs, urlsplit
 
 from config import get_config
 from field_capture.site_viewer import UnsafeMediaPath, resolve_media_request, upload_id_for_path
-from media_store import get_media_store
+from media_store import LocalFilesystemStore, get_media_store
 from ops_dashboard.common import SectionContext
 from ops_dashboard.layout import html_page
 from ops_dashboard.post_routes import dispatch_post_route
@@ -128,7 +128,11 @@ def serve_media_response(media_path: str, runtime_root: Path) -> tuple[HTTPStatu
     key = upload_id_for_path(path, upload_dir)
     store = get_media_store(upload_dir)
     if not store.exists(key):
-        return json_response({"error": "not_found"}, HTTPStatus.NOT_FOUND)
+        if isinstance(store, LocalFilesystemStore):
+            return json_response({"error": "not_found"}, HTTPStatus.NOT_FOUND)
+        store = LocalFilesystemStore(upload_dir)
+        if not store.exists(key):
+            return json_response({"error": "not_found"}, HTTPStatus.NOT_FOUND)
     content_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
     try:
         return HTTPStatus.OK, content_type, store.read(key), {}

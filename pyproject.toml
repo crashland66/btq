@@ -16,6 +16,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+r2 = ["boto3>=1.34"]
 vision-mlx = ["mlx-vlm", "Pillow"]
 dev = [
   "pymarkdownlnt",
