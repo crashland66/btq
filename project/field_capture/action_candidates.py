@@ -64,6 +64,7 @@ CANDIDATE_PLAN_WOULD_CREATE = "would_create"
 CANDIDATE_PLAN_SKIPPED = "skipped"
 CANDIDATE_PLAN_FAILED = "failed"
 COUCHDB_CANDIDATE_WRITE_ENV = "BTQ_COUCHDB_ACTION_CANDIDATE_WRITE"
+KEYWORD_ACTION_FALLBACK_ENV = "BTQ_ALLOW_KEYWORD_ACTION_FALLBACK"
 LOGGER = logging.getLogger(__name__)
 
 
@@ -91,6 +92,11 @@ class ReviewResult:
 
 def couchdb_candidate_write_enabled() -> bool:
     raw = os.environ.get(COUCHDB_CANDIDATE_WRITE_ENV, "1").strip().lower()
+    return raw not in {"0", "false", "no", "off", "disabled"}
+
+
+def keyword_action_fallback_enabled() -> bool:
+    raw = os.environ.get(KEYWORD_ACTION_FALLBACK_ENV, "0").strip().lower()
     return raw not in {"0", "false", "no", "off", "disabled"}
 
 
@@ -627,6 +633,9 @@ def structured_payloads_from_semantic(path: Path, payload: dict[str, object]) ->
 def payloads_from_semantic(path: Path, payload: dict[str, object]) -> list[dict[str, object]]:
     if has_extracted_actions(payload):
         return structured_payloads_from_semantic(path, payload)
+
+    if not keyword_action_fallback_enabled():
+        return []
 
     action_candidates = payload.get("action_candidates")
     if not isinstance(action_candidates, list):
