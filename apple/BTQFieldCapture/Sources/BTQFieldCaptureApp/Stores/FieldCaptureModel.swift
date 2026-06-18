@@ -23,6 +23,7 @@ public final class FieldCaptureModel {
     public private(set) var submissionQualitySummary: SubmissionQualitySummary?
     public private(set) var isRefreshingSubmittedHistory: Bool = false
     public private(set) var notificationPermissionStatus: NotificationPermissionStatus = .unknown
+    public private(set) var requiresReconnect: Bool = false
 
     private let store: any FieldCaptureStore
     private let apiClient: any CaptureAPIClient
@@ -125,7 +126,11 @@ public final class FieldCaptureModel {
     }
 
     public var canSubmitCaptures: Bool {
-        session?.canSubmit != false
+        guard !requiresReconnect else { return false }
+        if session == nil && (account.personName != nil || !sites.isEmpty) {
+            return false
+        }
+        return session?.canSubmit != false
     }
 
     public var accounts: [BTQAccount] {
@@ -247,6 +252,10 @@ public final class FieldCaptureModel {
     @discardableResult
     public func connect(token: String) async -> Bool {
         guard !isConnecting else { return false }
+        guard account.baseURL.btqUsesHTTPS else {
+            statusMessage = CaptureAPIError.insecureBaseURL.description
+            return false
+        }
         isConnecting = true
         defer { isConnecting = false }
         do {
@@ -278,6 +287,7 @@ public final class FieldCaptureModel {
             session = liveSession
             mergeSites(liveSession.sites)
             isOfflineMode = false
+            requiresReconnect = false
             statusMessage = "Ready for \(liveSession.person.name)"
             try await persist()
             return true
@@ -292,6 +302,10 @@ public final class FieldCaptureModel {
 
     @discardableResult
     public func refreshSessionIfPossible() async -> Bool {
+        guard account.baseURL.btqUsesHTTPS else {
+            statusMessage = CaptureAPIError.insecureBaseURL.description
+            return false
+        }
         guard let token = try? await tokenStore.loadToken(accountID: account.id), !token.isEmpty else {
             return true
         }
@@ -299,11 +313,12 @@ public final class FieldCaptureModel {
             let liveSession = try await apiClient.session(baseURL: account.baseURL, token: token)
             apply(liveSession)
             isOfflineMode = false
+            requiresReconnect = false
             statusMessage = "Session refreshed"
             try await persist()
             return true
         } catch CaptureAPIError.unauthorized {
-            statusMessage = "Token is invalid, expired, or revoked."
+            await requireReconnect(message: "Token expired or revoked. Reconnect this account.")
             return false
         } catch {
             statusMessage = sites.isEmpty ? "Could not refresh session." : "Cached session remains available."
@@ -328,6 +343,10 @@ public final class FieldCaptureModel {
         guard !isRefreshingSubmittedHistory else { return }
         let requestedAccountID = account.id
         let requestedBaseURL = account.baseURL
+        guard requestedBaseURL.btqUsesHTTPS else {
+            statusMessage = CaptureAPIError.insecureBaseURL.description
+            return
+        }
         guard let token = try? await tokenStore.loadToken(accountID: requestedAccountID), !token.isEmpty else {
             statusMessage = "Connect a token to refresh submitted history."
             return
@@ -343,7 +362,7 @@ public final class FieldCaptureModel {
             statusMessage = response.submissions.isEmpty ? "No submitted captures yet." : "Submitted history refreshed."
         } catch CaptureAPIError.unauthorized {
             guard account.id == requestedAccountID else { return }
-            statusMessage = "Token is invalid, expired, or revoked."
+            await requireReconnect(message: "Token expired or revoked. Reconnect this account.")
         } catch {
             guard account.id == requestedAccountID else { return }
             statusMessage = "Could not refresh submitted history."
@@ -521,7 +540,13 @@ public final class FieldCaptureModel {
     public func syncPending() async {
         guard !isSyncing else { return }
         guard canSubmitCaptures else {
-            statusMessage = "This account cannot submit captures."
+            statusMessage = requiresReconnect || (session == nil && (account.personName != nil || !sites.isEmpty))
+                ? "Reconnect this account to sync captures."
+                : "This account cannot submit captures."
+            return
+        }
+        guard account.baseURL.btqUsesHTTPS else {
+            statusMessage = CaptureAPIError.insecureBaseURL.description
             return
         }
         guard let token = try? await tokenStore.loadToken(accountID: account.id), !token.isEmpty else {
@@ -565,6 +590,12 @@ public final class FieldCaptureModel {
                 }
                 captures[failedIndex].attempts += 1
                 captures[failedIndex].lastError = error.description
+                if case .unauthorized = error {
+                    captures[failedIndex].status = .pending
+                    captures[failedIndex].retryAfter = nil
+                    await requireReconnect(message: "Token expired or revoked. Reconnect this account to sync.")
+                    break
+                }
                 if error.isPermanent {
                     captures[failedIndex].status = .failed
                     captures[failedIndex].retryAfter = nil
@@ -678,6 +709,7 @@ public final class FieldCaptureModel {
         captures = workspace.captures
         submittedCaptures = []
         submissionQualitySummary = nil
+        requiresReconnect = false
         selectedSiteID = prioritizedSites.first?.siteID
         selectedCategoryValue = nil
     }
@@ -698,6 +730,7 @@ public final class FieldCaptureModel {
         captures = []
         submittedCaptures = []
         submissionQualitySummary = nil
+        requiresReconnect = false
         selectedSiteID = nil
         selectedCategoryValue = nil
         observationText = ""
@@ -711,6 +744,7 @@ public final class FieldCaptureModel {
         updatedAccount.personName = liveSession.person.name
         account = updatedAccount
         session = liveSession
+        requiresReconnect = false
         mergeSites(liveSession.sites)
     }
 
@@ -817,6 +851,20 @@ public final class FieldCaptureModel {
         return now.addingTimeInterval(delay)
     }
 
+    private func requireReconnect(message: String) async {
+        try? await tokenStore.deleteToken(accountID: account.id)
+        var updatedAccount = account
+        updatedAccount.tokenID = nil
+        account = updatedAccount
+        session = nil
+        submittedCaptures = []
+        submissionQualitySummary = nil
+        isOfflineMode = true
+        requiresReconnect = true
+        statusMessage = message
+        try? await persist()
+    }
+
     private func persist() async throws {
         upsertCurrentWorkspace()
         try await store.save(
@@ -844,6 +892,8 @@ public struct VisitTimelineEntry: Identifiable, Equatable, Sendable {
 private extension CaptureAPIError {
     var isPermanent: Bool {
         switch self {
+        case .insecureBaseURL:
+            true
         case .unauthorized:
             true
         case .serverStatus(let status, _, _):

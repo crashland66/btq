@@ -17,8 +17,9 @@ public struct LocalMediaStore: Sendable {
         let filename = "\(safeStem(preferredStem))-\(UUID().uuidString).\(imagePolicy.format.fileExtension)"
         let url = mediaDirectory(bucketID: bucketID).appendingPathComponent(filename)
         let normalizedData = try ImageNormalizer.normalizedData(from: data, policy: imagePolicy)
-        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try prepareMediaDirectory(for: url)
         try normalizedData.write(to: url, options: [.atomic])
+        try LocalFilePrivacy.protectExistingItem(url)
         return CapturePhoto(filename: filename, mimeType: imagePolicy.format.mimeType, fileURL: url)
     }
 
@@ -26,8 +27,9 @@ public struct LocalMediaStore: Sendable {
         let filename = "\(safeStem(preferredStem))-\(UUID().uuidString).\(imagePolicy.format.fileExtension)"
         let url = mediaDirectory(bucketID: bucketID).appendingPathComponent(filename)
         let normalizedData = try ImageNormalizer.normalizedData(from: sourceURL, policy: imagePolicy)
-        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try prepareMediaDirectory(for: url)
         try normalizedData.write(to: url, options: [.atomic])
+        try LocalFilePrivacy.protectExistingItem(url)
         return CapturePhoto(filename: filename, mimeType: imagePolicy.format.mimeType, fileURL: url)
     }
 
@@ -37,7 +39,7 @@ public struct LocalMediaStore: Sendable {
         }
         let filename = safeFilename(audio.filename, fallback: "voice-\(UUID().uuidString).m4a")
         let destination = mediaDirectory(bucketID: bucketID).appendingPathComponent(filename)
-        try FileManager.default.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try prepareMediaDirectory(for: destination)
         if sourceURL != destination {
             if FileManager.default.fileExists(atPath: destination.path) {
                 try FileManager.default.removeItem(at: destination)
@@ -47,6 +49,7 @@ public struct LocalMediaStore: Sendable {
                 try? FileManager.default.removeItem(at: sourceURL)
             }
         }
+        try LocalFilePrivacy.protectExistingItem(destination)
         return CaptureAudio(
             id: audio.id,
             filename: filename,
@@ -146,6 +149,11 @@ public struct LocalMediaStore: Sendable {
         let rootPath = rootDirectory.standardizedFileURL.path
         let mediaPath = url.standardizedFileURL.path
         return mediaPath == rootPath || mediaPath.hasPrefix(rootPath + "/")
+    }
+
+    private func prepareMediaDirectory(for fileURL: URL) throws {
+        try LocalFilePrivacy.prepareDirectory(rootDirectory)
+        try LocalFilePrivacy.prepareDirectory(fileURL.deletingLastPathComponent())
     }
 
     private func removeEmptyParentDirectories(startingAt directory: URL) {

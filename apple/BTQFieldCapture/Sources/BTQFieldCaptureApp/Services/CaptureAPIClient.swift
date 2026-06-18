@@ -21,6 +21,7 @@ public struct SubmitCaptureResponse: Codable, Equatable, Sendable {
 }
 
 public enum CaptureAPIError: Error, Equatable, LocalizedError, CustomStringConvertible, Sendable {
+    case insecureBaseURL
     case invalidResponse
     case unauthorized
     case serverStatus(status: Int, code: String?, message: String?)
@@ -31,6 +32,8 @@ public enum CaptureAPIError: Error, Equatable, LocalizedError, CustomStringConve
 
     public var description: String {
         switch self {
+        case .insecureBaseURL:
+            return "Server URL must use HTTPS"
         case .invalidResponse:
             return "Invalid server response"
         case .unauthorized:
@@ -69,7 +72,7 @@ public final class HTTPCaptureAPIClient: CaptureAPIClient, @unchecked Sendable {
     }
 
     public func session(baseURL: URL, token: String) async throws -> BTQSession {
-        var request = URLRequest(url: baseURL.appendingPathComponent("api/session"))
+        var request = URLRequest(url: try secureAPIURL(baseURL: baseURL, path: "api/session"))
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         request.cachePolicy = .reloadIgnoringLocalCacheData
@@ -88,7 +91,7 @@ public final class HTTPCaptureAPIClient: CaptureAPIClient, @unchecked Sendable {
     }
 
     public func mySubmissions(baseURL: URL, token: String) async throws -> MySubmissionsResponse {
-        var request = URLRequest(url: baseURL.appendingPathComponent("api/my-submissions"))
+        var request = URLRequest(url: try secureAPIURL(baseURL: baseURL, path: "api/my-submissions"))
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         request.cachePolicy = .reloadIgnoringLocalCacheData
@@ -108,7 +111,7 @@ public final class HTTPCaptureAPIClient: CaptureAPIClient, @unchecked Sendable {
 
     public func submit(capture: LocalCapture, baseURL: URL, token: String) async throws -> SubmitCaptureResponse {
         let boundary = "Boundary-\(UUID().uuidString)"
-        var request = URLRequest(url: baseURL.appendingPathComponent("api/submit"))
+        var request = URLRequest(url: try secureAPIURL(baseURL: baseURL, path: "api/submit"))
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
@@ -128,6 +131,13 @@ public final class HTTPCaptureAPIClient: CaptureAPIClient, @unchecked Sendable {
             throw serverError(status: http.statusCode, data: data)
         }
         return try decoder.decode(SubmitCaptureResponse.self, from: data)
+    }
+
+    private func secureAPIURL(baseURL: URL, path: String) throws -> URL {
+        guard baseURL.btqUsesHTTPS else {
+            throw CaptureAPIError.insecureBaseURL
+        }
+        return baseURL.appendingPathComponent(path)
     }
 
     private func serverError(status: Int, data: Data) -> CaptureAPIError {

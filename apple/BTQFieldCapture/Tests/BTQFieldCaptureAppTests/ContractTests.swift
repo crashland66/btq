@@ -826,6 +826,32 @@ import UniformTypeIdentifiers
     #expect(migrationBlock.contains("PRAGMA synchronous=FULL;"))
 }
 
+@Test func localStoresApplyBackupExclusionAndFileProtectionHooks() throws {
+    let privacySource = try String(
+        contentsOf: packageRoot().appendingPathComponent("Sources/BTQFieldCaptureApp/Support/LocalFilePrivacy.swift"),
+        encoding: .utf8
+    )
+    let mediaStoreSource = try String(
+        contentsOf: packageRoot().appendingPathComponent("Sources/BTQFieldCaptureApp/Services/LocalMediaStore.swift"),
+        encoding: .utf8
+    )
+    let sqliteStoreSource = try String(
+        contentsOf: packageRoot().appendingPathComponent("Sources/BTQFieldCaptureApp/Stores/SQLiteFieldCaptureStore.swift"),
+        encoding: .utf8
+    )
+
+    #expect(privacySource.contains("setResourceValue(true, forKey: .isExcludedFromBackupKey)"))
+    #expect(privacySource.contains("#if os(iOS)"))
+    #expect(privacySource.contains(".protectionKey: FileProtectionType.complete"))
+    #expect(mediaStoreSource.contains("try LocalFilePrivacy.prepareDirectory(rootDirectory)"))
+    #expect(mediaStoreSource.contains("try LocalFilePrivacy.protectExistingItem(url)"))
+    #expect(mediaStoreSource.contains("try LocalFilePrivacy.protectExistingItem(destination)"))
+    #expect(sqliteStoreSource.contains("try LocalFilePrivacy.prepareDirectory(fileURL.deletingLastPathComponent())"))
+    #expect(sqliteStoreSource.contains("try LocalFilePrivacy.protectExistingItem(fileURL)"))
+    #expect(sqliteStoreSource.contains("fileURL.path + \"-wal\""))
+    #expect(sqliteStoreSource.contains("fileURL.path + \"-shm\""))
+}
+
 @Test func localMediaStorePersistsPhotosAndAudioOutsideTemporaryInputs() throws {
     let temp = FileManager.default.temporaryDirectory.appendingPathComponent("btq-media-\(UUID().uuidString)", isDirectory: true)
     let source = FileManager.default.temporaryDirectory.appendingPathComponent("btq-media-source-\(UUID().uuidString)", isDirectory: true)
@@ -1928,6 +1954,57 @@ import UniformTypeIdentifiers
     #expect(model.statusMessage == "Capture failed: At most one photo may be submitted")
 }
 
+@Test @MainActor func unauthorizedSyncRequiresReconnectAndPreservesPendingCapture() async {
+    let account = BTQAccount.defaultProduction
+    let capture = LocalCapture(
+        captureID: "capture-unauthorized",
+        jobID: "job-unauthorized",
+        visitID: nil,
+        siteID: "site_1",
+        siteLabel: "Site One",
+        targetID: "site_1",
+        qcCategory: "general_note",
+        note: "Keep this pending",
+        capturedAt: Date(timeIntervalSince1970: 1_800_000_000),
+        exportedAt: Date(timeIntervalSince1970: 1_800_000_001)
+    )
+    let apiClient = FailingSubmitAPIClient(error: CaptureAPIError.unauthorized)
+    let tokenStore = MemoryTokenStore()
+    let notificationScheduler = RecordingUploadNotificationScheduler()
+    let store = MemoryFieldCaptureStore(snapshot: captureSnapshot(account: account, captures: [capture]))
+    let model = FieldCaptureModel(
+        store: store,
+        apiClient: apiClient,
+        tokenStore: tokenStore,
+        notificationScheduler: notificationScheduler
+    )
+    await model.load()
+    await tokenStore.saveToken("revoked-token", accountID: account.id)
+
+    await model.syncPending()
+
+    #expect(model.requiresReconnect)
+    #expect(model.canSubmitCaptures == false)
+    #expect(model.session == nil)
+    #expect(model.captures.first?.status == .pending)
+    #expect(model.captures.first?.lastError == "Token is invalid, expired, or revoked")
+    #expect(model.statusMessage == "Token expired or revoked. Reconnect this account to sync.")
+    #expect(await tokenStore.loadToken(accountID: account.id) == nil)
+    #expect(await notificationScheduler.failedUploads.isEmpty)
+
+    let reloadedModel = FieldCaptureModel(
+        store: store,
+        apiClient: MockCaptureAPIClient(),
+        tokenStore: tokenStore,
+        notificationScheduler: NoopUploadNotificationScheduler()
+    )
+    await reloadedModel.load()
+
+    #expect(reloadedModel.session == nil)
+    #expect(reloadedModel.canSubmitCaptures == false)
+    #expect(reloadedModel.captures.first?.status == .pending)
+}
+
 @Test @MainActor func permanentCaptureFailureDoesNotBlockLaterPendingUploads() async {
     let account = BTQAccount.defaultProduction
     let rejected = LocalCapture(
@@ -2899,6 +2976,22 @@ import UniformTypeIdentifiers
     } catch let error as CaptureAPIError {
         #expect(error == .serverStatus(status: 400, code: "too_many_images", message: "At most one photo may be submitted"))
         #expect(error.description == "At most one photo may be submitted")
+    }
+}
+
+@Test func apiClientRejectsInsecureBaseURLBeforeBearerRequest() async throws {
+    let temp = FileManager.default.temporaryDirectory.appendingPathComponent("btq-api-insecure-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: temp, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: temp) }
+
+    let client = HTTPCaptureAPIClient(uploadBodyDirectory: temp)
+
+    do {
+        _ = try await client.session(baseURL: URL(string: "http://example.test")!, token: "token-123")
+        Issue.record("Expected insecure base URL to throw")
+    } catch let error as CaptureAPIError {
+        #expect(error == .insecureBaseURL)
+        #expect(error.description == "Server URL must use HTTPS")
     }
 }
 

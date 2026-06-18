@@ -92,6 +92,11 @@ struct BTQFieldCaptureShell: View {
             .onOpenURL { url in
                 Task { await handleOnboardingURL(url) }
             }
+            .onChange(of: model.requiresReconnect) { _, requiresReconnect in
+                if requiresReconnect {
+                    section = .settings
+                }
+            }
     }
 
     @ViewBuilder

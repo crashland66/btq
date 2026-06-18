@@ -52,7 +52,7 @@ public actor SQLiteFieldCaptureStore: FieldCaptureStore {
     }
 
     private func withDatabase<T>(_ operation: (OpaquePointer) throws -> T) throws -> T {
-        try FileManager.default.createDirectory(at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try LocalFilePrivacy.prepareDirectory(fileURL.deletingLastPathComponent())
         var database: OpaquePointer?
         let flags = SQLITE_OPEN_CREATE | SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX
         guard sqlite3_open_v2(fileURL.path, &database, flags, nil) == SQLITE_OK, let database else {
@@ -60,8 +60,13 @@ public actor SQLiteFieldCaptureStore: FieldCaptureStore {
             if let database { sqlite3_close(database) }
             throw SQLiteFieldCaptureStoreError.openFailed(message)
         }
-        defer { sqlite3_close(database) }
-        return try operation(database)
+        defer {
+            sqlite3_close(database)
+            try? protectSQLiteFiles()
+        }
+        let result = try operation(database)
+        try protectSQLiteFiles()
+        return result
     }
 
     private func migrate(_ database: OpaquePointer) throws {
@@ -156,6 +161,12 @@ public actor SQLiteFieldCaptureStore: FieldCaptureStore {
 
     private func errorMessage(_ database: OpaquePointer) -> String {
         String(cString: sqlite3_errmsg(database))
+    }
+
+    private func protectSQLiteFiles() throws {
+        try LocalFilePrivacy.protectExistingItem(fileURL)
+        try LocalFilePrivacy.protectExistingItem(URL(fileURLWithPath: fileURL.path + "-wal"))
+        try LocalFilePrivacy.protectExistingItem(URL(fileURLWithPath: fileURL.path + "-shm"))
     }
 }
 
