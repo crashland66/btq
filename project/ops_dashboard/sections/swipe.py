@@ -30,6 +30,7 @@ from field_capture import job_draft_review
 from ops_dashboard.common import (
     UNKNOWN_SUBMITTER,
     capture_thumbnails,
+    human_source_details_by_capture,
     render_relative_time,
     resolve_site_label,
     submitters_by_capture,
@@ -97,10 +98,16 @@ def swipe_card(
     *,
     runtime_root: Path,
     submitters: dict[str, dict[str, str]],
+    human_sources: dict[str, dict[str, str]] | None = None,
 ) -> dict[str, object]:
     """Reduce a job_draft artifact to the minimal card the operator decides on."""
     capture_id = str(payload.get("source_capture_id") or "")
     submitter = submitters.get(capture_id, {})
+    if human_sources is None and capture_id:
+        human_sources = human_source_details_by_capture(runtime_root)
+    human_source = (human_sources or {}).get(capture_id, {})
+    human_source = human_source if isinstance(human_source, dict) else {}
+    source_text = str(human_source.get("source_text") or "").strip()
     draft = _draft_detail(payload)
 
     return {
@@ -117,8 +124,11 @@ def swipe_card(
         "rationale": "",
         "confidence": _confidence_label(payload.get("confidence")),
         "evidence": str(payload.get("message") or ""),
-        # The worker's actual message + the photos they captured: the human
-        # context the operator decides on (vs the technical proposed mutation).
+        "source_text": source_text,
+        "source_is_human": bool(source_text),
+        "source_missing_message": "" if source_text else "No human source found for originating capture.",
+        # Keep the model's proposed-action text separate from the resolved
+        # human source above; tests assert this field stays payload["message"].
         "message": str(payload.get("message") or ""),
         "photos": capture_thumbnails(runtime_root, capture_id),
         "proposed_job_type": str(draft["job_type"] or ""),
@@ -134,11 +144,18 @@ def swipe_card(
 
 def collect_cards(runtime_root: Path, *, status: str = QUEUE_NEEDS_APPROVAL) -> list[dict[str, object]]:
     submitters = submitters_by_capture(runtime_root)
+    human_sources = human_source_details_by_capture(runtime_root)
     grouped: dict[str, dict[str, object]] = {}
     for path, payload in job_draft_review.couchdb_job_draft_payloads(review_status=status):
         if payload.get("type") != "job_draft_review":
             continue
-        card = swipe_card(path, payload, runtime_root=runtime_root, submitters=submitters)
+        card = swipe_card(
+            path,
+            payload,
+            runtime_root=runtime_root,
+            submitters=submitters,
+            human_sources=human_sources,
+        )
         group_id = str(card.get("group_id") or card.get("draft_id") or "")
         if group_id not in grouped:
             grouped[group_id] = card
@@ -470,16 +487,28 @@ window.__btqSwipeInit = function () {
         }).join('') + '</div>'
       : '';
     var proposed = isMulti ? renderChecklist(c, drafts) : renderSingleDraft(c, firstDraft);
+    var sourceBadge = c.source_is_human
+      ? ' <span class="pill source-human">source: human</span>'
+      : '';
+    var sourceEvidence = c.source_is_human
+      ? '<section class="decision-evidence swipe-source-evidence">' +
+          '<p class="swipe-source-label muted">Reported by cleaner</p>' +
+          '<blockquote class="swipe-source">' + esc(c.source_text || '') + '</blockquote>' +
+        '</section>'
+      : (c.source_missing_message
+          ? '<p class="swipe-source-missing muted">' + esc(c.source_missing_message) + '</p>'
+          : '');
 
-    // The card leads with the human context -- the worker's message, who sent
-    // it, for which site, and the photos -- not the technical proposed mutation.
+    // The card lead remains the proposed-action message. Human provenance is
+    // rendered additively from sourceEvidence/sourceBadge.
     mount.innerHTML =
       '<article class="swipe-card" data-draft-id="' + esc(c.draft_id) + '">' +
         '<div class="swipe-card-top">' +
           '<span class="swipe-progress">' + remaining + ' left</span>' +
           (c.captured_at ? '<span>' + esc(friendlyTime(c.captured_at)) + '</span>' : '') +
         '</div>' +
-        '<p class="swipe-message">' + esc(c.message || c.summary || '(no message)') + '</p>' +
+        '<p class="swipe-message">' + esc(c.message || c.summary || '(no message)') + sourceBadge + '</p>' +
+        sourceEvidence +
         '<p class="swipe-meta muted">' + esc(c.submitter_name || 'Unknown submitter') +
           ' · ' + esc(site) + (c.area ? ' · ' + esc(c.area) : '') + '</p>' +
         thumbs +
