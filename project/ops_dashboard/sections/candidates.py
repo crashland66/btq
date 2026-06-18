@@ -19,6 +19,7 @@ from ops_dashboard.common import (
     default_actor,
     first_filter_value,
     first_query_value,
+    human_source_details_by_capture,
     is_advisory_warning,
     pending_candidate_counts_by_capture,
     photo_vision_by_capture,
@@ -121,6 +122,7 @@ def candidate_detail(
     runtime_root: Path | None = None,
     vision_items: list[dict[str, object]] | None = None,
     notification: dict[str, object] | None = None,
+    human_source: dict[str, str] | None = None,
 ) -> dict[str, object]:
     resolution = payload.get("resolution") if isinstance(payload.get("resolution"), dict) else {}
     draft_payload = payload.get("payload") if isinstance(payload.get("payload"), dict) else {}
@@ -128,6 +130,12 @@ def candidate_detail(
     proposed_error = str(payload.get("validation_error") or "")
     if not proposed_error and not validate_job({"job_type": proposed_job_type, "payload": draft_payload}):
         proposed_error = "job_draft fails queue_spec validation"
+    capture_id = str(payload.get("source_capture_id") or "")
+    if human_source is None and runtime_root is not None and capture_id:
+        human_source = human_source_details_by_capture(runtime_root).get(capture_id, {})
+    human_source = human_source if isinstance(human_source, dict) else {}
+    resolved_source_text = str(human_source.get("source_text") or "").strip()
+    cleaned_internal_note = str(human_source.get("cleaned_internal_note") or "").strip()
     return {
         "candidate_id": str(payload.get("draft_id") or ""),
         "draft_id": str(payload.get("draft_id") or ""),
@@ -137,17 +145,19 @@ def candidate_detail(
         "area": "",
         "visit_proposed": False,
         "visit_type": "",
-        "capture_id": str(payload.get("source_capture_id") or ""),
+        "capture_id": capture_id,
         "captured_at": str(payload.get("created_at") or ""),
         "submitter_name": str(payload.get("submitter_name") or ""),
         "submitter_id": "",
         "audio_asset_id": "",
         "summary": str(payload.get("message") or ""),
         "rationale": "",
-        "source_text": str(payload.get("message") or ""),
-        "source_context": "",
-        "semantic_artifact_path": "",
-        "source_transcript_path": "",
+        "source_text": resolved_source_text,
+        "source_context": cleaned_internal_note if cleaned_internal_note != resolved_source_text else "",
+        "source_is_human": bool(resolved_source_text),
+        "source_missing_message": "" if resolved_source_text else "No human source found for originating capture.",
+        "semantic_artifact_path": str(human_source.get("semantic_artifact_path") or ""),
+        "source_transcript_path": str(human_source.get("source_transcript_path") or ""),
         "artifact_path": str(path),
         "reviewer": str(payload.get("reviewed_by") or ""),
         "reviewed_at": str(payload.get("reviewed_at") or ""),
@@ -172,13 +182,21 @@ def candidate_detail(
 def review_candidates(candidate_dir: Path, status: str | None, runtime_root: Path) -> list[dict[str, object]]:
     candidates: list[dict[str, object]] = []
     vision_by_capture = photo_vision_by_capture(runtime_root)
+    human_sources = human_source_details_by_capture(runtime_root)
     submitters = submitters_by_capture(runtime_root)
     for path, payload in job_draft_review.couchdb_job_draft_payloads(review_status=status):
         if payload.get("type") != "job_draft_review":
             continue
         capture_id = str(payload.get("source_capture_id") or "")
         notification: dict[str, object] = {}
-        candidate = candidate_detail(path, payload, runtime_root, vision_by_capture.get(capture_id, []), notification)
+        candidate = candidate_detail(
+            path,
+            payload,
+            runtime_root,
+            vision_by_capture.get(capture_id, []),
+            notification,
+            human_sources.get(capture_id, {}),
+        )
         submitter = submitters.get(capture_id, safe_submitter({}))
         if not candidate["submitter_name"]:
             candidate["submitter_name"] = submitter["submitter_name"]
@@ -229,6 +247,12 @@ def resolution_filter_status(candidate: dict[str, object]) -> str:
 def render_resolution_pill(status: str) -> str:
     css_class, label = RESOLUTION_DISPLAY.get(status, RESOLUTION_DISPLAY[""])
     return f'<span class="pill resolution-{css_class}">{html.escape(label)}</span>'
+
+
+def render_source_pill(candidate: dict[str, object]) -> str:
+    if not candidate.get("source_is_human"):
+        return ""
+    return '<span class="pill source-human">source: human</span>'
 
 
 def render_resolution_counts(candidates: list[dict[str, object]]) -> str:
@@ -503,18 +527,27 @@ def render_evidence_summary(candidate: dict[str, object]) -> str:
     source_text = str(candidate.get("source_text") or "").strip()
     source_context = str(candidate.get("source_context") or "").strip()
     rationale = str(candidate.get("rationale") or "").strip()
+    source_is_human = bool(candidate.get("source_is_human"))
     pieces = []
     if source_text:
         pieces.append(f"<blockquote>{html.escape(source_text)}</blockquote>")
     elif source_context:
         pieces.append(f"<blockquote>{html.escape(source_context)}</blockquote>")
+    elif not source_is_human:
+        missing_message = str(
+            candidate.get("source_missing_message") or "No human source found for originating capture."
+        )
+        pieces.append(
+            f'<p class="muted">{html.escape(missing_message)}</p>'
+        )
     if rationale:
         pieces.append(f"<p>{html.escape(rationale)}</p>")
     if not pieces:
-        pieces.append('<p class="muted">No evidence text was captured.</p>')
+        pieces.append('<p class="muted">No human source found for originating capture.</p>')
+    label = "Reported by cleaner" if source_is_human else "Cleaner report"
     return f"""
     <section class="decision-evidence">
-      <p class="muted">Why</p>
+      <p class="muted">{html.escape(label)}</p>
       {''.join(pieces)}
     </section>
     """
@@ -654,7 +687,7 @@ def render_candidate_card(candidate: dict[str, object], thumb_urls: list[str] | 
     return f"""
     <article>
       {render_resolution_pill(resolution_status(candidate))}
-      <p class="candidate-action"><strong>{summary}</strong></p>
+      <p class="candidate-action"><strong>{summary}</strong> {render_source_pill(candidate)}</p>
       {actions}
       <details>
         <summary>Review details</summary>
@@ -824,9 +857,11 @@ def render_candidate_groups(candidates: list[dict[str, object]], runtime_root: P
         raw_message = (
             str(first.get("source_text") or "").strip()
             or str(first.get("source_context") or "").strip()
-            or str(first.get("summary") or "").strip()
         )
-        message_html = html.escape(raw_message) if raw_message else "(no message)"
+        if raw_message:
+            message_html = html.escape(raw_message)
+        else:
+            message_html = '<span class="muted">No human source found for originating capture.</span>'
         who = html.escape(str(first.get("submitter_name") or UNKNOWN_SUBMITTER))
         site = html.escape(str(first.get("site_id") or ""))
         when = str(first.get("captured_at") or "").strip()

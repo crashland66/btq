@@ -1494,6 +1494,68 @@ def photo_vision_by_capture(runtime_root: Path) -> dict[str, list[dict[str, obje
     return by_capture
 
 
+_HUMAN_SOURCE_CACHE_TTL_SECONDS = 5.0
+# cache[dir] = (cached_at_monotonic, dir_mtime, source_details_by_capture)
+_HUMAN_SOURCE_CACHE: dict[Path, tuple[float, float, dict[str, dict[str, str]]]] = {}
+_HUMAN_SOURCE_CACHE_LOCK = threading.Lock()
+
+
+def human_source_details_by_capture(runtime_root: Path) -> dict[str, dict[str, str]]:
+    semantic_dir = runtime_root / "field_capture" / "semantics"
+    if not semantic_dir.exists():
+        return {}
+    try:
+        dir_mtime = semantic_dir.stat().st_mtime
+    except OSError:
+        dir_mtime = 0.0
+
+    def _cached_if_fresh() -> dict[str, dict[str, str]] | None:
+        cached = _HUMAN_SOURCE_CACHE.get(semantic_dir)
+        if cached is None:
+            return None
+        cached_at, cached_dir_mtime, cached_result = cached
+        if cached_dir_mtime != dir_mtime or time.monotonic() - cached_at >= _HUMAN_SOURCE_CACHE_TTL_SECONDS:
+            return None
+        return cached_result
+
+    fresh = _cached_if_fresh()
+    if fresh is not None:
+        return fresh
+
+    with _HUMAN_SOURCE_CACHE_LOCK:
+        fresh = _cached_if_fresh()
+        if fresh is not None:
+            return fresh
+        by_capture: dict[str, dict[str, str]] = {}
+        for path in sorted(semantic_dir.glob("*.json")):
+            payload, _error = read_json_artifact(path)
+            if not payload:
+                continue
+            capture_id = str(payload.get("capture_id") or payload.get("upload_id") or path.stem).strip()
+            source_text = str(payload.get("source_text") or "").strip()
+            cleaned_internal_note = str(payload.get("cleaned_internal_note") or "").strip()
+            human_text = source_text or cleaned_internal_note
+            if not capture_id or not human_text:
+                continue
+            by_capture[capture_id] = {
+                "source_text": human_text,
+                "raw_source_text": source_text,
+                "cleaned_internal_note": cleaned_internal_note,
+                "semantic_artifact_path": str(path),
+                "source_transcript_path": str(payload.get("source_transcript_path") or ""),
+            }
+        _HUMAN_SOURCE_CACHE[semantic_dir] = (time.monotonic(), dir_mtime, by_capture)
+        return by_capture
+
+
+def human_source_by_capture(runtime_root: Path) -> dict[str, str]:
+    return {
+        capture_id: details["source_text"]
+        for capture_id, details in human_source_details_by_capture(runtime_root).items()
+        if details.get("source_text")
+    }
+
+
 def safe_media_url(value: object) -> str:
     media_url = str(value or "")
     if media_url.startswith("/media/") and ".." not in media_url:
