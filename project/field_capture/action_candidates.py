@@ -65,6 +65,8 @@ CANDIDATE_PLAN_SKIPPED = "skipped"
 CANDIDATE_PLAN_FAILED = "failed"
 COUCHDB_CANDIDATE_WRITE_ENV = "BTQ_COUCHDB_ACTION_CANDIDATE_WRITE"
 KEYWORD_ACTION_FALLBACK_ENV = "BTQ_ALLOW_KEYWORD_ACTION_FALLBACK"
+VISION_ORIGINATED_JOBS_ENV = "BTQ_ALLOW_VISION_ORIGINATED_JOBS"
+NO_HUMAN_TEXT_BASIS_REASON = "suppressed: no human-text basis (vision cannot originate jobs)"
 LOGGER = logging.getLogger(__name__)
 
 
@@ -98,6 +100,56 @@ def couchdb_candidate_write_enabled() -> bool:
 def keyword_action_fallback_enabled() -> bool:
     raw = os.environ.get(KEYWORD_ACTION_FALLBACK_ENV, "0").strip().lower()
     return raw not in {"0", "false", "no", "off", "disabled"}
+
+
+def vision_originated_jobs_enabled() -> bool:
+    # Current operator policy: vision may enrich review, but it cannot originate
+    # jobs until the larger-model/GPU path is explicitly enabled.
+    raw = os.environ.get(VISION_ORIGINATED_JOBS_ENV, "0").strip().lower()
+    return raw not in {"0", "false", "no", "off", "disabled"}
+
+
+def candidate_human_text_basis(candidate: dict[str, object]) -> str:
+    return str(candidate.get("source_text") or candidate.get("source_excerpt") or "").strip()
+
+
+def candidate_has_human_text_basis(candidate: dict[str, object]) -> bool:
+    return bool(candidate_human_text_basis(candidate))
+
+
+def candidate_missing_human_text_basis_reason(candidate: dict[str, object]) -> str:
+    if vision_originated_jobs_enabled() or candidate_has_human_text_basis(candidate):
+        return ""
+    return NO_HUMAN_TEXT_BASIS_REASON
+
+
+def suppress_candidate_without_human_text_basis(candidate: dict[str, object], *, semantic_path: Path | None = None) -> bool:
+    reason = candidate_missing_human_text_basis_reason(candidate)
+    if not reason:
+        return False
+    LOGGER.info(
+        "field action candidate %s: candidate_id=%s semantic_path=%s summary=%r",
+        reason,
+        str(candidate.get("candidate_id") or ""),
+        "" if semantic_path is None else str(semantic_path),
+        str(candidate.get("summary") or ""),
+    )
+    return True
+
+
+def require_candidate_human_text_basis(candidate: dict[str, object], *, context: str = "") -> None:
+    reason = candidate_missing_human_text_basis_reason(candidate)
+    if not reason:
+        return
+    message = reason.replace("suppressed:", "blocked:", 1)
+    LOGGER.warning(
+        "field action candidate %s: candidate_id=%s context=%s summary=%r",
+        message,
+        str(candidate.get("candidate_id") or ""),
+        context,
+        str(candidate.get("summary") or ""),
+    )
+    raise CandidateReviewError(message)
 
 
 def couchdb_candidate_store_configured() -> bool:
@@ -626,6 +678,8 @@ def structured_payloads_from_semantic(path: Path, payload: dict[str, object]) ->
                     "schema": EXTRACTED_ACTION_SCHEMA_VERSION,
                 },
             }
+        if suppress_candidate_without_human_text_basis(record, semantic_path=path):
+            continue
         records.append(record)
     return records
 
@@ -639,48 +693,47 @@ def payloads_from_semantic(path: Path, payload: dict[str, object]) -> list[dict[
 
     action_candidates = payload.get("action_candidates")
     if not isinstance(action_candidates, list):
-        return [
-            action_candidate_payload(
-                candidate_type=FIELD_CAPTURE_CANDIDATE_TYPE,
-                summary="",
-                rationale="Malformed field-capture semantic action_candidates value.",
-                source_text=str(payload.get("cleaned_internal_note") or ""),
-                source_context=str(payload.get("operational_summary") or ""),
-                provenance=semantic_provenance(path, payload),
-                channel_metadata=semantic_channel_metadata(payload),
-            )
-        ]
+        record = action_candidate_payload(
+            candidate_type=FIELD_CAPTURE_CANDIDATE_TYPE,
+            summary="",
+            rationale="Malformed field-capture semantic action_candidates value.",
+            source_text=str(payload.get("cleaned_internal_note") or ""),
+            source_context=str(payload.get("operational_summary") or ""),
+            provenance=semantic_provenance(path, payload),
+            channel_metadata=semantic_channel_metadata(payload),
+        )
+        return [] if suppress_candidate_without_human_text_basis(record, semantic_path=path) else [record]
 
     malformed_entries = [candidate for candidate in action_candidates if not isinstance(candidate, str) or not candidate.strip()]
     summaries = quality_filtered_summaries(payload)
     if malformed_entries and not summaries:
-        return [
-            action_candidate_payload(
-                candidate_type=FIELD_CAPTURE_CANDIDATE_TYPE,
-                summary="",
-                rationale=str(payload.get("operational_summary") or ""),
-                confidence="unknown",
-                source_text=str(payload.get("cleaned_internal_note") or ""),
-                source_context=str(payload.get("client_safe_note") or ""),
-                provenance=semantic_provenance(path, payload),
-                channel_metadata=semantic_channel_metadata(payload),
-            )
-        ]
+        record = action_candidate_payload(
+            candidate_type=FIELD_CAPTURE_CANDIDATE_TYPE,
+            summary="",
+            rationale=str(payload.get("operational_summary") or ""),
+            confidence="unknown",
+            source_text=str(payload.get("cleaned_internal_note") or ""),
+            source_context=str(payload.get("client_safe_note") or ""),
+            provenance=semantic_provenance(path, payload),
+            channel_metadata=semantic_channel_metadata(payload),
+        )
+        return [] if suppress_candidate_without_human_text_basis(record, semantic_path=path) else [record]
 
     records: list[dict[str, object]] = []
     for summary in summaries:
-        records.append(
-            action_candidate_payload(
-                candidate_type=FIELD_CAPTURE_CANDIDATE_TYPE,
-                summary=summary,
-                rationale=str(payload.get("operational_summary") or ""),
-                confidence="unknown",
-                source_text=str(payload.get("cleaned_internal_note") or ""),
-                source_context=str(payload.get("client_safe_note") or ""),
-                provenance=semantic_provenance(path, payload),
-                channel_metadata=semantic_channel_metadata(payload),
-            )
+        record = action_candidate_payload(
+            candidate_type=FIELD_CAPTURE_CANDIDATE_TYPE,
+            summary=summary,
+            rationale=str(payload.get("operational_summary") or ""),
+            confidence="unknown",
+            source_text=str(payload.get("cleaned_internal_note") or ""),
+            source_context=str(payload.get("client_safe_note") or ""),
+            provenance=semantic_provenance(path, payload),
+            channel_metadata=semantic_channel_metadata(payload),
         )
+        if suppress_candidate_without_human_text_basis(record, semantic_path=path):
+            continue
+        records.append(record)
     return records
 
 
@@ -732,7 +785,8 @@ def plan_candidates_from_semantic(
             )
         ]
 
-    if isinstance(action_candidates, list) and not payloads_from_semantic(semantic_path, semantic_payload):
+    candidate_payloads = payloads_from_semantic(semantic_path, semantic_payload)
+    if isinstance(action_candidates, list) and not candidate_payloads:
         return [
             candidate_collection_result(
                 semantic_path=semantic_path,
@@ -742,7 +796,7 @@ def plan_candidates_from_semantic(
         ]
 
     results: list[dict[str, object]] = []
-    for candidate in payloads_from_semantic(semantic_path, semantic_payload):
+    for candidate in candidate_payloads:
         candidate_id = str(candidate.get("candidate_id") or "")
         candidate_path = action_candidate_review_path(candidate_dir, candidate_id) if candidate_id else None
         if candidate.get("status") == "failed":

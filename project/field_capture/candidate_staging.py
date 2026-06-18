@@ -42,16 +42,34 @@ def materialize_candidate_for_direct_staging(runtime_root: Path, candidate_id: s
     candidate_dir = field_action_candidates.default_candidate_dir(runtime_root)
     candidate_path = action_candidate_review_path(candidate_dir, candidate_id)
     payload = field_action_candidates.couchdb_action_candidate_to_review_payload(doc)
+    field_action_candidates.require_candidate_human_text_basis(
+        payload,
+        context=f"direct staging materialization candidate_id={candidate_id}",
+    )
     payload["status"] = "approved"
     candidate_dir.mkdir(parents=True, exist_ok=True)
     write_json_object(candidate_path, payload)
     return candidate_path
 
 
+def approved_candidate_for_staging(runtime_root: Path, candidate_id: str) -> dict[str, object] | None:
+    candidate_dir = field_action_candidates.default_candidate_dir(runtime_root)
+    for _path, candidate in field_action_candidates.find_candidate_artifacts(candidate_dir, candidate_id):
+        if candidate.get("type") == "action_candidate_review" and candidate.get("status") == "approved":
+            return candidate
+    return None
+
+
 def stage_candidate_job_after_approval(runtime_root: Path, candidate_id: str) -> str:
     candidate_dir = field_action_candidates.default_candidate_dir(runtime_root)
     draft_dir = approved_job_drafts.default_draft_dir(runtime_root)
     materialize_candidate_for_direct_staging(runtime_root, candidate_id)
+    approved_candidate = approved_candidate_for_staging(runtime_root, candidate_id)
+    if approved_candidate is not None:
+        field_action_candidates.require_candidate_human_text_basis(
+            approved_candidate,
+            context=f"approved staging candidate_id={candidate_id}",
+        )
     draft_counts = approved_job_drafts.create_approved_job_drafts(
         candidate_dir,
         draft_dir,
