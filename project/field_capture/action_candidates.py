@@ -4,7 +4,8 @@ from event_pipeline.site_registry_data import load_brand_keywords
 import hashlib
 import logging
 import os
-from dataclasses import asdict, dataclass
+import re
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any, Iterable, Iterator
 
@@ -34,6 +35,7 @@ from processing_core.extracted_actions import (
     validated_extracted_actions,
 )
 from processing_core.status import STATUS_COMPLETE
+from queue_spec import JOB_LOG_EQUIPMENT_REQUEST, JOB_LOG_SUPPLY_NEED
 from queue_spec import normalize_vault_relative_path as _normalize_vault_relative_path
 from queue_spec import validate_job
 
@@ -68,6 +70,20 @@ KEYWORD_ACTION_FALLBACK_ENV = "BTQ_ALLOW_KEYWORD_ACTION_FALLBACK"
 VISION_ORIGINATED_JOBS_ENV = "BTQ_ALLOW_VISION_ORIGINATED_JOBS"
 NO_HUMAN_TEXT_BASIS_REASON = "suppressed: no human-text basis (vision cannot originate jobs)"
 LOGGER = logging.getLogger(__name__)
+SUPPLY_EQUIPMENT_ITEM_FIELDS = {
+    JOB_LOG_SUPPLY_NEED: "item_name",
+    JOB_LOG_EQUIPMENT_REQUEST: "equipment_name",
+}
+COORDINATED_ITEM_AND_RE = re.compile(r"\s+\band\b\s+", flags=re.IGNORECASE)
+COORDINATED_ITEM_LEADING_AND_RE = re.compile(r"^\s*and\s+", flags=re.IGNORECASE)
+TRAILING_DESCRIPTIVE_CLAUSE_RE = re.compile(
+    r"\s+\b(?:to|so|because|that|which|when|while|after|before|for|in|on|at|with|by|near|around)\b.+$",
+    flags=re.IGNORECASE,
+)
+DESCRIPTIVE_FRAGMENT_START_RE = re.compile(
+    r"^(?:to|so|because|that|which|when|while|after|before|for|in|on|at|with|by|near|around)\b",
+    flags=re.IGNORECASE,
+)
 
 
 class CandidateReviewError(RuntimeError):
@@ -592,13 +608,13 @@ def structured_action_source_kind(payload: dict[str, object], action: ExtractedA
     return action.source_kind or str(payload.get("source_kind") or payload.get("type") or "")
 
 
-def structured_action_stable_id_key(payload: dict[str, object], action: ExtractedAction) -> dict[str, object]:
+def structured_action_stable_id_key(payload: dict[str, object], action: ExtractedAction, *, item_identity: str = "") -> dict[str, object]:
     target_identity = action.target_id or normalized_text(action.target_label)
     proposed_job_type = ""
     if isinstance(action.proposed_queue_job, dict):
         proposed_job_type = str(action.proposed_queue_job.get("job_type") or "")
     job_type = action.job_type or proposed_job_type
-    return {
+    id_key = {
         "semantic_artifact_type": str(payload.get("type") or ""),
         "capture_id": str(payload.get("capture_id") or payload.get("upload_id") or ""),
         "source_kind": structured_action_source_kind(payload, action),
@@ -608,6 +624,131 @@ def structured_action_stable_id_key(payload: dict[str, object], action: Extracte
         "target_type": action.target_type,
         "target_identity": target_identity,
     }
+    if item_identity:
+        id_key["item_identity"] = normalized_text(item_identity)
+    return id_key
+
+
+def structured_action_job_type(action: ExtractedAction) -> str:
+    proposed_job_type = ""
+    if isinstance(action.proposed_queue_job, dict):
+        proposed_job_type = str(action.proposed_queue_job.get("job_type") or "")
+    return action.job_type or proposed_job_type
+
+
+def structured_action_item_field(action: ExtractedAction) -> str:
+    return SUPPLY_EQUIPMENT_ITEM_FIELDS.get(structured_action_job_type(action), "")
+
+
+def structured_action_item_text(action: ExtractedAction, item_field: str) -> str:
+    if isinstance(action.proposed_queue_job, dict):
+        payload = action.proposed_queue_job.get("payload")
+        if isinstance(payload, dict):
+            value = payload.get(item_field)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    if isinstance(action.payload_fields, dict):
+        value = action.payload_fields.get(item_field)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
+def coordinated_item_field_items(text: str) -> list[str]:
+    cleaned = " ".join(str(text or "").strip().split()).strip(" ,")
+    cleaned = re.sub(r"(?:\s*,\s*)+", ", ", cleaned).strip(" ,")
+    if not cleaned:
+        return []
+    if "," not in cleaned and COORDINATED_ITEM_AND_RE.search(cleaned) is None:
+        return [cleaned]
+
+    fragments: list[str] = []
+    for comma_part in cleaned.split(","):
+        comma_part = COORDINATED_ITEM_LEADING_AND_RE.sub("", comma_part).strip()
+        if not comma_part:
+            continue
+        fragments.extend(fragment.strip() for fragment in COORDINATED_ITEM_AND_RE.split(comma_part) if fragment.strip())
+
+    items: list[str] = []
+    for index, fragment in enumerate(fragments):
+        item = cleaned_item_fragment(fragment, is_last=index == len(fragments) - 1)
+        if not item:
+            continue
+        if descriptive_fragment_is_standalone_clause(item):
+            continue
+        if not item_fragment_is_split_safe(item):
+            return [cleaned]
+        items.append(item)
+
+    if len(items) <= 1 and not items:
+        return [cleaned]
+    return items
+
+
+def cleaned_item_fragment(text: str, *, is_last: bool = False) -> str:
+    cleaned = " ".join(text.strip().split()).strip(" ,.;:")
+    if is_last:
+        cleaned = strip_trailing_descriptive_clause(cleaned)
+    return cleaned
+
+
+def strip_trailing_descriptive_clause(text: str) -> str:
+    match = TRAILING_DESCRIPTIVE_CLAUSE_RE.search(text)
+    if not match:
+        return text
+    prefix = text[: match.start()].strip(" ,.;:")
+    return prefix if len(prefix.split()) >= 2 else text
+
+
+def item_fragment_is_split_safe(text: str) -> bool:
+    if not text or not re.search(r"[A-Za-z0-9]", text):
+        return False
+    return not re.search(r"[.!?;:]", text)
+
+
+def descriptive_fragment_is_standalone_clause(text: str) -> bool:
+    return DESCRIPTIVE_FRAGMENT_START_RE.search(text) is not None
+
+
+def structured_candidate_actions(action: ExtractedAction) -> list[tuple[ExtractedAction, str]]:
+    item_field = structured_action_item_field(action)
+    if not item_field:
+        return [(action, "")]
+    item_text = structured_action_item_text(action, item_field)
+    items = coordinated_item_field_items(item_text)
+    if len(items) <= 1:
+        return [(action, "")]
+    return [(action_with_item_field(action, item_field, item, item_text), item) for item in items]
+
+
+def action_with_item_field(action: ExtractedAction, item_field: str, item: str, original_item_text: str) -> ExtractedAction:
+    payload_fields = dict(action.payload_fields or {})
+    payload_fields[item_field] = item
+
+    proposed_queue_job = action.proposed_queue_job
+    if isinstance(proposed_queue_job, dict):
+        proposed_queue_job = dict(proposed_queue_job)
+        payload = proposed_queue_job.get("payload")
+        if isinstance(payload, dict):
+            proposed_payload = dict(payload)
+            proposed_payload[item_field] = item
+            proposed_queue_job["payload"] = proposed_payload
+
+    return replace(
+        action,
+        summary=split_item_summary(action, item_field, item, original_item_text),
+        payload_fields=payload_fields,
+        proposed_queue_job=proposed_queue_job,
+    )
+
+
+def split_item_summary(action: ExtractedAction, item_field: str, item: str, original_item_text: str) -> str:
+    summary = action.summary.strip()
+    if original_item_text and original_item_text in summary:
+        return summary.replace(original_item_text, item, 1)
+    if item_field == "equipment_name":
+        return f"Equipment request: {item}."
+    return f"Supply request: {item}."
 
 
 def valid_proposed_queue_job(action: ExtractedAction) -> dict[str, object] | None:
@@ -630,57 +771,55 @@ def structured_payloads_from_semantic(path: Path, payload: dict[str, object]) ->
 
     provenance = semantic_provenance(path, payload)
     records: list[dict[str, object]] = []
-    for action in actions:
-        # The rule engine emits a generic "review this note" extracted action when
-        # it finds nothing actionable; that is not a real action item, so skip it
-        # (a generic-only capture then produces no candidate at all).
-        if is_generic_summary(action.summary):
-            continue
-        source_kind = structured_action_source_kind(payload, action)
-        proposed_job_type = ""
-        if isinstance(action.proposed_queue_job, dict):
-            proposed_job_type = str(action.proposed_queue_job.get("job_type") or "")
-        job_type = action.job_type or proposed_job_type
-        channel_metadata = {
-            **semantic_channel_metadata(payload),
-            "target_type": action.target_type,
-            "target_id": action.target_id,
-            "target_label": action.target_label,
-            "action_key": action.action_key,
-            "job_type": job_type,
-            "source_kind": source_kind,
-            "extracted_action_schema": EXTRACTED_ACTION_SCHEMA_VERSION,
-        }
-        if action.payload_fields is not None:
-            channel_metadata["payload_fields"] = action.payload_fields
-        if action.evidence_terms:
-            channel_metadata["evidence_terms"] = list(action.evidence_terms)
-        if action.proposed_queue_job_error:
-            channel_metadata["proposed_queue_job_error"] = action.proposed_queue_job_error
-
-        record = action_candidate_payload(
-            candidate_type=action.candidate_type,
-            summary=action.summary,
-            rationale=action.rationale,
-            confidence=action.confidence,
-            source_text=action.source_excerpt,
-            source_context=str(payload.get("operational_summary") or payload.get("client_safe_note") or ""),
-            provenance=provenance,
-            channel_metadata=channel_metadata,
-            id_key=structured_action_stable_id_key(payload, action),
-        )
-        proposed = valid_proposed_queue_job(action)
-        if proposed is not None:
-            record["approval_metadata"] = {
-                "proposed_queue_job": proposed,
-                "extracted_action": {
-                    "action_key": action.action_key,
-                    "schema": EXTRACTED_ACTION_SCHEMA_VERSION,
-                },
+    for original_action in actions:
+        for action, item_identity in structured_candidate_actions(original_action):
+            # The rule engine emits a generic "review this note" extracted action when
+            # it finds nothing actionable; that is not a real action item, so skip it
+            # (a generic-only capture then produces no candidate at all).
+            if is_generic_summary(action.summary):
+                continue
+            source_kind = structured_action_source_kind(payload, action)
+            job_type = structured_action_job_type(action)
+            channel_metadata = {
+                **semantic_channel_metadata(payload),
+                "target_type": action.target_type,
+                "target_id": action.target_id,
+                "target_label": action.target_label,
+                "action_key": action.action_key,
+                "job_type": job_type,
+                "source_kind": source_kind,
+                "extracted_action_schema": EXTRACTED_ACTION_SCHEMA_VERSION,
             }
-        if suppress_candidate_without_human_text_basis(record, semantic_path=path):
-            continue
-        records.append(record)
+            if action.payload_fields is not None:
+                channel_metadata["payload_fields"] = action.payload_fields
+            if action.evidence_terms:
+                channel_metadata["evidence_terms"] = list(action.evidence_terms)
+            if action.proposed_queue_job_error:
+                channel_metadata["proposed_queue_job_error"] = action.proposed_queue_job_error
+
+            record = action_candidate_payload(
+                candidate_type=action.candidate_type,
+                summary=action.summary,
+                rationale=action.rationale,
+                confidence=action.confidence,
+                source_text=action.source_excerpt,
+                source_context=str(payload.get("operational_summary") or payload.get("client_safe_note") or ""),
+                provenance=provenance,
+                channel_metadata=channel_metadata,
+                id_key=structured_action_stable_id_key(payload, action, item_identity=item_identity),
+            )
+            proposed = valid_proposed_queue_job(action)
+            if proposed is not None:
+                record["approval_metadata"] = {
+                    "proposed_queue_job": proposed,
+                    "extracted_action": {
+                        "action_key": action.action_key,
+                        "schema": EXTRACTED_ACTION_SCHEMA_VERSION,
+                    },
+                }
+            if suppress_candidate_without_human_text_basis(record, semantic_path=path):
+                continue
+            records.append(record)
     return records
 
 
