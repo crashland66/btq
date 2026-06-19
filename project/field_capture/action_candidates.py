@@ -74,16 +74,18 @@ SUPPLY_EQUIPMENT_ITEM_FIELDS = {
     JOB_LOG_SUPPLY_NEED: "item_name",
     JOB_LOG_EQUIPMENT_REQUEST: "equipment_name",
 }
-COORDINATED_ITEM_AND_RE = re.compile(r"\s+\band\b\s+", flags=re.IGNORECASE)
+COORDINATED_ITEM_AND_RE = re.compile(r"\s+\band\b(?:\s+|$)", flags=re.IGNORECASE)
 COORDINATED_ITEM_LEADING_AND_RE = re.compile(r"^\s*and\s+", flags=re.IGNORECASE)
 TRAILING_DESCRIPTIVE_CLAUSE_RE = re.compile(
-    r"\s+\b(?:to|so|because|that|which|when|while|after|before|for|in|on|at|with|by|near|around)\b.+$",
+    r"\s+\b(?:to|so|because|that|which|when|while|after|before|for|in|on|at|with|by|near|around|is|are|was|were|be|been|being)\b.+$",
     flags=re.IGNORECASE,
 )
 DESCRIPTIVE_FRAGMENT_START_RE = re.compile(
     r"^(?:to|so|because|that|which|when|while|after|before|for|in|on|at|with|by|near|around)\b",
     flags=re.IGNORECASE,
 )
+CONTENTLESS_ITEM_WORDS = frozenset({"and", "or", "the", "a", "an"})
+CONTENTLESS_ITEM_TOKENS = frozenset({"and", "or", "&", "and/or", "the", "a", "an"})
 
 
 class CandidateReviewError(RuntimeError):
@@ -654,13 +656,27 @@ def structured_action_item_text(action: ExtractedAction, item_field: str) -> str
     return ""
 
 
+def supply_equipment_item_is_contentless(text: str) -> bool:
+    normalized = " ".join(str(text or "").strip().split()).strip()
+    stripped = normalized.strip(" ,.;:!?()[]{}\"'")
+    if not stripped:
+        return True
+
+    compact = re.sub(r"\s+", "", stripped).lower()
+    if compact in CONTENTLESS_ITEM_TOKENS:
+        return True
+
+    alphabetic_words = re.findall(r"[A-Za-z0-9]+", stripped)
+    return not any(word.lower() not in CONTENTLESS_ITEM_WORDS for word in alphabetic_words)
+
+
 def coordinated_item_field_items(text: str) -> list[str]:
     cleaned = " ".join(str(text or "").strip().split()).strip(" ,")
     cleaned = re.sub(r"(?:\s*,\s*)+", ", ", cleaned).strip(" ,")
     if not cleaned:
         return []
     if "," not in cleaned and COORDINATED_ITEM_AND_RE.search(cleaned) is None:
-        return [cleaned]
+        return [] if supply_equipment_item_is_contentless(cleaned) else [cleaned]
 
     fragments: list[str] = []
     for comma_part in cleaned.split(","):
@@ -674,14 +690,16 @@ def coordinated_item_field_items(text: str) -> list[str]:
         item = cleaned_item_fragment(fragment, is_last=index == len(fragments) - 1)
         if not item:
             continue
+        if supply_equipment_item_is_contentless(item):
+            continue
         if descriptive_fragment_is_standalone_clause(item):
             continue
         if not item_fragment_is_split_safe(item):
             return [cleaned]
         items.append(item)
 
-    if len(items) <= 1 and not items:
-        return [cleaned]
+    if not items:
+        return [] if supply_equipment_item_is_contentless(cleaned) else [cleaned]
     return items
 
 
@@ -716,7 +734,11 @@ def structured_candidate_actions(action: ExtractedAction) -> list[tuple[Extracte
         return [(action, "")]
     item_text = structured_action_item_text(action, item_field)
     items = coordinated_item_field_items(item_text)
-    if len(items) <= 1:
+    if not items:
+        return []
+    if len(items) == 1:
+        if items[0] != item_text:
+            return [(action_with_item_field(action, item_field, items[0], item_text), items[0])]
         return [(action, "")]
     return [(action_with_item_field(action, item_field, item, item_text), item) for item in items]
 
@@ -773,6 +795,9 @@ def structured_payloads_from_semantic(path: Path, payload: dict[str, object]) ->
     records: list[dict[str, object]] = []
     for original_action in actions:
         for action, item_identity in structured_candidate_actions(original_action):
+            item_field = structured_action_item_field(action)
+            if item_field and supply_equipment_item_is_contentless(structured_action_item_text(action, item_field)):
+                continue
             # The rule engine emits a generic "review this note" extracted action when
             # it finds nothing actionable; that is not a real action item, so skip it
             # (a generic-only capture then produces no candidate at all).
