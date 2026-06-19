@@ -1,6 +1,6 @@
 {
   "_id": "_design/btq_vault",
-  "validate_doc_update": "function(newDoc, oldDoc, userCtx, secObj) {\n  if (newDoc._deleted) return;\n  var canonicalTypes = {\n    \"account\": true,\n    \"location\": true,\n    \"employee\": true,\n    \"visit\": true,\n    \"visit_gap\": true,\n    \"opportunity\": true,\n    \"shift_report\": true,\n    \"day_record\": true,\n    \"journal\": true,\n    \"unknown_capture\": true,\n    \"personnel_event\": true,\n    \"prospect\": true,\n    \"site_issue\": true,\n    \"supply_need\": true,\n    \"monthly_summary\": true,\n    \"equipment_request\": true,\n    \"supply_order\": true,\n    \"plan\": true,\n    \"inventory\": true,\n    \"note\": true,\n    \"operator\": true\n  };\n  if (!newDoc.type || !canonicalTypes[newDoc.type]) {\n    throw({forbidden: 'Document type must be one of the canonical entity types.'});\n  }\n  if (newDoc.type !== 'operator' && !newDoc.operator) {\n    throw({forbidden: 'Non-operator entity documents require an operator field.'});\n  }\n}",
+  "validate_doc_update": "function(newDoc, oldDoc, userCtx, secObj) {\n  if (newDoc._deleted) return;\n  var canonicalTypes = {\n    \"account\": true,\n    \"location\": true,\n    \"employee\": true,\n    \"visit\": true,\n    \"visit_gap\": true,\n    \"opportunity\": true,\n    \"shift_report\": true,\n    \"day_record\": true,\n    \"journal\": true,\n    \"unknown_capture\": true,\n    \"personnel_event\": true,\n    \"availability_constraint\": true,\n    \"prospect\": true,\n    \"site_issue\": true,\n    \"supply_need\": true,\n    \"monthly_summary\": true,\n    \"equipment_request\": true,\n    \"supply_order\": true,\n    \"plan\": true,\n    \"inventory\": true,\n    \"note\": true,\n    \"operator\": true\n  };\n  if (!newDoc.type || !canonicalTypes[newDoc.type]) {\n    throw({forbidden: 'Document type must be one of the canonical entity types.'});\n  }\n  if (newDoc.type !== 'operator' && !newDoc.operator) {\n    throw({forbidden: 'Non-operator entity documents require an operator field.'});\n  }\n}",
   "views": {
     "by_type": {
       "map": "function(doc) {\n  if (doc._deleted) return;\n  emit([doc.type, doc._id], null);\n}"
@@ -13,6 +13,12 @@
     },
     "employees_by_status": {
       "map": "function(doc) {\n  if (doc._deleted) return;\n  if (doc.type !== 'employee') return;\n  var status = doc.status || null;\n  emit([status, doc._id], {name: doc.name || null, person_id: doc.person_id || null, site_ids: doc.site_ids || [], hire_date: doc.hire_date || null});\n}"
+    },
+    "availability_constraints_by_person": {
+      "map": "function(doc) {\n  if (doc._deleted) return;\n  if (doc.type !== 'availability_constraint') return;\n  emit(doc.person_id, {constraint_type: doc.constraint_type || null, date: doc.date || null, related_site: doc.related_site || null, reported_by: doc.reported_by || null, source_text: doc.source_text || null});\n}"
+    },
+    "availability_constraints_by_site": {
+      "map": "function(doc) {\n  if (doc._deleted) return;\n  if (doc.type !== 'availability_constraint') return;\n  if (!doc.related_site) return;\n  function clean(input) {\n    if (!input) return '';\n    return String(input).replace(/^\\s+|\\s+$/g, '');\n  }\n  function bareSite(input) {\n    var text = clean(input).replace(/^\"+|\"+$/g, '');\n    if (text.indexOf('location_') === 0) return text.substr(9);\n    if (text.indexOf('site_') === 0) return text.substr(5);\n    return text;\n  }\n  var site = bareSite(doc.related_site);\n  if (!site) return;\n  emit([site, doc.date], {person_id: doc.person_id || null, constraint_type: doc.constraint_type || null, reported_by: doc.reported_by || null});\n}"
     },
     "visits_by_site_date": {
       "map": "function(doc) {\n  if (doc._deleted) return;\n  if (doc.type !== 'visit') return;\n  var site_id = doc.site_id || doc.job || null;\n  var date = doc.date || doc.visit_date || null;\n  emit([site_id, date], {evidence: doc.evidence || doc.content || null, confidence: doc.confidence || null, visited_by: doc.visited_by || null, visit_type: doc.visit_type || null});\n}"

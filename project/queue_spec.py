@@ -51,6 +51,7 @@ JOB_LOG_SITE_ISSUE = "log_site_issue"
 JOB_LOG_SUPPLY_NEED = "log_supply_need"
 JOB_LOG_EQUIPMENT_REQUEST = "log_equipment_request"
 JOB_LOG_PERSONNEL_EVENT = "log_personnel_event"
+JOB_LOG_AVAILABILITY_CONSTRAINT = "log_availability_constraint"
 JOB_SET_ENTITY_STATUS = "set_entity_status"
 JOB_UPDATE_SITE_EQUIPMENT = "update_site_equipment"
 JOB_MARK_SUPPLY_ORDERED = "mark_supply_ordered"
@@ -100,6 +101,7 @@ PERSONNEL_EVENT_SEVERITIES = {
     "separation",
 }
 PERSONNEL_EVENT_STATUSES = {"open", "monitoring", "resolved"}
+AVAILABILITY_CONSTRAINT_TYPES = {"unavailable_date", "last_working_day"}
 ENTITY_STATUS_TYPES = {"site", "employee"}
 ENTITY_STATUSES = {"active", "inactive"}
 SITE_EQUIPMENT_ITEM_STATUSES = {"operational", "non_functional", "untested"}
@@ -135,6 +137,7 @@ ALLOWED_JOB_TYPES = {
     JOB_LOG_SUPPLY_NEED,
     JOB_LOG_EQUIPMENT_REQUEST,
     JOB_LOG_PERSONNEL_EVENT,
+    JOB_LOG_AVAILABILITY_CONSTRAINT,
     JOB_SET_ENTITY_STATUS,
     JOB_UPDATE_SITE_EQUIPMENT,
     JOB_MARK_SUPPLY_ORDERED,
@@ -193,6 +196,7 @@ JOB_SCHEMAS = {
     JOB_LOG_SUPPLY_NEED: ["site_id", "item_name", "requested_by"],
     JOB_LOG_EQUIPMENT_REQUEST: ["site_id", "equipment_name", "requested_by"],
     JOB_LOG_PERSONNEL_EVENT: ["employee", "event_type", "summary", "occurred_at", "reported_by"],
+    JOB_LOG_AVAILABILITY_CONSTRAINT: ["employee", "constraint_type", "date", "reported_by", "source_text"],
     JOB_SET_ENTITY_STATUS: ["entity_type", "entity_id", "status", "reason", "source"],
     JOB_UPDATE_SITE_EQUIPMENT: ["equipment", "inspection_date", "inspected_by"],
     JOB_MARK_SUPPLY_ORDERED: ["supply_id", "actor"],
@@ -349,6 +353,16 @@ LOG_PERSONNEL_EVENT_ALLOWED_PAYLOAD_FIELDS = {
     "related_candidate_ids",
     "related_media",
     "source_artifacts",
+    "event_id",
+}
+LOG_AVAILABILITY_CONSTRAINT_ALLOWED_PAYLOAD_FIELDS = {
+    "employee",
+    "constraint_type",
+    "date",
+    "reported_by",
+    "source_text",
+    "related_site",
+    "reported_at",
     "event_id",
 }
 SET_ENTITY_STATUS_ALLOWED_PAYLOAD_FIELDS = {
@@ -823,6 +837,27 @@ def _validate_log_personnel_event_payload(payload: dict) -> bool:
     return all(_is_non_empty_string_list(payload.get(field)) for field in ("related_capture_ids", "related_candidate_ids", "related_media", "source_artifacts"))
 
 
+def _validate_log_availability_constraint_payload(payload: dict) -> bool:
+    if set(payload) - LOG_AVAILABILITY_CONSTRAINT_ALLOWED_PAYLOAD_FIELDS:
+        return False
+    if not _is_non_empty_string(payload.get("employee")):
+        return False
+    if payload.get("constraint_type") not in AVAILABILITY_CONSTRAINT_TYPES:
+        return False
+    date = payload.get("date")
+    if not isinstance(date, str) or ENTITY_STATUS_DATE_RE.match(date) is None:
+        return False
+    if not _is_non_empty_string(payload.get("reported_by")):
+        return False
+    if not _is_non_empty_string(payload.get("source_text")):
+        return False
+    for field in ("related_site", "reported_at", "event_id"):
+        value = payload.get(field)
+        if value is not None and not isinstance(value, str):
+            return False
+    return True
+
+
 def _validate_update_site_equipment_payload(payload: dict) -> bool:
     if set(payload) - UPDATE_SITE_EQUIPMENT_ALLOWED_PAYLOAD_FIELDS:
         return False
@@ -1086,6 +1121,9 @@ def validate_job(job: dict) -> bool:
             return False
     if job_type == JOB_LOG_PERSONNEL_EVENT:
         if not _validate_log_personnel_event_payload(payload):
+            return False
+    if job_type == JOB_LOG_AVAILABILITY_CONSTRAINT:
+        if not _validate_log_availability_constraint_payload(payload):
             return False
     if job_type == JOB_SET_ENTITY_STATUS:
         if not _validate_set_entity_status_payload(payload):

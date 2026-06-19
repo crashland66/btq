@@ -217,6 +217,8 @@ Do not use when:
 - the intent is onboarding, new employee creation, person registration, or any other entity creation; use `add_person`
 - the content is a personnel/HR event (attendance, performance, accommodation,
   disciplinary, recognition, on-the-job incident); use `log_personnel_event`
+- the content is a forward-looking availability fact, PTO date, or last working
+  day; use `log_availability_constraint`
 - you do not know the exact target path
 
 ### Required payload fields
@@ -1392,7 +1394,87 @@ Do not use when:
 }
 ```
 
-## 15. `set_entity_status`
+## 15. `log_availability_constraint`
+
+Use when:
+
+- a reviewed human report says an employee is unavailable on a specific date
+- a reviewed human report gives an employee's last working day
+- the fact must be filterable by person and, when known, by related site
+
+Do not use when:
+
+- the source text or human reporter is missing
+- the note is raw intake or unresolved model interpretation
+- the action should change employee status, status date, assignment, or
+  schedule; this job only records the availability fact
+- the fact is a backward-looking attendance, performance, disciplinary,
+  recognition, or incident event; use `log_personnel_event`
+
+### Required payload fields
+
+- `employee`: employee/person string
+- `constraint_type`: one of `unavailable_date`, `last_working_day`
+- `date`: `YYYY-MM-DD`
+- `reported_by`: non-empty human reporter string
+- `source_text`: non-empty verbatim human report text
+
+### Optional payload fields
+
+- `related_site`: site ID, site name, or other site reference string
+- `reported_at`: ISO timestamp string
+- `event_id`: explicit stable ID when updating a known availability constraint
+
+### Runtime behavior notes
+
+- writes a canonical `availability_constraint` document keyed by the canonical
+  person, `constraint_type`, and `date`
+- derives a deterministic ID from `{person, constraint_type, date}` unless
+  `event_id` is supplied; `reported_by` and `reported_at` are provenance, not
+  identity
+- requires human provenance: both `reported_by` and the verbatim `source_text`
+  must be present
+- reprocessing the same person/kind/date updates the same record and preserves
+  `created_at`
+- `last_working_day` writes its own dated document and does not change employee
+  `status`, `status_date`, `job`, `additional_jobs`, or schedule fields
+- `related_site` is optional context and does not make this a site-routability
+  gated job
+
+### Valid examples
+
+```json
+{
+  "job_id": "2026-06-11T14-00-00Z__forsythe-unavailable-2026-06-24",
+  "job_type": "log_availability_constraint",
+  "payload": {
+    "employee": "forsythe_adriana",
+    "constraint_type": "unavailable_date",
+    "date": "2026-06-24",
+    "reported_by": "Adriana Forsythe",
+    "source_text": "I cannot work on June 24.",
+    "related_site": "789",
+    "reported_at": "2026-06-11T14:00:00-04:00"
+  }
+}
+```
+
+```json
+{
+  "job_id": "2026-06-11T14-05-00Z__forsythe-last-working-day",
+  "job_type": "log_availability_constraint",
+  "payload": {
+    "employee": "forsythe_adriana",
+    "constraint_type": "last_working_day",
+    "date": "2026-08-14",
+    "reported_by": "Adriana Forsythe",
+    "source_text": "My last working day will be August 14.",
+    "related_site": "789"
+  }
+}
+```
+
+## 16. `set_entity_status`
 
 Use when:
 
@@ -1448,7 +1530,7 @@ Do not use when:
 }
 ```
 
-## 15. `close_recruiting`
+## 17. `close_recruiting`
 
 Use when:
 

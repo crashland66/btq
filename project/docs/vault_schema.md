@@ -39,6 +39,9 @@ The queue processor writes and reads these `btq_vault` document types:
 - `personnel_event` — an HR/personnel event for an employee (attendance,
   performance, accommodation, disciplinary, recognition, incident), keyed by
   `event_id`.
+- `availability_constraint` — a forward-looking human-reported employee
+  availability fact, keyed by person, constraint type, and date. Carries
+  required provenance (`reported_by` and verbatim `source_text`).
 - `journal` — a dated operational journal entry.
 - `unknown_capture` — a capture that could not be classified into a supported
   event type, retained for later reclassification.
@@ -53,9 +56,10 @@ The queue processor writes and reads these `btq_vault` document types:
   numbers — always quote them, e.g. `"7050"`).
 - Person identity is the stable `person_id`. Names are presentation only and may
   change; `person_id` is the canonical anchor.
-- `issue_id`, `supply_id`, `equipment_id`, and `event_id` are deterministic from
-  their source facts unless an explicit id is supplied, so reprocessing the same
-  queue job updates the same document rather than creating a duplicate.
+- `issue_id`, `supply_id`, `equipment_id`, `event_id`, and availability
+  constraint IDs are deterministic from their source facts unless an explicit
+  id is supplied, so reprocessing the same queue job updates the same document
+  rather than creating a duplicate.
 
 ## Site Issue Fields
 
@@ -116,6 +120,24 @@ Personnel-event documents use `type: personnel_event`. They carry `employee`
 `occurred_at`, `reported_by`, optional `related_site`, and client-notification
 and resolution fields. The `event_id` is deterministic from employee, event
 type, occurrence time, and reporter.
+
+## Availability Constraint Fields
+
+Availability-constraint documents use `type: availability_constraint`. They
+carry `person_id`, `constraint_type`, `date`, `reported_by`, and the verbatim
+human `source_text`; `related_site` and `reported_at` are optional context.
+Allowed `constraint_type` values are `unavailable_date` and
+`last_working_day`.
+
+The document ID is deterministic from the canonical person, constraint type,
+and `YYYY-MM-DD` date unless an explicit `event_id` is supplied. Reporter and
+report time are provenance, not identity, so re-reporting the same person/kind/
+date updates the same document and preserves `created_at`.
+
+`last_working_day` is represented as its own dated availability constraint. It
+does not change the employee document's `status`, `status_date`, `job`, or
+schedule fields; any future status transition must be a separate deterministic
+writer job.
 
 ## Employee Fields
 

@@ -5,7 +5,7 @@ from pathlib import Path
 
 from queue_spec import (
     JOB_ADD_PERSON, JOB_APPEND_TO_NOTE, JOB_CLOSE_RECRUITING, JOB_FLAG_ACCESS_CONSTRAINT,
-    JOB_FLAG_RETENTION_RISK, JOB_LOG_EQUIPMENT_REQUEST, JOB_LOG_PERSONNEL_EVENT, JOB_LOG_SITE_ISSUE,
+    JOB_FLAG_RETENTION_RISK, JOB_LOG_AVAILABILITY_CONSTRAINT, JOB_LOG_EQUIPMENT_REQUEST, JOB_LOG_PERSONNEL_EVENT, JOB_LOG_SITE_ISSUE,
     JOB_LOG_SUPPLY_NEED, JOB_MARK_EQUIPMENT_APPROVED, JOB_MARK_EQUIPMENT_DENIED,
     JOB_MARK_EQUIPMENT_NO_ACTION_NEEDED, JOB_MARK_EQUIPMENT_ORDERED, JOB_MARK_EQUIPMENT_PROVIDED,
     JOB_MARK_ISSUE_MONITORING, JOB_MARK_ISSUE_OPEN, JOB_MARK_ISSUE_RESOLVED,
@@ -44,6 +44,7 @@ JOB_HANDLERS: dict[str, JobHandler] = {
     JOB_LOG_SUPPLY_NEED: supplies_equipment.process_log_supply_need_job,
     JOB_LOG_EQUIPMENT_REQUEST: supplies_equipment.process_log_equipment_request_job,
     JOB_LOG_PERSONNEL_EVENT: people.process_log_personnel_event_job,
+    JOB_LOG_AVAILABILITY_CONSTRAINT: people.process_log_availability_constraint_job,
     JOB_SET_ENTITY_STATUS: people.process_set_entity_status_job,
     JOB_UPDATE_SITE_EQUIPMENT: supplies_equipment.process_update_site_equipment_job,
     JOB_MARK_SUPPLY_ORDERED: supplies_equipment_transitions.process_mark_supply_ordered_job,
