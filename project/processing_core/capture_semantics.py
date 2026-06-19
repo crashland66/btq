@@ -69,6 +69,11 @@ NON_FIELD_OPERATION_ACTION_TERMS = (
     "processing",
 )
 EQUIPMENT_TERMS = ("vacuum", "equipment", "machine", "backpack vac", "extractor", "auto scrubber")
+OPERATOR_CLASSIFICATION_DECLARATION_RE = re.compile(
+    r"^\s*(?:[>\-*\u2022]\s*)?(?P<label>supply|supplies|equipment)\s*"
+    r"(?P<need>needs?)?\s*(?:[:;,.\-]|\u2013|\u2014)\s*(?P<item>.*)$",
+    flags=re.IGNORECASE | re.DOTALL,
+)
 SUPPLY_ITEM_TERMS = (
     "supply",
     "supplies",
@@ -437,11 +442,13 @@ def extracted_actions_from_model_payload(raw: object, source: CaptureSemanticInp
         excerpt = action.source_excerpt or source.source_text
         if note_is_completion_report(excerpt):
             continue
+        action = action_with_operator_classification_override(action, source)
         actions.append(action_with_valid_proposed_queue_job(action, source))
     actions = supply_category_actions(actions, source)
     return actions
 
 
+OPERATOR_CLASSIFICATION_OVERRIDE_JOB_TYPES = frozenset({JOB_LOG_SUPPLY_NEED, JOB_LOG_EQUIPMENT_REQUEST})
 OPERATOR_PROPOSED_JOB_TYPES = frozenset(
     {
         JOB_APPEND_TO_NOTE,
@@ -456,6 +463,85 @@ OPERATOR_PROPOSED_JOB_TYPES = frozenset(
     }
 )
 DEFAULT_REPORTED_BY = "operator"
+
+
+def action_with_operator_classification_override(action: ExtractedAction, source: CaptureSemanticInput) -> ExtractedAction:
+    if action.job_type not in OPERATOR_CLASSIFICATION_OVERRIDE_JOB_TYPES:
+        return action
+    parsed = operator_classification_for_action(action, source)
+    if parsed is None:
+        return action
+
+    forced_job_type, declared_item_text = parsed
+    payload_fields = payload_fields_with_operator_classification_item(
+        action.payload_fields,
+        forced_job_type,
+        declared_item_text,
+    )
+    return replace(
+        action,
+        job_type=forced_job_type,
+        payload_fields=payload_fields,
+        proposed_queue_job=None,
+        proposed_queue_job_error="",
+    )
+
+
+def operator_classification_for_action(action: ExtractedAction, source: CaptureSemanticInput) -> tuple[str, str] | None:
+    for text in (action.source_excerpt, source.source_text):
+        parsed = parse_operator_classification_token(text)
+        if parsed is not None:
+            return parsed
+    return None
+
+
+def parse_operator_classification_token(text: str) -> tuple[str, str] | None:
+    match = OPERATOR_CLASSIFICATION_DECLARATION_RE.match(text or "")
+    if not match:
+        return None
+    label = match.group("label").strip().lower()
+    job_type = JOB_LOG_SUPPLY_NEED if label.startswith("suppl") else JOB_LOG_EQUIPMENT_REQUEST
+    return job_type, operator_declared_item_text(match.group("item") or "", job_type)
+
+
+def operator_declared_item_text(text: str, job_type: str) -> str:
+    cleaned = collapse_whitespace(re.sub(r"\s*\n+\s*", ". ", text.strip())).strip(" ,.;:-")
+    if not cleaned:
+        return ""
+    if job_type == JOB_LOG_SUPPLY_NEED:
+        return clean_supply_item_phrase(cleaned)
+    return cleaned
+
+
+def payload_fields_with_operator_classification_item(
+    payload_fields: dict[str, object] | None,
+    job_type: str,
+    declared_item_text: str,
+) -> dict[str, object]:
+    updated = normalized_payload_fields(payload_fields)
+    if job_type == JOB_LOG_SUPPLY_NEED:
+        item_text = declared_item_text or payload_text(
+            updated,
+            "item_name",
+            "supply_item",
+            "supply_items",
+            "item",
+            "items",
+            "equipment_name",
+            "equipment",
+        )
+        updated.pop("equipment_name", None)
+        updated.pop("equipment", None)
+        if item_text:
+            updated["item_name"] = item_text
+    elif job_type == JOB_LOG_EQUIPMENT_REQUEST:
+        item_text = declared_item_text or payload_text(updated, "equipment_name", "equipment", "item", "item_name")
+        updated.pop("item_name", None)
+        updated.pop("supply_item", None)
+        updated.pop("supply_items", None)
+        if item_text:
+            updated["equipment_name"] = item_text
+    return updated
 
 
 def action_with_valid_proposed_queue_job(action: ExtractedAction, source: CaptureSemanticInput) -> ExtractedAction:
