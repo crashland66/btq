@@ -69,6 +69,43 @@ def _guard_s3_key(key: str) -> str:
     return key
 
 
+def media_key_from_stored_path(stored_path: object, upload_root: Path) -> str:
+    """Return the media-store key represented by persisted capture metadata.
+
+    Older CouchDB capture docs store absolute local paths under runtime/uploads;
+    newer records also carry upload_id. This read-only helper accepts either
+    shape and returns the canonical store key: date/capture_id/filename.
+    """
+    text = str(stored_path or "").strip().replace("\\", "/")
+    if not text:
+        raise ValueError("Media stored_path must not be empty")
+
+    root = upload_root.expanduser().resolve(strict=False)
+    if text.startswith("/media/"):
+        return _guard_s3_key(text.removeprefix("/media/"))
+
+    path = Path(text).expanduser()
+    if path.is_absolute():
+        resolved = path.resolve(strict=False)
+        try:
+            return resolved.relative_to(root).as_posix()
+        except ValueError as exc:
+            raise ValueError(f"Media stored_path escapes upload root: {stored_path}") from exc
+
+    parts = PurePosixPath(text).parts
+    key = ""
+    if "runtime" in parts and "uploads" in parts:
+        index = parts.index("uploads")
+        key = PurePosixPath(*parts[index + 1 :]).as_posix() if index + 1 < len(parts) else ""
+    elif parts and parts[0] == "uploads":
+        key = PurePosixPath(*parts[1:]).as_posix() if len(parts) > 1 else ""
+    else:
+        key = PurePosixPath(text).as_posix()
+    if key in {"", "."}:
+        raise ValueError(f"Media stored_path has no key suffix: {stored_path}")
+    return _guard_s3_key(key)
+
+
 class S3Store:
     def __init__(
         self,

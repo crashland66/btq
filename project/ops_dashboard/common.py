@@ -21,6 +21,7 @@ from event_pipeline.sites import SITES
 from event_pipeline import couchdb_config
 from event_pipeline.couchdb_registry import CouchDBSiteRegistry
 from field_capture import photo_vision as field_photo_vision
+from media_store import LocalFilesystemStore, get_media_store, media_key_from_stored_path
 from ops_dashboard import audit
 from processing_core.slugs import css_status_slug
 from voice_memo.couchdb import VoiceMemoCouchDBConfig, VoiceMemoCouchDBError, query_couchdb_find
@@ -213,10 +214,224 @@ def is_audio_file(path: Path) -> bool:
     return mime.startswith("audio/") or path.suffix.lower() in {".webm", ".m4a", ".mp3", ".wav", ".aac"}
 
 
-def latest_uploads(upload_root: Path, submitters: dict[str, dict[str, str]] | None = None, limit: int = 5) -> list[dict[str, object]]:
+IMAGE_MIME_PREFIX = "image/"
+
+
+def is_audio_filename(filename: str, mime_type: str = "") -> bool:
+    mime = mime_type or mimetypes.guess_type(filename)[0] or ""
+    return mime.startswith("audio/") or Path(filename).suffix.lower() in {".webm", ".m4a", ".mp3", ".wav", ".aac"}
+
+
+def is_image_filename(filename: str, mime_type: str = "") -> bool:
+    mime = mime_type or mimetypes.guess_type(filename)[0] or ""
+    return mime.startswith(IMAGE_MIME_PREFIX)
+
+
+def _field_capture_couchdb_config() -> object | None:
+    try:
+        return couchdb_config.from_env()
+    except couchdb_config.CouchDBConfigError as exc:
+        logger.warning("field-capture CouchDB config unavailable for media discovery: %s", exc)
+        return None
+
+
+def _query_field_capture_docs(mango: dict[str, object]) -> list[dict[str, object]]:
+    config = _field_capture_couchdb_config()
+    if config is None:
+        return []
+    try:
+        response = query_couchdb_find(config, couchdb_config.field_captures_database(), mango)
+    except Exception as exc:
+        logger.warning("field-capture CouchDB media discovery failed: %s", exc)
+        return []
+    docs = response.get("docs") if isinstance(response, dict) else None
+    return [doc for doc in docs if isinstance(doc, dict)] if isinstance(docs, list) else []
+
+
+def _query_field_capture_docs_all(fields: list[str], *, limit: int = 5000) -> list[dict[str, object]]:
+    config = _field_capture_couchdb_config()
+    if config is None:
+        return []
+    docs: list[dict[str, object]] = []
+    bookmark: object = None
+    for _ in range(400):
+        mango: dict[str, object] = {
+            "selector": {"type": "field_capture"},
+            "fields": fields,
+            "limit": limit,
+        }
+        if bookmark:
+            mango["bookmark"] = bookmark
+        try:
+            response = query_couchdb_find(config, couchdb_config.field_captures_database(), mango)
+        except Exception as exc:
+            logger.warning("field-capture CouchDB media discovery failed: %s", exc)
+            return docs
+        page = response.get("docs") if isinstance(response, dict) else None
+        if not isinstance(page, list):
+            return docs
+        docs.extend(doc for doc in page if isinstance(doc, dict))
+        bookmark = response.get("bookmark")
+        if len(page) < limit or not bookmark:
+            break
+    return docs
+
+
+def _capture_doc_timestamp(doc: dict[str, object]) -> str:
+    return str(doc.get("captured_at") or doc.get("exported_at") or doc.get("created_at") or doc.get("capture_id") or doc.get("_id") or "")
+
+
+def _media_items(doc: dict[str, object]) -> list[tuple[str, dict[str, object]]]:
+    items: list[tuple[str, dict[str, object]]] = []
+    for media_type, raw in (("photo", doc.get("photos")), ("audio", doc.get("audio"))):
+        if not isinstance(raw, list):
+            continue
+        for item in raw:
+            if isinstance(item, dict):
+                items.append((media_type, item))
+    return items
+
+
+def _media_key(record: dict[str, object], upload_root: Path) -> str:
+    for value in (record.get("upload_id"), record.get("stored_path")):
+        if not value:
+            continue
+        try:
+            return media_key_from_stored_path(value, upload_root)
+        except ValueError:
+            continue
+    return ""
+
+
+def _media_url_for_key(key: str, upload_root: Path, media_store: object | None = None) -> str:
+    if not key:
+        return ""
+    try:
+        store = media_store if media_store is not None else get_media_store(upload_root)
+        # Do not log the url_for result. S3 implementations return a fresh
+        # per-request presigned URL and logs must contain only the key.
+        return str(store.url_for(key))
+    except Exception:
+        logger.warning("media url resolution failed for key=%s", key)
+        return ""
+
+
+def _local_media_store(upload_root: Path, media_store: object | None = None) -> LocalFilesystemStore | None:
+    try:
+        store = media_store if media_store is not None else get_media_store(upload_root)
+    except Exception as exc:
+        logger.warning("media store resolution failed for local discovery fallback: %s", exc)
+        return None
+    return store if isinstance(store, LocalFilesystemStore) else None
+
+
+def _capture_media_records(
+    doc: dict[str, object],
+    upload_root: Path,
+    *,
+    media_store: object | None = None,
+) -> list[dict[str, object]]:
+    records: list[dict[str, object]] = []
+    seen_keys: set[str] = set()
+    capture_id = str(doc.get("capture_id") or doc.get("_id") or "").strip()
+    for media_type, item in _media_items(doc):
+        key = _media_key(item, upload_root)
+        if not key or key in seen_keys:
+            continue
+        seen_keys.add(key)
+        filename = str(item.get("filename") or Path(key).name).strip()
+        mime_type = str(item.get("mime_type") or mimetypes.guess_type(filename)[0] or "")
+        records.append(
+            {
+                "capture_id": capture_id,
+                "media_type": media_type,
+                "filename": filename,
+                "mime_type": mime_type,
+                "key": key,
+                "url": _media_url_for_key(key, upload_root, media_store),
+                "size_bytes": int(item.get("size_bytes") or 0) if str(item.get("size_bytes") or "").isdigit() else 0,
+            }
+        )
+    return records
+
+
+def _local_capture_media_records(upload_root: Path, capture_id: str, store: LocalFilesystemStore) -> list[dict[str, object]]:
+    records: list[dict[str, object]] = []
+    for item in sorted(upload_root.glob(f"*/{capture_id}/*"), key=lambda path: path.name):
+        if not item.is_file():
+            continue
+        mime_type = mimetypes.guess_type(item.name)[0] or ""
+        if is_image_filename(item.name, mime_type):
+            media_type = "photo"
+        elif is_audio_filename(item.name, mime_type):
+            media_type = "audio"
+        else:
+            continue
+        try:
+            key = item.relative_to(upload_root).as_posix()
+        except ValueError:
+            continue
+        try:
+            size_bytes = item.stat().st_size
+        except OSError:
+            size_bytes = 0
+        records.append(
+            {
+                "capture_id": capture_id,
+                "media_type": media_type,
+                "filename": item.name,
+                "mime_type": mime_type,
+                "key": key,
+                "url": str(store.url_for(key)),
+                "size_bytes": size_bytes,
+            }
+        )
+    return records
+
+
+def field_capture_media_records(
+    runtime_root: Path,
+    capture_id: str,
+    *,
+    media_store: object | None = None,
+) -> list[dict[str, object]]:
+    upload_root = runtime_root.expanduser().resolve(strict=False) / "uploads"
+    normalized = str(capture_id or "").strip()
+    if not normalized:
+        return []
+    docs = _query_field_capture_docs(
+        {
+            "selector": {
+                "type": "field_capture",
+                "$or": [{"capture_id": normalized}, {"_id": normalized}],
+            },
+            "fields": ["_id", "capture_id", "photos", "audio"],
+            "limit": 10,
+        }
+    )
+    records: list[dict[str, object]] = []
+    seen_keys: set[str] = set()
+    for doc in docs:
+        for record in _capture_media_records(doc, upload_root, media_store=media_store):
+            key = str(record.get("key") or "")
+            if key in seen_keys:
+                continue
+            seen_keys.add(key)
+            records.append(record)
+    if not records:
+        store = _local_media_store(upload_root, media_store)
+        if store is not None:
+            records = _local_capture_media_records(upload_root, normalized, store)
+    return records
+
+
+def _latest_uploads_from_local_filesystem(
+    upload_root: Path,
+    submitters: dict[str, dict[str, str]],
+    limit: int,
+) -> list[dict[str, object]]:
     if not upload_root.exists():
         return []
-    submitters = submitters or {}
     captures: list[tuple[float, Path]] = []
     for path in upload_root.glob("*/*"):
         if path.is_dir():
@@ -240,6 +455,57 @@ def latest_uploads(upload_root: Path, submitters: dict[str, dict[str, str]] | No
                 "image_count": sum(1 for item in path.glob("*") if item.is_file() and (mimetypes.guess_type(item.name)[0] or "").startswith("image/")),
             }
         )
+    return items
+
+
+def latest_uploads(
+    upload_root: Path,
+    submitters: dict[str, dict[str, str]] | None = None,
+    limit: int = 5,
+    *,
+    media_store: object | None = None,
+) -> list[dict[str, object]]:
+    submitters = submitters or {}
+    fields = [
+        "_id",
+        "capture_id",
+        "created_at",
+        "captured_at",
+        "exported_at",
+        "photos",
+        "audio",
+    ]
+    captures = _query_field_capture_docs_all(fields)
+    captures.sort(key=_capture_doc_timestamp, reverse=True)
+    items: list[dict[str, object]] = []
+    seen_capture_ids: set[str] = set()
+    for doc in captures:
+        if len(items) >= limit:
+            break
+        capture_id = str(doc.get("capture_id") or doc.get("_id") or "").strip()
+        if not capture_id or capture_id in seen_capture_ids:
+            continue
+        records = _capture_media_records(doc, upload_root, media_store=media_store)
+        if not records:
+            continue
+        seen_capture_ids.add(capture_id)
+        first_key = str(records[0].get("key") or "")
+        date = first_key.split("/", 1)[0] if "/" in first_key else ""
+        submitter = submitters.get(capture_id, safe_submitter(doc))
+        items.append(
+            {
+                "capture_id": capture_id,
+                "submitter_name": submitter["submitter_name"],
+                "submitter_id": submitter["submitter_id"],
+                "date": date,
+                "path": first_key.rsplit("/", 1)[0] if "/" in first_key else "",
+                "file_count": len(records),
+                "audio_count": sum(1 for record in records if is_audio_filename(str(record.get("filename") or ""), str(record.get("mime_type") or ""))),
+                "image_count": sum(1 for record in records if is_image_filename(str(record.get("filename") or ""), str(record.get("mime_type") or ""))),
+            }
+        )
+    if not items and _local_media_store(upload_root, media_store) is not None:
+        return _latest_uploads_from_local_filesystem(upload_root, submitters, limit)
     return items
 
 
@@ -1563,22 +1829,21 @@ def safe_media_url(value: object) -> str:
     return ""
 
 
-def capture_thumbnails(runtime_root: Path, capture_id: str) -> list[str]:
-    """Return /media/ URLs for every image in the capture upload directory.
+def capture_thumbnails(runtime_root: Path, capture_id: str, *, media_store: object | None = None) -> list[str]:
+    """Return store-resolved URLs for every image in a capture.
 
     Shared by the review surfaces (swipe card + candidates table) so a capture's
     photos can be shown as thumbnails next to the operator's decision.
     """
-    upload_root = runtime_root / "uploads"
-    if not capture_id or not upload_root.exists():
-        return []
     urls: list[str] = []
-    for capture_dir in upload_root.glob(f"*/{capture_id}"):
-        for item in sorted(capture_dir.glob("*")):
-            if item.is_file() and (mimetypes.guess_type(item.name)[0] or "").startswith("image/"):
-                url = safe_media_url(f"/media/{item.relative_to(upload_root)}")
-                if url:
-                    urls.append(url)
+    records = field_capture_media_records(runtime_root, capture_id, media_store=media_store)
+    records.sort(key=lambda item: str(item.get("filename") or ""))
+    for record in records:
+        if not is_image_filename(str(record.get("filename") or ""), str(record.get("mime_type") or "")):
+            continue
+        url = str(record.get("url") or "")
+        if url:
+            urls.append(url)
     return urls
 
 

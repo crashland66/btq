@@ -134,6 +134,8 @@ def serve_media_response(media_path: str, runtime_root: Path) -> tuple[HTTPStatu
         if not store.exists(key):
             return json_response({"error": "not_found"}, HTTPStatus.NOT_FOUND)
     content_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+    if not isinstance(store, LocalFilesystemStore):
+        return HTTPStatus.FOUND, "text/plain; charset=utf-8", b"", {"Location": store.url_for(key)}
     try:
         return HTTPStatus.OK, content_type, store.read(key), {}
     except OSError:
