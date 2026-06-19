@@ -442,6 +442,54 @@ def _assigned_sites_section(site_ids: list[str], site_names: dict[str, str]) -> 
     return f"<section><h2>Assigned sites</h2><p>{chips}</p></section>"
 
 
+def _availability_section(employee_id: str, doc: dict[str, Any] | None = None) -> str:
+    if doc is None:
+        doc = _load_vault_doc(f"employee_{employee_id}")
+    person_id = _clean((doc or {}).get("person_id") or employee_id)
+    rows: list[dict[str, Any]] = []
+    if person_id:
+        try:
+            base, headers, database, timeout = _cdb()
+            rows = site_detail.query_view(
+                base,
+                headers,
+                database,
+                site_detail.DDOC,
+                "availability_constraints_by_person",
+                startkey=person_id,
+                endkey=person_id,
+                timeout=timeout,
+            )
+        except Exception:  # noqa: BLE001 - availability is additive and should never break the person page.
+            rows = []
+
+    today = date.today()
+    unavailable_dates: set[date] = set()
+    last_working_days: list[date] = []
+    for row in rows:
+        value = row.get("value")
+        if not isinstance(value, dict):
+            continue
+        constraint_date = _parse_date(_clean(value.get("date")))
+        if constraint_date is None or constraint_date < today:
+            continue
+        constraint_type = _clean(value.get("constraint_type"))
+        if constraint_type == "unavailable_date":
+            unavailable_dates.add(constraint_date)
+        elif constraint_type == "last_working_day":
+            last_working_days.append(constraint_date)
+
+    parts: list[str] = []
+    if unavailable_dates:
+        dates = ", ".join(day.isoformat() for day in sorted(unavailable_dates))
+        parts.append(f"<p><strong>Unavailable:</strong> {html.escape(dates)}</p>")
+    if last_working_days:
+        last_day = min(last_working_days).isoformat()
+        parts.append(f"<p><strong>Last day:</strong> {html.escape(last_day)}</p>")
+    body = "".join(parts) if parts else '<p class="zero-state">No upcoming unavailability recorded.</p>'
+    return f"<section><h2>Availability constraints</h2>{body}</section>"
+
+
 def _demote_about_headings(rendered_html: str) -> str:
     def replace(match: re.Match[str]) -> str:
         closing, level, attrs = match.groups()
@@ -558,6 +606,7 @@ def render(ctx: object, employee_id: str) -> str:
             sections.append(f"<section><h2>Edit employee</h2>{''.join(edit_sections)}</section>")
         sections.append(_activity_section(events, captures, data_flags, site_names))
         sections.append(_assigned_sites_section(assigned_site_ids, site_names))
+        sections.append(_availability_section(employee_id, doc))
 
         raw_content = str(doc.get("content") or "")
         if edit_section == "about":

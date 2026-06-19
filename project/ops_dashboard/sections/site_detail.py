@@ -335,6 +335,129 @@ def _notes_section(notes: list[dict[str, Any]]) -> str:
     return _section("Notes", "".join(blocks))
 
 
+def _text(value: object) -> str:
+    return str(value or "").strip()
+
+
+def _row_doc_or_value(row: dict[str, Any]) -> dict[str, Any]:
+    doc = row.get("doc")
+    if isinstance(doc, dict):
+        return doc
+    value = row.get("value")
+    return value if isinstance(value, dict) else {}
+
+
+def _employee_person_id(row: dict[str, Any]) -> str:
+    value = _row_doc_or_value(row)
+    return _text(value.get("person_id") or row.get("id"))
+
+
+def _employee_name(row: dict[str, Any]) -> str:
+    value = _row_doc_or_value(row)
+    name = _text(value.get("name"))
+    if name:
+        return name
+    first = _text(value.get("preferred_name") or value.get("first"))
+    last = _text(value.get("last"))
+    combined = " ".join(part for part in (first, last) if part)
+    return combined or _employee_person_id(row) or "Unknown cleaner"
+
+
+def _availability_constraint_date(value: dict[str, Any]) -> date | None:
+    raw = _text(value.get("date"))[:10]
+    if not raw:
+        return None
+    try:
+        return date.fromisoformat(raw)
+    except ValueError:
+        return None
+
+
+def _coverage_gap_rows(employee_rows: list[dict[str, Any]]) -> list[dict[str, object]]:
+    person_ids = [_employee_person_id(row) for row in employee_rows]
+    person_ids = [person_id for person_id in dict.fromkeys(person_ids) if person_id]
+    if not person_ids:
+        return []
+
+    person_id_set = set(person_ids)
+    labels = {
+        person_id: _employee_name(row)
+        for row in employee_rows
+        if (person_id := _employee_person_id(row))
+    }
+    try:
+        base, headers, database, timeout = _cdb()
+        constraint_rows = query_view(
+            base,
+            headers,
+            database,
+            DDOC,
+            "availability_constraints_by_person",
+            timeout=timeout,
+        )
+    except Exception:  # noqa: BLE001 - coverage gaps are additive and should degrade to empty.
+        constraint_rows = []
+
+    today = date.today()
+    grouped: dict[str, dict[str, object]] = {
+        person_id: {"unavailable_dates": set(), "last_working_days": []}
+        for person_id in person_ids
+    }
+    for row in constraint_rows:
+        person_id = _text(row.get("key"))
+        if person_id not in person_id_set:
+            continue
+        value = row.get("value")
+        if not isinstance(value, dict):
+            continue
+        constraint_date = _availability_constraint_date(value)
+        if constraint_date is None or constraint_date < today:
+            continue
+        constraint_type = _text(value.get("constraint_type"))
+        if constraint_type == "unavailable_date":
+            unavailable_dates = grouped[person_id]["unavailable_dates"]
+            if isinstance(unavailable_dates, set):
+                unavailable_dates.add(constraint_date)
+        elif constraint_type == "last_working_day":
+            last_working_days = grouped[person_id]["last_working_days"]
+            if isinstance(last_working_days, list):
+                last_working_days.append(constraint_date)
+
+    rows: list[dict[str, object]] = []
+    for person_id in person_ids:
+        availability = grouped[person_id]
+        unavailable_dates = availability["unavailable_dates"]
+        last_working_days = availability["last_working_days"]
+        if not isinstance(unavailable_dates, set) or not isinstance(last_working_days, list):
+            continue
+        if not unavailable_dates and not last_working_days:
+            continue
+        rows.append({
+            "person_id": person_id,
+            "name": labels.get(person_id) or person_id,
+            "unavailable_dates": sorted(unavailable_dates),
+            "last_working_day": min(last_working_days) if last_working_days else None,
+        })
+    return rows
+
+
+def _coverage_gaps_section(rows: list[dict[str, object]]) -> str:
+    if not rows:
+        return _section("Upcoming coverage gaps", '<p class="zero-state">No upcoming coverage gaps.</p>')
+    items: list[str] = []
+    for row in rows:
+        dates = row.get("unavailable_dates")
+        unavailable = ", ".join(day.isoformat() for day in dates if isinstance(day, date)) if isinstance(dates, list) else ""
+        last_day = row.get("last_working_day")
+        if isinstance(last_day, date):
+            summary = f"{unavailable} (+ Last day: {last_day.isoformat()})" if unavailable else f"Last day: {last_day.isoformat()}"
+        else:
+            summary = unavailable
+        name = _text(row.get("name") or row.get("person_id"))
+        items.append(f"<li><strong>{html.escape(name)}</strong>: {html.escape(summary)}</li>")
+    return _section("Upcoming coverage gaps", f"<ul>{''.join(items)}</ul>")
+
+
 def _related_data(site_id: str) -> dict[str, Any]:
     base, headers, database, timeout = _cdb()
     employee_rows = [
@@ -354,9 +477,11 @@ def _related_data(site_id: str) -> dict[str, Any]:
     ]
     recent_visits = sorted(visit_rows, key=lambda row: _row_date(row) or date.min, reverse=True)[:5]
     notes = _site_notes(site_id)
+    coverage_gap_rows = _coverage_gap_rows(employee_rows)
     return {
         "notes": notes,
         "employee_rows": employee_rows,
+        "coverage_gap_rows": coverage_gap_rows,
         "opportunity_rows": opportunity_rows,
         "visit_rows": visit_rows,
         "recent_visits": recent_visits,
@@ -365,6 +490,7 @@ def _related_data(site_id: str) -> dict[str, Any]:
 
 def _related_sections(data: dict[str, Any]) -> list[tuple[str, int, str]]:
     employee_rows = data["employee_rows"]
+    coverage_gap_rows = data.get("coverage_gap_rows", [])
     opportunity_rows = data["opportunity_rows"]
     recent_visits = data["recent_visits"]
     notes = data["notes"]
@@ -374,6 +500,11 @@ def _related_sections(data: dict[str, Any]) -> list[tuple[str, int, str]]:
             "Employees Assigned",
             len(employee_rows),
             _section("Employees Assigned", _employee_table(employee_rows, include_sites=False)),
+        ),
+        (
+            "Upcoming coverage gaps",
+            len(coverage_gap_rows),
+            _coverage_gaps_section(coverage_gap_rows),
         ),
         (
             "Open Opportunities",
