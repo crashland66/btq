@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import hashlib
 import sys
 from pathlib import Path
 from typing import Any
@@ -24,6 +25,7 @@ from event_pipeline.btq_client import (  # type: ignore  # noqa: E402
     BTQClientError,
     diagnose_job,
     enqueue,
+    get_doc,
 )
 from event_pipeline.couchdb_queue_reader import (  # type: ignore  # noqa: E402
     CouchDBQueueReaderError,
@@ -35,6 +37,14 @@ from queue_spec import JOB_RECORD_SHIFT_REPORT  # type: ignore  # noqa: E402
 DEFAULT_START = "2026-05-27"
 DEFAULT_END = "2026-06-12"
 DEFAULT_PREPARED_BY = "Greg"
+
+
+def content_hash(content: str) -> str:
+    return hashlib.sha256(content.encode("utf-8")).hexdigest()[:12]
+
+
+def vault_doc_id(date_text: str) -> str:
+    return f"shift_report_journal_{date_text.replace('-', '_')}_shift_report"
 
 
 def parse_date(value: str) -> dt.date:
@@ -59,21 +69,22 @@ def default_journal_dir() -> Path:
 
 
 def build_job(date_text: str, content: str) -> dict[str, Any]:
+    job_id = f"record-shift-report-{date_text}-{content_hash(content)}"
     return {
-        # Explicit, date-unique, deterministic job_id. Without it the shared
+        # Explicit, content-aware deterministic job_id. Without it the shared
         # derive_job_id falls back to "{timestamp}__record-shift-report" (this
         # payload has no slug/title/path/site_id/person_id), so a batch enqueued
         # within the same second collides on _id and all-but-one are dropped as
-        # false 409s. A date-keyed id makes each date distinct AND makes re-runs
-        # truly idempotent (same date -> same _id -> real 409).
-        "job_id": f"record-shift-report-{date_text}",
+        # false 409s. Including the content hash lets corrections re-materialize
+        # the date-keyed vault doc while identical content remains a true no-op.
+        "job_id": job_id,
         "job_type": JOB_RECORD_SHIFT_REPORT,
         "payload": {
             "date": date_text,
             "content": content,
             "prepared_by": DEFAULT_PREPARED_BY,
         },
-        "idempotency_key": f"shift-report-{date_text}",
+        "idempotency_key": job_id,
     }
 
 
@@ -156,6 +167,8 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     enqueued = 0
+    updated = 0
+    unchanged = 0
     failed = 0
     try:
         load_reader_config()
@@ -164,6 +177,21 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     for date_text, _, job in jobs:
+        current_doc = None
+        current_doc_known = False
+        try:
+            current_doc = get_doc("vault", vault_doc_id(date_text))
+            current_doc_known = True
+        except Exception:
+            pass
+
+        if current_doc_known:
+            current_content = current_doc.get("content") if current_doc is not None else None
+            if current_content == job["payload"]["content"]:
+                print(f"{date_text}: unchanged")
+                unchanged += 1
+                continue
+
         try:
             result = enqueue(job, created_by=args.created_by, dry_run=False)
         except BTQClientError as exc:
@@ -171,12 +199,19 @@ def main(argv: list[str] | None = None) -> int:
             print(f"{date_text}: failed ({exc.code}): {exc.message}", file=sys.stderr)
             continue
         if result.get("duplicate") or result.get("status") == 409:
-            print(f"{date_text}: already enqueued")
+            print(f"{date_text}: unchanged")
+            unchanged += 1
+        elif current_doc_known and current_doc is not None:
+            print(f"{date_text}: updated")
+            updated += 1
         else:
             print(f"{date_text}: enqueued")
-        enqueued += 1
+            enqueued += 1
 
-    print(f"Summary: enqueued={enqueued} skipped-missing={len(skipped_missing)} failed={failed}")
+    print(
+        f"Summary: enqueued={enqueued} updated={updated} unchanged={unchanged} "
+        f"skipped-missing={len(skipped_missing)} failed={failed}"
+    )
     return 1 if failed else 0
 
 

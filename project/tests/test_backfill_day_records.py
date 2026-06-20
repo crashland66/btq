@@ -145,21 +145,33 @@ def test_extract_no_section_returns_none(mod):
 # ==========================================================================
 
 def test_build_job_shape(mod):
-    job = mod.build_job("2026-06-03", "## Day Record\nbody")
-    assert job["job_id"] == "record-day-record-2026-06-03"
+    content = "## Day Record\nbody"
+    job = mod.build_job("2026-06-03", content)
+    # Content-aware job_id: date-keyed PLUS a sha256[:12] of the content so
+    # corrections re-materialize the (date-keyed) vault doc instead of no-oping.
+    expected_id = f"record-day-record-2026-06-03-{mod.content_hash(content)}"
+    assert job["job_id"] == expected_id
     assert job["job_type"] == "record_day_record"
     assert job["payload"]["date"] == "2026-06-03"
-    assert job["payload"]["content"] == "## Day Record\nbody"
-    assert job["idempotency_key"] == "day-record-2026-06-03"
+    assert job["payload"]["content"] == content
+    # idempotency_key is now the same content-aware job_id (not date-only).
+    assert job["idempotency_key"] == expected_id
 
 
 def test_job_id_is_date_keyed_distinct_across_dates(mod):
     j1 = mod.build_job("2026-06-03", "x")
     j2 = mod.build_job("2026-06-04", "y")
-    # Two dates in a same-second batch must NOT share a job_id.
+    # Original intent preserved: two DIFFERENT dates in a same-second batch must
+    # NOT share a job_id (the same-second collision guard). Still holds with the
+    # content hash appended.
     assert j1["job_id"] != j2["job_id"]
-    assert j1["job_id"] == "record-day-record-2026-06-03"
-    assert j2["job_id"] == "record-day-record-2026-06-04"
+    assert j1["job_id"] == f"record-day-record-2026-06-03-{mod.content_hash('x')}"
+    assert j2["job_id"] == f"record-day-record-2026-06-04-{mod.content_hash('y')}"
+    # Distinctness must come from the DATE, not merely the differing content:
+    # same content on two dates still yields distinct ids.
+    s1 = mod.build_job("2026-06-03", "same")
+    s2 = mod.build_job("2026-06-04", "same")
+    assert s1["job_id"] != s2["job_id"]
 
 
 def test_job_validates_against_real_queue_spec(mod):
@@ -193,7 +205,8 @@ def test_enqueued_content_equals_extracted_section(mod, journal, rec):
     enq = rec.enqueue_calls[0]["job"]
     expected = mod.extract_day_record(content)
     assert enq["payload"]["content"] == expected
-    assert enq["job_id"] == "record-day-record-2026-06-06"
+    # job_id is content-aware: date-keyed + hash of the extracted section.
+    assert enq["job_id"] == f"record-day-record-2026-06-06-{mod.content_hash(expected)}"
     assert "Trailing" not in enq["payload"]["content"]
 
 
@@ -256,14 +269,40 @@ def test_duplicate_flag_treated_as_success(mod, journal, rec):
     assert len(rec.enqueue_calls) == 1
 
 
-def test_rerun_yields_same_date_keyed_job_id(mod, journal, rec):
+def test_rerun_same_content_yields_same_job_id(mod, journal, rec):
+    """Original intent: re-running the SAME date is idempotent. With the
+    content-aware id this holds for IDENTICAL content (same date + same content
+    -> same job_id -> server 409 -> true no-op)."""
     _write(journal, "2026-06-09", "## Day Record\nbody\n")
     _run(mod, journal, "--start", "2026-06-09", "--end", "2026-06-09")
     first_id = rec.enqueue_calls[0]["job"]["job_id"]
     rec.enqueue_calls.clear()
+    # Re-write byte-identical content and re-run.
+    _write(journal, "2026-06-09", "## Day Record\nbody\n")
     _run(mod, journal, "--start", "2026-06-09", "--end", "2026-06-09")
     second_id = rec.enqueue_calls[0]["job"]["job_id"]
-    assert first_id == second_id == "record-day-record-2026-06-09"
+    assert first_id == second_id
+    section = mod.extract_day_record("## Day Record\nbody\n")
+    assert second_id == f"record-day-record-2026-06-09-{mod.content_hash(section)}"
+
+
+def test_rerun_changed_content_yields_different_job_id(mod, journal, rec):
+    """THE FIX: a correction (changed on-disk content) for the SAME date must
+    produce a DIFFERENT job_id so the enqueue is not a false 409 and the handler
+    re-materializes the date-keyed vault doc. If the id were date-only, the
+    correction would silently no-op (the live 2026-06-19 bug)."""
+    _write(journal, "2026-06-09", "## Day Record\noriginal body\n")
+    _run(mod, journal, "--start", "2026-06-09", "--end", "2026-06-09")
+    first_id = rec.enqueue_calls[0]["job"]["job_id"]
+    rec.enqueue_calls.clear()
+    # Operator corrects the day record.
+    _write(journal, "2026-06-09", "## Day Record\nCORRECTED body\n")
+    _run(mod, journal, "--start", "2026-06-09", "--end", "2026-06-09")
+    second_id = rec.enqueue_calls[0]["job"]["job_id"]
+    assert first_id != second_id
+    # Both remain date-keyed (same date prefix); only the content hash differs.
+    assert first_id.startswith("record-day-record-2026-06-09-")
+    assert second_id.startswith("record-day-record-2026-06-09-")
 
 
 # ==========================================================================
