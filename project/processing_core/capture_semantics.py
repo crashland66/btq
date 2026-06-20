@@ -113,6 +113,67 @@ MOVEMENT_TERMS = (
     "for next week",
 )
 ROUTINE_SUPPLY_NEED_TERMS = ("low", "out of", "running low", "restock", "need more", "reorder")
+SUPPLY_EQUIPMENT_NEED_TERMS = tuple(
+    dict.fromkeys(
+        (
+            *ROUTINE_SUPPLY_NEED_TERMS,
+            "need",
+            "needs",
+            "needed",
+            "out",
+            "order",
+            "request",
+            "requests",
+            "requested",
+            "restock",
+            "bring",
+            "more",
+            "low",
+            "empty",
+        )
+    )
+)
+SUPPLY_EQUIPMENT_QUANTITY_UNITS = (
+    "bag",
+    "bags",
+    "bottle",
+    "bottles",
+    "box",
+    "boxes",
+    "bucket",
+    "buckets",
+    "bundle",
+    "bundles",
+    "can",
+    "cans",
+    "carton",
+    "cartons",
+    "case",
+    "cases",
+    "container",
+    "containers",
+    "dozen",
+    "gallon",
+    "gallons",
+    "jug",
+    "jugs",
+    "pack",
+    "packs",
+    "package",
+    "packages",
+    "pair",
+    "pairs",
+    "pallet",
+    "pallets",
+    "ream",
+    "reams",
+    "roll",
+    "rolls",
+    "sleeve",
+    "sleeves",
+    "tube",
+    "tubes",
+)
 COMPLETION_SIGNAL_TERMS = (
     "pulled",
     "swept",
@@ -443,6 +504,8 @@ def extracted_actions_from_model_payload(raw: object, source: CaptureSemanticInp
         if note_is_completion_report(excerpt):
             continue
         action = action_with_operator_classification_override(action, source)
+        if supply_equipment_action_lacks_need_signal(action, source):
+            continue
         actions.append(action_with_valid_proposed_queue_job(action, source))
     actions = supply_category_actions(actions, source)
     return actions
@@ -953,6 +1016,8 @@ def supply_category_actions(actions: list[ExtractedAction], source: CaptureSeman
         return actions
     if any(action.job_type == JOB_LOG_SITE_ISSUE for action in actions):
         return actions
+    if not need_signal_present(source.source_text):
+        return [action for action in actions if action.job_type != JOB_LOG_SUPPLY_NEED]
     supply_action = None
     for action in actions:
         if action.job_type == JOB_LOG_SUPPLY_NEED:
@@ -990,6 +1055,41 @@ def supply_loss_or_movement_text(text: str) -> bool:
     loss_terms = _matched_loss_terms(text) if supply_equipment_terms else []
     movement_terms = _matched_movement_terms(text)
     return bool(loss_terms or (movement_terms and (supply_equipment_terms or _movement_has_implied_item(text, movement_terms))))
+
+
+def supply_equipment_action_lacks_need_signal(action: ExtractedAction, source: CaptureSemanticInput) -> bool:
+    if action.job_type not in {JOB_LOG_SUPPLY_NEED, JOB_LOG_EQUIPMENT_REQUEST}:
+        return False
+    return not (need_signal_present(source.source_text) or need_signal_present(action.source_excerpt))
+
+
+def need_signal_present(text: str) -> bool:
+    haystack = _norm(text)
+    if not haystack:
+        return False
+    if OPERATOR_CLASSIFICATION_DECLARATION_RE.match(text or ""):
+        return True
+    if any(_contains_need_signal_term(haystack, term) for term in SUPPLY_EQUIPMENT_NEED_TERMS):
+        return True
+    return _contains_quantity_signal(haystack)
+
+
+def _contains_need_signal_term(haystack: str, term: str) -> bool:
+    normalized = _norm(term)
+    if not normalized:
+        return False
+    pattern = r"(?<!\w)" + r"\s+".join(re.escape(part) for part in normalized.split()) + r"(?!\w)"
+    return re.search(pattern, haystack) is not None
+
+
+def _contains_quantity_signal(haystack: str) -> bool:
+    unit_pattern = "|".join(re.escape(unit) for unit in SUPPLY_EQUIPMENT_QUANTITY_UNITS)
+    quantity_pattern = (
+        r"\b(?:\d+(?:\.\d+)?|a|an|one|two|three|four|five|six|seven|eight|nine|ten|twelve)\s+"
+        rf"(?:{unit_pattern})\b(?:\s+of\b)?"
+    )
+    grouped_items_pattern = r"\b(?:a\s+)?(?:couple|few)\s+of\s+(?:items|things|supplies|products)\b"
+    return re.search(quantity_pattern, haystack) is not None or re.search(grouped_items_pattern, haystack) is not None
 
 
 def supply_need_action_payload(
@@ -1393,8 +1493,9 @@ def _rule_extracted_actions(source: CaptureSemanticInput, cleaned: str, issue_ty
         )
         handled_supply_equipment = True
     if is_supply_area(source.area) and not handled_supply_equipment:
-        raw_actions.append(supply_need_action_payload(source, cleaned, "field_capture_supply_need"))
-        handled_supply_equipment = True
+        if need_signal_present(cleaned):
+            raw_actions.append(supply_need_action_payload(source, cleaned, "field_capture_supply_need"))
+            handled_supply_equipment = True
     elif issue_type == "supplies" and not handled_supply_equipment:
         raw_actions.append(_rule_site_action(source, "supply_review", "Review supply/order follow-up.", cleaned, ["supply", *routine_terms]))
         handled_supply_equipment = True
