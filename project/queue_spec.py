@@ -38,6 +38,7 @@ JOB_FLAG_RETENTION_RISK = "flag_retention_risk"
 JOB_ADD_PERSON = "add_person"
 JOB_SET_EMPLOYEE_ID = "set_employee_id"
 JOB_RECORD_SHIFT_REPORT = "record_shift_report"
+JOB_SHIFT_REPORT_NOTE = "shift_report_note"
 JOB_RECORD_DAY_RECORD = "record_day_record"
 JOB_RECORD_UNKNOWN_CAPTURE = "record_unknown_capture"
 JOB_RECLASSIFY_UNKNOWN = "reclassify_unknown"
@@ -134,6 +135,7 @@ ALLOWED_JOB_TYPES = {
     JOB_ADD_PERSON,
     JOB_SET_EMPLOYEE_ID,
     JOB_RECORD_SHIFT_REPORT,
+    JOB_SHIFT_REPORT_NOTE,
     JOB_RECORD_DAY_RECORD,
     JOB_RECORD_UNKNOWN_CAPTURE,
     JOB_RECLASSIFY_UNKNOWN,
@@ -194,6 +196,7 @@ JOB_SCHEMAS = {
     JOB_ADD_PERSON: ["name", "role"],
     JOB_SET_EMPLOYEE_ID: ["person", "employee_id"],
     JOB_RECORD_SHIFT_REPORT: ["date", "content"],
+    JOB_SHIFT_REPORT_NOTE: ["date", "content", "actor", "capture_id", "photo_asset_id"],
     JOB_RECORD_DAY_RECORD: ["date", "content"],
     JOB_RECORD_UNKNOWN_CAPTURE: ["path", "content", "timestamp", "audio_file"],
     JOB_RECLASSIFY_UNKNOWN: ["path"],
@@ -257,6 +260,16 @@ SET_EMPLOYEE_ID_ALLOWED_PAYLOAD_FIELDS = {
     "metadata",
 }
 RECORD_SHIFT_REPORT_ALLOWED_PAYLOAD_FIELDS = {"date", "content", "prepared_by", "source"}
+SHIFT_REPORT_NOTE_ALLOWED_PAYLOAD_FIELDS = {
+    "date",
+    "content",
+    "actor",
+    "capture_id",
+    "photo_asset_id",
+    "site_id",
+    "prompt_id",
+    "prompt_label",
+}
 RECORD_DAY_RECORD_ALLOWED_PAYLOAD_FIELDS = {"date", "content", "source"}
 LOG_SITE_ISSUE_ALLOWED_PAYLOAD_FIELDS = {
     "site_id",
@@ -670,6 +683,22 @@ def _validate_record_shift_report_payload(payload: dict) -> bool:
     return True
 
 
+def _validate_shift_report_note_payload(payload: dict) -> bool:
+    if set(payload) - SHIFT_REPORT_NOTE_ALLOWED_PAYLOAD_FIELDS:
+        return False
+    date = payload.get("date")
+    if not _is_non_empty_string(date) or INSPECTION_DATE_RE.match(str(date).strip()) is None:
+        return False
+    for field in ("content", "actor", "capture_id", "photo_asset_id"):
+        if not _is_non_empty_string(payload.get(field)):
+            return False
+    for field in ("site_id", "prompt_id", "prompt_label"):
+        value = payload.get(field)
+        if value is not None and not isinstance(value, str):
+            return False
+    return True
+
+
 def _validate_record_day_record_payload(payload: dict) -> bool:
     if set(payload) - RECORD_DAY_RECORD_ALLOWED_PAYLOAD_FIELDS:
         return False
@@ -1073,6 +1102,9 @@ def validate_job(job: dict) -> bool:
             return False
     if job_type == JOB_RECORD_SHIFT_REPORT:
         if not _validate_record_shift_report_payload(payload):
+            return False
+    if job_type == JOB_SHIFT_REPORT_NOTE:
+        if not _validate_shift_report_note_payload(payload):
             return False
     if job_type == JOB_RECORD_DAY_RECORD:
         if not _validate_record_day_record_payload(payload):

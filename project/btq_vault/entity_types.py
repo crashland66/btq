@@ -7,7 +7,7 @@ import os
 # design_btq_vault.json. Must be kept in sync.
 CANONICAL_ENTITY_TYPES: frozenset[str] = frozenset({
     "account", "location", "employee", "visit", "visit_gap", "opportunity",
-    "shift_report", "day_record", "journal", "unknown_capture", "personnel_event",
+    "shift_report", "shift_report_note", "day_record", "journal", "unknown_capture", "personnel_event",
     "availability_constraint",
     "prospect", "site_issue", "supply_need", "monthly_summary",
     "equipment_request", "supply_order", "plan", "inventory", "note", "operator",

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import html
 import json
 import logging
@@ -46,6 +47,7 @@ KNOWN_JOB_SUMMARY_TYPES = {
     "parse_supply_email",
     "personal_journal_entry",
     "record_shift_report",
+    "shift_report_note",
     "record_day_record",
     "photo_capture",
     "deep_analysis",
@@ -1218,6 +1220,11 @@ def render_job_summary(job_type: object, payload: object) -> str:
         prepared_by = html.escape(_clean_display_part(body.get("prepared_by")))
         suffix = _join_summary_parts(date, f"by {prepared_by}" if prepared_by else "")
         return _summary_with_suffix("Record shift report", suffix)
+    if job_type_text == "shift_report_note":
+        capture = html.escape(_clean_display_part(body.get("capture_id")))
+        prompt_label = html.escape(_clean_display_part(body.get("prompt_label") or body.get("prompt_id")))
+        suffix = _join_summary_parts(capture, f"({prompt_label})" if prompt_label else "")
+        return _summary_with_suffix("Shift report note", suffix)
     if job_type_text == "record_day_record":
         return _summary_with_suffix("Record day record", html.escape(_clean_display_part(body.get("date"))))
     if job_type_text == "photo_capture":
@@ -1500,6 +1507,65 @@ def write_deep_analysis_job(
     queue_dir = runtime_root.expanduser().resolve(strict=False) / "queue"
     queue_dir.mkdir(parents=True, exist_ok=True)
     queue_path = queue_dir / f"deep-analysis-{suffix}.json"
+    temp_path = queue_path.with_name(f".{queue_path.name}.tmp")
+    temp_path.write_text(json.dumps(job, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    temp_path.replace(queue_path)
+    return queue_path
+
+
+def write_shift_report_note_job(
+    queue_dir: Path,
+    *,
+    date: str,
+    content: str,
+    actor: str,
+    capture_id: str,
+    photo_asset_id: str,
+    site_id: str = "",
+    prompt_id: str = "",
+    prompt_label: str = "",
+) -> Path:
+    from queue_spec import JOB_SHIFT_REPORT_NOTE, validate_job
+
+    suffix = str(uuid.uuid4())
+    payload: dict[str, object] = {
+        "date": date,
+        "content": content,
+        "actor": actor,
+        "capture_id": capture_id,
+        "photo_asset_id": photo_asset_id,
+    }
+    for key, value in (
+        ("site_id", site_id),
+        ("prompt_id", prompt_id),
+        ("prompt_label", prompt_label),
+    ):
+        if value:
+            payload[key] = value
+    idempotency_seed = json.dumps(
+        {
+            "date": date,
+            "content": content,
+            "capture_id": capture_id,
+            "photo_asset_id": photo_asset_id,
+            "prompt_id": prompt_id,
+            "prompt_label": prompt_label,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    digest = hashlib.sha256(idempotency_seed.encode("utf-8")).hexdigest()[:32]
+    job = {
+        "job_id": f"shift-report-note-{suffix}",
+        "job_type": JOB_SHIFT_REPORT_NOTE,
+        "idempotency_key": f"shift-report-note:{digest}",
+        "payload": payload,
+    }
+    if not validate_job(job):
+        raise ValueError("invalid shift_report_note payload")
+    queue_dir = queue_dir.expanduser().resolve(strict=False)
+    queue_dir.mkdir(parents=True, exist_ok=True)
+    queue_path = queue_dir / f"shift-report-note-{suffix}.json"
     temp_path = queue_path.with_name(f".{queue_path.name}.tmp")
     temp_path.write_text(json.dumps(job, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     temp_path.replace(queue_path)

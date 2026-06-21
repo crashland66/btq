@@ -33,6 +33,8 @@ def dispatch_post_route(
         return candidates.handle_completion_dismiss_post(ctx, body)
     if route_path == "/captures/analyze-deeper":
         return captures.handle_analyze_deeper_post(ctx, body)
+    if route_path == "/captures/send-to-shift-report":
+        return captures.handle_send_to_shift_report(ctx, body)
     if route_path == "/drafts/generate":
         return drafts.handle_generate_post(ctx, body)
     if route_path == "/drafts/stage":

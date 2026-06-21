@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 from dataclasses import dataclass
@@ -282,6 +283,61 @@ def process_record_shift_report_job(job_path: Path, job: QueueJob, context: RunC
     moved_path = _shared.move_job_file(job_path, processed_dir)
     print(f"Job {job.job_id}: updated {target.doc_id}"); print(f"Job {job.job_id}: moved queue file to {moved_path}")
     _shared.write_log_line(context.log_path, f"job_id={job.job_id} action=record-shift-report status=success error=")
+
+def _shift_report_note_doc_id(date: str, content: str, capture_id: str) -> str:
+    digest = hashlib.sha256(f"{content}\n{capture_id}".encode("utf-8")).hexdigest()[:12]
+    return f"shift_report_note_{date.replace('-', '_')}_{digest}"
+
+def process_shift_report_note_job(job_path: Path, job: QueueJob, context: RunContext, processed_dir: Path) -> None:
+    payload = job.payload
+    date = str(payload["date"]).strip()
+    content = str(payload["content"])
+    capture_id = str(payload["capture_id"]).strip()
+    photo_asset_id = str(payload["photo_asset_id"]).strip()
+    actor = str(payload["actor"]).strip()
+    site_id = str(payload.get("site_id") or "").strip()
+    prompt_id = str(payload.get("prompt_id") or "").strip()
+    prompt_label = str(payload.get("prompt_label") or "").strip()
+    doc_id = _shift_report_note_doc_id(date, content, capture_id)
+    processed_destination = processed_dir / job_path.name
+    if not context.dry_run and processed_destination.exists():
+        raise _shared.QueueProcessorError(f"Destination already exists: {processed_destination}")
+    target = CanonicalTarget(doc_id=doc_id, doc_type="shift_report_note", allow_create=True, require_existing=False)
+
+    def transform(state: CanonicalEntityState) -> CanonicalMutation:
+        outgoing = dict(state.doc or {})
+        outgoing["content"] = content
+        outgoing["date"] = date
+        outgoing["capture_id"] = capture_id
+        outgoing["photo_asset_id"] = photo_asset_id
+        outgoing["actor"] = actor
+        outgoing["operator"] = current_operator_id()
+        outgoing["captured_at"] = _utc_now_iso()
+        if site_id:
+            outgoing["site_id"] = site_id
+        if prompt_id:
+            outgoing["prompt_id"] = prompt_id
+        if prompt_label:
+            outgoing["prompt_label"] = prompt_label
+        return CanonicalMutation(doc=outgoing, evidence_text=f"shift report note {date} {capture_id}")
+
+    print(f"Job {job.job_id}: validated")
+    print(f"Job {job.job_id}: target {target.doc_id}")
+    if context.dry_run:
+        print(f"Job {job.job_id}: would apply shift-report-note"); _shared.write_log_line(context.log_path, f"job_id={job.job_id} action=shift-report-note status=success error=")
+        return
+    try:
+        canonical_doc = apply_canonical_rmw(_shared._vault_store(), target, job.job_id, transform)
+    except Exception as exc:
+        raise _shared.QueueJobError("canonical couchdb write failed " f"job_type={job.job_type} job_id={job.job_id} entity_id={target.doc_id}: {exc}") from exc
+    if canonical_doc is None:
+        print(f"Job {job.job_id}: job_id marker already present — skipping"); moved_path = _shared.move_job_file(job_path, processed_dir)
+        print(f"Job {job.job_id}: moved queue file to {moved_path}"); _shared.write_log_line(context.log_path, f"job_id={job.job_id} action=skip status=success reason=job-id-marker-present")
+        return
+    _shared.write_mutation_evidence(context, job, canonical_doc, f"shift report note {date} {capture_id}")
+    moved_path = _shared.move_job_file(job_path, processed_dir)
+    print(f"Job {job.job_id}: updated {target.doc_id}"); print(f"Job {job.job_id}: moved queue file to {moved_path}")
+    _shared.write_log_line(context.log_path, f"job_id={job.job_id} action=shift-report-note status=success error=")
 
 def process_record_day_record_job(job_path: Path, job: QueueJob, context: RunContext, processed_dir: Path) -> None:
     payload = job.payload

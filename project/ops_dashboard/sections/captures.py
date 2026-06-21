@@ -4,6 +4,7 @@ import html
 import json
 import mimetypes
 import re
+from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import parse_qs, quote, unquote, urlencode, urlsplit, urlunsplit
 
@@ -35,12 +36,22 @@ from ops_dashboard.common import (
     string_list,
     submitters_by_capture,
     write_deep_analysis_job,
+    write_shift_report_note_job,
 )
 from ops_dashboard.layout import html_page
 from queue_spec import DEEP_ANALYSIS_PRESET_IDS
 
 
 _DEEP_ANALYSIS_LABELS = {preset["id"]: preset["label"] for preset in DEEP_ANALYSIS_PRESETS}
+
+
+def _safe_return_to(value: str) -> str:
+    if not value.startswith("/") or value.startswith("//"):
+        return ""
+    parsed = urlsplit(value)
+    if parsed.scheme or parsed.netloc:
+        return ""
+    return value
 
 
 def intake_records(root: Path) -> dict[str, dict[str, object]]:
@@ -816,14 +827,6 @@ def handle_analyze_deeper_post(ctx: object, body: bytes) -> tuple:
     return_to = first_query_value(form, "return_to").strip()
     redirect_base = f"/captures?capture_id={quote(capture_id)}" if capture_id else "/captures"
 
-    def _safe_return_to(value: str) -> str:
-        if not value.startswith("/") or value.startswith("//"):
-            return ""
-        parsed = urlsplit(value)
-        if parsed.scheme or parsed.netloc:
-            return ""
-        return value
-
     def _redirect_target(param: str, value: str) -> str:
         target = _safe_return_to(return_to) or redirect_base
         parsed = urlsplit(target)
@@ -868,6 +871,64 @@ def handle_analyze_deeper_post(ctx: object, body: bytes) -> tuple:
 
     _audit_append(f"success: staged deep_analysis capture_id={capture_id} photo_asset_id={photo_asset_id} queue_path={queue_path}")
     return _redirect(_redirect_target("message", "deep_analysis_queued"))
+
+
+def handle_send_to_shift_report(ctx: object, body: bytes) -> tuple:
+    form = parse_qs(body.decode("utf-8", errors="replace"), keep_blank_values=True)
+    root = Path(getattr(ctx, "runtime_root", Path("."))).expanduser().resolve(strict=False)
+    form_payload = {key: values[0] if values else "" for key, values in form.items()}
+
+    def _audit_append(result: str) -> None:
+        audit.append_audit(root, {"route": "/captures/send-to-shift-report", "actor": "localhost", "payload": form_payload, "result_summary": result})
+
+    def _redirect(location: str) -> tuple:
+        return 303, "text/html; charset=utf-8", f'<a href="{html.escape(location)}">Return</a>'.encode(), {"Location": location}
+
+    capture_id = first_query_value(form, "capture_id").strip()
+    photo_asset_id = first_query_value(form, "photo_asset_id").strip()
+    actor = first_query_value(form, "actor").strip()
+    content = first_query_value(form, "content").strip()
+    site_id = first_query_value(form, "site_id").strip()
+    prompt_id = first_query_value(form, "prompt_id").strip()
+    prompt_label = first_query_value(form, "prompt_label").strip()
+    date = first_query_value(form, "date").strip() or datetime.now(timezone.utc).date().isoformat()
+    return_to = first_query_value(form, "return_to").strip()
+    redirect_base = f"/captures?capture_id={quote(capture_id)}" if capture_id else "/captures"
+
+    def _redirect_target(param: str, value: str) -> str:
+        target = _safe_return_to(return_to) or redirect_base
+        parsed = urlsplit(target)
+        query = parse_qs(parsed.query, keep_blank_values=True)
+        query[param] = [value]
+        return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, urlencode(query, doseq=True), parsed.fragment))
+
+    def _fail(reason: str) -> tuple:
+        _audit_append(f"failed: {reason}")
+        return _redirect(_redirect_target("error", reason))
+
+    if first_query_value(form, "confirm") != "1":
+        return _fail("confirm_required")
+    if not content or not actor or not capture_id or not photo_asset_id:
+        return _fail("missing_field")
+
+    try:
+        queue_path = write_shift_report_note_job(
+            root / "queue",
+            date=date,
+            content=content,
+            actor=actor,
+            capture_id=capture_id,
+            photo_asset_id=photo_asset_id,
+            site_id=site_id,
+            prompt_id=prompt_id,
+            prompt_label=prompt_label,
+        )
+    except Exception as exc:  # noqa: BLE001
+        _audit_append(f"failed: {exc}")
+        return _redirect(_redirect_target("error", str(exc)))
+
+    _audit_append(f"success: staged shift_report_note capture_id={capture_id} photo_asset_id={photo_asset_id} queue_path={queue_path}")
+    return _redirect(_redirect_target("message", "shift_report_note_queued"))
 
 
 def _processing_details_section(

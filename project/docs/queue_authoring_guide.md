@@ -481,7 +481,80 @@ Use a stable date-keyed value when available, for example
 }
 ```
 
-## 2c. `record_day_record`
+## 2c. `shift_report_note`
+
+Use when:
+
+- an operator captures a displayed deep-analysis finding into today's shift report
+- the full analysis text and photo references should be preserved as an
+  operational fact for closeday report generation
+- the capture should also leave durable canonical traceability in `btq_vault`
+
+Do not use when:
+
+- generating or replacing the full end-of-day shift report; use
+  `record_shift_report`
+- requesting additional image analysis; use `deep_analysis`
+- mutating operational vault records directly from a raw capture or AI summary
+
+### Required payload fields
+
+- `date`: `YYYY-MM-DD`
+- `content`: non-empty full analysis text
+- `actor`: operator name or id confirming the send
+- `capture_id`: source field capture document id
+- `photo_asset_id`: source photo asset id within the capture
+
+### Optional payload fields
+
+- `site_id`: string site identifier when known
+- `prompt_id`: string deep-analysis prompt id when known
+- `prompt_label`: display label for the prompt when known
+
+### Optional top-level fields
+
+- `idempotency_key`: string, strongly recommended for replay safety
+
+Use a stable content-aware value derived from the date, content, capture id,
+photo asset id, and prompt metadata.
+
+### Runtime behavior notes
+
+- closeday reads today's queue payloads directly, so this job flows into the
+  generated shift report without changing closeday
+- upserts a canonical `shift_report_note` document in `btq_vault` for durable
+  traceability
+- the document id is content-aware and date-scoped:
+  `shift_report_note_YYYY_MM_DD_<content_hash>`
+- identical resends of the same note target the same document; distinct notes
+  for the same date coexist as separate documents
+- the writer sets `date`, `content`, `capture_id`, `photo_asset_id`, optional
+  prompt/site fields, `actor`, `operator`, and `captured_at`
+- `operator` and `captured_at` are resolved by the handler, not supplied by the
+  job payload
+- reprocessing the same job is idempotent via the `btq_job_ids` marker
+
+### Valid example
+
+```json
+{
+  "job_id": "2026-06-12T18-15-00Z__shift-report-note-cap-photo-2026-06-12T14-48-00-04-00",
+  "job_type": "shift_report_note",
+  "idempotency_key": "shift-report-note:7f3d8c5b1a0e9d2c4b6a8130f9e2d1c0",
+  "payload": {
+    "date": "2026-06-12",
+    "content": "Deep analysis found a damaged threshold at the west entrance.",
+    "actor": "Jordan Avery",
+    "capture_id": "cap-photo-2026-06-12T14-48-00-04-00",
+    "photo_asset_id": "photo-west-entrance-1",
+    "site_id": "7050",
+    "prompt_id": "damage_hazard",
+    "prompt_label": "Damage / hazard"
+  }
+}
+```
+
+## 2d. `record_day_record`
 
 Use when:
 
