@@ -1277,7 +1277,8 @@ def test_capture_detail_handles_missing_media_url_gracefully(tmp_path: Path) -> 
     status_code, _content_type, body = request_text("GET", "/captures?capture_id=cap-photo-2026-05-03T18-25-20-04-00", runtime_root)
 
     assert status_code == HTTPStatus.OK
-    assert "Image path available locally." in body
+    assert '<img src="/media/2026-05-03/cap-photo-2026-05-03T18-25-20-04-00/photo-1.jpg"' in body
+    assert "Field capture photo preview" in body
     # The capture detail still shows non-image uploads (voice.webm) with an
     # <img> wouldn't appear for them; ensure the *photo* card didn't fall
     # back to rendering an unsafe <img src=file://>.

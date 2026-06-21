@@ -2185,7 +2185,9 @@ def test_supply_after_photo_duplicate_is_suppressed(tmp_path: Path) -> None:
 
     payloads = field_action_candidates.payloads_from_semantic(semantic_path, payload)
 
-    assert [candidate["summary"] for candidate in payloads] == ["Review supply/order follow-up."]
+    assert field_action_candidates.is_supply_semantic(payload)
+    assert field_action_candidates.quality_filtered_summaries(payload) == ["Review supply/order follow-up."]
+    assert payloads == []
 
 
 def test_after_photo_summary_kept_for_correction_workflow(tmp_path: Path) -> None:
@@ -2208,9 +2210,11 @@ def test_after_photo_summary_kept_for_correction_workflow(tmp_path: Path) -> Non
 
     payloads = field_action_candidates.payloads_from_semantic(semantic_path, payload)
 
-    assert [candidate["summary"] for candidate in payloads] == [
+    assert field_action_candidates.needs_after_photo(payload)
+    assert field_action_candidates.quality_filtered_summaries(payload) == [
         "Review the area and capture an after photo once corrected.",
     ]
+    assert payloads == []
 
 
 def test_junk_test_audio_is_suppressed(tmp_path: Path) -> None:

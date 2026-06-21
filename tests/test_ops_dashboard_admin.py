@@ -210,6 +210,22 @@ def header_cell_count(fragment: str) -> int:
     return fragment.count("<th>") + fragment.count("<th ")
 
 
+EXPECTED_INBOX_CARD_IDS = [
+    "captures_with_note",
+    "pending_candidates",
+    "approved_missing_draft",
+    "approved_drafts_not_staged",
+    "failed_queue_jobs",
+    "failed_captures",
+    "failed_photo_vision_sidecars",
+    "unknown_captures",
+    "uploaded_without_candidate",
+    "open_site_issues",
+    "open_supply_needs",
+    "open_equipment_requests",
+]
+
+
 def test_existing_status_route_moved_to_health_path(tmp_path: Path) -> None:
     runtime_root = tmp_path / "runtime"
     write_field_capture_fixture(runtime_root)
@@ -728,7 +744,7 @@ def test_inbox_empty_cards_render_with_zero_state(tmp_path: Path) -> None:
     status, _content_type, body = request_text("GET", "/inbox", tmp_path / "runtime")
 
     assert status == HTTPStatus.OK
-    assert body.count('class="inbox-card"') == 5
+    assert body.count('class="inbox-card"') == 6
     assert "Nothing waiting" in body
     assert 'class="inbox-summary-strip"' in body
 
@@ -779,16 +795,23 @@ def test_inbox_counts_have_semantic_color_css(tmp_path: Path) -> None:
     assert 'data-card-id="failed_queue_jobs"' in body
 
 
-def test_inbox_primary_grid_has_five_cards(tmp_path: Path) -> None:
+def test_inbox_primary_grid_has_six_cards(tmp_path: Path) -> None:
     status, _content_type, body = request_text("GET", "/inbox", tmp_path / "runtime")
 
     assert status == HTTPStatus.OK
     start = body.index('<section class="inbox-primary">')
     end = body.index("</section>", start)
     primary = body[start:end]
-    assert primary.count('class="inbox-card"') == 5
+    assert primary.count('class="inbox-card"') == 6
     # 337a: the first two inbox cards are retitled for the job_draft model.
-    for title in ("Job drafts needing review", "Pending drafts without capture context", "Failed queue jobs", "Unknown captures", "Open site issues"):
+    for title in (
+        "Job drafts needing review",
+        "Pending drafts without capture context",
+        "Failed queue jobs",
+        "Failed captures",
+        "Unknown captures",
+        "Open site issues",
+    ):
         assert title in primary
 
 
@@ -826,19 +849,7 @@ def test_api_inbox_json_route_serves_inbox_payload(tmp_path: Path, couchdb_job_d
     assert status == HTTPStatus.OK
     assert "application/json" in content_type
     assert sorted(payload) == ["cards", "generated_at"]
-    assert [card["id"] for card in payload["cards"]] == [
-        "captures_with_note",
-        "pending_candidates",
-        "approved_missing_draft",
-        "approved_drafts_not_staged",
-        "failed_queue_jobs",
-        "failed_photo_vision_sidecars",
-        "unknown_captures",
-        "uploaded_without_candidate",
-        "open_site_issues",
-        "open_supply_needs",
-        "open_equipment_requests",
-    ]
+    assert [card["id"] for card in payload["cards"]] == EXPECTED_INBOX_CARD_IDS
     # 337a: deep links now carry draft_id (the review surface reads job_drafts).
     assert payload["cards"][0]["top"][0]["deep_link"].startswith("/candidates?draft_id=")
 
@@ -895,11 +906,11 @@ def test_candidate_inbox_row_has_note_false_when_no_transcript_path() -> None:
     assert result["has_note"] is False
 
 
-def test_inbox_api_json_still_lists_eleven_cards(tmp_path: Path) -> None:
+def test_inbox_api_json_still_lists_twelve_cards(tmp_path: Path) -> None:
     status, _content_type, body = request_text("GET", "/api/inbox.json", tmp_path / "runtime")
 
     assert status == HTTPStatus.OK
-    assert len(json.loads(body)["cards"]) == 11
+    assert len(json.loads(body)["cards"]) == len(EXPECTED_INBOX_CARD_IDS)
 
 
 def test_inbox_includes_open_site_issues_card(tmp_path: Path, monkeypatch) -> None:
@@ -1023,19 +1034,7 @@ def test_inbox_card_order_places_structured_open_items_after_intake_cards(tmp_pa
     _status, _content_type, body = request_text("GET", "/api/inbox.json", tmp_path / "runtime")
     payload = json.loads(body)
 
-    assert [card["id"] for card in payload["cards"]] == [
-        "captures_with_note",
-        "pending_candidates",
-        "approved_missing_draft",
-        "approved_drafts_not_staged",
-        "failed_queue_jobs",
-        "failed_photo_vision_sidecars",
-        "unknown_captures",
-        "uploaded_without_candidate",
-        "open_site_issues",
-        "open_supply_needs",
-        "open_equipment_requests",
-    ]
+    assert [card["id"] for card in payload["cards"]] == EXPECTED_INBOX_CARD_IDS
 
 
 def test_inbox_uploaded_without_candidate_excludes_those_with_candidate(tmp_path: Path, couchdb_job_draft_review) -> None:
@@ -1064,7 +1063,7 @@ def test_api_inbox_json_shape_matches_html_card_counts(tmp_path: Path) -> None:
     assert status == HTTPStatus.OK
     assert html_status == HTTPStatus.OK
     assert "application/json" in content_type
-    assert len(payload["cards"]) == 11
+    assert len(payload["cards"]) == len(EXPECTED_INBOX_CARD_IDS)
     for card in payload["cards"]:
         assert str(card["count"]) in html_body
 

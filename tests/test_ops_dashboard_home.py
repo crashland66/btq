@@ -648,7 +648,7 @@ def test_home_includes_field_photos_preview_strip(monkeypatch: pytest.MonkeyPatc
     photos_start = body.index("<h2>Recent field photos</h2>")
     photos = body[photos_start:body.index("</section>", photos_start)]
     assert '<a href="/field-photos">View all</a>' in photos
-    assert '<div class="site-gallery">' in photos
+    assert '<div class="site-gallery site-gallery--strip">' in photos
     assert "<article>Photo</article>" in photos
     # No inline photos filter form on the landing.
     assert '<form method="get" action="/field-photos"' not in body
@@ -974,9 +974,11 @@ def test_home_renders_operational_group_for_grouped_rows(monkeypatch: pytest.Mon
     first_op = home_group(body, "home-group--operational")
     assert "No visit in 30 days &middot;" in first_op
     assert "Open opportunities &middot;" in first_op
-    # The recent-activity operational group carries recent field photos + visits.
+    # The recent-activity operational group carries the field-photo strip; the
+    # low-value recent-visits list was intentionally removed.
     assert "<h2>Recent field photos</h2>" in body
-    assert "Recent visits &middot;" in body
+    assert '<p class="zero-state">No photos yet.</p>' in body
+    assert "Recent visits &middot;" not in body
 
 
 def test_home_grid_shell_wraps_all_groups(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

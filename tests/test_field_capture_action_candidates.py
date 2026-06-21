@@ -139,24 +139,28 @@ def test_default_semantic_dirs_returns_audio_then_text_then_voice_in_order(tmp_p
     )
 
 
-def test_plan_candidates_from_semantic_accepts_text_semantic(tmp_path: Path) -> None:
+def test_plan_candidates_from_semantic_skips_text_semantic_without_extracted_actions(tmp_path: Path) -> None:
     results = action_candidates.plan_candidates_from_semantic(
         tmp_path / "semantic.json",
         semantic_payload(semantic_type="field_text_semantic_summary"),
         tmp_path / "candidates",
     )
 
-    assert results[0]["status"] == action_candidates.CANDIDATE_PLAN_WOULD_CREATE
+    assert results[0]["status"] == action_candidates.CANDIDATE_PLAN_SKIPPED
+    assert results[0]["reason"] == "semantic action candidates suppressed by quality rules"
+    assert results[0]["candidate"] is None
 
 
-def test_plan_candidates_from_semantic_accepts_audio_semantic(tmp_path: Path) -> None:
+def test_plan_candidates_from_semantic_skips_audio_semantic_without_extracted_actions(tmp_path: Path) -> None:
     results = action_candidates.plan_candidates_from_semantic(
         tmp_path / "semantic.json",
         semantic_payload(semantic_type="field_audio_semantic_summary"),
         tmp_path / "candidates",
     )
 
-    assert results[0]["status"] == action_candidates.CANDIDATE_PLAN_WOULD_CREATE
+    assert results[0]["status"] == action_candidates.CANDIDATE_PLAN_SKIPPED
+    assert results[0]["reason"] == "semantic action candidates suppressed by quality rules"
+    assert results[0]["candidate"] is None
 
 
 def test_plan_candidates_from_semantic_rejects_unknown_semantic_type(tmp_path: Path) -> None:

@@ -36,7 +36,6 @@ from btq_vault.projector import (
     _location_list as _projector_location_list,
     _grouped_rows,
     _opportunity_label,
-    _visit_label,
     _rows_by_site,
     _status_rows,
     _row_date,
@@ -508,53 +507,6 @@ def _render_named_location_panel(
         f"{view_all}"
         "</div>"
         f'{_location_list_html(preview_locations, empty=empty)}'
-        f"{details}"
-        "</section>"
-    )
-
-
-def _render_recent_visits_section(
-    recent_visits: dict[str, list[dict]],
-    locations: list[_Location],
-) -> str:
-    site_names = {loc.site_id: loc.name for loc in locations}
-    rows = [row for site_rows in recent_visits.values() for row in site_rows]
-    rows.sort(key=lambda row: (_row_date(row) or date.min), reverse=True)
-    count = len(rows)
-
-    def row_html(row: dict) -> str:
-        site_id = _site_id(row)
-        label = site_names.get(site_id, site_id or "Unknown site")
-        return (
-            "<li>"
-            f"{_site_link(site_id, label) if site_id else _esc(label)}"
-            f'<p class="subline">{_esc(_visit_label(row) or "Visit")}</p>'
-            "</li>"
-        )
-
-    if rows:
-        compact = f"<ul>{''.join(row_html(row) for row in rows[:6])}</ul>"
-        view_all = (
-            '<a href="#recent-visits-all" '
-            "onclick=\"var el=document.getElementById('recent-visits-all');if(el){el.open=true;}\">View all</a>"
-        )
-        details = (
-            '<details class="detail-block" id="recent-visits-all">'
-            f'<summary>View all <span class="details-count">{_esc(str(count))} visit{"s" if count != 1 else ""}</span></summary>'
-            f'<div class="detail-block-body">{_grouped_rows(recent_visits, locations, _visit_label)}</div>'
-            "</details>"
-        )
-    else:
-        compact = '<p class="zero-state">No visits in the last 14 days.</p>'
-        view_all = ""
-        details = ""
-    return (
-        "<section>"
-        '<div class="section-heading-row">'
-        f"<h2>Recent visits &middot; {_esc(str(count))}</h2>"
-        f"{view_all}"
-        "</div>"
-        f"{compact}"
         f"{details}"
         "</section>"
     )
