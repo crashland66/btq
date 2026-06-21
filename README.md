@@ -184,6 +184,8 @@ Current Python/runtime requirements inferred from active code paths:
   markdown linting for operational docs, installed through the `dev` extra
 - `ruff`
   Python linting for first-party code, installed through the `dev` extra
+- `boto3`
+  only needed on hosts running the media store with `media_store="s3"` for Cloudflare R2, installed through the `r2` extra
 - `ffmpeg`
   expected on `PATH` for Whisper audio handling
 
@@ -221,6 +223,16 @@ python3 -m venv project/.venv
 project/.venv/bin/python -m pip install --upgrade pip
 project/.venv/bin/python -m pip install ".[dev]"
 ```
+
+On serving or ingest hosts using the Cloudflare R2 media store (`media_store="s3"`), install the
+optional `r2` extra in the same venv too:
+
+```bash
+project/.venv/bin/python -m pip install ".[r2]"
+```
+
+The `r2` install is idempotent and safe to re-run. Hosts using the default `local` media store do
+not need this extra.
 
 If that install fails very early with build-backend or setuptools errors, upgrade `setuptools` inside the venv and retry.
 
