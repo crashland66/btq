@@ -245,6 +245,255 @@ public struct SubmissionQualitySummary: Codable, Equatable, Sendable {
     }
 }
 
+public struct InboxResponse: Codable, Equatable, Sendable {
+    public var count: Int
+    public var items: [InboxItem]
+
+    public init(count: Int, items: [InboxItem]) {
+        self.count = count
+        self.items = items
+    }
+}
+
+public struct InboxItem: Identifiable, Codable, Equatable, Sendable {
+    public var id: String { draftID }
+    public var draftID: String
+    public var revision: String
+    public var sourceCaptureID: String
+    public var source: String
+    public var message: String
+    public var evidence: String
+    public var site: String
+    public var siteID: String
+    public var groupID: String
+    public var submitterName: String
+    public var createdAt: String
+    public var jobType: String
+    public var payload: [String: JSONValue]
+
+    public init(
+        draftID: String,
+        revision: String,
+        sourceCaptureID: String = "",
+        source: String = "",
+        message: String = "",
+        evidence: String = "",
+        site: String = "",
+        siteID: String = "",
+        groupID: String = "",
+        submitterName: String = "",
+        createdAt: String = "",
+        jobType: String,
+        payload: [String: JSONValue] = [:]
+    ) {
+        self.draftID = draftID
+        self.revision = revision
+        self.sourceCaptureID = sourceCaptureID
+        self.source = source
+        self.message = message
+        self.evidence = evidence
+        self.site = site
+        self.siteID = siteID
+        self.groupID = groupID
+        self.submitterName = submitterName
+        self.createdAt = createdAt
+        self.jobType = jobType
+        self.payload = payload
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case draftID = "draft_id"
+        case revision = "_rev"
+        case sourceCaptureID = "source_capture_id"
+        case source
+        case message
+        case evidence
+        case site
+        case siteID = "site_id"
+        case groupID = "group_id"
+        case submitterName = "submitter_name"
+        case createdAt = "created_at"
+        case jobType = "job_type"
+        case payload
+    }
+}
+
+public struct InboxGroup: Identifiable, Equatable, Sendable {
+    public var id: String
+    public var items: [InboxItem]
+
+    public init(id: String, items: [InboxItem]) {
+        self.id = id
+        self.items = items
+    }
+}
+
+public enum InboxDecisionAction: String, Codable, Equatable, Sendable {
+    case approve
+    case reject
+}
+
+public struct InboxDecisionResponse: Codable, Equatable, Sendable {
+    public var ok: Bool?
+    public var draftID: String?
+    public var status: String?
+    public var error: String?
+    public var message: String?
+
+    public init(ok: Bool? = nil, draftID: String? = nil, status: String? = nil, error: String? = nil, message: String? = nil) {
+        self.ok = ok
+        self.draftID = draftID
+        self.status = status
+        self.error = error
+        self.message = message
+    }
+
+    public var alreadyDecided: Bool {
+        status == "already_decided" || error == "already_decided"
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case ok
+        case draftID = "draft_id"
+        case status
+        case error
+        case message
+    }
+}
+
+public struct InboxSetDecisionEntry: Codable, Equatable, Sendable {
+    public var draftID: String
+    public var revision: String
+    public var checked: Bool
+
+    public init(draftID: String, revision: String, checked: Bool) {
+        self.draftID = draftID
+        self.revision = revision
+        self.checked = checked
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case draftID = "draft_id"
+        case revision = "_rev"
+        case checked
+    }
+}
+
+public struct InboxSetDecisionResponse: Codable, Equatable, Sendable {
+    public var ok: Bool?
+    public var approved: Int
+    public var rejected: Int
+    public var alreadyDecided: Int
+    public var results: [InboxSetDecisionResult]
+
+    public init(ok: Bool? = nil, approved: Int = 0, rejected: Int = 0, alreadyDecided: Int = 0, results: [InboxSetDecisionResult] = []) {
+        self.ok = ok
+        self.approved = approved
+        self.rejected = rejected
+        self.alreadyDecided = alreadyDecided
+        self.results = results
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case ok
+        case approved
+        case rejected
+        case alreadyDecided = "already_decided"
+        case results
+    }
+}
+
+public struct InboxSetDecisionResult: Codable, Equatable, Sendable {
+    public var draftID: String
+    public var action: String?
+    public var status: String?
+    public var revision: String?
+    public var error: String?
+    public var message: String?
+
+    public init(draftID: String, action: String? = nil, status: String? = nil, revision: String? = nil, error: String? = nil, message: String? = nil) {
+        self.draftID = draftID
+        self.action = action
+        self.status = status
+        self.revision = revision
+        self.error = error
+        self.message = message
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case draftID = "draft_id"
+        case action
+        case status
+        case revision = "_rev"
+        case error
+        case message
+    }
+}
+
+public enum JSONValue: Codable, Equatable, Sendable, CustomStringConvertible {
+    case string(String)
+    case number(Double)
+    case bool(Bool)
+    case object([String: JSONValue])
+    case array([JSONValue])
+    case null
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        if container.decodeNil() {
+            self = .null
+        } else if let value = try? container.decode(Bool.self) {
+            self = .bool(value)
+        } else if let value = try? container.decode(Double.self) {
+            self = .number(value)
+        } else if let value = try? container.decode(String.self) {
+            self = .string(value)
+        } else if let value = try? container.decode([JSONValue].self) {
+            self = .array(value)
+        } else {
+            self = .object(try container.decode([String: JSONValue].self))
+        }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        switch self {
+        case .string(let value):
+            try container.encode(value)
+        case .number(let value):
+            try container.encode(value)
+        case .bool(let value):
+            try container.encode(value)
+        case .object(let value):
+            try container.encode(value)
+        case .array(let value):
+            try container.encode(value)
+        case .null:
+            try container.encodeNil()
+        }
+    }
+
+    public var description: String {
+        switch self {
+        case .string(let value):
+            value
+        case .number(let value):
+            value.rounded() == value ? String(Int(value)) : String(value)
+        case .bool(let value):
+            value ? "true" : "false"
+        case .object(let value):
+            value
+                .sorted { $0.key < $1.key }
+                .map { "\($0.key): \($0.value.description)" }
+                .joined(separator: ", ")
+        case .array(let value):
+            value.map(\.description).joined(separator: ", ")
+        case .null:
+            ""
+        }
+    }
+}
+
 public struct BTQSite: Identifiable, Codable, Equatable, Sendable {
     public var id: String { siteID }
     public var siteID: String

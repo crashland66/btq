@@ -109,6 +109,38 @@ import UniformTypeIdentifiers
     #expect(response.qualitySummary?.flagCounts["too_dark"] == 1)
 }
 
+@Test func inboxDecodesBackendShape() throws {
+    let json = """
+    {
+      "count": 2,
+      "items": [
+        {
+          "draft_id": "jd_1",
+          "_rev": "1-abc",
+          "source_capture_id": "cap_1",
+          "source": "voice",
+          "message": "Supply need: paper towels out.",
+          "evidence": "Operator said east restroom is out.",
+          "site": "Sandbox Site",
+          "site_id": "SANDBOX",
+          "group_id": "grp_1",
+          "submitter_name": "Gregory Stoltz",
+          "created_at": "Today",
+          "job_type": "log_supply_need",
+          "payload": {"site_id": "SANDBOX", "item_name": "Paper towels", "requested_by": "operator"}
+        }
+      ]
+    }
+    """.data(using: .utf8)!
+
+    let response = try JSONDecoder().decode(InboxResponse.self, from: json)
+
+    #expect(response.count == 2)
+    #expect(response.items.first?.draftID == "jd_1")
+    #expect(response.items.first?.revision == "1-abc")
+    #expect(response.items.first?.payload["item_name"]?.description == "Paper towels")
+}
+
 @Test func onboardingParserFindsQueryAndFragmentTokens() {
     #expect(OnboardingLinkParser.token(from: URL(string: "https://fc.gregstoltz.com/?token=abc")!) == "abc")
     #expect(OnboardingLinkParser.token(from: URL(string: "https://fc.gregstoltz.com/#token=def")!) == "def")
@@ -527,6 +559,10 @@ import UniformTypeIdentifiers
         contentsOf: packageRoot().appendingPathComponent("Sources/BTQFieldCaptureApp/Views/CapturePhotoThumbnail.swift"),
         encoding: .utf8
     )
+    let inboxView = try String(
+        contentsOf: packageRoot().appendingPathComponent("Sources/BTQFieldCaptureApp/Views/InboxView.swift"),
+        encoding: .utf8
+    )
     #expect(queueView.contains("\"queue.summary.\\(label.lowercased())\""))
     #expect(queueView.contains("\"queue.capture.\\(capture.captureID)\""))
     #expect(queueView.contains("\"queue.server.refresh\""))
@@ -557,6 +593,15 @@ import UniformTypeIdentifiers
     #expect(appVersionFooter.contains("\"app.version.footer\""))
     #expect(photoThumbnail.contains("struct CapturePhotoThumbnail"))
     #expect(photoThumbnail.contains("Data(contentsOf: fileURL)"))
+    #expect(inboxView.contains("struct InboxView"))
+    #expect(inboxView.contains("Approval Inbox"))
+    #expect(inboxView.contains("model.refreshInbox()"))
+    #expect(inboxView.contains("\"inbox.refresh\""))
+    #expect(inboxView.contains("model.reviewInboxItem(item, action: .reject)"))
+    #expect(inboxView.contains("model.reviewInboxItem(item, action: .approve)"))
+    #expect(inboxView.contains("model.reviewInboxSet(group, approvedDraftIDs: approvedDraftIDs)"))
+    #expect(inboxView.contains("PayloadRows(payload: item.payload)"))
+    #expect(inboxView.contains(".disabled(model.isReviewingInboxItem || model.isOfflineMode)"))
 
     let sitesView = try String(
         contentsOf: packageRoot().appendingPathComponent("Sources/BTQFieldCaptureApp/Views/SitesView.swift"),
@@ -578,6 +623,14 @@ import UniformTypeIdentifiers
     )
     let rootView = try String(
         contentsOf: packageRoot().appendingPathComponent("Sources/BTQFieldCaptureApp/Views/BTQFieldCaptureRootView.swift"),
+        encoding: .utf8
+    )
+    let initialSetupView = try String(
+        contentsOf: packageRoot().appendingPathComponent("Sources/BTQFieldCaptureApp/Views/InitialSetupView.swift"),
+        encoding: .utf8
+    )
+    let modelSource = try String(
+        contentsOf: packageRoot().appendingPathComponent("Sources/BTQFieldCaptureApp/Stores/FieldCaptureModel.swift"),
         encoding: .utf8
     )
     #expect(settingsView.contains("\"settings.notifications.status\""))
@@ -621,6 +674,13 @@ import UniformTypeIdentifiers
     #expect(rootView.contains(".preferredColorScheme(ScreenMode.normalized(screenModeRaw).preferredColorScheme)"))
     #expect(rootView.contains(".tint(.btqAccent)"))
     #expect(rootView.contains("BTQFieldCaptureShell(model: model, screenMode: screenMode)"))
+    #expect(rootView.contains("case inbox"))
+    #expect(rootView.contains("static func visible(canReview: Bool)"))
+    #expect(rootView.contains("section != .inbox || canReview"))
+    #expect(rootView.contains(".badge(item == .inbox ? model.inboxBadgeCount : 0)"))
+    #expect(rootView.contains("InboxView(model: model)"))
+    #expect(rootView.contains("if model.needsInitialSetup"))
+    #expect(rootView.contains("InitialSetupView(model: model, onConnected: routeToCapture)"))
     #expect(rootView.contains(".onOpenURL { url in"))
     #expect(rootView.contains("Task { await handleOnboardingURL(url) }"))
     #expect(rootView.contains("SettingsView(model: model, screenMode: $screenMode, onConnected: routeToCapture)"))
@@ -629,6 +689,18 @@ import UniformTypeIdentifiers
     #expect(rootView.contains("if await model.connectWithOnboardingURL(url)"))
     #expect(rootView.contains("private func routeToCapture()"))
     #expect(rootView.contains("section = .capture"))
+    #expect(modelSource.contains("public var needsInitialSetup: Bool"))
+    #expect(modelSource.contains("account.tokenID == nil || requiresReconnect"))
+    #expect(initialSetupView.contains("struct InitialSetupView"))
+    #expect(initialSetupView.contains("FieldCaptureBrandHeader()"))
+    #expect(initialSetupView.contains("Paste the setup token from your TestFlight notes."))
+    #expect(initialSetupView.contains("TextField(\"Paste setup token\""))
+    #expect(initialSetupView.contains(".privacySensitive()"))
+    #expect(initialSetupView.contains("model.connectWithOnboardingURL(url)"))
+    #expect(initialSetupView.contains("model.connect(token: value)"))
+    #expect(initialSetupView.contains("onConnected()"))
+    #expect(initialSetupView.contains("\"initial.setup.token\""))
+    #expect(initialSetupView.contains("\"initial.setup.connect\""))
     #expect(settingsView.contains("connectButtonLabel"))
     #expect(settingsView.contains("model.isConnecting ? \"Connecting\" : \"Connect\""))
     #expect(settingsView.contains(".disabled(model.isConnecting || tokenOrLink.trimmingCharacters"))
@@ -2479,6 +2551,34 @@ import UniformTypeIdentifiers
     #expect(await apiClient.requestedTokens == ["token-123"])
 }
 
+@Test @MainActor func validConnectIsNotRejectedWhenLocalSnapshotSaveFails() async {
+    let liveSession = BTQSession(
+        person: BTQPerson(personID: "person_review", name: "App Store Review"),
+        token: BTQToken(tokenID: "token_review", label: "Review"),
+        sites: [BTQSite(siteID: "SANDBOX", label: "Sandbox Site")],
+        canSubmit: true,
+        canReview: false,
+        maxImages: 6
+    )
+    let tokenStore = MemoryTokenStore()
+    let model = FieldCaptureModel(
+        store: FailingSaveFieldCaptureStore(snapshot: FieldCaptureSnapshot(account: .defaultProduction)),
+        apiClient: SequencedSessionAPIClient(sessions: [liveSession]),
+        tokenStore: tokenStore,
+        notificationScheduler: NoopUploadNotificationScheduler()
+    )
+    await model.load()
+
+    let didConnect = await model.connect(token: "review-token")
+
+    #expect(didConnect)
+    #expect(model.needsInitialSetup == false)
+    #expect(model.account.personName == "App Store Review")
+    #expect(model.sites.map(\.siteID) == ["SANDBOX"])
+    #expect(model.statusMessage == "Ready for App Store Review. Local cache could not be saved.")
+    #expect(await tokenStore.loadToken(accountID: model.account.id) == "review-token")
+}
+
 @Test @MainActor func removingActiveAccountDeletesTokenAndSwitchesToFallbackAccount() async {
     let apiClient = SequencedSessionAPIClient(sessions: [
         BTQSession(
@@ -2842,6 +2942,113 @@ import UniformTypeIdentifiers
     #expect(await apiClient.requestedTokens == ["token-history"])
 }
 
+@Test @MainActor func reviewInboxLoadsGroupsAndCarriesRevisionThroughDecision() async {
+    let session = BTQSession(
+        person: BTQPerson(personID: "operator_1", name: "Operator One"),
+        token: BTQToken(tokenID: "token_review", label: "Operator"),
+        sites: [BTQSite(siteID: "SANDBOX", label: "Sandbox Site")],
+        canSubmit: true,
+        canReview: true,
+        maxImages: 6,
+        inboxCount: 2
+    )
+    let items = [
+        InboxItem(
+            draftID: "jd_1",
+            revision: "1-a",
+            sourceCaptureID: "cap_1",
+            source: "voice",
+            message: "Need towels",
+            evidence: "East restroom is empty.",
+            site: "Sandbox Site",
+            siteID: "SANDBOX",
+            groupID: "grp_1",
+            submitterName: "Operator One",
+            createdAt: "Today",
+            jobType: "log_supply_need",
+            payload: ["item_name": .string("Paper towels")]
+        ),
+        InboxItem(
+            draftID: "jd_2",
+            revision: "1-b",
+            sourceCaptureID: "cap_1",
+            source: "voice",
+            message: "Need liners",
+            evidence: "Supply closet is low.",
+            site: "Sandbox Site",
+            siteID: "SANDBOX",
+            groupID: "grp_1",
+            submitterName: "Operator One",
+            createdAt: "Today",
+            jobType: "log_supply_need",
+            payload: ["item_name": .string("Can liners")]
+        ),
+    ]
+    let apiClient = ReviewInboxAPIClient(
+        session: session,
+        inbox: InboxResponse(count: items.count, items: items),
+        decisionResponse: InboxDecisionResponse(ok: true, draftID: "jd_1", status: "approved")
+    )
+    let tokenStore = MemoryTokenStore()
+    let model = FieldCaptureModel(
+        store: MemoryFieldCaptureStore(snapshot: FieldCaptureSnapshot(account: .defaultProduction)),
+        apiClient: apiClient,
+        tokenStore: tokenStore,
+        notificationScheduler: NoopUploadNotificationScheduler()
+    )
+    await tokenStore.saveToken("token-review", accountID: model.account.id)
+    await model.load()
+
+    await model.refreshInbox()
+
+    #expect(model.canReviewInbox)
+    #expect(model.inboxBadgeCount == 2)
+    #expect(model.inboxItems.map(\.draftID) == ["jd_1", "jd_2"])
+    #expect(model.inboxGroups.count == 1)
+
+    await model.reviewInboxItem(items[0], action: .approve)
+
+    #expect(model.inboxItems.map(\.draftID) == ["jd_2"])
+    #expect(model.inboxBadgeCount == 1)
+    #expect(model.statusMessage == "Approved.")
+    #expect(await apiClient.decisions == [RecordedInboxDecision(action: .approve, draftID: "jd_1", revision: "1-a")])
+}
+
+@Test @MainActor func alreadyDecidedInboxDecisionDropsCardWithoutError() async {
+    let session = BTQSession(
+        person: BTQPerson(personID: "operator_1", name: "Operator One"),
+        token: BTQToken(tokenID: "token_review", label: "Operator"),
+        sites: [BTQSite(siteID: "SANDBOX", label: "Sandbox Site")],
+        canSubmit: true,
+        canReview: true,
+        maxImages: 6,
+        inboxCount: 1
+    )
+    let item = InboxItem(draftID: "jd_done", revision: "2-done", jobType: "append_to_note")
+    let apiClient = ReviewInboxAPIClient(
+        session: session,
+        inbox: InboxResponse(count: 1, items: [item]),
+        decisionResponse: InboxDecisionResponse(error: "already_decided")
+    )
+    let tokenStore = MemoryTokenStore()
+    let model = FieldCaptureModel(
+        store: MemoryFieldCaptureStore(snapshot: FieldCaptureSnapshot(account: .defaultProduction)),
+        apiClient: apiClient,
+        tokenStore: tokenStore,
+        notificationScheduler: NoopUploadNotificationScheduler()
+    )
+    await tokenStore.saveToken("token-review", accountID: model.account.id)
+    await model.load()
+    await model.refreshInbox()
+
+    await model.reviewInboxItem(item, action: .reject)
+
+    #expect(model.inboxItems.isEmpty)
+    #expect(model.inboxBadgeCount == 0)
+    #expect(model.statusMessage == "Already handled on another device.")
+    #expect(await apiClient.decisions == [RecordedInboxDecision(action: .reject, draftID: "jd_done", revision: "2-done")])
+}
+
 @Test @MainActor func submittedHistoryRefreshDoesNotCrossAccountSwitch() async {
     let alphaID = UUID(uuidString: "00000000-0000-0000-0000-0000000000a1")!
     let betaID = UUID(uuidString: "00000000-0000-0000-0000-0000000000b2")!
@@ -2939,6 +3146,49 @@ import UniformTypeIdentifiers
     #expect(historyRequest?.httpMethod == "GET")
     #expect(historyRequest?.value(forHTTPHeaderField: "Authorization") == "Bearer token-history")
     #expect(historyRequest?.value(forHTTPHeaderField: "Accept") == "application/json")
+
+    let inbox = try await client.inbox(baseURL: URL(string: "https://example.test")!, token: "token-review")
+    let inboxRequest = await recorder.requests.last
+
+    #expect(inbox.items.first?.draftID == "jd_api_1")
+    #expect(inboxRequest?.url?.path == "/api/inbox")
+    #expect(inboxRequest?.httpMethod == "GET")
+    #expect(inboxRequest?.value(forHTTPHeaderField: "Authorization") == "Bearer token-review")
+
+    let inboxItem = try #require(inbox.items.first)
+    let approveResponse = try await client.decideInboxItem(
+        action: .approve,
+        item: inboxItem,
+        reason: nil,
+        baseURL: URL(string: "https://example.test")!,
+        token: "token-review"
+    )
+    let approveRequest = await recorder.requests.last
+    let approveBody = try #require(await recorder.bodies.last)
+    let approveJSON = try JSONSerialization.jsonObject(with: approveBody) as? [String: Any]
+
+    #expect(approveResponse.status == "approved")
+    #expect(approveRequest?.url?.path == "/api/inbox/approve")
+    #expect(approveRequest?.httpMethod == "POST")
+    #expect(approveRequest?.value(forHTTPHeaderField: "Content-Type") == "application/json")
+    #expect(approveJSON?["draft_id"] as? String == "jd_api_1")
+    #expect(approveJSON?["_rev"] as? String == "1-api")
+
+    let setResponse = try await client.decideInboxSet(
+        [InboxSetDecisionEntry(draftID: "jd_api_1", revision: "1-api", checked: true)],
+        baseURL: URL(string: "https://example.test")!,
+        token: "token-review"
+    )
+    let setRequest = await recorder.requests.last
+    let setBody = try #require(await recorder.bodies.last)
+    let setJSON = try JSONSerialization.jsonObject(with: setBody) as? [String: Any]
+    let setDrafts = setJSON?["drafts"] as? [[String: Any]]
+
+    #expect(setResponse.approved == 1)
+    #expect(setRequest?.url?.path == "/api/inbox/approve-set")
+    #expect(setDrafts?.first?["draft_id"] as? String == "jd_api_1")
+    #expect(setDrafts?.first?["_rev"] as? String == "1-api")
+    #expect(setDrafts?.first?["checked"] as? Bool == true)
 
     let capture = LocalCapture(
         captureID: "cap-unified-api",
@@ -3217,6 +3467,61 @@ private func makeStubbedSession(recorder: RequestRecorder) -> URLSession {
                     "clear": 1,
                     "flag_counts": {}
                   }
+                }
+                """.data(using: .utf8)!
+            )
+        }
+        if request.url?.path == "/api/inbox" {
+            return (
+                200,
+                """
+                {
+                  "count": 1,
+                  "items": [
+                    {
+                      "draft_id": "jd_api_1",
+                      "_rev": "1-api",
+                      "source_capture_id": "cap-api-1",
+                      "source": "voice",
+                      "message": "Supply need: paper towels",
+                      "evidence": "Operator reported empty dispenser.",
+                      "site": "Sandbox Site",
+                      "site_id": "SANDBOX",
+                      "group_id": "grp_api",
+                      "submitter_name": "API User",
+                      "created_at": "Today",
+                      "job_type": "log_supply_need",
+                      "payload": {"site_id": "SANDBOX", "item_name": "Paper towels"}
+                    }
+                  ]
+                }
+                """.data(using: .utf8)!
+            )
+        }
+        if request.url?.path == "/api/inbox/approve" || request.url?.path == "/api/inbox/reject" {
+            return (
+                200,
+                """
+                {
+                  "ok": true,
+                  "draft_id": "jd_api_1",
+                  "status": "approved"
+                }
+                """.data(using: .utf8)!
+            )
+        }
+        if request.url?.path == "/api/inbox/approve-set" {
+            return (
+                200,
+                """
+                {
+                  "ok": true,
+                  "approved": 1,
+                  "rejected": 0,
+                  "already_decided": 0,
+                  "results": [
+                    {"draft_id": "jd_api_1", "action": "approve", "status": "approved", "_rev": "2-api"}
+                  ]
                 }
                 """.data(using: .utf8)!
             )
@@ -3506,6 +3811,61 @@ private actor SubmittedHistoryAPIClient: CaptureAPIClient {
     func mySubmissions(baseURL: URL, token: String) async throws -> MySubmissionsResponse {
         requestedTokens.append(token)
         return response
+    }
+
+    func submit(capture: LocalCapture, baseURL: URL, token: String) async throws -> SubmitCaptureResponse {
+        SubmitCaptureResponse(
+            status: "submitted",
+            jobID: capture.jobID,
+            captureID: capture.captureID,
+            couchdbDocID: capture.captureID,
+            photoCount: capture.photos.count,
+            audioCount: capture.audio == nil ? 0 : 1,
+            idempotentReplay: false
+        )
+    }
+}
+
+private struct RecordedInboxDecision: Equatable, Sendable {
+    var action: InboxDecisionAction
+    var draftID: String
+    var revision: String
+}
+
+private actor ReviewInboxAPIClient: CaptureAPIClient {
+    private let sessionResponse: BTQSession
+    private let inboxResponse: InboxResponse
+    private let decisionResponse: InboxDecisionResponse
+    private(set) var decisions: [RecordedInboxDecision] = []
+
+    init(session: BTQSession, inbox: InboxResponse, decisionResponse: InboxDecisionResponse) {
+        self.sessionResponse = session
+        self.inboxResponse = inbox
+        self.decisionResponse = decisionResponse
+    }
+
+    func session(baseURL: URL, token: String) async throws -> BTQSession {
+        sessionResponse
+    }
+
+    func mySubmissions(baseURL: URL, token: String) async throws -> MySubmissionsResponse {
+        MySubmissionsResponse(submissions: [])
+    }
+
+    func inbox(baseURL: URL, token: String) async throws -> InboxResponse {
+        inboxResponse
+    }
+
+    func decideInboxItem(action: InboxDecisionAction, item: InboxItem, reason: String?, baseURL: URL, token: String) async throws -> InboxDecisionResponse {
+        decisions.append(RecordedInboxDecision(action: action, draftID: item.draftID, revision: item.revision))
+        return decisionResponse
+    }
+
+    func decideInboxSet(_ drafts: [InboxSetDecisionEntry], baseURL: URL, token: String) async throws -> InboxSetDecisionResponse {
+        for draft in drafts {
+            decisions.append(RecordedInboxDecision(action: draft.checked ? .approve : .reject, draftID: draft.draftID, revision: draft.revision))
+        }
+        return InboxSetDecisionResponse(ok: true, approved: drafts.filter(\.checked).count, rejected: drafts.filter { !$0.checked }.count)
     }
 
     func submit(capture: LocalCapture, baseURL: URL, token: String) async throws -> SubmitCaptureResponse {

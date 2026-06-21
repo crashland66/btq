@@ -53,11 +53,29 @@ public enum CaptureAPIError: Error, Equatable, LocalizedError, CustomStringConve
 public protocol CaptureAPIClient: Sendable {
     func session(baseURL: URL, token: String) async throws -> BTQSession
     func mySubmissions(baseURL: URL, token: String) async throws -> MySubmissionsResponse
+    func inbox(baseURL: URL, token: String) async throws -> InboxResponse
+    func decideInboxItem(action: InboxDecisionAction, item: InboxItem, reason: String?, baseURL: URL, token: String) async throws -> InboxDecisionResponse
+    func decideInboxSet(_ drafts: [InboxSetDecisionEntry], baseURL: URL, token: String) async throws -> InboxSetDecisionResponse
     func submit(capture: LocalCapture, baseURL: URL, token: String) async throws -> SubmitCaptureResponse
+}
+
+public extension CaptureAPIClient {
+    func inbox(baseURL: URL, token: String) async throws -> InboxResponse {
+        throw CaptureAPIError.serverStatus(status: 501, code: "inbox_unavailable", message: "Inbox review is not available.")
+    }
+
+    func decideInboxItem(action: InboxDecisionAction, item: InboxItem, reason: String?, baseURL: URL, token: String) async throws -> InboxDecisionResponse {
+        throw CaptureAPIError.serverStatus(status: 501, code: "inbox_unavailable", message: "Inbox review is not available.")
+    }
+
+    func decideInboxSet(_ drafts: [InboxSetDecisionEntry], baseURL: URL, token: String) async throws -> InboxSetDecisionResponse {
+        throw CaptureAPIError.serverStatus(status: 501, code: "inbox_unavailable", message: "Inbox review is not available.")
+    }
 }
 
 public final class HTTPCaptureAPIClient: CaptureAPIClient, @unchecked Sendable {
     let session: URLSession
+    private let encoder: JSONEncoder
     private let decoder: JSONDecoder
     private let uploadBodyDirectory: URL
 
@@ -67,6 +85,7 @@ public final class HTTPCaptureAPIClient: CaptureAPIClient, @unchecked Sendable {
     ) {
         self.session = session
         self.uploadBodyDirectory = uploadBodyDirectory
+        encoder = JSONEncoder()
         decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
     }
@@ -109,6 +128,82 @@ public final class HTTPCaptureAPIClient: CaptureAPIClient, @unchecked Sendable {
         return try decoder.decode(MySubmissionsResponse.self, from: data)
     }
 
+    public func inbox(baseURL: URL, token: String) async throws -> InboxResponse {
+        var request = URLRequest(url: try secureAPIURL(baseURL: baseURL, path: "api/inbox"))
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.cachePolicy = .reloadIgnoringLocalCacheData
+
+        let (data, response) = try await session.data(for: request)
+        guard let http = response as? HTTPURLResponse else {
+            throw CaptureAPIError.invalidResponse
+        }
+        if http.statusCode == 401 {
+            throw CaptureAPIError.unauthorized
+        }
+        guard (200..<300).contains(http.statusCode) else {
+            throw serverError(status: http.statusCode, data: data)
+        }
+        return try decoder.decode(InboxResponse.self, from: data)
+    }
+
+    public func decideInboxItem(
+        action: InboxDecisionAction,
+        item: InboxItem,
+        reason: String?,
+        baseURL: URL,
+        token: String
+    ) async throws -> InboxDecisionResponse {
+        let path = action == .approve ? "api/inbox/approve" : "api/inbox/reject"
+        var request = URLRequest(url: try secureAPIURL(baseURL: baseURL, path: path))
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.httpBody = try encoder.encode(InboxDecisionRequest(draftID: item.draftID, revision: item.revision, reason: reason))
+
+        let (data, response) = try await session.data(for: request)
+        guard let http = response as? HTTPURLResponse else {
+            throw CaptureAPIError.invalidResponse
+        }
+        if http.statusCode == 401 {
+            throw CaptureAPIError.unauthorized
+        }
+        if http.statusCode == 409 {
+            return (try? decoder.decode(InboxDecisionResponse.self, from: data))
+                ?? InboxDecisionResponse(status: "already_decided")
+        }
+        guard (200..<300).contains(http.statusCode) else {
+            throw serverError(status: http.statusCode, data: data)
+        }
+        return try decoder.decode(InboxDecisionResponse.self, from: data)
+    }
+
+    public func decideInboxSet(
+        _ drafts: [InboxSetDecisionEntry],
+        baseURL: URL,
+        token: String
+    ) async throws -> InboxSetDecisionResponse {
+        var request = URLRequest(url: try secureAPIURL(baseURL: baseURL, path: "api/inbox/approve-set"))
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.httpBody = try encoder.encode(InboxSetDecisionRequest(drafts: drafts))
+
+        let (data, response) = try await session.data(for: request)
+        guard let http = response as? HTTPURLResponse else {
+            throw CaptureAPIError.invalidResponse
+        }
+        if http.statusCode == 401 {
+            throw CaptureAPIError.unauthorized
+        }
+        guard (200..<300).contains(http.statusCode) else {
+            throw serverError(status: http.statusCode, data: data)
+        }
+        return try decoder.decode(InboxSetDecisionResponse.self, from: data)
+    }
+
     public func submit(capture: LocalCapture, baseURL: URL, token: String) async throws -> SubmitCaptureResponse {
         let boundary = "Boundary-\(UUID().uuidString)"
         var request = URLRequest(url: try secureAPIURL(baseURL: baseURL, path: "api/submit"))
@@ -149,6 +244,22 @@ public final class HTTPCaptureAPIClient: CaptureAPIClient, @unchecked Sendable {
 private struct CaptureAPIErrorPayload: Decodable {
     var error: String?
     var message: String?
+}
+
+private struct InboxDecisionRequest: Encodable {
+    var draftID: String
+    var revision: String
+    var reason: String?
+
+    enum CodingKeys: String, CodingKey {
+        case draftID = "draft_id"
+        case revision = "_rev"
+        case reason
+    }
+}
+
+private struct InboxSetDecisionRequest: Encodable {
+    var drafts: [InboxSetDecisionEntry]
 }
 
 public enum MultipartCaptureBuilder {

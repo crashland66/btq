@@ -22,6 +22,9 @@ public final class FieldCaptureModel {
     public private(set) var submittedCaptures: [SubmittedCapture] = []
     public private(set) var submissionQualitySummary: SubmissionQualitySummary?
     public private(set) var isRefreshingSubmittedHistory: Bool = false
+    public private(set) var inboxItems: [InboxItem] = []
+    public private(set) var isRefreshingInbox: Bool = false
+    public private(set) var isReviewingInboxItem: Bool = false
     public private(set) var notificationPermissionStatus: NotificationPermissionStatus = .unknown
     public private(set) var requiresReconnect: Bool = false
 
@@ -131,6 +134,34 @@ public final class FieldCaptureModel {
             return false
         }
         return session?.canSubmit != false
+    }
+
+    public var canReviewInbox: Bool {
+        guard !requiresReconnect else { return false }
+        return session?.canReview == true
+    }
+
+    public var inboxBadgeCount: Int {
+        canReviewInbox ? max(0, session?.inboxCount ?? inboxItems.count) : 0
+    }
+
+    public var inboxGroups: [InboxGroup] {
+        var groups: [InboxGroup] = []
+        var indexes: [String: Int] = [:]
+        for (index, item) in inboxItems.enumerated() {
+            let key = item.groupID.isEmpty ? item.draftID : item.groupID
+            if let groupIndex = indexes[key] {
+                groups[groupIndex].items.append(item)
+            } else {
+                indexes[key] = groups.count
+                groups.append(InboxGroup(id: key.isEmpty ? "draft-\(index)" : key, items: [item]))
+            }
+        }
+        return groups
+    }
+
+    public var needsInitialSetup: Bool {
+        account.tokenID == nil || requiresReconnect
     }
 
     public var accounts: [BTQAccount] {
@@ -288,8 +319,12 @@ public final class FieldCaptureModel {
             mergeSites(liveSession.sites)
             isOfflineMode = false
             requiresReconnect = false
-            statusMessage = "Ready for \(liveSession.person.name)"
-            try await persist()
+            do {
+                try await persist()
+                statusMessage = "Ready for \(liveSession.person.name)"
+            } catch {
+                statusMessage = "Ready for \(liveSession.person.name). Local cache could not be saved."
+            }
             return true
         } catch CaptureAPIError.unauthorized {
             statusMessage = "Token is invalid, expired, or revoked."
@@ -366,6 +401,151 @@ public final class FieldCaptureModel {
         } catch {
             guard account.id == requestedAccountID else { return }
             statusMessage = "Could not refresh submitted history."
+        }
+    }
+
+    public func refreshInbox() async {
+        guard !isRefreshingInbox else { return }
+        guard canReviewInbox else {
+            inboxItems = []
+            setInboxCount(0)
+            statusMessage = "This account does not have approval access."
+            return
+        }
+        let requestedAccountID = account.id
+        let requestedBaseURL = account.baseURL
+        guard requestedBaseURL.btqUsesHTTPS else {
+            statusMessage = CaptureAPIError.insecureBaseURL.description
+            return
+        }
+        guard let token = try? await tokenStore.loadToken(accountID: requestedAccountID), !token.isEmpty else {
+            statusMessage = "Connect a token to review approvals."
+            return
+        }
+        isRefreshingInbox = true
+        defer { isRefreshingInbox = false }
+
+        do {
+            let response = try await apiClient.inbox(baseURL: requestedBaseURL, token: token)
+            guard account.id == requestedAccountID else { return }
+            inboxItems = response.items
+            setInboxCount(response.count)
+            statusMessage = response.items.isEmpty ? "Nothing waiting for approval." : "\(response.count) approval item\(response.count == 1 ? "" : "s") waiting."
+        } catch CaptureAPIError.unauthorized {
+            guard account.id == requestedAccountID else { return }
+            await requireReconnect(message: "Token expired or revoked. Reconnect this account.")
+        } catch CaptureAPIError.serverStatus(let status, _, _) where status == 403 {
+            guard account.id == requestedAccountID else { return }
+            inboxItems = []
+            setInboxCount(0)
+            statusMessage = "This account does not have approval access."
+        } catch {
+            guard account.id == requestedAccountID else { return }
+            statusMessage = "Could not load approval inbox."
+        }
+    }
+
+    public func reviewInboxItem(_ item: InboxItem, action: InboxDecisionAction) async {
+        guard !isReviewingInboxItem else { return }
+        guard canReviewInbox else {
+            statusMessage = "This account does not have approval access."
+            return
+        }
+        guard !isOfflineMode else {
+            statusMessage = "Approval review requires a connection."
+            return
+        }
+        let requestedAccountID = account.id
+        let requestedBaseURL = account.baseURL
+        guard let token = try? await tokenStore.loadToken(accountID: requestedAccountID), !token.isEmpty else {
+            statusMessage = "Connect a token to review approvals."
+            return
+        }
+        isReviewingInboxItem = true
+        defer { isReviewingInboxItem = false }
+
+        do {
+            let response = try await apiClient.decideInboxItem(
+                action: action,
+                item: item,
+                reason: action == .reject ? "" : nil,
+                baseURL: requestedBaseURL,
+                token: token
+            )
+            guard account.id == requestedAccountID else { return }
+            if response.alreadyDecided {
+                removeInboxItems(draftIDs: [item.draftID])
+                statusMessage = "Already handled on another device."
+                return
+            }
+            if let error = response.error, error != "already_decided" {
+                statusMessage = response.message ?? "Could not review approval item."
+                return
+            }
+            removeInboxItems(draftIDs: [item.draftID])
+            statusMessage = action == .approve ? "Approved." : "Rejected."
+        } catch CaptureAPIError.unauthorized {
+            guard account.id == requestedAccountID else { return }
+            await requireReconnect(message: "Token expired or revoked. Reconnect this account.")
+        } catch {
+            guard account.id == requestedAccountID else { return }
+            statusMessage = "Action failed. Refreshing approval inbox."
+            await refreshInbox()
+        }
+    }
+
+    public func reviewInboxSet(_ group: InboxGroup, approvedDraftIDs: Set<String>) async {
+        guard !isReviewingInboxItem else { return }
+        guard canReviewInbox else {
+            statusMessage = "This account does not have approval access."
+            return
+        }
+        guard !isOfflineMode else {
+            statusMessage = "Approval review requires a connection."
+            return
+        }
+        let requestedAccountID = account.id
+        let requestedBaseURL = account.baseURL
+        guard let token = try? await tokenStore.loadToken(accountID: requestedAccountID), !token.isEmpty else {
+            statusMessage = "Connect a token to review approvals."
+            return
+        }
+        let decisions = group.items.map {
+            InboxSetDecisionEntry(
+                draftID: $0.draftID,
+                revision: $0.revision,
+                checked: approvedDraftIDs.contains($0.draftID)
+            )
+        }
+        guard !decisions.isEmpty else { return }
+        isReviewingInboxItem = true
+        defer { isReviewingInboxItem = false }
+
+        do {
+            let response = try await apiClient.decideInboxSet(decisions, baseURL: requestedBaseURL, token: token)
+            guard account.id == requestedAccountID else { return }
+            let hasReviewFailure = response.results.contains { result in
+                guard let error = result.error else { return false }
+                return error != "already_decided"
+            }
+            if hasReviewFailure {
+                statusMessage = "Set partly failed. Refreshing approval inbox."
+                await refreshInbox()
+                return
+            }
+            removeInboxItems(draftIDs: Set(group.items.map(\.draftID)))
+            if response.alreadyDecided > 0 {
+                statusMessage = "Set handled; \(response.alreadyDecided) already decided elsewhere."
+            } else {
+                statusMessage = "Set reviewed."
+            }
+        } catch CaptureAPIError.unauthorized {
+            guard account.id == requestedAccountID else { return }
+            await requireReconnect(message: "Token expired or revoked. Reconnect this account.")
+        } catch {
+            guard account.id == requestedAccountID else { return }
+            statusMessage = "Action failed. Refreshing approval inbox."
+            await refreshInbox()
         }
     }
 
@@ -709,6 +889,7 @@ public final class FieldCaptureModel {
         captures = workspace.captures
         submittedCaptures = []
         submissionQualitySummary = nil
+        inboxItems = []
         requiresReconnect = false
         selectedSiteID = prioritizedSites.first?.siteID
         selectedCategoryValue = nil
@@ -730,6 +911,7 @@ public final class FieldCaptureModel {
         captures = []
         submittedCaptures = []
         submissionQualitySummary = nil
+        inboxItems = []
         requiresReconnect = false
         selectedSiteID = nil
         selectedCategoryValue = nil
@@ -851,6 +1033,19 @@ public final class FieldCaptureModel {
         return now.addingTimeInterval(delay)
     }
 
+    private func setInboxCount(_ count: Int) {
+        guard var currentSession = session else { return }
+        currentSession.inboxCount = max(0, count)
+        session = currentSession
+    }
+
+    private func removeInboxItems(draftIDs: Set<String>) {
+        guard !draftIDs.isEmpty else { return }
+        let removedCount = inboxItems.filter { draftIDs.contains($0.draftID) }.count
+        inboxItems.removeAll { draftIDs.contains($0.draftID) }
+        setInboxCount(max(0, inboxBadgeCount - removedCount))
+    }
+
     private func requireReconnect(message: String) async {
         try? await tokenStore.deleteToken(accountID: account.id)
         var updatedAccount = account
@@ -859,6 +1054,7 @@ public final class FieldCaptureModel {
         session = nil
         submittedCaptures = []
         submissionQualitySummary = nil
+        inboxItems = []
         isOfflineMode = true
         requiresReconnect = true
         statusMessage = message

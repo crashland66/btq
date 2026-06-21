@@ -4,6 +4,7 @@ public enum AppSection: String, CaseIterable, Identifiable {
     case capture
     case sites
     case queue
+    case inbox
     case settings
 
     public var id: String { rawValue }
@@ -13,6 +14,7 @@ public enum AppSection: String, CaseIterable, Identifiable {
         case .capture: "Capture"
         case .sites: "Sites"
         case .queue: "Queue"
+        case .inbox: "Inbox"
         case .settings: "Settings"
         }
     }
@@ -22,7 +24,14 @@ public enum AppSection: String, CaseIterable, Identifiable {
         case .capture: "square.and.pencil"
         case .sites: "building.2"
         case .queue: "arrow.trianglehead.2.clockwise"
+        case .inbox: "envelope"
         case .settings: "gearshape"
+        }
+    }
+
+    static func visible(canReview: Bool) -> [AppSection] {
+        allCases.filter { section in
+            section != .inbox || canReview
         }
     }
 }
@@ -97,13 +106,29 @@ struct BTQFieldCaptureShell: View {
                     section = .settings
                 }
             }
+            .onChange(of: model.canReviewInbox) { _, canReview in
+                if !canReview && section == .inbox {
+                    section = .capture
+                }
+            }
     }
 
     @ViewBuilder
     private var shellContent: some View {
+        if model.needsInitialSetup {
+            NavigationStack {
+                InitialSetupView(model: model, onConnected: routeToCapture)
+            }
+        } else {
+            mainShellContent
+        }
+    }
+
+    @ViewBuilder
+    private var mainShellContent: some View {
         #if os(macOS)
         NavigationSplitView {
-            List(AppSection.allCases, selection: $section) { item in
+            List(AppSection.visible(canReview: model.canReviewInbox), selection: $section) { item in
                 Label(item.title, systemImage: item.systemImage)
                     .tag(item)
             }
@@ -113,11 +138,12 @@ struct BTQFieldCaptureShell: View {
         }
         #else
         TabView(selection: $section) {
-            ForEach(AppSection.allCases) { item in
+            ForEach(AppSection.visible(canReview: model.canReviewInbox)) { item in
                 NavigationStack {
                     detail(for: item)
                 }
                 .tabItem { Label(item.title, systemImage: item.systemImage) }
+                .badge(item == .inbox ? model.inboxBadgeCount : 0)
                 .tag(item)
             }
         }
@@ -138,6 +164,8 @@ struct BTQFieldCaptureShell: View {
             SitesView(model: model, onSiteSelected: routeToCapture)
         case .queue:
             QueueView(model: model)
+        case .inbox:
+            InboxView(model: model)
         case .settings:
             SettingsView(model: model, screenMode: $screenMode, onConnected: routeToCapture)
         }
