@@ -46,6 +46,7 @@ def _build_mango_selector(
     date_from: str,
     date_to: str,
     *,
+    has_deep_analysis: bool = False,
     target_type: str = "",
     target_id: str = "",
 ) -> dict[str, object]:
@@ -60,6 +61,8 @@ def _build_mango_selector(
             must.append({"target_id": target_id})
     if area_guess:
         must.append({"area_guess": area_guess})
+    if has_deep_analysis:
+        must.append({"deep_analysis.0": {"$exists": True}})
     date_clause: dict[str, object] = {}
     if date_from:
         date_clause["$gte"] = date_from
@@ -175,6 +178,8 @@ def _in_memory_filter(
     area_guess: str,
     date_from: str,
     date_to: str,
+    *,
+    has_deep_analysis: bool = False,
 ) -> list[dict[str, object]]:
     results = sidecars
     if q:
@@ -188,6 +193,8 @@ def _in_memory_filter(
         results = [s for s in results if str(s.get("generated_at") or "") >= date_from]
     if date_to:
         results = [s for s in results if str(s.get("generated_at") or "") <= date_to + "Z"]
+    if has_deep_analysis:
+        results = [s for s in results if isinstance(s.get("deep_analysis"), list) and s.get("deep_analysis")]
     results.sort(key=lambda s: str(s.get("generated_at") or ""), reverse=True)
     return results[:PAGE_LIMIT]
 
@@ -564,12 +571,14 @@ def _filter_form(
     area_guess: str,
     date_from: str,
     date_to: str,
+    has_deep_analysis: bool,
     *,
     site_options: list[tuple[str, str]],
     area_options: list[str],
 ) -> str:
     site_opts = _select_options(site_options, site_id, any_label="All sites")
     area_opts = _select_options([(a, a) for a in area_options], area_guess, any_label="All areas")
+    deep_checked = " checked" if has_deep_analysis else ""
     return (
         '<form method="get" action="/field-photos" data-submit-on-change'
         ' style="display:flex;flex-wrap:wrap;gap:.5rem;align-items:flex-end">'
@@ -578,6 +587,7 @@ def _filter_form(
         f'<label style="flex:1 1 10em">Area<select name="area_guess" style="width:100%">{area_opts}</select></label>'
         f'<label>From<input type="date" name="date_from" value="{html.escape(date_from)}"></label>'
         f'<label>To<input type="date" name="date_to" value="{html.escape(date_to)}"></label>'
+        f'<label><input type="checkbox" name="deep_analysis" value="1"{deep_checked}> Flagged for deeper analysis</label>'
         '<button type="submit">Search</button>'
         "</form>"
     )
@@ -590,6 +600,7 @@ def render_filter_form(
     area_guess: str = "",
     date_from: str = "",
     date_to: str = "",
+    has_deep_analysis: bool = False,
 ) -> str:
     cdb_config = _photo_vision_couchdb_config()
     site_options = _load_site_options()
@@ -600,6 +611,7 @@ def render_filter_form(
         area_guess,
         date_from,
         date_to,
+        has_deep_analysis,
         site_options=site_options,
         area_options=area_options,
     )
@@ -830,6 +842,7 @@ def render(ctx: object) -> str:
     area_guess = first_filter_value(query, "area_guess")
     date_from = first_filter_value(query, "date_from")
     date_to = first_filter_value(query, "date_to")
+    has_deep_analysis = first_filter_value(query, "deep_analysis").lower() in {"1", "true", "yes", "on"}
 
     cdb_config = _photo_vision_couchdb_config()
     sidecars: list[dict[str, object]] = []
@@ -837,7 +850,7 @@ def render(ctx: object) -> str:
     has_more = False
 
     if cdb_config is not None:
-        mango = _build_mango_selector(q, site_id, area_guess, date_from, date_to)
+        mango = _build_mango_selector(q, site_id, area_guess, date_from, date_to, has_deep_analysis=has_deep_analysis)
         docs = _query_couchdb(cdb_config, mango)
         if docs is not None:
             has_more = len(docs) > PAGE_LIMIT
@@ -858,24 +871,41 @@ def render(ctx: object) -> str:
         from field_capture import photo_vision as field_photo_vision
         photo_vision_dir = field_photo_vision.default_photo_vision_dir(runtime_root)
         all_sidecars = load_photo_vision_sidecars(photo_vision_dir)
-        sidecars = _in_memory_filter(all_sidecars, q, site_id, area_guess, date_from, date_to)
+        sidecars = _in_memory_filter(
+            all_sidecars,
+            q,
+            site_id,
+            area_guess,
+            date_from,
+            date_to,
+            has_deep_analysis=has_deep_analysis,
+        )
         processed_asset_ids = {str(s.get("photo_asset_id") or "") for s in all_sidecars}
 
     vault_root = Path(getattr(ctx.config, "vault_root", runtime_root / "vault")).expanduser()
     submitters = submitters_by_capture(runtime_root)
-    pending_records = _pending_photo_records(
-        runtime_root,
-        processed_asset_ids=processed_asset_ids or set(),
-        terminal_capture_ids=terminal_capture_ids,
+    pending_records = []
+    if not has_deep_analysis:
+        pending_records = _pending_photo_records(
+            runtime_root,
+            processed_asset_ids=processed_asset_ids or set(),
+            terminal_capture_ids=terminal_capture_ids,
+            q=q,
+            site_id=site_id,
+            area_guess=area_guess,
+            date_from=date_from,
+            date_to=date_to,
+        )
+    pending_html = _render_pending_section(pending_records, vault_root)
+
+    filter_form = render_filter_form(
         q=q,
         site_id=site_id,
         area_guess=area_guess,
         date_from=date_from,
         date_to=date_to,
+        has_deep_analysis=has_deep_analysis,
     )
-    pending_html = _render_pending_section(pending_records, vault_root)
-
-    filter_form = render_filter_form(q=q, site_id=site_id, area_guess=area_guess, date_from=date_from, date_to=date_to)
 
     cards_html = "".join(_render_card(s, submitters, vault_root) for s in sidecars)
     grid_html = (
