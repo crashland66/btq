@@ -202,33 +202,38 @@ def _config_string(config: object, attr: str) -> str:
     return value.strip() if isinstance(value, str) else ""
 
 
+def build_s3_store(instance_config: object | None = None) -> S3Store:
+    config = get_instance_config() if instance_config is None else instance_config
+    endpoint_url = _config_string(config, _R2_ENDPOINT_ATTR)
+    bucket = _config_string(config, _R2_BUCKET_ATTR)
+    region = _config_string(config, _R2_REGION_ATTR) or "auto"
+    access_key = _config_string(config, _R2_ACCESS_KEY_ATTR)
+    secret_access_key = _config_string(config, _R2_SECRET_ACCESS_KEY_ATTR)
+    if not access_key or not secret_access_key:
+        secrets = _load_r2_credentials(key_prefix=_config_string(config, _R2_SECRET_PREFIX_ATTR))
+        access_key = access_key or secrets["access_key"]
+        secret_access_key = secret_access_key or secrets["secret_access_key"]
+
+    missing = [
+        name
+        for name, value in (
+            (_R2_ENDPOINT_ATTR, endpoint_url),
+            (_R2_BUCKET_ATTR, bucket),
+            (f"{_R2_ACCESS_KEY_ATTR}/access_key", access_key),
+            (f"{_R2_SECRET_ACCESS_KEY_ATTR}/secret_access_key", secret_access_key),
+        )
+        if not value
+    ]
+    if missing:
+        raise MediaStoreConfigError(f"media_store 's3' requires configured R2 values: {', '.join(missing)}")
+    return S3Store(endpoint_url, bucket, access_key, secret_access_key, region)
+
+
 def get_media_store(upload_root: Path, instance_config: object | None = None) -> MediaStore:
     config = get_instance_config() if instance_config is None else instance_config
     media_store = getattr(config, "media_store", DEFAULT_MEDIA_STORE) or DEFAULT_MEDIA_STORE
     if media_store == "local":
         return LocalFilesystemStore(upload_root)
     if media_store == "s3":
-        endpoint_url = _config_string(config, _R2_ENDPOINT_ATTR)
-        bucket = _config_string(config, _R2_BUCKET_ATTR)
-        region = _config_string(config, _R2_REGION_ATTR) or "auto"
-        access_key = _config_string(config, _R2_ACCESS_KEY_ATTR)
-        secret_access_key = _config_string(config, _R2_SECRET_ACCESS_KEY_ATTR)
-        if not access_key or not secret_access_key:
-            secrets = _load_r2_credentials(key_prefix=_config_string(config, _R2_SECRET_PREFIX_ATTR))
-            access_key = access_key or secrets["access_key"]
-            secret_access_key = secret_access_key or secrets["secret_access_key"]
-
-        missing = [
-            name
-            for name, value in (
-                (_R2_ENDPOINT_ATTR, endpoint_url),
-                (_R2_BUCKET_ATTR, bucket),
-                (f"{_R2_ACCESS_KEY_ATTR}/access_key", access_key),
-                (f"{_R2_SECRET_ACCESS_KEY_ATTR}/secret_access_key", secret_access_key),
-            )
-            if not value
-        ]
-        if missing:
-            raise MediaStoreConfigError(f"media_store 's3' requires configured R2 values: {', '.join(missing)}")
-        return S3Store(endpoint_url, bucket, access_key, secret_access_key, region)
+        return build_s3_store(config)
     raise NotImplementedError(f"media_store {media_store!r} is not supported")

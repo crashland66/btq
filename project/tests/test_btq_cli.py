@@ -23,6 +23,7 @@ EXPECTED_SUBCOMMANDS = [
     "backfill-unknown-captures",
     "backfill-field-capture-employees",
     "dedupe-employee-docs",
+    "backfill-media-to-r2",
     "replay",
     "skill",
     "transcribe-field-audio",
@@ -104,6 +105,20 @@ def test_backfill_unknown_captures_parses_args_and_dispatches(monkeypatch: pytes
     args = _route(monkeypatch, backfill, "handle_backfill_unknown_captures", ["backfill-unknown-captures", "--dry-run"])
     assert args.command == "backfill-unknown-captures"
     assert args.dry_run is True
+
+
+def test_backfill_media_to_r2_parses_args_and_dispatches(monkeypatch: pytest.MonkeyPatch) -> None:
+    args = _route(
+        monkeypatch,
+        backfill.media_backfill_to_r2,
+        "handle_backfill_media_to_r2",
+        ["backfill-media-to-r2", "--runtime-root", "runtime", "--dry-run", "--limit", "5", "--verbose"],
+    )
+    assert args.command == "backfill-media-to-r2"
+    assert str(args.runtime_root) == "runtime"
+    assert args.dry_run is True
+    assert args.limit == 5
+    assert args.verbose is True
 
 
 def test_skill_parses_args_and_dispatches(monkeypatch: pytest.MonkeyPatch) -> None:

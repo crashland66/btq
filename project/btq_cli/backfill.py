@@ -6,6 +6,7 @@ from pathlib import Path
 
 from btq_vault.couch_store import CouchDBEntityStore
 from config import get_config
+from btq_cli import media_backfill_to_r2
 from field_capture import backfill_employees as field_backfill_employees
 from field_capture import dedupe_employee_docs as field_dedupe_employee_docs
 from queue_processor import backfill_unknown_captures
@@ -43,6 +44,15 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
     )
     dedupe_employee_docs_parser.add_argument("--json", action="store_true")
     dedupe_employee_docs_parser.set_defaults(func=handle_dedupe_employee_docs)
+    media_to_r2_parser = subparsers.add_parser(
+        "backfill-media-to-r2",
+        help="Copy local runtime uploads into the configured R2 bucket without deleting local originals.",
+    )
+    media_to_r2_parser.add_argument("--runtime-root", type=Path, required=True, help="Runtime root containing the uploads/ directory.")
+    media_to_r2_parser.add_argument("--dry-run", action="store_true", help="Report copy decisions without writing R2 objects.")
+    media_to_r2_parser.add_argument("--limit", type=int, help="Maximum number of upload files to scan for staged runs.")
+    media_to_r2_parser.add_argument("--verbose", action="store_true", help="Print per-object key decisions.")
+    media_to_r2_parser.set_defaults(func=media_backfill_to_r2.handle_backfill_media_to_r2)
 
 
 def _require_vault_root(args: argparse.Namespace) -> Path:
