@@ -283,6 +283,7 @@ def _deep_analysis_payload(entries: object) -> list[dict[str, object]]:
         payload.append(
             {
                 "prompt": _deep_analysis_prompt_label(entry),
+                "prompt_id": str(entry.get("prompt_id") or "").strip(),
                 "status": str(entry.get("status") or "").strip() or "unknown",
                 "model": model,
                 "actor": str(entry.get("actor") or "").strip(),
@@ -304,9 +305,11 @@ def _json_attr(value: object) -> str:
 def _render_deep_analysis_actions(sidecar: dict[str, object]) -> str:
     capture_id = str(sidecar.get("capture_id") or "").strip()
     photo_asset_id = str(sidecar.get("photo_asset_id") or "").strip()
+    site_id = str(sidecar.get("site_id") or "").strip()
     analysis_payload = _deep_analysis_payload(sidecar.get("deep_analysis"))
     escaped_capture_id = html.escape(capture_id, quote=True)
     escaped_photo_asset_id = html.escape(photo_asset_id, quote=True)
+    escaped_site_id = html.escape(site_id, quote=True)
     run_button = (
         '<button type="button" class="icon-btn" title="Run deeper analysis" aria-label="Run deeper analysis" '
         f'data-deep-analysis-run data-capture-id="{escaped_capture_id}" '
@@ -317,7 +320,8 @@ def _render_deep_analysis_actions(sidecar: dict[str, object]) -> str:
         view_button = (
             '<button type="button" class="icon-btn" title="View deeper analysis" aria-label="View deeper analysis" '
             f'data-deep-analysis-view data-capture-id="{escaped_capture_id}" '
-            f'data-photo-asset-id="{escaped_photo_asset_id}" data-analysis="{_json_attr(analysis_payload)}">'
+            f'data-photo-asset-id="{escaped_photo_asset_id}" data-site-id="{escaped_site_id}" '
+            f'data-analysis="{_json_attr(analysis_payload)}">'
             f'{_analysis_icon("view")}</button>'
         )
     return (
@@ -701,6 +705,9 @@ def _render_deep_analysis_dialogs(return_to: str) -> str:
         f'<option value="{html.escape(str(preset["id"]), quote=True)}">{html.escape(str(preset["label"]))}</option>'
         for preset in DEEP_ANALYSIS_PRESETS
     )
+    default_actor_json = (
+        json.dumps(default_actor()).replace("&", "\\u0026").replace("<", "\\u003c").replace(">", "\\u003e")
+    )
     return f"""
     <dialog id="field-photo-analysis-run-dialog" style="max-width:640px;width:min(640px,92vw)">
       <form method="post" action="/captures/analyze-deeper" class="review-action-form deep-analysis-form">
@@ -742,6 +749,7 @@ def _render_deep_analysis_dialogs(return_to: str) -> str:
         const customPrompt = customRow ? customRow.querySelector('textarea') : null;
         const viewTitle = document.getElementById('field-photo-analysis-view-title');
         const viewBody = document.getElementById('field-photo-analysis-view-body');
+        const defaultActor = {default_actor_json};
         function openDialog(dialog) {{
           if (!dialog) return;
           if (typeof dialog.showModal === 'function') dialog.showModal();
@@ -767,10 +775,58 @@ def _render_deep_analysis_dialogs(return_to: str) -> str:
           parent.appendChild(el);
           return el;
         }}
-        function appendEntry(entry) {{
+        function sendAnalysisToShiftReport(entry, context, button, feedback) {{
+          if (!confirm('Send this analysis to today\\'s shift report?')) return;
+          button.disabled = true;
+          button.textContent = 'Sending...';
+          if (feedback) feedback.textContent = '';
+          const params = new URLSearchParams();
+          params.set('content', entry.result === null || entry.result === undefined ? '' : String(entry.result));
+          params.set('capture_id', context.captureId || '');
+          params.set('photo_asset_id', context.photoAssetId || '');
+          params.set('site_id', context.siteId || '');
+          params.set('prompt_id', entry.prompt_id || '');
+          params.set('prompt_label', entry.prompt || '');
+          params.set('actor', defaultActor || '');
+          params.set('confirm', '1');
+          params.set('return_to', window.location.pathname + window.location.search);
+          fetch('/captures/send-to-shift-report', {{
+            method: 'POST',
+            headers: {{'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8'}},
+            body: params.toString(),
+          }}).then(function (response) {{
+            if (!response.ok) throw new Error('HTTP ' + response.status);
+            const responseUrl = new URL(response.url, window.location.origin);
+            if (response.redirected && responseUrl.searchParams.get('message') !== 'shift_report_note_queued') {{
+              throw new Error('shift report send failed');
+            }}
+            button.textContent = '✓ Sent';
+          }}).catch(function () {{
+            button.disabled = false;
+            button.textContent = 'Send to shift report';
+            if (feedback) feedback.textContent = 'Could not send to shift report.';
+          }});
+        }}
+        function appendEntry(entry, context) {{
           const article = document.createElement('article');
           article.style.borderTop = '1px solid var(--line)';
           article.style.padding = '12px 0';
+          const actions = document.createElement('div');
+          actions.style.display = 'flex';
+          actions.style.gap = '8px';
+          actions.style.justifyContent = 'flex-end';
+          actions.style.alignItems = 'center';
+          const feedback = document.createElement('span');
+          feedback.className = 'error';
+          const sendButton = document.createElement('button');
+          sendButton.type = 'button';
+          sendButton.textContent = 'Send to shift report';
+          sendButton.addEventListener('click', function () {{
+            sendAnalysisToShiftReport(entry, context, sendButton, feedback);
+          }});
+          actions.appendChild(feedback);
+          actions.appendChild(sendButton);
+          article.appendChild(actions);
           const details = document.createElement('dl');
           [
             ['Prompt', entry.prompt],
@@ -820,7 +876,12 @@ def _render_deep_analysis_dialogs(return_to: str) -> str:
             viewBody.textContent = '';
             if (viewTitle) viewTitle.textContent = 'Deeper analysis';
             if (!entries.length) appendText(viewBody, 'p', 'No deeper analysis entries.', 'muted');
-            entries.forEach(appendEntry);
+            const context = {{
+              captureId: button.dataset.captureId || '',
+              photoAssetId: button.dataset.photoAssetId || '',
+              siteId: button.dataset.siteId || '',
+            }};
+            entries.forEach(function (entry) {{ appendEntry(entry, context); }});
             openDialog(viewDialog);
           }});
         }});

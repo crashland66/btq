@@ -532,7 +532,37 @@ def _render_deep_analysis_result(value: object) -> str:
     return render_deep_analysis_markdown(value)
 
 
-def _render_deep_analysis_entry(entry: object) -> str:
+def _hidden_input(name: str, value: object) -> str:
+    return f'<input type="hidden" name="{html.escape(name, quote=True)}" value="{html.escape(str(value), quote=True)}">'
+
+
+def _render_shift_report_deep_analysis_form(record: dict[str, object], entry: dict[str, object]) -> str:
+    capture_id = str(record.get("capture_id") or "").strip()
+    photo_asset_id = str(record.get("photo_asset_id") or "").strip()
+    return_to = f"/captures?capture_id={quote(capture_id)}" if capture_id else "/captures"
+    fields = {
+        "content": "" if entry.get("result") is None else str(entry.get("result")),
+        "capture_id": capture_id,
+        "photo_asset_id": photo_asset_id,
+        "site_id": str(record.get("site_id") or "").strip(),
+        "prompt_id": str(entry.get("prompt_id") or "").strip(),
+        "prompt_label": _deep_analysis_prompt_label(entry),
+        "actor": default_actor(),
+        "confirm": "1",
+        "return_to": return_to,
+    }
+    hidden_fields = "".join(_hidden_input(name, value) for name, value in fields.items())
+    return f"""
+        <form method="post" action="/captures/send-to-shift-report" class="review-action-form"
+          style="display:flex;justify-content:flex-end;margin:8px 0"
+          onsubmit="return confirm('Send this analysis to today\\'s shift report?')">
+          {hidden_fields}
+          <button type="submit">Send to shift report</button>
+        </form>
+    """
+
+
+def _render_deep_analysis_entry(record: dict[str, object], entry: object) -> str:
     if not isinstance(entry, dict):
         return ""
     status = str(entry.get("status") or "").strip() or "unknown"
@@ -563,6 +593,7 @@ def _render_deep_analysis_entry(entry: object) -> str:
     return f"""
       <article>
         {render_kv(details)}
+        {_render_shift_report_deep_analysis_form(record, entry)}
         {error_html}
         {_render_deep_analysis_result(entry.get("result"))}
       </article>
@@ -573,7 +604,7 @@ def render_deep_analysis_results(record: dict[str, object]) -> str:
     entries = record.get("deep_analysis")
     if not isinstance(entries, list) or not entries:
         return ""
-    body = "".join(_render_deep_analysis_entry(entry) for entry in entries)
+    body = "".join(_render_deep_analysis_entry(record, entry) for entry in entries)
     if not body:
         return ""
     return f'<div class="deep-analysis-results"><h5>Deep analysis results</h5>{body}</div>'
