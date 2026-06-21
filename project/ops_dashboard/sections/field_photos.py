@@ -284,6 +284,7 @@ def _deep_analysis_payload(entries: object) -> list[dict[str, object]]:
             {
                 "prompt": _deep_analysis_prompt_label(entry),
                 "prompt_id": str(entry.get("prompt_id") or "").strip(),
+                "prompt_text": str(entry.get("prompt_text") or "").strip(),
                 "status": str(entry.get("status") or "").strip() or "unknown",
                 "model": model,
                 "actor": str(entry.get("actor") or "").strip(),
@@ -827,9 +828,10 @@ def _render_deep_analysis_dialogs(return_to: str) -> str:
           actions.appendChild(feedback);
           actions.appendChild(sendButton);
           article.appendChild(actions);
+          appendText(article, 'h4', entry.prompt || 'Custom');
           const details = document.createElement('dl');
           [
-            ['Prompt', entry.prompt],
+            ['Prompt', entry.prompt_text],
             ['Status', entry.status],
             ['Model', entry.model],
             ['Actor', entry.actor],

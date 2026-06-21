@@ -532,6 +532,14 @@ def _render_deep_analysis_result(value: object) -> str:
     return render_deep_analysis_markdown(value)
 
 
+def _render_deep_analysis_prompt_text(entry: dict[str, object]) -> str:
+    prompt_text = str(entry.get("prompt_text") or "").strip()
+    if not prompt_text:
+        return ""
+    escaped_prompt = html.escape(prompt_text).replace("\r\n", "\n").replace("\r", "\n").replace("\n", "<br>")
+    return f'<p class="subline"><strong>Prompt:</strong> {escaped_prompt}</p>'
+
+
 def _hidden_input(name: str, value: object) -> str:
     return f'<input type="hidden" name="{html.escape(name, quote=True)}" value="{html.escape(str(value), quote=True)}">'
 
@@ -593,6 +601,7 @@ def _render_deep_analysis_entry(record: dict[str, object], entry: object) -> str
     return f"""
       <article>
         {render_kv(details)}
+        {_render_deep_analysis_prompt_text(entry)}
         {_render_shift_report_deep_analysis_form(record, entry)}
         {error_html}
         {_render_deep_analysis_result(entry.get("result"))}
