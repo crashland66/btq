@@ -11,6 +11,7 @@ _R2_BUCKET_ATTR = _R2_ATTR_PREFIX + "bucket"
 _R2_REGION_ATTR = _R2_ATTR_PREFIX + "region"
 _R2_ACCESS_KEY_ATTR = _R2_ATTR_PREFIX + "access_key_id"
 _R2_SECRET_ACCESS_KEY_ATTR = _R2_ATTR_PREFIX + "secret_access_key"
+_R2_SECRET_PREFIX_ATTR = _R2_ATTR_PREFIX + "secret_prefix"
 
 
 class MediaStore(Protocol):
@@ -158,7 +159,9 @@ class S3Store:
         )
 
 
-def _load_r2_credentials(secrets_path: str | Path = "secrets/cloudflareR2") -> dict[str, str]:
+def _load_r2_credentials(
+    secrets_path: str | Path = "secrets/cloudflareR2", key_prefix: str = ""
+) -> dict[str, str]:
     path = Path(secrets_path).expanduser()
     if not path.is_absolute():
         path = Path(__file__).resolve().parents[1] / path
@@ -182,6 +185,12 @@ def _load_r2_credentials(secrets_path: str | Path = "secrets/cloudflareR2") -> d
         key, value = stripped[:idx], stripped[idx + 1 :]
         value = value.strip().strip('"').strip("'")
         values[key.strip()] = value
+    prefix = key_prefix.strip().strip("_")
+    if prefix:
+        access_key = values.get(f"{prefix}_access_key", "")
+        secret_access_key = values.get(f"{prefix}_secret_access_key", "")
+        if access_key and secret_access_key:
+            return {"access_key": access_key, "secret_access_key": secret_access_key}
     return {
         "access_key": values.get("access_key", ""),
         "secret_access_key": values.get("secret_access_key", ""),
@@ -205,7 +214,7 @@ def get_media_store(upload_root: Path, instance_config: object | None = None) ->
         access_key = _config_string(config, _R2_ACCESS_KEY_ATTR)
         secret_access_key = _config_string(config, _R2_SECRET_ACCESS_KEY_ATTR)
         if not access_key or not secret_access_key:
-            secrets = _load_r2_credentials()
+            secrets = _load_r2_credentials(key_prefix=_config_string(config, _R2_SECRET_PREFIX_ATTR))
             access_key = access_key or secrets["access_key"]
             secret_access_key = secret_access_key or secrets["secret_access_key"]
 

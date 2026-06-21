@@ -257,5 +257,6 @@ def test_instance_config_holds_only_instance_surface() -> None:
         "r2_region",
         "r2_access_key_id",
         "r2_secret_access_key",
+        "r2_secret_prefix",
     }
     assert instance_fields == expected

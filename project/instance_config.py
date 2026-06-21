@@ -46,6 +46,7 @@ class InstanceConfig:
     r2_region: str
     r2_access_key_id: str
     r2_secret_access_key: str
+    r2_secret_prefix: str
 
 
 def repo_root() -> Path:
@@ -227,6 +228,7 @@ def load_instance_config(
         r2_region=_env_or_config("BTQ_R2_REGION", r2, "region", ""),
         r2_access_key_id=_env_or_config("BTQ_R2_ACCESS_KEY_ID", r2, "access_key_id", ""),
         r2_secret_access_key=_env_or_config("BTQ_R2_SECRET_ACCESS_KEY", r2, "secret_access_key", ""),
+        r2_secret_prefix=_env_or_config("BTQ_R2_SECRET_PREFIX", r2, "secret_prefix", ""),
     )
 
 
