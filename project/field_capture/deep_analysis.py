@@ -235,7 +235,7 @@ def _media_key_for_asset(asset: photo_vision.FieldPhotoAsset, upload_root: Path)
         raise
 
 
-def _describe_image_bytes(client: object, image_bytes: bytes, prompt_text: str, *, suffix: str) -> dict[str, object]:
+def _describe_image_bytes(client: object, image_bytes: bytes, prompt_text: str, *, suffix: str) -> str:
     temp_path: Path | None = None
     fd = -1
     try:
@@ -244,9 +244,9 @@ def _describe_image_bytes(client: object, image_bytes: bytes, prompt_text: str, 
         with os.fdopen(fd, "wb") as handle:
             fd = -1
             handle.write(image_bytes)
-        result = client.describe(temp_path, prompt_text)
-        if not isinstance(result, dict):
-            raise ValueError("deep-analysis vision response was not a JSON object")
+        result = client.generate_text(temp_path, prompt_text)
+        if not isinstance(result, str):
+            raise ValueError("deep-analysis vision response was not text")
         return result
     finally:
         if fd != -1:
@@ -259,7 +259,7 @@ def _completed_entry(
     *,
     prompt_id: str,
     prompt_text: str,
-    result: dict[str, object],
+    result: object,
     actor: str,
     generated_at: str,
     provider: str,
@@ -278,7 +278,7 @@ def _completed_entry(
     label = _label_for_prompt(prompt_id)
     if label:
         entry["label"] = label
-    if "confidence" in result:
+    if isinstance(result, dict) and "confidence" in result:
         entry["confidence"] = result.get("confidence")
     return entry
 

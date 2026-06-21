@@ -15,24 +15,48 @@ from field_capture import photo_vision
 # ----------------------------------------------------------------------------
 
 
+DEFAULT_PROSE = (
+    "The restroom is clean overall. Mirrors are streak-free, the floor has been "
+    "mopped, and trash receptacles are empty. No visible damage or hazards."
+)
+
+
 class StubVisionClient:
-    """Records the (path, prompt) it was asked to describe and returns a canned dict."""
+    """Records the (path, prompt) it was asked to analyze and returns canned PROSE.
+
+    406d: deep analysis now calls ``generate_text`` (raw model text, no JSON),
+    NOT ``describe`` (which JSON-parses for the base vision pass). The stub
+    exposes ``generate_text`` returning a prose string. It deliberately ALSO
+    exposes a ``describe`` that returns a dict / raises — so the mutation check
+    (pointing the code back at ``describe``) reddens the prose-result assertions
+    rather than failing with AttributeError.
+    """
 
     provider = "local"
     model = "stub-vlm"
 
-    def __init__(self, result: dict | None = None, raises: Exception | None = None) -> None:
-        self.result = result if result is not None else {"description": "canned", "confidence": 0.9}
+    def __init__(self, result: str | None = None, raises: Exception | None = None) -> None:
+        self.result = result if result is not None else DEFAULT_PROSE
         self.raises = raises
         self.calls: list[tuple[Path, str]] = []
+        self.describe_calls: list[tuple[Path, str]] = []
 
-    def describe(self, image_path, prompt):  # signature: (Path, str) -> dict
+    def generate_text(self, image_path, prompt):  # signature: (Path, str) -> str
         self.calls.append((Path(image_path), prompt))
         if self.raises is not None:
             raise self.raises
         # Prove the temp file actually carries the image bytes the store returned.
         assert Path(image_path).exists(), "vision client must receive a real temp file path"
-        return dict(self.result)
+        return str(self.result)
+
+    def describe(self, image_path, prompt):  # signature: (Path, str) -> dict
+        # Present so the mutation check (code -> describe) exercises the JSON
+        # contract path and the prose-result assertions go red (dict != prose).
+        self.describe_calls.append((Path(image_path), prompt))
+        if self.raises is not None:
+            raise self.raises
+        assert Path(image_path).exists(), "vision client must receive a real temp file path"
+        return {"description": str(self.result), "confidence": 0.9}
 
 
 class StubMediaStore:
@@ -188,30 +212,36 @@ def test_resolve_prompt_empty_custom_raises():
 # ----------------------------------------------------------------------------
 
 
-def test_run_completed_describes_with_resolved_prompt_and_returns_entry(tmp_path):
+def test_run_completed_generate_text_with_resolved_prompt_and_returns_entry(tmp_path):
     runtime = tmp_path / "rt"
     cap, upload_root, asset = _seed_capture(runtime)
-    vision = StubVisionClient(result={"description": "rich detail", "confidence": 0.7})
+    prose = "Rich prose detail about the condition of the space."
+    vision = StubVisionClient(result=prose)
     store = StubMediaStore()
     puts: list[dict] = []
 
     entry = _run(runtime, upload_root, asset, vision=vision, store=store, put=puts.append,
                  preset_id="condition_detail")
 
-    # describe() received the RESOLVED preset prompt text (not the id, not a fixed string).
+    # generate_text() received the RESOLVED preset prompt text (not the id, not a fixed string).
     assert len(vision.calls) == 1
     _, prompt_seen = vision.calls[0]
     expected = next(p["prompt"] for p in deep_analysis.DEEP_ANALYSIS_PRESETS if p["id"] == "condition_detail")
     assert prompt_seen == expected
+    # The code must NOT touch describe() — generate_text is the deep-analysis path.
+    assert vision.describe_calls == []
 
     # store fetched the image by the asset's media key.
     assert store.keys == [f"2026-06-21/{cap}/photo1.jpg"]
 
-    # completed entry shape.
+    # completed entry shape: result is the raw prose STRING (not a dict, no JSON).
     assert entry["status"] == "completed"
     assert entry["prompt_id"] == "condition_detail"
     assert entry["prompt_text"] == expected
-    assert entry["result"] == {"description": "rich detail", "confidence": 0.7}
+    assert entry["result"] == prose
+    assert isinstance(entry["result"], str)
+    # Prose result is not a dict, so no confidence is harvested.
+    assert "confidence" not in entry
     assert entry["actor"] == "operator-greg"
     assert entry["generated_at"] == "2026-06-21T12:30:00Z"
     assert entry["label"] == "Detailed condition assessment"
@@ -284,17 +314,17 @@ def test_second_run_appends_and_preserves_prior_entry_and_base_fields(tmp_path):
     }
     sidecar_path.write_text(json.dumps(base))
 
-    first = _run(runtime, upload_root, asset, vision=StubVisionClient(result={"description": "first"}),
+    first = _run(runtime, upload_root, asset, vision=StubVisionClient(result="first prose"),
                  store=StubMediaStore(), put=lambda d: None, preset_id="condition_detail")
-    second = _run(runtime, upload_root, asset, vision=StubVisionClient(result={"description": "second"}),
+    second = _run(runtime, upload_root, asset, vision=StubVisionClient(result="second prose"),
                   store=StubMediaStore(), put=lambda d: None, custom_prompt="custom one")
 
     sidecar = json.loads(sidecar_path.read_text())
     assert len(sidecar["deep_analysis"]) == 2
     assert sidecar["deep_analysis"][0] == first
     assert sidecar["deep_analysis"][1] == second
-    assert sidecar["deep_analysis"][0]["result"] == {"description": "first"}
-    assert sidecar["deep_analysis"][1]["result"] == {"description": "second"}
+    assert sidecar["deep_analysis"][0]["result"] == "first prose"
+    assert sidecar["deep_analysis"][1]["result"] == "second prose"
     # Base vision fields preserved.
     assert sidecar["description"] == "BASE VISION DESCRIPTION"
     assert sidecar["area_guess"] == "restroom"
@@ -351,15 +381,21 @@ def test_media_read_failure_returns_failed_entry_logs_metric_no_raise(tmp_path):
     assert "duration_ms" in lines[0]
 
 
-def test_describe_failure_returns_failed_entry_logs_metric_no_raise(tmp_path):
+def test_generate_text_failure_returns_failed_entry_logs_metric_no_raise(tmp_path):
     runtime = tmp_path / "rt"
     cap, upload_root, asset = _seed_capture(runtime)
     vision = StubVisionClient(raises=RuntimeError("model exploded"))
 
+    # No raise escapes: fail-closed.
     entry = _run(runtime, upload_root, asset, vision=vision, store=StubMediaStore(),
                  put=lambda d: None, preset_id="equipment_id")
 
     assert entry["status"] == "failed"
+    assert entry["result"] == {}
+    assert entry["error"]["type"] == "RuntimeError"
+    assert "model exploded" in entry["error"]["message"]
+    # generate_text was the call that raised (not describe).
+    assert len(vision.calls) == 1
     # A failed metric is still recorded.
     lines = _metric_lines(runtime)
     assert len(lines) == 1
@@ -411,3 +447,162 @@ def test_build_doc_ignores_non_list_deep_analysis():
     }
     doc = build_photo_vision_document(payload)
     assert "deep_analysis" not in doc
+
+
+# ----------------------------------------------------------------------------
+# 8. Vision backends: generate_text returns RAW text, no JSON parsing (406d)
+# ----------------------------------------------------------------------------
+
+
+def _png_file(tmp_path: Path) -> Path:
+    p = tmp_path / "img.png"
+    p.write_bytes(StubMediaStore.PNG)
+    return p
+
+
+def test_both_clients_expose_generate_text():
+    import vision_backends
+
+    assert hasattr(vision_backends.MlxVisionClient, "generate_text")
+    assert hasattr(vision_backends.OllamaVisionClient, "generate_text")
+
+
+def test_mlx_generate_text_returns_raw_text_no_json(tmp_path, monkeypatch):
+    """MlxVisionClient.generate_text returns the model's raw PROSE string,
+    not a json.loads'd dict, and cleans up any resized temp."""
+    import vision_backends
+
+    img = _png_file(tmp_path)
+    prose = "This is prose, not JSON. The floor looks clean."
+
+    # Build an instance without loading any real MLX model.
+    client = vision_backends.MlxVisionClient.__new__(vision_backends.MlxVisionClient)
+
+    seen: dict[str, object] = {}
+
+    def fake_generate_response(prompt, image_path):
+        seen["prompt"] = prompt
+        seen["image_path"] = image_path
+        return prose
+
+    monkeypatch.setattr(client, "_generate_response", fake_generate_response)
+
+    # Track temp cleanup: stub _resize_image_for_mlx to report a resized temp.
+    resized_temp = tmp_path / "resized.png"
+    resized_temp.write_bytes(StubMediaStore.PNG)
+
+    def fake_resize(path):
+        return resized_temp, True  # (path_to_use, was_resized)
+
+    monkeypatch.setattr(vision_backends, "_resize_image_for_mlx", fake_resize)
+
+    result = client.generate_text(img, "describe this in prose")
+
+    assert result == prose  # raw string, NOT a dict
+    assert isinstance(result, str)
+    assert seen["prompt"] == "describe this in prose"
+    assert seen["image_path"] == str(resized_temp)
+    # The resized temp must be cleaned up.
+    assert not resized_temp.exists()
+
+
+def test_mlx_generate_text_does_not_clean_unresized_original(tmp_path, monkeypatch):
+    import vision_backends
+
+    img = _png_file(tmp_path)
+    client = vision_backends.MlxVisionClient.__new__(vision_backends.MlxVisionClient)
+    monkeypatch.setattr(client, "_generate_response", lambda prompt, image_path: "prose")
+    monkeypatch.setattr(vision_backends, "_resize_image_for_mlx", lambda path: (path, False))
+
+    result = client.generate_text(img, "p")
+
+    assert result == "prose"
+    # Original (not resized) must NOT be unlinked by generate_text.
+    assert img.exists()
+
+
+def test_ollama_generate_text_returns_raw_text_no_json(tmp_path, monkeypatch):
+    """OllamaVisionClient.generate_text returns the raw `response` string from
+    /api/generate, NOT a json.loads of that prose into a dict."""
+    import io
+    import json as _json
+    from urllib import request as _request
+
+    import vision_backends
+
+    img = _png_file(tmp_path)
+    prose = "Prose answer: there are 3 mop buckets and 2 carts."
+
+    client = vision_backends.OllamaVisionClient(ollama_url="http://127.0.0.1:11434")
+
+    class _FakeResp:
+        def __init__(self, body: bytes) -> None:
+            self._buf = io.BytesIO(body)
+
+        def read(self):
+            return self._buf.read()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    captured: dict[str, object] = {}
+
+    def fake_urlopen(req, *args, **kwargs):
+        captured["url"] = req.full_url if hasattr(req, "full_url") else str(req)
+        captured["payload"] = _json.loads(req.data.decode("utf-8"))
+        body = _json.dumps({"response": prose}).encode("utf-8")
+        return _FakeResp(body)
+
+    monkeypatch.setattr(_request, "urlopen", fake_urlopen)
+
+    result = client.generate_text(img, "count the buckets")
+
+    # Raw prose string returned verbatim — NOT parsed into a dict.
+    assert result == prose
+    assert isinstance(result, str)
+    assert captured["url"].endswith("/api/generate")
+    assert captured["payload"]["prompt"] == "count the buckets"
+    # No JSON-forcing on the deep-analysis path (unlike describe's format=json).
+    assert "format" not in captured["payload"]
+
+
+def test_ollama_describe_still_json_parses(tmp_path, monkeypatch):
+    """Guard the contract split: describe() still json.loads the response into a
+    dict (base vision pass), proving 406d did not change describe()."""
+    import io
+    import json as _json
+    from urllib import request as _request
+
+    import vision_backends
+
+    img = _png_file(tmp_path)
+    client = vision_backends.OllamaVisionClient(ollama_url="http://127.0.0.1:11434")
+
+    class _FakeResp:
+        def __init__(self, body: bytes) -> None:
+            self._buf = io.BytesIO(body)
+
+        def read(self):
+            return self._buf.read()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    def fake_urlopen(req, *args, **kwargs):
+        # describe sets format=json; the model returns a JSON STRING in `response`.
+        inner = _json.dumps({"description": "clean", "confidence": 0.8})
+        body = _json.dumps({"response": inner}).encode("utf-8")
+        return _FakeResp(body)
+
+    monkeypatch.setattr(_request, "urlopen", fake_urlopen)
+
+    parsed = client.describe(img, "describe")
+    assert isinstance(parsed, dict)
+    assert parsed["description"] == "clean"
+    assert parsed["confidence"] == 0.8

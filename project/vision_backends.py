@@ -92,6 +92,45 @@ class OllamaVisionClient:
             return parsed
         raise RuntimeError("vision retry loop exited without a result")
 
+    def generate_text(self, image_path: Path, prompt: str) -> str:
+        image_b64 = base64.b64encode(image_path.read_bytes()).decode("ascii")
+        payload = {
+            "model": self.model,
+            "prompt": prompt,
+            "images": [image_b64],
+            "stream": False,
+            "options": {
+                "temperature": 0.3,
+                "num_ctx": 8192,
+            },
+        }
+        data = json.dumps(payload).encode("utf-8")
+        req = request.Request(
+            f"{self.ollama_url}/api/generate",
+            data=data,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with request.urlopen(req, timeout=self.timeout_seconds) as response:
+                response_payload = json.loads(response.read().decode("utf-8"))
+        except TimeoutError as exc:
+            raise VisionModelTimeoutError(f"local Ollama vision request timed out after {self.timeout_seconds:g} seconds") from exc
+        except URLError as exc:
+            if isinstance(exc.reason, TimeoutError) or "timed out" in str(exc).lower():
+                raise VisionModelTimeoutError(f"local Ollama vision request timed out after {self.timeout_seconds:g} seconds") from exc
+            if isinstance(exc.reason, (ConnectionError, OSError)):
+                raise VisionModelConnectionError(f"local Ollama vision endpoint unreachable: {exc}") from exc
+            raise RuntimeError(f"local Ollama vision request failed: {exc}") from exc
+        except ConnectionError as exc:
+            raise VisionModelConnectionError(f"local Ollama vision endpoint unreachable: {exc}") from exc
+        except (OSError, json.JSONDecodeError) as exc:
+            raise RuntimeError(f"local Ollama vision request failed: {exc}") from exc
+        raw = response_payload.get("response")
+        if not isinstance(raw, str):
+            raise ValueError("Ollama response did not contain a response string")
+        return raw
+
     def _request_response(self, prompt: str, image_b64: str) -> str:
         payload = {
             "model": self.model,
@@ -286,6 +325,14 @@ class MlxVisionClient:
             if was_resized:
                 inference_path.unlink(missing_ok=True)
         raise RuntimeError("mlx vision retry loop exited without a result")
+
+    def generate_text(self, image_path: Path, prompt: str) -> str:
+        inference_path, was_resized = _resize_image_for_mlx(image_path)
+        try:
+            return self._generate_response(prompt, str(inference_path))
+        finally:
+            if was_resized:
+                inference_path.unlink(missing_ok=True)
 
     def _generate_response(self, prompt: str, image_path: str) -> str:
         formatted = self._apply_chat_template(
