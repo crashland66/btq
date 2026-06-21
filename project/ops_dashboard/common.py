@@ -55,6 +55,7 @@ KNOWN_JOB_SUMMARY_TYPES = {
     "log_supply_need",
     "log_equipment_request",
     "log_personnel_event",
+    "log_availability_constraint",
     "set_entity_status",
     "set_employee_id",
     "update_site_equipment",
@@ -1177,6 +1178,18 @@ def render_job_summary(job_type: object, payload: object) -> str:
         employee = html.escape(_clean_display_part(body.get("employee")))
         suffix = _join_summary_parts(f"({event_type})" if event_type else "", employee)
         return _summary_with_suffix("Log personnel event", suffix)
+    if job_type_text == "log_availability_constraint":
+        employee = html.escape(_clean_display_part(body.get("employee")))
+        constraint_type = html.escape(_clean_display_part(body.get("constraint_type")))
+        date = html.escape(_clean_display_part(body.get("date")))
+        site = html.escape(_clean_display_part(body.get("related_site")))
+        suffix = _join_summary_parts(
+            f"({constraint_type})" if constraint_type else "",
+            employee,
+            f"on {date}" if date else "",
+            f"at {site}" if site else "",
+        )
+        return _summary_with_suffix("Log availability constraint", suffix)
     if job_type_text == "set_entity_status":
         entity_type = html.escape(_clean_display_part(body.get("entity_type")))
         entity_id = html.escape(_clean_display_part(body.get("entity_id")))

@@ -501,6 +501,24 @@ def test_log_personnel_event_has_one_line_summary() -> None:
     assert "Tate, Marcus" in rendered
 
 
+def test_render_job_summary_log_availability_constraint() -> None:
+    rendered = render_job_summary(
+        "log_availability_constraint",
+        {
+            "employee": "Yuhas, Richard",
+            "constraint_type": "last_working_day",
+            "date": "2026-06-30",
+            "related_site": "705",
+        },
+    )
+
+    assert "Log availability constraint" in rendered
+    assert "last_working_day" in rendered
+    assert "Yuhas, Richard" in rendered
+    assert "2026-06-30" in rendered
+    assert "705" in rendered
+
+
 def test_render_job_summary_set_entity_status() -> None:
     rendered = render_job_summary("set_entity_status", {"entity_type": "site", "entity_id": "7030", "status": "inactive"})
 
