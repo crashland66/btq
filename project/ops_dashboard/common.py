@@ -1375,6 +1375,43 @@ def write_edit_record_fields_job(
     return queue_path
 
 
+def write_deep_analysis_job(
+    runtime_root: Path,
+    *,
+    capture_id: str,
+    photo_asset_id: str,
+    actor: str,
+    preset_id: str | None = None,
+    custom_prompt: str | None = None,
+) -> Path:
+    from queue_spec import JOB_DEEP_ANALYSIS, validate_job
+
+    suffix = str(uuid.uuid4())
+    payload: dict[str, object] = {
+        "capture_id": capture_id,
+        "photo_asset_id": photo_asset_id,
+        "actor": actor,
+    }
+    if preset_id is not None:
+        payload["preset_id"] = preset_id
+    if custom_prompt is not None:
+        payload["custom_prompt"] = custom_prompt
+    job = {
+        "job_id": f"deep-analysis-{suffix}",
+        "job_type": JOB_DEEP_ANALYSIS,
+        "payload": payload,
+    }
+    if not validate_job(job):
+        raise ValueError("invalid deep_analysis payload")
+    queue_dir = runtime_root.expanduser().resolve(strict=False) / "queue"
+    queue_dir.mkdir(parents=True, exist_ok=True)
+    queue_path = queue_dir / f"deep-analysis-{suffix}.json"
+    temp_path = queue_path.with_name(f".{queue_path.name}.tmp")
+    temp_path.write_text(json.dumps(job, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    temp_path.replace(queue_path)
+    return queue_path
+
+
 def render_site_id_options(current_site_id: str) -> str:
     current = str(current_site_id or "").strip()
     options = ['<option value="">Select site</option>']

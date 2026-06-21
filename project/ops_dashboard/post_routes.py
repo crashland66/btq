@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from http import HTTPStatus
 
-from ops_dashboard.sections import batch_images, candidates, drafts, employee_detail, equipment, failed, home, issues, prospect_detail, site_detail, sites, supplies, system, tokens
+from ops_dashboard.sections import batch_images, candidates, captures, drafts, employee_detail, equipment, failed, home, issues, prospect_detail, site_detail, sites, supplies, system, tokens
 
 Response = tuple[HTTPStatus, str, bytes, dict[str, str]]
 
@@ -31,6 +31,8 @@ def dispatch_post_route(
         return candidates.handle_resolve(ctx, body)
     if route_path == "/field-capture/review/dismiss-completion":
         return candidates.handle_completion_dismiss_post(ctx, body)
+    if route_path == "/captures/analyze-deeper":
+        return captures.handle_analyze_deeper_post(ctx, body)
     if route_path == "/drafts/generate":
         return drafts.handle_generate_post(ctx, body)
     if route_path == "/drafts/stage":

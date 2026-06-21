@@ -5,14 +5,17 @@ import json
 import mimetypes
 import re
 from pathlib import Path
-from urllib.parse import quote, unquote
+from urllib.parse import parse_qs, quote, unquote
 
 from field_capture import approved_job_drafts, audio_semantics, audio_transcription
+from field_capture.deep_analysis import DEEP_ANALYSIS_PRESETS
 from field_capture import photo_vision as field_photo_vision
 from field_capture.site_viewer import UnsafeMediaPath, resolve_media_path, resolve_media_request
+from ops_dashboard import audit
 from ops_dashboard.common import (
     UNKNOWN_SUBMITTER,
     audio_player,
+    default_actor,
     first_query_value,
     humanize_key,
     is_audio_file,
@@ -30,8 +33,13 @@ from ops_dashboard.common import (
     significant_warnings,
     string_list,
     submitters_by_capture,
+    write_deep_analysis_job,
 )
 from ops_dashboard.layout import html_page
+from queue_spec import DEEP_ANALYSIS_PRESET_IDS
+
+
+_DEEP_ANALYSIS_LABELS = {preset["id"]: preset["label"] for preset in DEEP_ANALYSIS_PRESETS}
 
 
 def intake_records(root: Path) -> dict[str, dict[str, object]]:
@@ -241,6 +249,15 @@ def _missing_sidecar_record(asset: field_photo_vision.FieldPhotoAsset, submitter
     }
 
 
+def _deep_analysis_entries_for_sidecar(sidecar: dict[str, object]) -> list[object]:
+    sidecar_path = str(sidecar.get("path") or "").strip()
+    if not sidecar_path:
+        return []
+    payload, _error = read_json_artifact(Path(sidecar_path))
+    entries = payload.get("deep_analysis") if isinstance(payload, dict) else None
+    return entries if isinstance(entries, list) else []
+
+
 def photo_card_records_for_capture(root: Path, capture_id: str) -> list[dict[str, object]]:
     """Build one photo-vision record per photo asset in a capture, merging
     sidecar fields when available and surfacing 'missing' status when not.
@@ -280,6 +297,9 @@ def photo_card_records_for_capture(root: Path, capture_id: str) -> list[dict[str
                     "submitter_id": record.get("submitter_id") or submitter["submitter_id"],
                 }
             )
+            deep_analysis = _deep_analysis_entries_for_sidecar(sidecar)
+            if deep_analysis:
+                record["deep_analysis"] = deep_analysis
         else:
             record = _missing_sidecar_record(asset, submitter)
         note = asset.note.strip()
@@ -295,6 +315,9 @@ def photo_card_records_for_capture(root: Path, capture_id: str) -> list[dict[str
         record = dict(sidecar)
         record.setdefault("submitter_name", submitter["submitter_name"])
         record.setdefault("submitter_id", submitter["submitter_id"])
+        deep_analysis = _deep_analysis_entries_for_sidecar(sidecar)
+        if deep_analysis:
+            record["deep_analysis"] = deep_analysis
         records.append(record)
     records.sort(key=lambda item: (str(item.get("captured_at") or ""), str(item.get("photo_asset_id") or "")))
     return records
@@ -479,6 +502,105 @@ def _photo_note_html(record: dict[str, object]) -> str:
     return f'<p class="subline site-gallery-meta"><b>Photo note</b><br>{escaped_note}</p>'
 
 
+def _deep_analysis_prompt_label(entry: dict[str, object]) -> str:
+    prompt_id = str(entry.get("prompt_id") or "").strip()
+    label = str(entry.get("label") or "").strip()
+    if label:
+        return label
+    if prompt_id == "custom":
+        return "Custom"
+    if prompt_id in _DEEP_ANALYSIS_LABELS:
+        return _DEEP_ANALYSIS_LABELS[prompt_id]
+    return humanize_key(prompt_id) if prompt_id else "Custom"
+
+
+def _render_deep_analysis_result(value: object) -> str:
+    if value is None or value == "":
+        return '<p class="muted">No result text.</p>'
+    if isinstance(value, (dict, list)):
+        text = json.dumps(value, indent=2, sort_keys=True)
+        return f'<pre>{html.escape(text)}</pre>'
+    text = html.escape(str(value)).replace("\r\n", "\n").replace("\r", "\n").replace("\n", "<br>")
+    return f"<p>{text}</p>"
+
+
+def _render_deep_analysis_entry(entry: object) -> str:
+    if not isinstance(entry, dict):
+        return ""
+    status = str(entry.get("status") or "").strip() or "unknown"
+    error = entry.get("error") if isinstance(entry.get("error"), dict) else {}
+    model = " / ".join(
+        part
+        for part in (
+            str(entry.get("model_provider") or "").strip(),
+            str(entry.get("model_name") or "").strip(),
+        )
+        if part
+    )
+    details = _without_empty_values(
+        {
+            "prompt": _deep_analysis_prompt_label(entry),
+            "status": status,
+            "model": model,
+            "actor": entry.get("actor", ""),
+            "generated_at": entry.get("generated_at", ""),
+        }
+    )
+    error_message = str(error.get("message") or "").strip()
+    error_html = ""
+    if status.lower() == "failed" or error_message:
+        error_type = str(error.get("type") or "").strip()
+        error_label = ": ".join(part for part in (error_type, error_message) if part)
+        error_html = f'<p class="error"><strong>Failed:</strong> {html.escape(error_label or "Deep analysis failed.")}</p>'
+    return f"""
+      <article>
+        {render_kv(details)}
+        {error_html}
+        {_render_deep_analysis_result(entry.get("result"))}
+      </article>
+    """
+
+
+def render_deep_analysis_results(record: dict[str, object]) -> str:
+    entries = record.get("deep_analysis")
+    if not isinstance(entries, list) or not entries:
+        return ""
+    body = "".join(_render_deep_analysis_entry(entry) for entry in entries)
+    if not body:
+        return ""
+    return f'<div class="deep-analysis-results"><h5>Deep analysis results</h5>{body}</div>'
+
+
+def render_analyze_deeper_form(record: dict[str, object]) -> str:
+    capture_id = str(record.get("capture_id") or "").strip()
+    photo_asset_id = str(record.get("photo_asset_id") or "").strip()
+    if not capture_id or not photo_asset_id:
+        return ""
+    preset_options = "".join(
+        f'<option value="{html.escape(str(preset["id"]), quote=True)}">{html.escape(str(preset["label"]))}</option>'
+        for preset in DEEP_ANALYSIS_PRESETS
+    )
+    return f"""
+      <form method="post" action="/captures/analyze-deeper" class="review-action-form deep-analysis-form">
+        <h5>Analyze deeper</h5>
+        <input type="hidden" name="capture_id" value="{html.escape(capture_id, quote=True)}">
+        <input type="hidden" name="photo_asset_id" value="{html.escape(photo_asset_id, quote=True)}">
+        <label>Prompt preset
+          <select name="preset_id">
+            {preset_options}
+            <option value="custom">Custom...</option>
+          </select>
+        </label>
+        <label>Custom prompt (used only when Custom is selected)
+          <textarea name="custom_prompt" rows="3"></textarea>
+        </label>
+        <label>Actor <input type="text" name="actor" value="{html.escape(default_actor(), quote=True)}" required></label>
+        <label><input type="checkbox" name="confirm" value="1" required> Confirm queueing deep analysis for this photo.</label>
+        <button type="submit">Run deep analysis</button>
+      </form>
+    """
+
+
 def render_photo_card(record: dict[str, object], root: Path | None = None) -> str:
     title = (
         str(record.get("area_guess") or "").strip()
@@ -547,6 +669,8 @@ def render_photo_processing_details(record: dict[str, object]) -> str:
     <article>
       <h4>{html.escape(title)}</h4>
       {render_kv(values)}
+      {render_analyze_deeper_form(record)}
+      {render_deep_analysis_results(record)}
     </article>
     """
 
@@ -674,6 +798,63 @@ def render_voice_processing_section(root: Path, audio_assets: list[audio_transcr
             """
         )
     return f'<section><h3>Voice note processing</h3>{"".join(cards)}</section>'
+
+
+def handle_analyze_deeper_post(ctx: object, body: bytes) -> tuple:
+    form = parse_qs(body.decode("utf-8", errors="replace"), keep_blank_values=True)
+    root = Path(getattr(ctx, "runtime_root", Path("."))).expanduser().resolve(strict=False)
+    form_payload = {key: values[0] if values else "" for key, values in form.items()}
+
+    def _audit_append(result: str) -> None:
+        audit.append_audit(root, {"route": "/captures/analyze-deeper", "actor": "localhost", "payload": form_payload, "result_summary": result})
+
+    def _redirect(location: str) -> tuple:
+        return 303, "text/html; charset=utf-8", f'<a href="{html.escape(location)}">Return</a>'.encode(), {"Location": location}
+
+    capture_id = first_query_value(form, "capture_id").strip()
+    photo_asset_id = first_query_value(form, "photo_asset_id").strip()
+    actor = first_query_value(form, "actor").strip()
+    preset_id = first_query_value(form, "preset_id").strip()
+    custom_prompt = first_query_value(form, "custom_prompt").strip()
+    redirect_base = f"/captures?capture_id={quote(capture_id)}" if capture_id else "/captures"
+
+    def _fail(reason: str) -> tuple:
+        _audit_append(f"failed: {reason}")
+        return _redirect(f"{redirect_base}&error={quote(reason)}" if "?" in redirect_base else f"{redirect_base}?error={quote(reason)}")
+
+    if first_query_value(form, "confirm") != "1":
+        return _fail("confirm_required")
+    if not capture_id or not photo_asset_id or not actor:
+        return _fail("missing_field")
+
+    staged_preset_id: str | None = None
+    staged_custom_prompt: str | None = None
+    if preset_id and preset_id not in DEEP_ANALYSIS_PRESET_IDS and preset_id != "custom":
+        return _fail("unknown_preset")
+    if preset_id in DEEP_ANALYSIS_PRESET_IDS:
+        if custom_prompt:
+            return _fail("prompt_source_conflict")
+        staged_preset_id = preset_id
+    elif custom_prompt:
+        staged_custom_prompt = custom_prompt
+    else:
+        return _fail("missing_prompt")
+
+    try:
+        queue_path = write_deep_analysis_job(
+            root,
+            capture_id=capture_id,
+            photo_asset_id=photo_asset_id,
+            actor=actor,
+            preset_id=staged_preset_id,
+            custom_prompt=staged_custom_prompt,
+        )
+    except Exception as exc:  # noqa: BLE001
+        _audit_append(f"failed: {exc}")
+        return _redirect(f"{redirect_base}&error={quote(str(exc))}")
+
+    _audit_append(f"success: staged deep_analysis capture_id={capture_id} photo_asset_id={photo_asset_id} queue_path={queue_path}")
+    return _redirect(f"/captures?capture_id={quote(capture_id)}&message=deep_analysis_queued")
 
 
 def _processing_details_section(
