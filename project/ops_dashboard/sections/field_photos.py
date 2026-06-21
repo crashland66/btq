@@ -5,9 +5,13 @@ import json
 import logging
 import os
 from pathlib import Path
+from urllib.parse import urlencode
 
+from field_capture.deep_analysis import DEEP_ANALYSIS_PRESETS
 from ops_dashboard.common import (
+    default_actor,
     first_filter_value,
+    humanize_key,
     load_photo_vision_sidecars,
     render_relative_time,
     render_short_id,
@@ -24,6 +28,7 @@ PAGE_LIMIT = 120
 PENDING_LIMIT = 12
 _TERMINAL_CAPTURE_STATES = frozenset({"failed", "complete", "completed"})
 _FIELD_CAPTURE_PAGE_SIZE = 5000
+_DEEP_ANALYSIS_LABELS = {str(preset["id"]): str(preset["label"]) for preset in DEEP_ANALYSIS_PRESETS}
 
 
 def _photo_vision_couchdb_config() -> object:
@@ -222,7 +227,103 @@ def _first_name(full_name: str) -> str:
     return full_name.split()[0] if full_name.strip() else ""
 
 
-def _render_card(sidecar: dict[str, object], submitters: dict[str, dict[str, str]], vault_root: Path) -> str:
+def _analysis_icon(kind: str) -> str:
+    if kind == "view":
+        return (
+            '<svg aria-hidden="true" viewBox="0 0 24 24" width="16" height="16" fill="none" '
+            'stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">'
+            '<path d="M2 12s4-7 10-7 10 7 10 7-4 7-10 7-10-7-10-7Z"></path>'
+            '<circle cx="12" cy="12" r="3"></circle></svg>'
+        )
+    return (
+        '<svg aria-hidden="true" viewBox="0 0 24 24" width="16" height="16" fill="none" '
+        'stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">'
+        '<circle cx="11" cy="11" r="7"></circle><path d="m21 21-4.3-4.3"></path>'
+        '<path d="M11 8v6"></path><path d="M8 11h6"></path></svg>'
+    )
+
+
+def _deep_analysis_prompt_label(entry: dict[str, object]) -> str:
+    prompt_id = str(entry.get("prompt_id") or "").strip()
+    label = str(entry.get("label") or "").strip()
+    if label:
+        return label
+    if prompt_id == "custom":
+        return "Custom"
+    if prompt_id in _DEEP_ANALYSIS_LABELS:
+        return _DEEP_ANALYSIS_LABELS[prompt_id]
+    return humanize_key(prompt_id) if prompt_id else "Custom"
+
+
+def _deep_analysis_payload(entries: object) -> list[dict[str, object]]:
+    if not isinstance(entries, list):
+        return []
+    payload: list[dict[str, object]] = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        error = entry.get("error") if isinstance(entry.get("error"), dict) else {}
+        model = " / ".join(
+            part
+            for part in (
+                str(entry.get("model_provider") or "").strip(),
+                str(entry.get("model_name") or "").strip(),
+            )
+            if part
+        )
+        payload.append(
+            {
+                "prompt": _deep_analysis_prompt_label(entry),
+                "status": str(entry.get("status") or "").strip() or "unknown",
+                "model": model,
+                "actor": str(entry.get("actor") or "").strip(),
+                "generated_at": str(entry.get("generated_at") or "").strip(),
+                "result": entry.get("result"),
+                "error_type": str(error.get("type") or "").strip(),
+                "error_message": str(error.get("message") or "").strip(),
+            }
+        )
+    return payload
+
+
+def _json_attr(value: object) -> str:
+    text = json.dumps(value, separators=(",", ":"), sort_keys=True)
+    return html.escape(text, quote=True)
+
+
+def _render_deep_analysis_actions(sidecar: dict[str, object]) -> str:
+    capture_id = str(sidecar.get("capture_id") or "").strip()
+    photo_asset_id = str(sidecar.get("photo_asset_id") or "").strip()
+    analysis_payload = _deep_analysis_payload(sidecar.get("deep_analysis"))
+    escaped_capture_id = html.escape(capture_id, quote=True)
+    escaped_photo_asset_id = html.escape(photo_asset_id, quote=True)
+    run_button = (
+        '<button type="button" class="icon-btn" title="Run deeper analysis" aria-label="Run deeper analysis" '
+        f'data-deep-analysis-run data-capture-id="{escaped_capture_id}" '
+        f'data-photo-asset-id="{escaped_photo_asset_id}">{_analysis_icon("run")}</button>'
+    )
+    view_button = ""
+    if analysis_payload:
+        view_button = (
+            '<button type="button" class="icon-btn" title="View deeper analysis" aria-label="View deeper analysis" '
+            f'data-deep-analysis-view data-capture-id="{escaped_capture_id}" '
+            f'data-photo-asset-id="{escaped_photo_asset_id}" data-analysis="{_json_attr(analysis_payload)}">'
+            f'{_analysis_icon("view")}</button>'
+        )
+    return (
+        '<div style="display:flex;gap:6px;justify-content:flex-end;margin:0 0 8px">'
+        f"{run_button}{view_button}"
+        "</div>"
+    )
+
+
+def _render_card(
+    sidecar: dict[str, object],
+    submitters: dict[str, dict[str, str]],
+    vault_root: Path,
+    *,
+    show_deep_analysis_controls: bool = True,
+) -> str:
     capture_id = str(sidecar.get("capture_id") or "")
     provenance = sidecar.get("provenance") if isinstance(sidecar.get("provenance"), dict) else {}
     raw_url = (provenance.get("image_media_url") if isinstance(provenance, dict) else None) or sidecar.get("image_media_url")
@@ -275,6 +376,8 @@ def _render_card(sidecar: dict[str, object], submitters: dict[str, dict[str, str
     pills_html = " ".join(f'<span class="pill">{html.escape(t)}</span>' for t in tags)
 
     inner = ""
+    if show_deep_analysis_controls:
+        inner += _render_deep_analysis_actions(sidecar)
     if meta_line:
         inner += f"<p style='margin:0 0 4px'>{meta_line}</p>"
     if sub_line:
@@ -545,7 +648,10 @@ def latest_photo_cards(
 
     submitters = submitters_by_capture(runtime_root)
     vault_root = Path(getattr(ctx.config, "vault_root", runtime_root / "vault")).expanduser()
-    return ("".join(_render_card(s, submitters, vault_root) for s in sidecars), fallback)
+    return (
+        "".join(_render_card(s, submitters, vault_root, show_deep_analysis_controls=False) for s in sidecars),
+        fallback,
+    )
 
 
 def _with_target_fields(sidecar: dict[str, object]) -> dict[str, object]:
@@ -566,6 +672,150 @@ def _with_target_fields(sidecar: dict[str, object]) -> dict[str, object]:
     if payload.get("target_id") is not None:
         enriched["target_id"] = str(payload.get("target_id") or "")
     return enriched
+
+
+def _field_photos_return_to(query: object) -> str:
+    if not isinstance(query, dict) or not query:
+        return "/field-photos"
+    qs = urlencode(query, doseq=True)
+    return f"/field-photos?{qs}" if qs else "/field-photos"
+
+
+def _render_deep_analysis_dialogs(return_to: str) -> str:
+    preset_options = "".join(
+        f'<option value="{html.escape(str(preset["id"]), quote=True)}">{html.escape(str(preset["label"]))}</option>'
+        for preset in DEEP_ANALYSIS_PRESETS
+    )
+    return f"""
+    <dialog id="field-photo-analysis-run-dialog" style="max-width:640px;width:min(640px,92vw)">
+      <form method="post" action="/captures/analyze-deeper" class="review-action-form deep-analysis-form">
+        <h3 style="margin-top:0">Run deeper analysis</h3>
+        <input type="hidden" name="capture_id" value="">
+        <input type="hidden" name="photo_asset_id" value="">
+        <input type="hidden" name="confirm" value="1">
+        <input type="hidden" name="return_to" value="{html.escape(return_to, quote=True)}">
+        <label>Prompt preset
+          <select name="preset_id" data-deep-analysis-preset style="width:100%">
+            {preset_options}
+            <option value="custom">Custom...</option>
+          </select>
+        </label>
+        <label data-deep-analysis-custom-row hidden>Custom prompt
+          <textarea name="custom_prompt" rows="5" disabled style="width:100%"></textarea>
+        </label>
+        <label>Actor <input type="text" name="actor" value="{html.escape(default_actor(), quote=True)}" required></label>
+        <p style="display:flex;gap:8px;justify-content:flex-end;margin-bottom:0">
+          <button type="button" data-close-dialog>Cancel</button>
+          <button type="submit">Send</button>
+        </p>
+      </form>
+    </dialog>
+    <dialog id="field-photo-analysis-view-dialog" style="max-width:760px;width:min(760px,92vw)">
+      <h3 id="field-photo-analysis-view-title" style="margin-top:0">Deeper analysis</h3>
+      <div id="field-photo-analysis-view-body"></div>
+      <p style="display:flex;justify-content:flex-end;margin-bottom:0">
+        <button type="button" data-close-dialog>Close</button>
+      </p>
+    </dialog>
+    <script>
+      document.addEventListener('DOMContentLoaded', function () {{
+        const runDialog = document.getElementById('field-photo-analysis-run-dialog');
+        const viewDialog = document.getElementById('field-photo-analysis-view-dialog');
+        const runForm = runDialog ? runDialog.querySelector('form') : null;
+        const presetSelect = runForm ? runForm.querySelector('[data-deep-analysis-preset]') : null;
+        const customRow = runForm ? runForm.querySelector('[data-deep-analysis-custom-row]') : null;
+        const customPrompt = customRow ? customRow.querySelector('textarea') : null;
+        const viewTitle = document.getElementById('field-photo-analysis-view-title');
+        const viewBody = document.getElementById('field-photo-analysis-view-body');
+        function openDialog(dialog) {{
+          if (!dialog) return;
+          if (typeof dialog.showModal === 'function') dialog.showModal();
+          else dialog.setAttribute('open', '');
+        }}
+        function closeDialog(dialog) {{
+          if (!dialog) return;
+          if (typeof dialog.close === 'function') dialog.close();
+          else dialog.removeAttribute('open');
+        }}
+        function syncCustomPrompt() {{
+          const custom = presetSelect && presetSelect.value === 'custom';
+          if (customRow) customRow.hidden = !custom;
+          if (customPrompt) {{
+            customPrompt.disabled = !custom;
+            if (!custom) customPrompt.value = '';
+          }}
+        }}
+        function appendText(parent, tag, text, className) {{
+          const el = document.createElement(tag);
+          if (className) el.className = className;
+          el.textContent = text || '';
+          parent.appendChild(el);
+          return el;
+        }}
+        function appendEntry(entry) {{
+          const article = document.createElement('article');
+          article.style.borderTop = '1px solid var(--line)';
+          article.style.padding = '12px 0';
+          const details = document.createElement('dl');
+          [
+            ['Prompt', entry.prompt],
+            ['Status', entry.status],
+            ['Model', entry.model],
+            ['Actor', entry.actor],
+            ['Generated', entry.generated_at],
+          ].forEach(function (row) {{
+            if (!row[1]) return;
+            const dt = document.createElement('dt');
+            const dd = document.createElement('dd');
+            dt.textContent = row[0];
+            dd.textContent = row[1];
+            details.appendChild(dt);
+            details.appendChild(dd);
+          }});
+          article.appendChild(details);
+          if ((entry.status || '').toLowerCase() === 'failed' || entry.error_message) {{
+            const bits = [entry.error_type, entry.error_message].filter(Boolean).join(': ');
+            appendText(article, 'p', 'Failed: ' + (bits || 'Deep analysis failed.'), 'error');
+          }}
+          if (entry.result === null || entry.result === undefined || entry.result === '') {{
+            appendText(article, 'p', 'No result text.', 'muted');
+          }} else if (typeof entry.result === 'object') {{
+            appendText(article, 'pre', JSON.stringify(entry.result, null, 2));
+          }} else {{
+            appendText(article, 'p', String(entry.result));
+          }}
+          viewBody.appendChild(article);
+        }}
+        presetSelect?.addEventListener('change', syncCustomPrompt);
+        document.querySelectorAll('[data-deep-analysis-run]').forEach(function (button) {{
+          button.addEventListener('click', function () {{
+            if (!runForm) return;
+            runForm.reset();
+            runForm.querySelector('[name="capture_id"]').value = button.dataset.captureId || '';
+            runForm.querySelector('[name="photo_asset_id"]').value = button.dataset.photoAssetId || '';
+            syncCustomPrompt();
+            openDialog(runDialog);
+          }});
+        }});
+        document.querySelectorAll('[data-deep-analysis-view]').forEach(function (button) {{
+          button.addEventListener('click', function () {{
+            if (!viewBody) return;
+            let entries = [];
+            try {{ entries = JSON.parse(button.getAttribute('data-analysis') || '[]'); }} catch (_error) {{ entries = []; }}
+            viewBody.textContent = '';
+            if (viewTitle) viewTitle.textContent = 'Deeper analysis';
+            if (!entries.length) appendText(viewBody, 'p', 'No deeper analysis entries.', 'muted');
+            entries.forEach(appendEntry);
+            openDialog(viewDialog);
+          }});
+        }});
+        document.querySelectorAll('[data-close-dialog]').forEach(function (button) {{
+          button.addEventListener('click', function () {{ closeDialog(button.closest('dialog')); }});
+        }});
+        syncCustomPrompt();
+      }});
+    </script>
+    """
 
 
 def render(ctx: object) -> str:
@@ -651,5 +901,6 @@ def render(ctx: object) -> str:
       <p class="muted" style="margin-top:.5rem">{html.escape(count_text)}</p>
       {grid_html}
     </section>
+    {_render_deep_analysis_dialogs(_field_photos_return_to(query))}
     """
     return html_page("Field Photos — BTQ Ops", body, active_section="field_photos")

@@ -5,7 +5,7 @@ import json
 import mimetypes
 import re
 from pathlib import Path
-from urllib.parse import parse_qs, quote, unquote
+from urllib.parse import parse_qs, quote, unquote, urlencode, urlsplit, urlunsplit
 
 from field_capture import approved_job_drafts, audio_semantics, audio_transcription
 from field_capture.deep_analysis import DEEP_ANALYSIS_PRESETS
@@ -816,11 +816,27 @@ def handle_analyze_deeper_post(ctx: object, body: bytes) -> tuple:
     actor = first_query_value(form, "actor").strip()
     preset_id = first_query_value(form, "preset_id").strip()
     custom_prompt = first_query_value(form, "custom_prompt").strip()
+    return_to = first_query_value(form, "return_to").strip()
     redirect_base = f"/captures?capture_id={quote(capture_id)}" if capture_id else "/captures"
+
+    def _safe_return_to(value: str) -> str:
+        if not value.startswith("/") or value.startswith("//"):
+            return ""
+        parsed = urlsplit(value)
+        if parsed.scheme or parsed.netloc:
+            return ""
+        return value
+
+    def _redirect_target(param: str, value: str) -> str:
+        target = _safe_return_to(return_to) or redirect_base
+        parsed = urlsplit(target)
+        query = parse_qs(parsed.query, keep_blank_values=True)
+        query[param] = [value]
+        return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, urlencode(query, doseq=True), parsed.fragment))
 
     def _fail(reason: str) -> tuple:
         _audit_append(f"failed: {reason}")
-        return _redirect(f"{redirect_base}&error={quote(reason)}" if "?" in redirect_base else f"{redirect_base}?error={quote(reason)}")
+        return _redirect(_redirect_target("error", reason))
 
     if first_query_value(form, "confirm") != "1":
         return _fail("confirm_required")
@@ -851,10 +867,10 @@ def handle_analyze_deeper_post(ctx: object, body: bytes) -> tuple:
         )
     except Exception as exc:  # noqa: BLE001
         _audit_append(f"failed: {exc}")
-        return _redirect(f"{redirect_base}&error={quote(str(exc))}")
+        return _redirect(_redirect_target("error", str(exc)))
 
     _audit_append(f"success: staged deep_analysis capture_id={capture_id} photo_asset_id={photo_asset_id} queue_path={queue_path}")
-    return _redirect(f"/captures?capture_id={quote(capture_id)}&message=deep_analysis_queued")
+    return _redirect(_redirect_target("message", "deep_analysis_queued"))
 
 
 def _processing_details_section(
