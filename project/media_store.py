@@ -237,3 +237,11 @@ def get_media_store(upload_root: Path, instance_config: object | None = None) ->
     if media_store == "s3":
         return build_s3_store(config)
     raise NotImplementedError(f"media_store {media_store!r} is not supported")
+
+
+def get_mirror_store(upload_root: Path, instance_config: object | None = None) -> "MediaStore | None":
+    config = get_instance_config() if instance_config is None else instance_config
+    media_store = getattr(config, "media_store", DEFAULT_MEDIA_STORE) or DEFAULT_MEDIA_STORE
+    if media_store == "s3":
+        return build_s3_store(config)
+    return None

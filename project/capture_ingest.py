@@ -6,6 +6,7 @@ capture surfaces that do not carry the full BTQ project package.
 
 from __future__ import annotations
 
+import logging
 import re
 import uuid
 from dataclasses import dataclass
@@ -266,12 +267,14 @@ def build_capture_document_envelope(
 
 
 def write_capture_media(media_records: list[object], uploads: list[UploadedFile], upload_dir: Path) -> None:
-    from media_store import get_media_store
+    from media_store import LocalFilesystemStore, get_mirror_store
 
     if len(media_records) != len(uploads):
         raise SubmissionError(HTTPStatus.BAD_REQUEST, "invalid_media", "Invalid media")
     upload_root = upload_dir.expanduser().resolve(strict=False)
-    store = get_media_store(upload_root)
+    local_store = LocalFilesystemStore(upload_root)
+    mirror = None
+    mirror_loaded = False
     for upload, record in zip(uploads, media_records):
         if not isinstance(record, dict):
             raise SubmissionError(HTTPStatus.BAD_REQUEST, "invalid_photo", "Invalid photo")
@@ -280,7 +283,20 @@ def write_capture_media(media_records: list[object], uploads: list[UploadedFile]
             key = stored_path.relative_to(upload_root).as_posix()
         except ValueError as exc:
             raise SubmissionError(HTTPStatus.BAD_REQUEST, "invalid_upload_path", "Invalid upload path") from exc
-        store.write(key, upload.content)
+        local_store.write(key, upload.content)
+        if not mirror_loaded:
+            try:
+                mirror = get_mirror_store(upload_root)
+            except Exception as exc:
+                logging.warning("btq R2 mirror unavailable: %s", exc)
+            mirror_loaded = True
+        if mirror is None:
+            continue
+        try:
+            mirror.write(key, upload.content)
+            logging.info("btq R2 mirror wrote %s", key)
+        except Exception as exc:
+            logging.warning("btq R2 mirror write failed for %s: %s", key, exc)
 
 
 def atomic_write_bytes(path: Path, data: bytes) -> None:
