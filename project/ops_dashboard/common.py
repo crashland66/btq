@@ -48,6 +48,7 @@ KNOWN_JOB_SUMMARY_TYPES = {
     "record_shift_report",
     "record_day_record",
     "photo_capture",
+    "deep_analysis",
     "promote_prospect",
     "retarget_capture",
     "log_site_issue",
@@ -1141,6 +1142,13 @@ def render_job_summary(job_type: object, payload: object) -> str:
         category = html.escape(_clean_display_part(body.get("qc_category")))
         suffix = _join_summary_parts(_site_summary(body), f"({category})" if category else "")
         return _summary_with_suffix("Photo capture at", suffix)
+    if job_type_text == "deep_analysis":
+        capture = html.escape(_clean_display_part(body.get("capture_id")))
+        preset = html.escape(_clean_display_part(body.get("preset_id")))
+        custom_prompt = html.escape(_clean_display_part(body.get("custom_prompt")))
+        prompt = preset or ("custom" if custom_prompt else "")
+        suffix = _join_summary_parts(f"({prompt})" if prompt else "", f"on capture {capture}" if capture else "")
+        return _summary_with_suffix("Deep analysis", suffix)
     if job_type_text == "promote_prospect":
         prospect = html.escape(_clean_display_part(body.get("prospect_id")))
         site = html.escape(_clean_display_part(body.get("site_id")))

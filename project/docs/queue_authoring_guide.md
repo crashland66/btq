@@ -912,7 +912,61 @@ Each photo object requires:
 }
 ```
 
-## 9a. `promote_prospect`
+## 9a. `deep_analysis`
+
+Use when:
+
+- an operator needs deeper image analysis on a single field-capture photo
+- the base per-capture vision pass has already run or remains unchanged
+- the result should be attached to the photo-vision sidecar for review
+
+Do not use when:
+
+- the action should mutate the operational vault directly
+- the prompt should use a cloud vision model
+- the request is for bulk analysis or a whole capture set instead of one photo
+
+### Required payload fields
+
+- `capture_id`: field capture document id
+- `photo_asset_id`: photo asset id within the capture
+- `actor`: operator name or id initiating the analysis
+
+Exactly one prompt source is required:
+
+- `preset_id`: one of `condition_detail`, `damage_hazard`, `cleanliness_qc`, `text_ocr`, `inventory_count`, `equipment_id`, or `shift_report`
+- `custom_prompt`: non-empty operator-supplied prompt
+
+Never provide both `preset_id` and `custom_prompt`. Never omit both.
+
+### Optional payload fields
+
+- none in the executable contract
+
+### Runtime behavior notes
+
+- this is an operator-triggered tier-2 escape hatch for deeper analysis on one capture photo
+- the runtime runs the configured local vision model only; it does not call cloud vision APIs
+- a vision or image failure records a `failed` deep-analysis result instead of failing the queue job
+- the runtime appends the result to the photo-vision sidecar's `deep_analysis` list
+- the runtime appends one metric event to `deep_analysis_requests.jsonl`
+
+### Valid example
+
+```json
+{
+  "job_id": "2026-05-28T18-00-00Z__deep-analysis-cap-photo-2026-05-28T12-48-00-04-00",
+  "job_type": "deep_analysis",
+  "payload": {
+    "capture_id": "cap-photo-2026-05-28T12-48-00-04-00",
+    "photo_asset_id": "photo-admin-entrance-1",
+    "actor": "Jordan Avery",
+    "preset_id": "damage_hazard"
+  }
+}
+```
+
+## 9b. `promote_prospect`
 
 Use when:
 
@@ -953,7 +1007,7 @@ Do not use when:
 }
 ```
 
-## 9b. `retarget_capture`
+## 9c. `retarget_capture`
 
 Use when:
 

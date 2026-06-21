@@ -12,11 +12,12 @@ from queue_spec import (
     JOB_MARK_RECORD_ARCHIVED, JOB_MARK_RECORD_UNARCHIVED, JOB_EDIT_RECORD_FIELDS,
     JOB_MARK_SUPPLY_DELIVERED, JOB_MARK_SUPPLY_NO_ACTION_NEEDED, JOB_MARK_SUPPLY_ORDERED,
     JOB_MARK_SUPPLY_STOCKED, JOB_PARSE_SUPPLY_EMAIL, JOB_PERSONAL_JOURNAL_ENTRY, JOB_PHOTO_CAPTURE,
+    JOB_DEEP_ANALYSIS,
     JOB_PROMOTE_PROSPECT, JOB_RECORD_DAY_RECORD, JOB_RECORD_SHIFT_REPORT, JOB_RECORD_UNKNOWN_CAPTURE, JOB_RECLASSIFY_UNKNOWN, JOB_REMOVE_FROM_SCHEDULE, JOB_RETARGET_CAPTURE,
     JOB_SET_EMPLOYEE_ID, JOB_SET_ENTITY_STATUS, JOB_TRIGGER_RECRUITING, JOB_UPDATE_SITE_EQUIPMENT, JOB_VISIT_CREATE,
     JOB_VOICE_MEMO_NOTE,
 )
-from queue_processor.handlers import employee_updates, misc, people, site_flags_notes, supplies_equipment, supplies_equipment_transitions, unknowns, visits
+from queue_processor.handlers import deep_analysis, employee_updates, misc, people, site_flags_notes, supplies_equipment, supplies_equipment_transitions, unknowns, visits
 from queue_processor.handlers._shared import QueueJob, QueueProcessorError, RunContext
 
 JobHandler = Callable[[Path, QueueJob, RunContext, Path], None]
@@ -40,6 +41,7 @@ JOB_HANDLERS: dict[str, JobHandler] = {
     JOB_VISIT_CREATE: visits.process_visit_create_job,
     JOB_PARSE_SUPPLY_EMAIL: misc.process_parse_supply_email_job,
     JOB_PHOTO_CAPTURE: visits.process_photo_capture_job,
+    JOB_DEEP_ANALYSIS: deep_analysis.process_deep_analysis_job,
     JOB_LOG_SITE_ISSUE: site_flags_notes.process_log_site_issue_job,
     JOB_LOG_SUPPLY_NEED: supplies_equipment.process_log_supply_need_job,
     JOB_LOG_EQUIPMENT_REQUEST: supplies_equipment.process_log_equipment_request_job,

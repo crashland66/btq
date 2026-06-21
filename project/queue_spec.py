@@ -45,6 +45,7 @@ JOB_VISIT_CREATE = "visit_create"
 JOB_PARSE_SUPPLY_EMAIL = "parse_supply_email"
 JOB_PERSONAL_JOURNAL_ENTRY = "personal_journal_entry"
 JOB_PHOTO_CAPTURE = "photo_capture"
+JOB_DEEP_ANALYSIS = "deep_analysis"
 JOB_PROMOTE_PROSPECT = "promote_prospect"
 JOB_RETARGET_CAPTURE = "retarget_capture"
 JOB_LOG_SITE_ISSUE = "log_site_issue"
@@ -83,6 +84,15 @@ SUPPLY_NEED_STATUSES = {"open", "ordered", "delivered", "stocked", "no_action_ne
 SUPPLY_NEED_URGENCIES = {"low", "normal", "high", "critical"}
 EQUIPMENT_REQUEST_STATUSES = {"open", "approved", "ordered", "provided", "denied", "no_action_needed"}
 EQUIPMENT_REQUEST_PRIORITIES = {"low", "normal", "high", "urgent"}
+DEEP_ANALYSIS_PRESET_IDS = (
+    "condition_detail",
+    "damage_hazard",
+    "cleanliness_qc",
+    "text_ocr",
+    "inventory_count",
+    "equipment_id",
+    "shift_report",
+)
 PERSONNEL_EVENT_TYPES = {
     "attendance",
     "performance",
@@ -131,6 +141,7 @@ ALLOWED_JOB_TYPES = {
     JOB_PARSE_SUPPLY_EMAIL,
     JOB_PERSONAL_JOURNAL_ENTRY,
     JOB_PHOTO_CAPTURE,
+    JOB_DEEP_ANALYSIS,
     JOB_PROMOTE_PROSPECT,
     JOB_RETARGET_CAPTURE,
     JOB_LOG_SITE_ISSUE,
@@ -190,6 +201,7 @@ JOB_SCHEMAS = {
     JOB_PARSE_SUPPLY_EMAIL: ["html_path", "subject", "source_email_date"],
     JOB_PERSONAL_JOURNAL_ENTRY: ["date", "timestamp", "audio_file", "body", "raw_transcript_path"],
     JOB_PHOTO_CAPTURE: ["site", "qc_category", "note", "photos", "captured_at", "exported_at"],
+    JOB_DEEP_ANALYSIS: ["capture_id", "photo_asset_id", "actor"],
     JOB_PROMOTE_PROSPECT: ["prospect_id", "site_id", "actor"],
     JOB_RETARGET_CAPTURE: ["capture_id", "new_target_type", "new_target_id", "actor"],
     JOB_LOG_SITE_ISSUE: ["site_id", "title", "reported_by", "client_notified", "resolution_trigger"],
@@ -992,6 +1004,26 @@ def _validate_edit_record_fields_payload(payload: dict) -> bool:
     return True
 
 
+def _validate_deep_analysis_payload(payload: dict) -> bool:
+    for field in ("capture_id", "photo_asset_id", "actor"):
+        if not _is_non_empty_string(payload.get(field)):
+            return False
+
+    preset_id = payload.get("preset_id")
+    custom_prompt = payload.get("custom_prompt")
+    has_preset = _is_non_empty_string(preset_id)
+    has_custom = _is_non_empty_string(custom_prompt)
+    if has_preset == has_custom:
+        return False
+    if has_preset and str(preset_id).strip() not in DEEP_ANALYSIS_PRESET_IDS:
+        return False
+    if preset_id is not None and not isinstance(preset_id, str):
+        return False
+    if custom_prompt is not None and not isinstance(custom_prompt, str):
+        return False
+    return True
+
+
 def validate_job(job: dict) -> bool:
     if not isinstance(job, dict):
         return False
@@ -1110,6 +1142,9 @@ def validate_job(job: dict) -> bool:
             stored_path = audio_record.get("stored_path")
             if not _is_non_empty_string(data_url) and not _is_non_empty_string(stored_path):
                 return False
+    if job_type == JOB_DEEP_ANALYSIS:
+        if not _validate_deep_analysis_payload(payload):
+            return False
     if job_type == JOB_LOG_SITE_ISSUE:
         if not _validate_log_site_issue_payload(payload):
             return False
