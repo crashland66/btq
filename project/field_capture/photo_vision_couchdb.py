@@ -77,6 +77,10 @@ def build_photo_vision_document(sidecar_payload: dict[str, object]) -> dict[str,
     if isinstance(error_payload, dict):
         doc["error"] = error_payload
 
+    deep_analysis = sidecar_payload.get("deep_analysis")
+    if isinstance(deep_analysis, list):
+        doc["deep_analysis"] = deep_analysis
+
     return doc
 
 
