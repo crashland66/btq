@@ -13,6 +13,7 @@ from ops_dashboard.common import (
     first_filter_value,
     humanize_key,
     load_photo_vision_sidecars,
+    render_deep_analysis_markdown,
     render_relative_time,
     render_short_id,
     resolve_site_label,
@@ -271,6 +272,7 @@ def _deep_analysis_payload(entries: object) -> list[dict[str, object]]:
             )
             if part
         )
+        result = entry.get("result")
         payload.append(
             {
                 "prompt": _deep_analysis_prompt_label(entry),
@@ -278,7 +280,8 @@ def _deep_analysis_payload(entries: object) -> list[dict[str, object]]:
                 "model": model,
                 "actor": str(entry.get("actor") or "").strip(),
                 "generated_at": str(entry.get("generated_at") or "").strip(),
-                "result": entry.get("result"),
+                "result": result,
+                "result_html": render_deep_analysis_markdown(result),
                 "error_type": str(error.get("type") or "").strip(),
                 "error_message": str(error.get("message") or "").strip(),
             }
@@ -779,10 +782,10 @@ def _render_deep_analysis_dialogs(return_to: str) -> str:
           }}
           if (entry.result === null || entry.result === undefined || entry.result === '') {{
             appendText(article, 'p', 'No result text.', 'muted');
-          }} else if (typeof entry.result === 'object') {{
-            appendText(article, 'pre', JSON.stringify(entry.result, null, 2));
           }} else {{
-            appendText(article, 'p', String(entry.result));
+            const result = document.createElement('div');
+            result.innerHTML = entry.result_html || '';
+            article.appendChild(result);
           }}
           viewBody.appendChild(article);
         }}

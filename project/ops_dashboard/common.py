@@ -78,6 +78,87 @@ KNOWN_JOB_SUMMARY_TYPES = {
 }
 
 
+_DEEP_ANALYSIS_ORDERED_RE = re.compile(r"^\s*\d+\.\s*(.+)$")
+_DEEP_ANALYSIS_UNORDERED_RE = re.compile(r"^\s*[-*]\s+(.+)$")
+_DEEP_ANALYSIS_STRONG_RE = re.compile(r"\*\*(.+?)\*\*")
+_DEEP_ANALYSIS_EM_ASTERISK_RE = re.compile(r"(?<!\*)\*(?![\s*])(.+?)(?<![\s*])\*(?!\*)")
+_DEEP_ANALYSIS_EM_UNDERSCORE_RE = re.compile(r"(?<![\w_])_(?![\s_])(.+?)(?<![\s_])_(?![\w_])")
+
+
+def _render_deep_analysis_inline(escaped_text: str) -> str:
+    strong_fragments: list[str] = []
+
+    def strong_replacement(match: re.Match[str]) -> str:
+        index = len(strong_fragments)
+        strong_fragments.append(f"<strong>{match.group(1)}</strong>")
+        return f"\x00BTQSTRONG{index}\x00"
+
+    rendered = _DEEP_ANALYSIS_STRONG_RE.sub(strong_replacement, escaped_text)
+    rendered = _DEEP_ANALYSIS_EM_ASTERISK_RE.sub(r"<em>\1</em>", rendered)
+    rendered = _DEEP_ANALYSIS_EM_UNDERSCORE_RE.sub(r"<em>\1</em>", rendered)
+    for index, fragment in enumerate(strong_fragments):
+        rendered = rendered.replace(f"\x00BTQSTRONG{index}\x00", fragment)
+    return rendered
+
+
+def render_deep_analysis_markdown(text: object) -> str:
+    if isinstance(text, (dict, list)):
+        raw = json.dumps(text, indent=2, sort_keys=True)
+    elif text is None:
+        raw = ""
+    else:
+        raw = str(text)
+
+    escaped = html.escape(raw, quote=True).replace("\r\n", "\n").replace("\r", "\n")
+    parts: list[str] = []
+    paragraph_lines: list[str] = []
+    list_kind = ""
+    list_items: list[str] = []
+
+    def flush_paragraph() -> None:
+        nonlocal paragraph_lines
+        if not paragraph_lines:
+            return
+        body = "<br>".join(_render_deep_analysis_inline(line.strip()) for line in paragraph_lines)
+        parts.append(f"<p>{body}</p>")
+        paragraph_lines = []
+
+    def flush_list() -> None:
+        nonlocal list_kind, list_items
+        if not list_kind or not list_items:
+            return
+        body = "".join(f"<li>{item}</li>" for item in list_items)
+        parts.append(f"<{list_kind}>{body}</{list_kind}>")
+        list_kind = ""
+        list_items = []
+
+    for line in escaped.split("\n"):
+        stripped = line.strip()
+        if not stripped:
+            flush_paragraph()
+            flush_list()
+            continue
+
+        ordered = _DEEP_ANALYSIS_ORDERED_RE.match(line)
+        unordered = _DEEP_ANALYSIS_UNORDERED_RE.match(line)
+        if ordered or unordered:
+            flush_paragraph()
+            next_kind = "ol" if ordered else "ul"
+            if list_kind and list_kind != next_kind:
+                flush_list()
+            list_kind = next_kind
+            item_text = (ordered or unordered).group(1).strip()
+            list_items.append(_render_deep_analysis_inline(item_text))
+            continue
+
+        flush_list()
+        paragraph_lines.append(line)
+
+    flush_paragraph()
+    flush_list()
+    return f'<div class="deep-analysis-md">{"".join(parts)}</div>'
+
+
 class SectionContext:
     def __init__(self, runtime_root: Path, get_config_func) -> None:
         self._runtime_root = runtime_root

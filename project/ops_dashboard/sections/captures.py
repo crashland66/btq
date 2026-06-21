@@ -22,6 +22,7 @@ from ops_dashboard.common import (
     load_photo_vision_sidecars,
     read_json_artifact,
     render_back_link,
+    render_deep_analysis_markdown,
     render_kv,
     record_section,
     render_relative_time,
@@ -517,11 +518,7 @@ def _deep_analysis_prompt_label(entry: dict[str, object]) -> str:
 def _render_deep_analysis_result(value: object) -> str:
     if value is None or value == "":
         return '<p class="muted">No result text.</p>'
-    if isinstance(value, (dict, list)):
-        text = json.dumps(value, indent=2, sort_keys=True)
-        return f'<pre>{html.escape(text)}</pre>'
-    text = html.escape(str(value)).replace("\r\n", "\n").replace("\r", "\n").replace("\n", "<br>")
-    return f"<p>{text}</p>"
+    return render_deep_analysis_markdown(value)
 
 
 def _render_deep_analysis_entry(entry: object) -> str:
