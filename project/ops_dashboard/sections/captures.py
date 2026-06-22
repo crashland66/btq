@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import html
 import json
+import logging
 import mimetypes
+import os
 import re
 from datetime import datetime, timezone
 from pathlib import Path
@@ -42,7 +44,16 @@ from ops_dashboard.layout import html_page
 from queue_spec import DEEP_ANALYSIS_PRESET_IDS
 
 
+logger = logging.getLogger(__name__)
 _DEEP_ANALYSIS_LABELS = {preset["id"]: preset["label"] for preset in DEEP_ANALYSIS_PRESETS}
+
+
+def _photo_vision_couchdb_config() -> object:
+    if not (os.environ.get("BTQ_COUCHDB_URL") or "").strip():
+        return None
+    from event_pipeline import couchdb_config as _cdb
+
+    return _cdb.from_env()
 
 
 def _safe_return_to(value: str) -> str:
@@ -270,6 +281,68 @@ def _deep_analysis_entries_for_sidecar(sidecar: dict[str, object]) -> list[objec
     return entries if isinstance(entries, list) else []
 
 
+def query_photo_vision_by_capture_ids(config: object, capture_ids: list[str]) -> dict[str, list[dict]]:
+    from field_capture.photo_vision_couchdb import query_photo_vision_by_capture_ids as _query
+
+    return _query(config, capture_ids)
+
+
+def _query_deep_analysis_docs_by_capture_ids(capture_ids: list[str]) -> dict[str, list[dict]] | None:
+    cleaned_ids = sorted({str(capture_id).strip() for capture_id in capture_ids if str(capture_id).strip()})
+    if not cleaned_ids:
+        return {}
+    try:
+        cdb_config = _photo_vision_couchdb_config()
+    except Exception as exc:  # noqa: BLE001 - detail pages should keep rendering with disk fallback.
+        logger.info("captures deep-analysis CouchDB config unavailable; falling back to sidecars: %s", exc)
+        return None
+    if cdb_config is None:
+        logger.debug("captures deep-analysis CouchDB is not configured; falling back to sidecars")
+        return None
+    try:
+        return query_photo_vision_by_capture_ids(cdb_config, cleaned_ids)
+    except Exception as exc:  # noqa: BLE001 - local sidecars are the compatibility fallback.
+        logger.info("captures deep-analysis CouchDB query failed; falling back to sidecars: %s", exc)
+        return None
+
+
+def _deep_analysis_doc_for_record(
+    docs_by_capture_id: dict[str, list[dict]],
+    record: dict[str, object],
+    sidecar: dict[str, object],
+) -> dict[str, object] | None:
+    capture_id = str(record.get("capture_id") or sidecar.get("capture_id") or "").strip()
+    if not capture_id:
+        return None
+    docs = docs_by_capture_id.get(capture_id) or []
+    if not docs:
+        return None
+    photo_asset_id = str(record.get("photo_asset_id") or sidecar.get("photo_asset_id") or "").strip()
+    if photo_asset_id:
+        for doc in docs:
+            doc_asset_id = str(doc.get("photo_asset_id") or doc.get("_id") or "").strip()
+            if doc_asset_id == photo_asset_id:
+                return doc
+    photo_id = str(record.get("photo_id") or sidecar.get("photo_id") or "").strip()
+    if photo_id:
+        for doc in docs:
+            if str(doc.get("photo_id") or "").strip() == photo_id:
+                return doc
+    return None
+
+
+def _deep_analysis_entries_for_record(
+    record: dict[str, object],
+    sidecar: dict[str, object],
+    docs_by_capture_id: dict[str, list[dict]] | None,
+) -> list[object]:
+    if docs_by_capture_id is not None:
+        doc = _deep_analysis_doc_for_record(docs_by_capture_id, record, sidecar)
+        entries = doc.get("deep_analysis") if isinstance(doc, dict) else None
+        return entries if isinstance(entries, list) else []
+    return _deep_analysis_entries_for_sidecar(sidecar)
+
+
 def photo_card_records_for_capture(root: Path, capture_id: str) -> list[dict[str, object]]:
     """Build one photo-vision record per photo asset in a capture, merging
     sidecar fields when available and surfacing 'missing' status when not.
@@ -283,6 +356,7 @@ def photo_card_records_for_capture(root: Path, capture_id: str) -> list[dict[str
     submitter = submitters_by_capture(root).get(capture_id, safe_submitter({}))
     sidecars = load_photo_vision_sidecars(photo_vision_dir)
     sidecars_by_asset = {str(s.get("photo_asset_id") or ""): s for s in sidecars if s.get("photo_asset_id")}
+    deep_analysis_docs_by_capture_id = _query_deep_analysis_docs_by_capture_ids([capture_id])
 
     records: list[dict[str, object]] = []
     seen_asset_ids: set[str] = set()
@@ -309,7 +383,7 @@ def photo_card_records_for_capture(root: Path, capture_id: str) -> list[dict[str
                     "submitter_id": record.get("submitter_id") or submitter["submitter_id"],
                 }
             )
-            deep_analysis = _deep_analysis_entries_for_sidecar(sidecar)
+            deep_analysis = _deep_analysis_entries_for_record(record, sidecar, deep_analysis_docs_by_capture_id)
             if deep_analysis:
                 record["deep_analysis"] = deep_analysis
         else:
@@ -327,7 +401,7 @@ def photo_card_records_for_capture(root: Path, capture_id: str) -> list[dict[str
         record = dict(sidecar)
         record.setdefault("submitter_name", submitter["submitter_name"])
         record.setdefault("submitter_id", submitter["submitter_id"])
-        deep_analysis = _deep_analysis_entries_for_sidecar(sidecar)
+        deep_analysis = _deep_analysis_entries_for_record(record, sidecar, deep_analysis_docs_by_capture_id)
         if deep_analysis:
             record["deep_analysis"] = deep_analysis
         records.append(record)
