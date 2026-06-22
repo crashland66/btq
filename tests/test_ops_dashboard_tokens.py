@@ -149,16 +149,33 @@ def test_tokens_compact_default_hides_detail_columns_and_toggle_shows_all(tmp_pa
     create_token(runtime_root)
 
     compact = request_text("GET", "/tokens", runtime_root)[2]
-    # essential columns (incl. Person + pinned Actions) always present
-    for header in ("Token ID", "Person", "Label", "Token Type", "Site Scope", "Active", "Last Used", "Actions"):
+    # essential columns (incl. Person + pinned Actions) always present.
+    # Site Scope + Active stay in compact so the active status is visible
+    # without horizontal scroll (the regression this fix protects).
+    for header in ("Token ID", "Person", "Label", "Site Scope", "Active", "Actions"):
         assert f">{header}</th>" in compact
-    # noisy detail columns hidden in the compact default
-    for header in ("Role", "Can Submit", "Can View Site", "Created At", "Expires At"):
+    # noisy detail columns hidden in the compact default. Token Type and
+    # Last Used are now detail-only so the table fits without scrolling.
+    for header in ("Token Type", "Last Used", "Role", "Can Submit", "Can View Site", "Created At", "Expires At"):
         assert f">{header}</th>" not in compact
 
     full = request_text("GET", "/tokens?columns=all", runtime_root)[2]
-    for header in ("Role", "Can Submit", "Created At", "Expires At"):
+    for header in ("Token Type", "Last Used", "Role", "Can Submit", "Created At", "Expires At"):
         assert f">{header}</th>" in full
+
+
+def test_tokens_compact_default_visible_set_is_exactly_essential_columns(tmp_path: Path) -> None:
+    # Focused regression: the compact default shows exactly these columns in
+    # order — token_id, person_id, label, site_scope, revoked("Active"),
+    # actions — so the table fits and Active is visible without scrolling.
+    import re
+
+    runtime_root = tmp_path / "runtime"
+    create_token(runtime_root)
+
+    compact = request_text("GET", "/tokens", runtime_root)[2]
+    headers = re.findall(r"<th[^>]*>([^<]+)</th>", compact)
+    assert headers == ["Token ID", "Person", "Label", "Site Scope", "Active", "Actions"]
 
 
 def test_build_person_name_map_resolves_token_slug_from_employee_doc() -> None:
@@ -290,10 +307,16 @@ def test_tokens_list_last_used_warning_pill_after_90_days(tmp_path: Path) -> Non
     with TokenStore(runtime_root / "field_capture_tokens.sqlite3").connect() as connection:
         connection.execute("UPDATE field_capture_tokens SET last_used_at = ? WHERE token_id = ?", (old, created.record.token_id))
 
-    body = request_text("GET", "/tokens", runtime_root)[2]
+    # Last Used is a detail column, so the warning pill renders in the
+    # all-columns view; the 90-day warning logic itself is unchanged.
+    body = request_text("GET", "/tokens?columns=all", runtime_root)[2]
 
     assert 'class="pill warning"' in body
     assert old in body
+
+    # In the compact default the Last Used cell (and its pill) is hidden.
+    compact = request_text("GET", "/tokens", runtime_root)[2]
+    assert old not in compact
 
 
 def test_token_create_admin_viewer_with_universal_site_scope(tmp_path: Path) -> None:
