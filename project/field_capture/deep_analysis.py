@@ -98,6 +98,10 @@ class DeepAnalysisError(ValueError):
     pass
 
 
+class DeepAnalysisCanonicalWriteError(DeepAnalysisError):
+    pass
+
+
 def resolve_prompt(preset_id: str | None, custom_prompt: str | None) -> tuple[str, str]:
     normalized_id = str(preset_id or "").strip()
     custom_text = str(custom_prompt or "").strip()
@@ -156,7 +160,26 @@ def run_deep_analysis(
             asset=asset,
             runtime_root=runtime_resolved,
             couchdb_put=couchdb_put,
+            require_canonical_write=True,
         )
+    except DeepAnalysisCanonicalWriteError:
+        duration_ms = (time.perf_counter() - started) * 1000.0
+        _record_metric(
+            runtime_resolved,
+            {
+                "ts": _iso_utc(now),
+                "capture_id": str(capture_id),
+                "photo_asset_id": str(photo_asset_id),
+                "prompt_id": prompt_id,
+                "is_custom": prompt_id == "custom",
+                "status": "couchdb_write_failed",
+                "duration_ms": round(duration_ms, 3),
+                "actor": str(actor),
+                "model_provider": provider,
+                "model_name": model_name,
+            },
+        )
+        raise
     except Exception as exc:  # noqa: BLE001 - operator-triggered worker callable must fail closed.
         entry = _failed_entry(
             prompt_id=prompt_id,
@@ -174,6 +197,7 @@ def run_deep_analysis(
                 asset=asset,
                 runtime_root=runtime_resolved,
                 couchdb_put=couchdb_put,
+                require_canonical_write=False,
             )
         except Exception:
             pass
@@ -319,6 +343,7 @@ def _append_entry_to_sidecar(
     asset: photo_vision.FieldPhotoAsset,
     runtime_root: Path,
     couchdb_put: Callable[[dict[str, object]], object] | None,
+    require_canonical_write: bool,
 ) -> None:
     sidecar_path = photo_vision.photo_vision_path_for(photo_vision.default_photo_vision_dir(runtime_root), asset.photo_asset_id)
     existing = read_json_object(sidecar_path)
@@ -327,11 +352,36 @@ def _append_entry_to_sidecar(
     entries = list(history) if isinstance(history, list) else []
     entries.append(entry)
     sidecar["deep_analysis"] = entries
+    if not require_canonical_write:
+        sidecar_path.parent.mkdir(parents=True, exist_ok=True)
+        write_json_object(sidecar_path, sidecar)
+        try:
+            doc = build_photo_vision_document(sidecar)
+            _put_couchdb_doc(doc, couchdb_put=couchdb_put)
+        except Exception as exc:  # noqa: BLE001 - failed-analysis sidecar recording stays best-effort.
+            logger.warning("deep-analysis CouchDB write-through failed for %s: %s", asset.photo_asset_id, exc)
+        return
+
+    doc = build_photo_vision_document(sidecar)
+    _put_couchdb_doc(doc, couchdb_put=couchdb_put)
     sidecar_path.parent.mkdir(parents=True, exist_ok=True)
     write_json_object(sidecar_path, sidecar)
-    doc = build_photo_vision_document(sidecar)
+
+
+def _put_couchdb_doc(
+    doc: dict[str, object],
+    *,
+    couchdb_put: Callable[[dict[str, object]], object] | None,
+) -> None:
     if couchdb_put is not None:
-        couchdb_put(doc)
+        try:
+            couchdb_put(doc)
+        except DeepAnalysisCanonicalWriteError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - injected CouchDB writer represents canonical publish.
+            raise DeepAnalysisCanonicalWriteError(
+                f"deep-analysis CouchDB write-through failed for {doc.get('_id')}: {exc}"
+            ) from exc
     else:
         _default_couchdb_put(doc)
 
@@ -373,13 +423,20 @@ def _minimal_sidecar(asset: photo_vision.FieldPhotoAsset) -> dict[str, object]:
 
 
 def _default_couchdb_put(doc: dict[str, object]) -> None:
-    cdb_config = photo_vision._photo_vision_couchdb_config()  # noqa: SLF001 - match existing photo vision write-through gate.
+    try:
+        cdb_config = photo_vision._photo_vision_couchdb_config()  # noqa: SLF001 - match existing photo vision write-through gate.
+    except Exception as exc:  # noqa: BLE001 - enabled CouchDB with invalid config is a canonical publish failure.
+        raise DeepAnalysisCanonicalWriteError(
+            f"deep-analysis CouchDB configuration failed for {doc.get('_id')}: {exc}"
+        ) from exc
     if cdb_config is None:
         return
     try:
         put_photo_vision_document(cdb_config, doc)
-    except Exception as exc:  # noqa: BLE001 - mirror base photo-vision best-effort write-through.
-        logger.warning("deep-analysis CouchDB write-through failed for %s: %s", doc.get("_id"), exc)
+    except Exception as exc:  # noqa: BLE001 - canonical deep-analysis publish must fail visibly.
+        raise DeepAnalysisCanonicalWriteError(
+            f"deep-analysis CouchDB write-through failed for {doc.get('_id')}: {exc}"
+        ) from exc
 
 
 def _record_metric(runtime_root: Path, payload: dict[str, object]) -> None:
