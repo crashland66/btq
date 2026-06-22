@@ -179,6 +179,87 @@ def test_build_person_name_map_resolves_token_slug_from_employee_doc() -> None:
     assert "iss_1" not in names
 
 
+def test_build_person_name_map_resolves_underscore_slug_form() -> None:
+    # New behavior under verification: the de-prefixed slug in UNDERSCORE form
+    # must resolve (e.g. token person_id stored as `greenwood_megan`).
+    from ops_dashboard.sections.tokens import _build_person_name_map
+
+    docs = [
+        {"type": "employee", "_id": "employee_greenwood_megan", "name": "Megan Greenwood"},
+    ]
+    names = _build_person_name_map(docs)
+
+    assert names["greenwood_megan"] == "Megan Greenwood"  # underscore form
+    assert names["greenwood-megan"] == "Megan Greenwood"  # dash form still works
+    assert names["employee_greenwood_megan"] == "Megan Greenwood"  # raw _id
+
+
+def test_build_person_name_map_resolves_dash_slug_regression_guard() -> None:
+    # Regression guard: a doc whose _id already uses a dash inside the slug
+    # (employee_mccartney-michael) must still resolve via the dash form.
+    from ops_dashboard.sections.tokens import _build_person_name_map
+
+    docs = [
+        {"type": "employee", "_id": "employee_mccartney-michael", "first": "Michael", "last": "McCartney"},
+    ]
+    names = _build_person_name_map(docs)
+
+    assert names["mccartney-michael"] == "Michael McCartney"
+    assert names["employee_mccartney-michael"] == "Michael McCartney"
+
+
+def test_build_person_name_map_resolves_explicit_person_id_field() -> None:
+    from ops_dashboard.sections.tokens import _build_person_name_map
+
+    docs = [
+        {"type": "employee", "_id": "employee_dalton_eric", "name": "Eric Dalton", "person_id": "per_eric_d"},
+    ]
+    names = _build_person_name_map(docs)
+
+    assert names["per_eric_d"] == "Eric Dalton"  # explicit person_id field
+    assert names["dalton_eric"] == "Eric Dalton"  # underscore slug
+    assert names["dalton-eric"] == "Eric Dalton"  # dash slug
+
+
+def test_build_person_name_map_keys_both_slug_forms_for_person_and_operator() -> None:
+    from ops_dashboard.sections.tokens import _build_person_name_map
+
+    docs = [
+        {"type": "person", "_id": "person_smith_jane", "name": "Jane Smith"},
+        {"type": "operator", "_id": "operator_jones_bob", "name": "Bob Jones"},
+    ]
+    names = _build_person_name_map(docs)
+
+    assert names["smith_jane"] == "Jane Smith"
+    assert names["smith-jane"] == "Jane Smith"
+    assert names["jones_bob"] == "Bob Jones"
+    assert names["jones-bob"] == "Bob Jones"
+
+
+def test_build_person_name_map_ignores_other_types_and_skips_nameless() -> None:
+    from ops_dashboard.sections.tokens import _build_person_name_map
+
+    docs = [
+        {"type": "site_issue", "_id": "employee_should_be_ignored", "name": "Ignore Me"},
+        {"type": "employee", "_id": "employee_no_name"},  # no name/first/last
+    ]
+    names = _build_person_name_map(docs)
+
+    assert names == {}
+
+
+def test_render_person_cell_shows_name_when_row_has_person_name_else_id_only() -> None:
+    from ops_dashboard.sections.tokens import render_person_cell
+
+    with_name = render_person_cell("greenwood_megan", {"person_name": "Megan Greenwood"})
+    assert "Megan Greenwood" in with_name
+    assert "greenwood_megan" in with_name
+
+    id_only = render_person_cell("greenwood_megan", {})
+    assert "Megan Greenwood" not in id_only
+    assert "greenwood_megan" in id_only
+
+
 def test_tokens_list_filter_by_token_type(tmp_path: Path) -> None:
     runtime_root = tmp_path / "runtime"
     create_token(runtime_root, label="Worker", token_type="capture")

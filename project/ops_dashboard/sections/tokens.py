@@ -60,10 +60,12 @@ def render_token_id_cell(value: object, row: dict[str, object]) -> str:
 def _build_person_name_map(docs: list[dict]) -> dict[str, str]:
     """Map token person_id -> display name from canonical person/employee docs.
 
-    Token person_ids are the de-prefixed dash slug of the employee doc id
+    Token person_ids are the de-prefixed slug of the employee doc id in either
+    underscore or dash form
     (e.g. doc `_id` ``employee_mercer_glen`` -> token person_id
-    ``mercer-glen``). Keyed by the slug, the raw `_id`, and any `person_id`
-    field so a token resolves however it was stored. Pure/synchronous for tests.
+    ``mercer_glen`` or ``mercer-glen``). Keyed by both slug forms, the raw
+    `_id`, and any `person_id` field so a token resolves however it was stored.
+    Pure/synchronous for tests.
     """
     names: dict[str, str] = {}
     for doc in docs:
@@ -79,7 +81,9 @@ def _build_person_name_map(docs: list[dict]) -> dict[str, str]:
             names[doc_id] = name
             for prefix in ("employee_", "person_", "operator_"):
                 if doc_id.startswith(prefix):
-                    names[doc_id[len(prefix):].replace("_", "-")] = name
+                    slug = doc_id[len(prefix):]
+                    names[slug] = name
+                    names[slug.replace("_", "-")] = name
                     break
         person_id = str(doc.get("person_id") or "").strip()
         if person_id:
