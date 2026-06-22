@@ -23,8 +23,10 @@ from queue_spec import (
     JOB_MARK_ISSUE_MONITORING, JOB_MARK_ISSUE_OPEN, JOB_MARK_ISSUE_RESOLVED,
     JOB_MARK_RECORD_ARCHIVED, JOB_MARK_RECORD_UNARCHIVED, JOB_EDIT_RECORD_FIELDS,
     JOB_MARK_SUPPLY_NO_ACTION_NEEDED, JOB_MARK_SUPPLY_ORDERED, JOB_MARK_SUPPLY_STOCKED,
+    JOB_DEEP_ANALYSIS, JOB_LOG_AVAILABILITY_CONSTRAINT,
     JOB_PARSE_SUPPLY_EMAIL, JOB_PERSONAL_JOURNAL_ENTRY, JOB_PHOTO_CAPTURE, JOB_PROMOTE_PROSPECT,
-    JOB_RECLASSIFY_UNKNOWN, JOB_REMOVE_FROM_SCHEDULE, JOB_RETARGET_CAPTURE, JOB_TRIGGER_RECRUITING,
+    JOB_RECORD_DAY_RECORD, JOB_RECORD_SHIFT_REPORT, JOB_RECORD_UNKNOWN_CAPTURE, JOB_RECLASSIFY_UNKNOWN,
+    JOB_REMOVE_FROM_SCHEDULE, JOB_RETARGET_CAPTURE, JOB_SET_EMPLOYEE_ID, JOB_SHIFT_REPORT_NOTE, JOB_TRIGGER_RECRUITING,
     JOB_SET_ENTITY_STATUS, JOB_UPDATE_SITE_EQUIPMENT, JOB_VISIT_CREATE, JOB_VOICE_MEMO_NOTE,
 )
 
@@ -285,6 +287,15 @@ def target_path_hint(job: QueueJob, context: RunContext) -> str:
         if job.job_type == JOB_PERSONAL_JOURNAL_ENTRY:
             date = _shared.validate_date_string(str(payload["date"]))
             return f"journal_personal_{date}"
+        if job.job_type == JOB_RECORD_SHIFT_REPORT:
+            date = _shared.validate_date_string(str(payload["date"]).strip())
+            return f"shift_report_journal_{date.replace('-', '_')}_shift_report"
+        if job.job_type == JOB_SHIFT_REPORT_NOTE:
+            date = _shared.validate_date_string(str(payload["date"]).strip())
+            return misc._shift_report_note_doc_id(date, str(payload["content"]), str(payload["capture_id"]).strip())
+        if job.job_type == JOB_RECORD_DAY_RECORD:
+            date = _shared.validate_date_string(str(payload["date"]).strip())
+            return f"day_record_{date.replace('-', '_')}"
         if job.job_type == JOB_VISIT_CREATE:
             return _canonical_location_hint(payload["site"])
         if job.job_type in {JOB_FLAG_ACCESS_CONSTRAINT, JOB_TRIGGER_RECRUITING, JOB_CLOSE_RECRUITING}:
@@ -293,15 +304,21 @@ def target_path_hint(job: QueueJob, context: RunContext) -> str:
             return _canonical_employee_hint(payload["employee"])
         if job.job_type == JOB_ADD_PERSON:
             return _canonical_employee_hint(payload["name"])
+        if job.job_type == JOB_SET_EMPLOYEE_ID:
+            return _canonical_employee_hint(payload["person"])
         if job.job_type == JOB_PARSE_SUPPLY_EMAIL:
             return str(misc.resolve_supply_email_path(context, str(payload["html_path"])))
         if job.job_type == JOB_PHOTO_CAPTURE:
             date = visits.photo_capture_date(payload)
             return f"journal_operational_{date}"
+        if job.job_type == JOB_DEEP_ANALYSIS:
+            return str(payload["photo_asset_id"])
         if job.job_type == JOB_PROMOTE_PROSPECT:
             return f"prospect_{payload.get('prospect_id', '')}->{payload.get('site_id', '')}"
         if job.job_type == JOB_RETARGET_CAPTURE:
             return f"capture_{payload.get('capture_id', '')}->{payload.get('new_target_type', '')}:{payload.get('new_target_id', '')}"
+        if job.job_type == JOB_RECORD_UNKNOWN_CAPTURE:
+            return str(unknowns.build_unknown_capture_doc_fields(payload)["_id"])
         if job.job_type == JOB_LOG_SITE_ISSUE:
             return _canonical_location_hint(payload["site_id"])
         if job.job_type == JOB_LOG_SUPPLY_NEED:
@@ -310,6 +327,8 @@ def target_path_hint(job: QueueJob, context: RunContext) -> str:
             return _canonical_location_hint(payload["site_id"])
         if job.job_type == JOB_LOG_PERSONNEL_EVENT:
             return people.personnel_event_doc_id(payload)
+        if job.job_type == JOB_LOG_AVAILABILITY_CONSTRAINT:
+            return people.availability_constraint_doc_id(payload)
         if job.job_type == JOB_SET_ENTITY_STATUS:
             if payload.get("entity_type") == "site":
                 return _canonical_location_hint(payload["entity_id"])
@@ -323,6 +342,10 @@ def target_path_hint(job: QueueJob, context: RunContext) -> str:
             return supplies_equipment_transitions._resolve_equipment_doc_id(str(payload["equipment_id"]))
         if job.job_type in {JOB_MARK_ISSUE_MONITORING, JOB_MARK_ISSUE_RESOLVED, JOB_MARK_ISSUE_OPEN}:
             return supplies_equipment_transitions._resolve_issue_doc_id(str(payload["issue_id"]))
+        if job.job_type in {JOB_MARK_RECORD_ARCHIVED, JOB_MARK_RECORD_UNARCHIVED}:
+            record_type = str(payload.get("record_type") or "")
+            record_id = str(payload.get("record_id") or "")
+            return record_id if record_id.startswith(f"{record_type}_") else f"{record_type}_{record_id}"
         if job.job_type == JOB_EDIT_RECORD_FIELDS:
             record_type = str(payload.get("record_type") or "")
             record_id = str(payload.get("record_id") or "")

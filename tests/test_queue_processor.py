@@ -767,6 +767,181 @@ def test_target_path_hint_returns_canonical_identifiers(tmp_path: Path) -> None:
     assert qp.target_path_hint(qp.QueueJob("j7", "reclassify_unknown", {"path": "Journal/2026-04-19-unknown.md"}, {}, {}), context) == "Journal/2026-04-19-unknown.md"
 
 
+# ---------------------------------------------------------------------------
+# Drift guard: every registered handler must resolve a target_path_hint.
+#
+# A well-formed representative payload for *every* JOB_HANDLERS key. Built from
+# JOB_HANDLERS keys (not a hardcoded list), so a NEW handler that lacks an entry
+# here fails the set-equality assertion below, forcing a maintainer to add both
+# a sample payload and (for the per-key assertion to pass) a hint branch.
+def _drift_guard_sample_payloads() -> dict[str, dict]:
+    return {
+        # original 34 branches
+        qp.JOB_APPEND_TO_NOTE: {"path": "Journal/2026-04-19.md"},
+        qp.JOB_RECLASSIFY_UNKNOWN: {"path": "Journal/2026-04-19-unknown.md"},
+        qp.JOB_PERSONAL_JOURNAL_ENTRY: {"date": "2026-04-19"},
+        qp.JOB_VISIT_CREATE: {"site": "7050"},
+        qp.JOB_FLAG_ACCESS_CONSTRAINT: {"site": "7050"},
+        qp.JOB_TRIGGER_RECRUITING: {"site": "7050"},
+        qp.JOB_CLOSE_RECRUITING: {"site": "7050"},
+        qp.JOB_REMOVE_FROM_SCHEDULE: {"employee": "Pearson, David"},
+        qp.JOB_FLAG_RETENTION_RISK: {"employee": "Pearson, David"},
+        qp.JOB_ADD_PERSON: {"name": "Eric Daniel Dalton"},
+        qp.JOB_PARSE_SUPPLY_EMAIL: {"html_path": "project/tmp/supply_email.html"},
+        qp.JOB_PHOTO_CAPTURE: {"captured_at": "2026-04-20T10:00:00Z"},
+        qp.JOB_PROMOTE_PROSPECT: {"prospect_id": "p1", "site_id": "7050"},
+        qp.JOB_RETARGET_CAPTURE: {
+            "capture_id": "c1",
+            "new_target_type": "site",
+            "new_target_id": "7050",
+        },
+        qp.JOB_LOG_SITE_ISSUE: {"site_id": "7050"},
+        qp.JOB_LOG_SUPPLY_NEED: {"site_id": "7050"},
+        qp.JOB_LOG_EQUIPMENT_REQUEST: {"site_id": "7050"},
+        qp.JOB_LOG_PERSONNEL_EVENT: {"employee": "Pearson, David"},
+        qp.JOB_SET_ENTITY_STATUS: {"entity_type": "site", "entity_id": "7050"},
+        qp.JOB_UPDATE_SITE_EQUIPMENT: {"site_id": "7050"},
+        qp.JOB_MARK_SUPPLY_ORDERED: {"supply_id": "s1"},
+        qp.JOB_MARK_SUPPLY_DELIVERED: {"supply_id": "s1"},
+        qp.JOB_MARK_SUPPLY_STOCKED: {"supply_id": "s1"},
+        qp.JOB_MARK_SUPPLY_NO_ACTION_NEEDED: {"supply_id": "s1"},
+        qp.JOB_MARK_EQUIPMENT_APPROVED: {"equipment_id": "e1"},
+        qp.JOB_MARK_EQUIPMENT_DENIED: {"equipment_id": "e1"},
+        qp.JOB_MARK_EQUIPMENT_ORDERED: {"equipment_id": "e1"},
+        qp.JOB_MARK_EQUIPMENT_PROVIDED: {"equipment_id": "e1"},
+        qp.JOB_MARK_EQUIPMENT_NO_ACTION_NEEDED: {"equipment_id": "e1"},
+        qp.JOB_MARK_ISSUE_MONITORING: {"issue_id": "i1"},
+        qp.JOB_MARK_ISSUE_RESOLVED: {"issue_id": "i1"},
+        qp.JOB_MARK_ISSUE_OPEN: {"issue_id": "i1"},
+        qp.JOB_EDIT_RECORD_FIELDS: {"record_type": "supply_need", "record_id": "abc"},
+        qp.JOB_VOICE_MEMO_NOTE: {},  # no site_id/employees -> general voice-memo note
+        # the 9 newly-added branches
+        qp.JOB_DEEP_ANALYSIS: {"photo_asset_id": "photo_asset_123"},
+        qp.JOB_LOG_AVAILABILITY_CONSTRAINT: {
+            "employee": "Pearson, David",
+            "constraint_type": "unavailable",
+            "date": "2026-04-22",
+        },
+        qp.JOB_MARK_RECORD_ARCHIVED: {"record_type": "supply_need", "record_id": "abc"},
+        qp.JOB_MARK_RECORD_UNARCHIVED: {"record_type": "issue", "record_id": "issue_abc"},
+        qp.JOB_RECORD_DAY_RECORD: {"date": "2026-04-21"},
+        qp.JOB_RECORD_SHIFT_REPORT: {"date": "2026-04-21", "content": "report body"},
+        qp.JOB_RECORD_UNKNOWN_CAPTURE: {
+            "path": "Journal/2026-04-21-unknown.md",
+            "timestamp": "2026-04-21T08:00:00Z",
+            "audio_file": "memo.m4a",
+        },
+        qp.JOB_SET_EMPLOYEE_ID: {"person": "Pearson, David", "employee_id": "567"},
+        qp.JOB_SHIFT_REPORT_NOTE: {
+            "date": "2026-04-21",
+            "content": "note body",
+            "capture_id": "cap-1",
+        },
+    }
+
+
+def test_target_path_hint_drift_guard_every_handler_has_a_hint(tmp_path: Path) -> None:
+    """DRIFT GUARD: every JOB_HANDLERS type must resolve a non-empty, non-'unknown' hint.
+
+    Two failure modes are caught:
+      1. A new handler registered with no representative sample here
+         (set-equality below), and
+      2. A handler with a sample but no target_path_hint branch (the per-key
+         loop, since the missing branch falls through to 'unknown').
+    """
+    project_root, vault_root, runtime_root, log_path = make_roots(tmp_path)
+    context = build_context(project_root, vault_root, runtime_root, log_path, False)
+
+    samples = _drift_guard_sample_payloads()
+
+    # (1) Force awareness: the sample map must cover exactly the live registry.
+    assert set(samples.keys()) == set(qp.JOB_HANDLERS.keys()), (
+        "Drift: _drift_guard_sample_payloads is out of sync with JOB_HANDLERS. "
+        f"Missing sample: {set(qp.JOB_HANDLERS) - set(samples)}; "
+        f"stale sample: {set(samples) - set(qp.JOB_HANDLERS)}"
+    )
+
+    # (2) Every registered handler must produce a real hint.
+    for job_type in qp.JOB_HANDLERS:
+        job = qp.QueueJob(f"drift-{job_type}", job_type, samples[job_type], {}, {})
+        hint = qp.target_path_hint(job, context)
+        assert isinstance(hint, str) and hint != "" and hint != "unknown", (
+            f"target_path_hint returned {hint!r} for job_type={job_type!r}; "
+            "this handler is missing a hint branch (falls through to 'unknown')."
+        )
+
+
+def test_target_path_hint_new_branches_mirror_canonical_doc_ids(tmp_path: Path) -> None:
+    """The 9 newly-added hints must equal the canonical doc id their handler writes.
+
+    Expected values are computed by calling the SAME helper the handler uses,
+    not hardcoded, so the hint is proven to mirror the canonical write target.
+    """
+    project_root, vault_root, runtime_root, log_path = make_roots(tmp_path)
+    context = build_context(project_root, vault_root, runtime_root, log_path, False)
+    samples = _drift_guard_sample_payloads()
+
+    def hint_for(job_type: str) -> str:
+        job = qp.QueueJob(f"new-{job_type}", job_type, samples[job_type], {}, {})
+        return qp.target_path_hint(job, context)
+
+    # deep_analysis -> the photo asset id
+    assert hint_for(qp.JOB_DEEP_ANALYSIS) == "photo_asset_123"
+
+    # log_availability_constraint -> people.availability_constraint_doc_id
+    p_avail = samples[qp.JOB_LOG_AVAILABILITY_CONSTRAINT]
+    assert hint_for(qp.JOB_LOG_AVAILABILITY_CONSTRAINT) == qp.people.availability_constraint_doc_id(p_avail)
+
+    # record_shift_report -> shift_report_journal_<date>_shift_report
+    assert hint_for(qp.JOB_RECORD_SHIFT_REPORT) == "shift_report_journal_2026_04_21_shift_report"
+
+    # shift_report_note -> misc._shift_report_note_doc_id
+    p_note = samples[qp.JOB_SHIFT_REPORT_NOTE]
+    assert hint_for(qp.JOB_SHIFT_REPORT_NOTE) == qp.misc._shift_report_note_doc_id(
+        "2026-04-21", p_note["content"], p_note["capture_id"]
+    )
+
+    # record_day_record -> day_record_<date>
+    assert hint_for(qp.JOB_RECORD_DAY_RECORD) == "day_record_2026_04_21"
+
+    # record_unknown_capture -> unknown_capture doc _id
+    p_unk = samples[qp.JOB_RECORD_UNKNOWN_CAPTURE]
+    assert hint_for(qp.JOB_RECORD_UNKNOWN_CAPTURE) == str(
+        qp.unknowns.build_unknown_capture_doc_fields(p_unk)["_id"]
+    )
+
+    # set_employee_id -> canonical employee hint for `person`
+    assert hint_for(qp.JOB_SET_EMPLOYEE_ID) == qp.target_path_hint(
+        qp.QueueJob("emp", qp.JOB_REMOVE_FROM_SCHEDULE, {"employee": "Pearson, David"}, {}, {}),
+        context,
+    )
+
+    # mark_record_(un)archived mirror edit_record_fields' record-id logic
+    assert hint_for(qp.JOB_MARK_RECORD_ARCHIVED) == "supply_need_abc"
+    assert hint_for(qp.JOB_MARK_RECORD_UNARCHIVED) == "issue_abc"  # already prefixed -> unchanged
+
+
+def test_target_path_hint_original_branches_unchanged(tmp_path: Path) -> None:
+    """Spot-check that representative original-34 branches still return prior hints."""
+    project_root, vault_root, runtime_root, log_path = make_roots(tmp_path)
+    context = build_context(project_root, vault_root, runtime_root, log_path, False)
+
+    def hint(job_type: str, payload: dict) -> str:
+        return qp.target_path_hint(qp.QueueJob("x", job_type, payload, {}, {}), context)
+
+    # date-based
+    assert hint(qp.JOB_PERSONAL_JOURNAL_ENTRY, {"date": "2026-04-19"}) == "journal_personal_2026-04-19"
+    assert hint(qp.JOB_PHOTO_CAPTURE, {"captured_at": "2026-04-20T10:00:00Z"}) == "journal_operational_2026-04-20"
+    # _canonical_location_hint
+    assert hint(qp.JOB_LOG_SUPPLY_NEED, {"site_id": "7050"}) == "location_7050"
+    # supply / equipment / issue resolvers (no canonical store -> legacy fallback id)
+    assert hint(qp.JOB_MARK_SUPPLY_ORDERED, {"supply_id": "s1"}) == "supply_need_s1"
+    assert hint(qp.JOB_MARK_EQUIPMENT_APPROVED, {"equipment_id": "e1"}) == "equipment_request_e1"
+    assert hint(qp.JOB_MARK_ISSUE_OPEN, {"issue_id": "i1"}) == "site_issue_i1"
+    # edit_record_fields
+    assert hint(qp.JOB_EDIT_RECORD_FIELDS, {"record_type": "supply_need", "record_id": "abc"}) == "supply_need_abc"
+
+
 def log_site_issue_job_payload(job_id: str = "job-log-site-issue") -> dict:
     return {
         "job_id": job_id,
