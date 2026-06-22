@@ -12,6 +12,7 @@ from typing import Any
 
 from queue_processor.health import count_json_files
 from queue_processor.processed_index import index_path_for, iter_records
+from queue_processor.timeparse import parse_timestamp as _parse_timestamp
 
 
 DEFAULT_ERROR_WINDOW_HOURS = 24
@@ -32,21 +33,6 @@ def latency_path_for(runtime_root: Path) -> Path:
 
 def _utc_now(now: float | None = None) -> datetime:
     return datetime.fromtimestamp(now, timezone.utc) if now is not None else datetime.now(timezone.utc)
-
-
-def _parse_timestamp(value: object) -> datetime | None:
-    if not isinstance(value, str) or not value.strip():
-        return None
-    text = value.strip()
-    if text.endswith("Z"):
-        text = text[:-1] + "+00:00"
-    try:
-        parsed = datetime.fromisoformat(text)
-    except ValueError:
-        return None
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
-    return parsed.astimezone(timezone.utc)
 
 
 def _json_timestamp(path: Path) -> datetime | None:

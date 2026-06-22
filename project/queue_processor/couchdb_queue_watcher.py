@@ -14,6 +14,7 @@ from config import get_config
 from event_pipeline import couchdb_config
 from event_pipeline.couchdb_listener import CouchDBChangesListener, CouchDBListenerError
 from event_pipeline.couchdb_worker import configure_worker_logger, couchdb_url_needs_remote_tunnel, run_change_worker
+from queue_processor.timeparse import parse_timestamp as _parse_timestamp
 from vps.couchdb_ops import temporary_env
 from vps.ssh import couchdb_tunnel
 
@@ -55,21 +56,6 @@ def _utc_now() -> datetime:
 def _isoformat_utc(value: datetime) -> str:
     active = value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
     return active.astimezone(timezone.utc).isoformat()
-
-
-def _parse_timestamp(value: object) -> datetime | None:
-    if not isinstance(value, str) or not value.strip():
-        return None
-    text = value.strip()
-    if text.endswith("Z"):
-        text = text[:-1] + "+00:00"
-    try:
-        parsed = datetime.fromisoformat(text)
-    except ValueError:
-        return None
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
-    return parsed.astimezone(timezone.utc)
 
 
 def _env_int(name: str, default: int) -> int:
