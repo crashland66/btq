@@ -21,6 +21,7 @@ from urllib.parse import parse_qs, quote
 from event_pipeline.sites import SITES
 from event_pipeline import couchdb_config
 from event_pipeline.couchdb_registry import CouchDBSiteRegistry
+from field_capture.deep_analysis import DEEP_ANALYSIS_PRESETS
 from field_capture import photo_vision as field_photo_vision
 from media_store import LocalFilesystemStore, get_media_store, media_key_from_stored_path
 from ops_dashboard import audit
@@ -33,6 +34,7 @@ logger = logging.getLogger(__name__)
 DEFAULT_LOG_LINES = 40
 PHOTO_VISION_RECENT_LIMIT = 8
 UNKNOWN_SUBMITTER = "Unknown submitter"
+DEEP_ANALYSIS_LABELS = {str(preset["id"]): str(preset["label"]) for preset in DEEP_ANALYSIS_PRESETS}
 KNOWN_JOB_SUMMARY_TYPES = {
     "append_to_note",
     "add_person",
@@ -78,6 +80,24 @@ KNOWN_JOB_SUMMARY_TYPES = {
     "edit_record_fields",
     "voice_memo_note",
 }
+
+
+def photo_vision_couchdb_config() -> object:
+    if not (os.environ.get("BTQ_COUCHDB_URL") or "").strip():
+        return None
+    return couchdb_config.from_env()
+
+
+def deep_analysis_prompt_label(entry: dict[str, object]) -> str:
+    prompt_id = str(entry.get("prompt_id") or "").strip()
+    label = str(entry.get("label") or "").strip()
+    if label:
+        return label
+    if prompt_id == "custom":
+        return "Custom"
+    if prompt_id in DEEP_ANALYSIS_LABELS:
+        return DEEP_ANALYSIS_LABELS[prompt_id]
+    return humanize_key(prompt_id) if prompt_id else "Custom"
 
 
 _DEEP_ANALYSIS_ORDERED_RE = re.compile(r"^\s*\d+\.\s*(.+)$")

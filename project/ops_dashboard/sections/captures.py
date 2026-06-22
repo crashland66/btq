@@ -4,7 +4,6 @@ import html
 import json
 import logging
 import mimetypes
-import os
 import re
 from datetime import datetime, timezone
 from pathlib import Path
@@ -16,13 +15,16 @@ from field_capture import photo_vision as field_photo_vision
 from field_capture.site_viewer import UnsafeMediaPath, resolve_media_path, resolve_media_request
 from ops_dashboard import audit
 from ops_dashboard.common import (
+    DEEP_ANALYSIS_LABELS,
     UNKNOWN_SUBMITTER,
     audio_player,
+    deep_analysis_prompt_label,
     default_actor,
     first_query_value,
     humanize_key,
     is_audio_file,
     load_photo_vision_sidecars,
+    photo_vision_couchdb_config as _photo_vision_couchdb_config,
     read_json_artifact,
     render_back_link,
     render_deep_analysis_markdown,
@@ -45,15 +47,6 @@ from queue_spec import DEEP_ANALYSIS_PRESET_IDS
 
 
 logger = logging.getLogger(__name__)
-_DEEP_ANALYSIS_LABELS = {preset["id"]: preset["label"] for preset in DEEP_ANALYSIS_PRESETS}
-
-
-def _photo_vision_couchdb_config() -> object:
-    if not (os.environ.get("BTQ_COUCHDB_URL") or "").strip():
-        return None
-    from event_pipeline import couchdb_config as _cdb
-
-    return _cdb.from_env()
 
 
 def _safe_return_to(value: str) -> str:
@@ -588,18 +581,6 @@ def _photo_note_html(record: dict[str, object]) -> str:
     return f'<p class="subline site-gallery-meta"><b>Photo note</b><br>{escaped_note}</p>'
 
 
-def _deep_analysis_prompt_label(entry: dict[str, object]) -> str:
-    prompt_id = str(entry.get("prompt_id") or "").strip()
-    label = str(entry.get("label") or "").strip()
-    if label:
-        return label
-    if prompt_id == "custom":
-        return "Custom"
-    if prompt_id in _DEEP_ANALYSIS_LABELS:
-        return _DEEP_ANALYSIS_LABELS[prompt_id]
-    return humanize_key(prompt_id) if prompt_id else "Custom"
-
-
 def _render_deep_analysis_result(value: object) -> str:
     if value is None or value == "":
         return '<p class="muted">No result text.</p>'
@@ -628,7 +609,7 @@ def _render_shift_report_deep_analysis_form(record: dict[str, object], entry: di
         "photo_asset_id": photo_asset_id,
         "site_id": str(record.get("site_id") or "").strip(),
         "prompt_id": str(entry.get("prompt_id") or "").strip(),
-        "prompt_label": _deep_analysis_prompt_label(entry),
+        "prompt_label": deep_analysis_prompt_label(entry),
         "actor": default_actor(),
         "confirm": "1",
         "return_to": return_to,
@@ -659,7 +640,7 @@ def _render_deep_analysis_entry(record: dict[str, object], entry: object) -> str
     )
     details = _without_empty_values(
         {
-            "prompt": _deep_analysis_prompt_label(entry),
+            "prompt": deep_analysis_prompt_label(entry),
             "status": status,
             "model": model,
             "actor": entry.get("actor", ""),

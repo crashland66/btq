@@ -3,16 +3,17 @@ from __future__ import annotations
 import html
 import json
 import logging
-import os
 from pathlib import Path
 from urllib.parse import urlencode
 
 from field_capture.deep_analysis import DEEP_ANALYSIS_PRESETS
 from ops_dashboard.common import (
+    DEEP_ANALYSIS_LABELS,
+    deep_analysis_prompt_label,
     default_actor,
     first_filter_value,
-    humanize_key,
     load_photo_vision_sidecars,
+    photo_vision_couchdb_config as _photo_vision_couchdb_config,
     render_deep_analysis_markdown,
     render_relative_time,
     render_short_id,
@@ -29,14 +30,6 @@ PAGE_LIMIT = 120
 PENDING_LIMIT = 12
 _TERMINAL_CAPTURE_STATES = frozenset({"failed", "complete", "completed"})
 _FIELD_CAPTURE_PAGE_SIZE = 5000
-_DEEP_ANALYSIS_LABELS = {str(preset["id"]): str(preset["label"]) for preset in DEEP_ANALYSIS_PRESETS}
-
-
-def _photo_vision_couchdb_config() -> object:
-    if not (os.environ.get("BTQ_COUCHDB_URL") or "").strip():
-        return None
-    from event_pipeline import couchdb_config as _cdb
-    return _cdb.from_env()
 
 
 def _build_mango_selector(
@@ -251,18 +244,6 @@ def _analysis_icon(kind: str) -> str:
     )
 
 
-def _deep_analysis_prompt_label(entry: dict[str, object]) -> str:
-    prompt_id = str(entry.get("prompt_id") or "").strip()
-    label = str(entry.get("label") or "").strip()
-    if label:
-        return label
-    if prompt_id == "custom":
-        return "Custom"
-    if prompt_id in _DEEP_ANALYSIS_LABELS:
-        return _DEEP_ANALYSIS_LABELS[prompt_id]
-    return humanize_key(prompt_id) if prompt_id else "Custom"
-
-
 def _deep_analysis_payload(entries: object) -> list[dict[str, object]]:
     if not isinstance(entries, list):
         return []
@@ -282,7 +263,7 @@ def _deep_analysis_payload(entries: object) -> list[dict[str, object]]:
         result = entry.get("result")
         payload.append(
             {
-                "prompt": _deep_analysis_prompt_label(entry),
+                "prompt": deep_analysis_prompt_label(entry),
                 "prompt_id": str(entry.get("prompt_id") or "").strip(),
                 "prompt_text": str(entry.get("prompt_text") or "").strip(),
                 "status": str(entry.get("status") or "").strip() or "unknown",
