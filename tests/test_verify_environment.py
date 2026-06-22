@@ -1,7 +1,9 @@
 import dataclasses
 import json
 import os
+import re
 import time
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -127,3 +129,44 @@ def test_config_json_has_no_outbox_or_working_dir() -> None:
 
     assert "outbox_dir" not in config_data
     assert "working_dir" not in config_data
+
+
+def _load_pyproject() -> dict:
+    pyproject_path = repo_root() / "pyproject.toml"
+    assert pyproject_path.exists(), f"pyproject.toml not found at {pyproject_path}"
+    return tomllib.loads(pyproject_path.read_text(encoding="utf-8"))
+
+
+def _requires_python_floor() -> tuple[int, ...]:
+    """Parse the `requires-python` floor (e.g. '>=3.12') from pyproject into a
+    version tuple like (3, 12)."""
+    requires_python = _load_pyproject()["project"]["requires-python"]
+    match = re.search(r"(\d+)\.(\d+)(?:\.(\d+))?", requires_python)
+    assert match, f"could not parse a version from requires-python={requires_python!r}"
+    return tuple(int(part) for part in match.groups() if part is not None)
+
+
+def test_min_python_matches_pyproject_requires_python() -> None:
+    """DRIFT GUARD: the verifier's MIN_PYTHON floor must equal the package's
+    `requires-python` floor in pyproject.toml. If the two ever diverge, a fresh
+    machine could pass verify_environment yet fail to install the package (or
+    vice versa). Derived from pyproject so it catches REAL drift on either side."""
+    floor = _requires_python_floor()
+
+    assert verify_environment.MIN_PYTHON == floor, (
+        f"verify_environment.MIN_PYTHON={verify_environment.MIN_PYTHON} "
+        f"!= pyproject requires-python floor {floor}; keep them in lockstep"
+    )
+
+
+def test_ruff_target_version_matches_python_floor() -> None:
+    """The ruff target-version (e.g. 'py312') must track the same Python floor,
+    so lint targets the language level the package actually requires."""
+    floor = _requires_python_floor()
+    target = _load_pyproject()["tool"]["ruff"]["target-version"]
+
+    expected = f"py{floor[0]}{floor[1]}"
+    assert target == expected, (
+        f"[tool.ruff] target-version={target!r} != expected {expected!r} "
+        f"derived from the Python floor {floor}"
+    )

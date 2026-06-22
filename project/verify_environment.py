@@ -10,7 +10,7 @@ from pathlib import Path
 from config import get_config
 
 
-MIN_PYTHON = (3, 9)
+MIN_PYTHON = (3, 12)
 RECENT_ACTIVITY_SECONDS = 15 * 60
 PROJECT_DIR = Path(__file__).resolve().parent
 REPO_ROOT = PROJECT_DIR.parent

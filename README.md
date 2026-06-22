@@ -173,7 +173,7 @@ The repository now includes a minimal root `pyproject.toml` for the Python packa
 
 Current Python/runtime requirements inferred from active code paths:
 
-- Python 3.9 or newer
+- Python 3.12 or newer
 - `openai-whisper`
   imported as `whisper` by `project/transcription_pipeline/main.py`
 - `torch`
@@ -449,7 +449,7 @@ Before running the pipeline on a fresh machine, verify:
 
 Practical checks:
 
-- the Python version is at least 3.9
+- the Python version is at least 3.12
 - `torch` and `whisper` import successfully from `project/.venv`
 - `ffmpeg` is on `PATH`
 - the configured inbox and archive paths exist on disk
@@ -473,7 +473,7 @@ outbox was retired; `config.json` now rejects unknown keys.)
 
 These are the versions currently installed in the maintainer's existing local venv. They are not pinned by the repository, but they are a concrete reference point for a working setup:
 
-- Python `3.9`
+- Python `3.12`
 - `openai-whisper` `20250625`
 - `torch` `2.8.0`
 - `pytest` `8.4.2`
@@ -516,9 +516,10 @@ cd project
 From the repository root:
 
 ```bash
-cd project
-.venv/bin/python -m pytest ../tests -q
+project/.venv/bin/python -m pytest
 ```
+
+Add `-q` for quieter output.
 
 The main test suites are:
 
