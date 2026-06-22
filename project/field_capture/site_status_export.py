@@ -9,6 +9,7 @@ from urllib.parse import quote
 from config import get_config
 from field_capture.action_candidates import couchdb_candidate_payloads, default_candidate_dir
 from field_capture.client_notifications import default_notification_dir, load_notification, safe_text
+from field_capture.visual_context import safe_visual_context
 from processing_core.artifacts import read_json_object, write_json_object
 from site_issues import discover_site_issues, issue_as_export
 
@@ -128,30 +129,6 @@ def media_url_from_vision_payload(payload: dict[str, object]) -> str:
         if media_url.startswith("/media/") and ".." not in media_url:
             return media_url
     return ""
-
-
-def safe_visual_context(value: object, *, limit: int = 520) -> str:
-    text = " ".join(str(value or "").split())
-    if not text:
-        return ""
-    lowered = text.lower()
-    unsafe_markers = (
-        "bearer ",
-        "field_capture_token",
-        "fct_",
-        "auth",
-        "/users/",
-        "/srv/",
-        "/var/",
-        "\\users\\",
-        "source_image_path",
-        "queue",
-    )
-    if any(marker in lowered for marker in unsafe_markers):
-        return ""
-    if len(text) <= limit:
-        return text
-    return text[: max(0, limit - 3)].rstrip() + "..."
 
 
 def media_references(capture: dict[str, object], upload_dir: Path, *, visual_context_by_url: dict[str, str] | None = None) -> list[dict[str, str]]:
