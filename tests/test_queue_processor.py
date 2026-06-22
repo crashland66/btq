@@ -787,6 +787,11 @@ def _drift_guard_sample_payloads() -> dict[str, dict]:
         qp.JOB_REMOVE_FROM_SCHEDULE: {"employee": "Pearson, David"},
         qp.JOB_FLAG_RETENTION_RISK: {"employee": "Pearson, David"},
         qp.JOB_ADD_PERSON: {"name": "Eric Daniel Dalton"},
+        qp.JOB_ASSIGN_EMPLOYEE_SITE: {
+            "employee_id": "Pearson, David",
+            "site_id": "592",
+            "actor": "Greg",
+        },
         qp.JOB_PARSE_SUPPLY_EMAIL: {"html_path": "project/tmp/supply_email.html"},
         qp.JOB_PHOTO_CAPTURE: {"captured_at": "2026-04-20T10:00:00Z"},
         qp.JOB_PROMOTE_PROSPECT: {"prospect_id": "p1", "site_id": "7050"},
@@ -915,6 +920,14 @@ def test_target_path_hint_new_branches_mirror_canonical_doc_ids(tmp_path: Path) 
         qp.QueueJob("emp", qp.JOB_REMOVE_FROM_SCHEDULE, {"employee": "Pearson, David"}, {}, {}),
         context,
     )
+
+    # assign_employee_site -> canonical employee hint for `employee_id`
+    assign_hint = hint_for(qp.JOB_ASSIGN_EMPLOYEE_SITE)
+    assert assign_hint == qp.target_path_hint(
+        qp.QueueJob("emp", qp.JOB_REMOVE_FROM_SCHEDULE, {"employee": "Pearson, David"}, {}, {}),
+        context,
+    )
+    assert assign_hint not in ("", "unknown")
 
     # mark_record_(un)archived mirror edit_record_fields' record-id logic
     assert hint_for(qp.JOB_MARK_RECORD_ARCHIVED) == "supply_need_abc"

@@ -21,6 +21,7 @@ from queue_processor.canonical_rmw import (
 from queue_processor import idempotency_ledger
 
 from . import _shared
+from .employee_sites import process_assign_employee_site_job
 from .site_flags_notes import (
     location_content_append_active_visit_key,
     process_employee_content_append_job,
@@ -415,6 +416,7 @@ def _build_employee_entity_doc(payload: dict, job: QueueJob, person_id: str, cre
     }
     doc.update({key: payload[key] for key in CANONICAL_EMPLOYEE_FIELDS if key in payload})
     return doc
+
 
 def process_add_person_job(job_path: Path, job: QueueJob, context: RunContext, processed_dir: Path) -> None:
     payload = job.payload

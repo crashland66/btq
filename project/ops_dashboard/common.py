@@ -38,6 +38,7 @@ DEEP_ANALYSIS_LABELS = {str(preset["id"]): str(preset["label"]) for preset in DE
 KNOWN_JOB_SUMMARY_TYPES = {
     "append_to_note",
     "add_person",
+    "assign_employee_site",
     "trigger_recruiting",
     "close_recruiting",
     "remove_from_schedule",
@@ -1203,6 +1204,13 @@ def render_job_summary(job_type: object, payload: object) -> str:
     if job_type_text == "add_person":
         suffix = _join_summary_parts(html.escape(_clean_display_part(body.get("name"))), f"({html.escape(_clean_display_part(body.get('role')))})" if _clean_display_part(body.get("role")) else "")
         return _summary_with_suffix("Add", suffix)
+    if job_type_text == "assign_employee_site":
+        employee = html.escape(_clean_display_part(body.get("employee_id")))
+        site = html.escape(_clean_display_part(body.get("site_id")))
+        action = _clean_display_part(body.get("action") or "assign")
+        verb = "Assign site to" if action != "unassign" else "Unassign site from"
+        suffix = _join_summary_parts(employee, f"site {site}" if site else "")
+        return _summary_with_suffix(verb, suffix)
     if job_type_text == "set_employee_id":
         person = html.escape(_clean_display_part(body.get("person")))
         emp = html.escape(_clean_display_part(body.get("employee_id")))

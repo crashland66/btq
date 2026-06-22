@@ -4,7 +4,7 @@ from typing import Callable
 from pathlib import Path
 
 from queue_spec import (
-    JOB_ADD_PERSON, JOB_APPEND_TO_NOTE, JOB_CLOSE_RECRUITING, JOB_FLAG_ACCESS_CONSTRAINT,
+    JOB_ADD_PERSON, JOB_APPEND_TO_NOTE, JOB_ASSIGN_EMPLOYEE_SITE, JOB_CLOSE_RECRUITING, JOB_FLAG_ACCESS_CONSTRAINT,
     JOB_FLAG_RETENTION_RISK, JOB_LOG_AVAILABILITY_CONSTRAINT, JOB_LOG_EQUIPMENT_REQUEST, JOB_LOG_PERSONNEL_EVENT, JOB_LOG_SITE_ISSUE,
     JOB_LOG_SUPPLY_NEED, JOB_MARK_EQUIPMENT_APPROVED, JOB_MARK_EQUIPMENT_DENIED,
     JOB_MARK_EQUIPMENT_NO_ACTION_NEEDED, JOB_MARK_EQUIPMENT_ORDERED, JOB_MARK_EQUIPMENT_PROVIDED,
@@ -25,6 +25,7 @@ JobHandler = Callable[[Path, QueueJob, RunContext, Path], None]
 JOB_HANDLERS: dict[str, JobHandler] = {
     JOB_APPEND_TO_NOTE: site_flags_notes.process_append_to_note_job,
     JOB_ADD_PERSON: people.process_add_person_job,
+    JOB_ASSIGN_EMPLOYEE_SITE: people.process_assign_employee_site_job,
     JOB_SET_EMPLOYEE_ID: employee_updates.process_set_employee_id_job,
     JOB_RECORD_SHIFT_REPORT: misc.process_record_shift_report_job,
     JOB_SHIFT_REPORT_NOTE: misc.process_shift_report_note_job,

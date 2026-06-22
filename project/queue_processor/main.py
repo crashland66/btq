@@ -16,7 +16,7 @@ from queue_processor.processor_lock import ProcessorLock, ProcessorLockError
 from queue_processor.registry import JOB_HANDLERS, JobHandler, _handler_for_job_type
 from queue_spec import (
     validate_job,
-    JOB_ADD_PERSON, JOB_APPEND_TO_NOTE, JOB_CLOSE_RECRUITING, JOB_FLAG_ACCESS_CONSTRAINT, JOB_FLAG_RETENTION_RISK,
+    JOB_ADD_PERSON, JOB_APPEND_TO_NOTE, JOB_ASSIGN_EMPLOYEE_SITE, JOB_CLOSE_RECRUITING, JOB_FLAG_ACCESS_CONSTRAINT, JOB_FLAG_RETENTION_RISK,
     JOB_LOG_EQUIPMENT_REQUEST, JOB_LOG_PERSONNEL_EVENT, JOB_LOG_SITE_ISSUE, JOB_LOG_SUPPLY_NEED,
     JOB_MARK_EQUIPMENT_APPROVED, JOB_MARK_EQUIPMENT_DENIED, JOB_MARK_EQUIPMENT_NO_ACTION_NEEDED,
     JOB_MARK_EQUIPMENT_ORDERED, JOB_MARK_EQUIPMENT_PROVIDED, JOB_MARK_SUPPLY_DELIVERED,
@@ -69,6 +69,7 @@ def processed_job_id_exists(runtime_root: Path, processed_dir: Path, job_id: str
 process_visit_create_job = visits.process_visit_create_job
 process_photo_capture_job = visits.process_photo_capture_job
 process_add_person_job = people.process_add_person_job
+process_assign_employee_site_job = people.process_assign_employee_site_job
 process_trigger_recruiting_job = people.process_trigger_recruiting_job
 process_close_recruiting_job = people.process_close_recruiting_job
 process_remove_from_schedule_job = people.process_remove_from_schedule_job
@@ -304,6 +305,8 @@ def target_path_hint(job: QueueJob, context: RunContext) -> str:
             return _canonical_employee_hint(payload["employee"])
         if job.job_type == JOB_ADD_PERSON:
             return _canonical_employee_hint(payload["name"])
+        if job.job_type == JOB_ASSIGN_EMPLOYEE_SITE:
+            return _canonical_employee_hint(payload["employee_id"])
         if job.job_type == JOB_SET_EMPLOYEE_ID:
             return _canonical_employee_hint(payload["person"])
         if job.job_type == JOB_PARSE_SUPPLY_EMAIL:

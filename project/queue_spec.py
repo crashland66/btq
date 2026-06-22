@@ -36,6 +36,7 @@ JOB_REMOVE_FROM_SCHEDULE = "remove_from_schedule"
 JOB_FLAG_ACCESS_CONSTRAINT = "flag_access_constraint"
 JOB_FLAG_RETENTION_RISK = "flag_retention_risk"
 JOB_ADD_PERSON = "add_person"
+JOB_ASSIGN_EMPLOYEE_SITE = "assign_employee_site"
 JOB_SET_EMPLOYEE_ID = "set_employee_id"
 JOB_RECORD_SHIFT_REPORT = "record_shift_report"
 JOB_SHIFT_REPORT_NOTE = "shift_report_note"
@@ -133,6 +134,7 @@ ALLOWED_JOB_TYPES = {
     JOB_FLAG_ACCESS_CONSTRAINT,
     JOB_FLAG_RETENTION_RISK,
     JOB_ADD_PERSON,
+    JOB_ASSIGN_EMPLOYEE_SITE,
     JOB_SET_EMPLOYEE_ID,
     JOB_RECORD_SHIFT_REPORT,
     JOB_SHIFT_REPORT_NOTE,
@@ -194,6 +196,7 @@ JOB_SCHEMAS = {
     JOB_FLAG_ACCESS_CONSTRAINT: ["site", "details"],
     JOB_FLAG_RETENTION_RISK: ["employee", "site", "details"],
     JOB_ADD_PERSON: ["name", "role"],
+    JOB_ASSIGN_EMPLOYEE_SITE: ["employee_id", "site_id", "actor"],
     JOB_SET_EMPLOYEE_ID: ["person", "employee_id"],
     JOB_RECORD_SHIFT_REPORT: ["date", "content"],
     JOB_SHIFT_REPORT_NOTE: ["date", "content", "actor", "capture_id", "photo_asset_id"],
@@ -250,6 +253,13 @@ ADD_PERSON_ALLOWED_PAYLOAD_FIELDS = {
 ADD_PERSON_ASSIGNMENT_FIELDS = {"job", "account", "location", "shift"}
 ADD_PERSON_CONTACT_FIELDS = {"phone", "email"}
 ADD_PERSON_METADATA_FIELDS = {"source"}
+ASSIGN_EMPLOYEE_SITE_ALLOWED_PAYLOAD_FIELDS = {
+    "employee_id",
+    "site_id",
+    "actor",
+    "action",
+    "source",
+}
 SET_EMPLOYEE_ID_ALLOWED_PAYLOAD_FIELDS = {
     "person",
     "employee_id",
@@ -643,6 +653,21 @@ def _validate_add_person_payload(payload: dict) -> bool:
         if source is not None and not _is_non_empty_string(source):
             return False
 
+    return True
+
+
+def _validate_assign_employee_site_payload(payload: dict) -> bool:
+    if set(payload) - ASSIGN_EMPLOYEE_SITE_ALLOWED_PAYLOAD_FIELDS:
+        return False
+    for field in ("employee_id", "site_id", "actor"):
+        if not _is_non_empty_string(payload.get(field)):
+            return False
+    action = payload.get("action")
+    if action is not None and action not in {"assign", "unassign"}:
+        return False
+    source = payload.get("source")
+    if source is not None and not _is_non_empty_string(source):
+        return False
     return True
 
 
@@ -1096,6 +1121,9 @@ def validate_job(job: dict) -> bool:
                 return False
     if job_type == JOB_ADD_PERSON:
         if not _validate_add_person_payload(payload):
+            return False
+    if job_type == JOB_ASSIGN_EMPLOYEE_SITE:
+        if not _validate_assign_employee_site_payload(payload):
             return False
     if job_type == JOB_SET_EMPLOYEE_ID:
         if not _validate_set_employee_id_payload(payload):

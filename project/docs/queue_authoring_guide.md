@@ -421,7 +421,78 @@ Use a stable source-system key when available, for example `ehub-9213`.
 }
 ```
 
-## 2b. `record_shift_report`
+## 2b. `assign_employee_site`
+
+Use when:
+
+- an existing employee needs one canonical site assignment added or removed
+- the target person can be resolved by employee document `_id`, `person_id`,
+  current `employee_id`, or unique display name
+- the change is limited to the employee document's `site_ids` list
+
+Do not use when:
+
+- the person does not already exist; use `add_person`
+- the request needs to edit name, status, contact, content, or arbitrary
+  employee fields
+- the target person cannot be resolved uniquely
+
+### Required payload fields
+
+- `employee_id`: non-empty resolver string
+- `site_id`: non-empty site id string, for example `"592"`
+- `actor`: non-empty string
+
+### Optional payload fields used by runtime
+
+- `action`: either `assign` or `unassign`; defaults to `assign`
+- `source`: string provenance label
+
+### Runtime behavior notes
+
+- the writer resolves `employee_id` to an existing canonical `employee`
+  document
+- `assign` appends `site_id` to `site_ids` only when it is not already present
+- `unassign` removes `site_id` from `site_ids` when present
+- existing `site_ids` order is preserved and duplicate entries are collapsed to
+  the first occurrence
+- every other employee field is preserved, including status, name, employee ID,
+  content, and existing audit/history fields
+- if no person matches, multiple people match, CouchDB cannot be read/written,
+  or the employee document is missing, the job fails safely without writing
+- reprocessing the same job is idempotent via the `btq_job_ids` marker
+
+### Valid examples
+
+```json
+{
+  "job_id": "2026-06-22T10-00-00Z__assign-greenwood-megan-592",
+  "job_type": "assign_employee_site",
+  "payload": {
+    "employee_id": "employee_greenwood_megan",
+    "site_id": "592",
+    "actor": "Greg",
+    "action": "assign",
+    "source": "operator_review"
+  }
+}
+```
+
+```json
+{
+  "job_id": "2026-06-22T10-05-00Z__unassign-greenwood-megan-592",
+  "job_type": "assign_employee_site",
+  "payload": {
+    "employee_id": "employee_greenwood_megan",
+    "site_id": "592",
+    "actor": "Greg",
+    "action": "unassign",
+    "source": "operator_review"
+  }
+}
+```
+
+## 2c. `record_shift_report`
 
 Use when:
 
