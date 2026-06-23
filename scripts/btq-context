@@ -1,0 +1,232 @@
+#!/usr/bin/env python3
+"""btq-context - read-only BTQ CouchDB context resolver CLI."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from pathlib import Path
+from typing import Any
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+PROJECT_ROOT = REPO_ROOT / "project"
+sys.path.insert(0, str(PROJECT_ROOT))
+
+from event_pipeline import context_resolver  # type: ignore  # noqa: E402
+from event_pipeline import couchdb_config  # type: ignore  # noqa: E402
+from event_pipeline.btq_client import BTQClientError  # type: ignore  # noqa: E402
+from event_pipeline.couchdb_queue_reader import CouchDBQueueReaderError  # type: ignore  # noqa: E402
+
+
+UNRESOLVED_KINDS = {"ambiguous", "not_found"}
+
+
+def print_json(value: Any) -> None:
+    print(json.dumps(value, indent=2, sort_keys=True))
+
+
+def add_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--format", choices=["json", "table"], default=None, help="Output format. Defaults to json.")
+    parser.add_argument("--account", help="Resolve an account by id, name, or alias.")
+    parser.add_argument("--person", help="Resolve a person by name or id.")
+    parser.add_argument("--manager", help="Resolve operator context for this manager/operator.")
+    parser.add_argument("--type", choices=["accounts", "employees"], help="For list mode, choose accounts or employees.")
+
+    format_parent = argparse.ArgumentParser(add_help=False)
+    format_parent.add_argument("--format", choices=["json", "table"], default=None, help="Output format. Defaults to json.")
+
+    sub = parser.add_subparsers(dest="command")
+
+    resolve_parser = sub.add_parser("resolve", parents=[format_parent], help="Resolve one account or person.")
+    target = resolve_parser.add_mutually_exclusive_group(required=True)
+    target.add_argument("--account", help="Resolve an account by id, name, or alias.")
+    target.add_argument("--person", help="Resolve a person by name or id.")
+
+    list_parser = sub.add_parser("list", parents=[format_parent], help="List accounts or employees for an operator.")
+    list_parser.add_argument("--manager", required=True, help="Manager/operator to resolve.")
+    list_parser.add_argument("--type", choices=["accounts", "employees"], required=True)
+
+    snapshot_parser = sub.add_parser("snapshot", parents=[format_parent], help="Show an operator context snapshot.")
+    snapshot_parser.add_argument("--manager", required=True, help="Manager/operator to resolve.")
+
+    return parser
+
+
+def resolve_command(args: argparse.Namespace) -> str:
+    if args.command:
+        return str(args.command)
+    if args.account and args.person:
+        raise ValueError("--account and --person are mutually exclusive")
+    if args.account or args.person:
+        return "resolve"
+    if args.manager and args.type:
+        return "list"
+    if args.manager:
+        return "snapshot"
+    raise ValueError("choose resolve, list, or snapshot")
+
+
+def format_account_table(accounts: list[dict[str, Any]]) -> str:
+    rows = [
+        (
+            str(account.get("job_number") or ""),
+            str(account.get("canonical_name") or ""),
+            str(account.get("status") or ""),
+            str(account.get("manager") or ""),
+        )
+        for account in accounts
+    ]
+    return _format_table(("JOB", "ACCOUNT", "STATUS", "MANAGER"), rows, empty="(no accounts)")
+
+
+def format_people_table(people: list[dict[str, Any]]) -> str:
+    rows = [
+        (
+            str(person.get("display_name") or person.get("canonical_name") or ""),
+            str(person.get("role") or ""),
+            str(person.get("relationship") or ""),
+            ", ".join(str(value) for value in person.get("assigned_job_numbers") or []),
+            str(person.get("manager") or ""),
+        )
+        for person in people
+    ]
+    return _format_table(("NAME", "ROLE", "RELATIONSHIP", "JOBS", "MANAGER"), rows, empty="(no employees)")
+
+
+def format_snapshot_table(snapshot: dict[str, Any]) -> str:
+    lines = [f"Operator: {snapshot.get('operator') or ''}", f"Generated: {snapshot.get('generated_at') or ''}", ""]
+    lines.append("Accounts")
+    lines.append(format_account_table(_list_value(snapshot.get("accounts"))))
+    lines.append("")
+    lines.append("Employees")
+    lines.append(format_people_table(_list_value(snapshot.get("people"))))
+    return "\n".join(lines)
+
+
+def _format_table(headers: tuple[str, ...], rows: list[tuple[str, ...]], *, empty: str) -> str:
+    if not rows:
+        return empty
+    widths = [len(header) for header in headers]
+    for row in rows:
+        for index, cell in enumerate(row):
+            widths[index] = max(widths[index], len(cell))
+    lines = ["  ".join(header.ljust(widths[index]) for index, header in enumerate(headers))]
+    lines.append("  ".join("-" * width for width in widths))
+    for row in rows:
+        lines.append("  ".join(cell.ljust(widths[index]) for index, cell in enumerate(row)))
+    return "\n".join(lines)
+
+
+def _list_value(value: Any) -> list[dict[str, Any]]:
+    return value if isinstance(value, list) else []
+
+
+def _is_unresolved(result: dict[str, Any]) -> bool:
+    if result.get("kind") in UNRESOLVED_KINDS:
+        return True
+    resolution = result.get("resolution")
+    return isinstance(resolution, dict) and resolution.get("kind") in UNRESOLVED_KINDS
+
+
+def _emit(value: Any, *, format_name: str, table: str | None = None) -> None:
+    if format_name == "table" and table is not None:
+        print(table)
+        return
+    print_json(value)
+
+
+def handle_resolve(
+    args: argparse.Namespace,
+    *,
+    resolver_module: Any,
+    docs: Any = None,
+    config: Any = None,
+) -> int:
+    if args.account:
+        result = resolver_module.resolve_account(args.account, docs=docs, config=config)
+        table = format_account_table([result]) if result.get("kind") == "account" else None
+    else:
+        result = resolver_module.resolve_person(args.person, docs=docs, config=config)
+        table = format_people_table([result]) if result.get("kind") == "person" else None
+    _emit(result, format_name=args.format or "json", table=None if _is_unresolved(result) else table)
+    return 2 if _is_unresolved(result) else 0
+
+
+def handle_list(
+    args: argparse.Namespace,
+    *,
+    resolver_module: Any,
+    docs: Any = None,
+    config: Any = None,
+    now: Any = None,
+) -> int:
+    snapshot = resolver_module.operator_context_snapshot(args.manager, docs=docs, now=now, config=config)
+    if _is_unresolved(snapshot):
+        print_json(snapshot)
+        return 2
+    key = "accounts" if args.type == "accounts" else "people"
+    items = _list_value(snapshot.get(key))
+    table = format_account_table(items) if key == "accounts" else format_people_table(items)
+    _emit(items, format_name=args.format or "json", table=table)
+    return 0
+
+
+def handle_snapshot(
+    args: argparse.Namespace,
+    *,
+    resolver_module: Any,
+    docs: Any = None,
+    config: Any = None,
+    now: Any = None,
+) -> int:
+    snapshot = resolver_module.operator_context_snapshot(args.manager, docs=docs, now=now, config=config)
+    _emit(
+        snapshot,
+        format_name=args.format or "json",
+        table=None if _is_unresolved(snapshot) else format_snapshot_table(snapshot),
+    )
+    return 2 if _is_unresolved(snapshot) else 0
+
+
+def main(
+    argv: list[str] | None = None,
+    *,
+    resolver_module: Any | None = None,
+    docs: Any = None,
+    config: Any = None,
+    now: Any = None,
+) -> int:
+    parser = add_parser()
+    try:
+        try:
+            args = parser.parse_args(argv)
+        except SystemExit as exc:
+            return exc.code if isinstance(exc.code, int) else 2
+        args.command = resolve_command(args)
+        resolver = resolver_module or context_resolver
+        if args.command == "resolve":
+            return handle_resolve(args, resolver_module=resolver, docs=docs, config=config)
+        if args.command == "list":
+            return handle_list(args, resolver_module=resolver, docs=docs, config=config, now=now)
+        if args.command == "snapshot":
+            return handle_snapshot(args, resolver_module=resolver, docs=docs, config=config, now=now)
+    except ValueError as exc:
+        print(f"btq-context: {exc}", file=sys.stderr)
+        return 2
+    except BTQClientError as exc:
+        print(f"btq-context: {exc.message}", file=sys.stderr)
+        return 2 if exc.code.startswith("invalid") else 1
+    except CouchDBQueueReaderError as exc:
+        print(f"btq-context: {exc.message}", file=sys.stderr)
+        return 1
+    except couchdb_config.CouchDBConfigError as exc:
+        print(f"btq-context: {exc}", file=sys.stderr)
+        return 1
+    parser.error(f"unknown command: {args.command}")
+    return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
