@@ -45,3 +45,19 @@
 - Ownership means the operator employee's own `site_ids` account set plus employees related by `manager` or account assignment. Sites have no manager field. Resolution must be operator-aware, not hardcoded to Greg.
 - Example: for "give me a read on all of my accounts", run `./scripts/btq-context --manager <operator>` first, then analyze only the resolved account set.
 - Example: for "which of my sites are over supply budget?" or "which of my employees are attached to accounts over labor budget?", resolve the operator's accounts or people first, then join that canonical context to the external budget or timekeeping data.
+
+## Agent Workspace
+
+- The agent workspace is a local, non-canonical working bench under the gitignored runtime root. CouchDB remains the source of truth; operational changes still go through validated queue jobs and CouchDB processors.
+- Workspace material may reference CouchDB doc ids, document revs, and queue job ids, but it is never the source of truth.
+- Use `./scripts/btq-agent-workspace init --operator <op> --project <proj>` as the onboarding action to create the workspace tree. The core module is `project/event_pipeline/agent_workspace.py`.
+- Use `./scripts/btq-agent-workspace path --operator <op> --project <proj> [--format json|text]` to discover the workspace path; do not hardcode or infer it from the launcher working directory.
+- Use `./scripts/btq-agent-workspace new-run --operator <op> --project <proj> --slug <slug>` to create a dated run bundle at `runs/<date>-<slug>/`.
+- `context/` holds resolved account, person, and operator snapshots from CouchDB, timestamped with source doc ids and revs, such as output from `project/event_pipeline/context_resolver.py` or `./scripts/btq-context`.
+- `drafts/` holds pre-submit artifacts such as queue job JSON, email drafts, and analysis drafts.
+- `evidence/` holds extracted spreadsheet summaries, OCR snippets, and links to local source files.
+- `handoffs/` holds notes for the planner, executor, or another Codex context.
+- `runs/<date>-<slug>/` holds a session bundle tying evidence, drafts, decisions, and final queue or job outcomes together.
+- Three-store rule: workspace = durable local agent scratch and working material; CouchDB = canonical operational state for accounts, people, sites, and queue results, mutated only via queue jobs; ai-methodology inbox = design items, planning specs, and prompt arcs.
+- Never put secrets, credentials, Gmail content, or private spreadsheet contents into the open-source repo; keep that material in the operator workspace.
+- Example: for an account analysis, run `new-run`, resolve the operator/account context with `./scripts/btq-context` into `context/`, put spreadsheet or OCR extracts in `evidence/`, stage draft queue JSON in `drafts/`, submit the real change through a validated queue job so CouchDB mutates, then leave a `handoffs/` note for the next context.
