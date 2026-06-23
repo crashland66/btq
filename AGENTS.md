@@ -33,3 +33,15 @@
 - Prefer local processing for sensitive operational data.
 - Do not hardwire cloud APIs for transcription, semantic cleanup, or classification.
 - Media serving must remain constrained to the configured upload directory.
+
+## Operator Context Resolution
+
+- Before any cross-account or multi-site analysis, resolve the operator's account set from CouchDB; do not derive ownership from spreadsheets, Roadmap entries, Drive folders, or recently discussed examples.
+- Before acting on a person or account name, resolve it to a canonical identity first.
+- If a lookup is ambiguous, present the candidates and require operator choice; never guess.
+- CouchDB is the canonical ownership source; never fall back to spreadsheet-derived ownership when the resolver is available.
+- Use `project/event_pipeline/context_resolver.py` for read-only resolution: `resolve_account`, `resolve_person`, and `operator_context_snapshot`. It resolves accounts by id/name/alias, people by name/id, and returns an operator snapshot of accounts plus people labeled `direct`, `assigned`, or `both`.
+- Use `./scripts/btq-context` for operator context checks: `--account <id|name|alias>`, `--person <name|id>`, `--manager <operator> --type accounts|employees`, or `--manager <operator>` for the full snapshot. JSON is the default output; ambiguous or not-found lookups exit 2 and still print candidates when available.
+- Ownership means the operator employee's own `site_ids` account set plus employees related by `manager` or account assignment. Sites have no manager field. Resolution must be operator-aware, not hardcoded to Greg.
+- Example: for "give me a read on all of my accounts", run `./scripts/btq-context --manager <operator>` first, then analyze only the resolved account set.
+- Example: for "which of my sites are over supply budget?" or "which of my employees are attached to accounts over labor budget?", resolve the operator's accounts or people first, then join that canonical context to the external budget or timekeeping data.
