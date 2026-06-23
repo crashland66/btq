@@ -757,3 +757,119 @@ def test_new_form_falls_back_to_text_input_when_roster_unavailable(monkeypatch) 
     # Issuance must not hard-fail on a roster hiccup — degrade to free text.
     assert '<input name="person_id" required' in out
     assert 'class="admin-form"' in out
+
+
+# --- Verification: active-before-revoked list ordering (created_at desc within each group) ---
+
+
+def _set_created_at(runtime_root: Path, token_id: str, created_at: str) -> None:
+    """Override a token's created_at so we can build an interleaved fixture.
+
+    created_at is auto-stamped at creation, so we rewrite it directly to get
+    active/revoked rows whose timestamps are deliberately interleaved.
+    """
+    store = TokenStore(runtime_root / "field_capture_tokens.sqlite3")
+    with store.connect() as connection:
+        connection.execute(
+            "UPDATE field_capture_tokens SET created_at = ? WHERE token_id = ?",
+            (created_at, token_id),
+        )
+
+
+def _ordering_fixture(runtime_root: Path) -> dict[str, str]:
+    """Build 2 active + 2 revoked tokens with INTERLEAVED created_at.
+
+    Timeline (oldest → newest): active-old, revoked-new is newer than it, etc.
+      active_old   2026-01-01
+      revoked_old  2026-02-01
+      revoked_new  2026-03-01
+      active_new   2026-04-01
+    So by pure created_at desc the raw order would be
+      active_new, revoked_new, revoked_old, active_old  (interleaved),
+    and the active-before-revoked grouping must reorder it to
+      active_new, active_old, revoked_new, revoked_old.
+    Returns the token_id for each labelled row.
+    """
+    store = TokenStore(runtime_root / "field_capture_tokens.sqlite3")
+    ids: dict[str, str] = {}
+    for key, ts in (
+        ("active_old", "2026-01-01T00:00:00Z"),
+        ("revoked_old", "2026-02-01T00:00:00Z"),
+        ("revoked_new", "2026-03-01T00:00:00Z"),
+        ("active_new", "2026-04-01T00:00:00Z"),
+    ):
+        created = create_token(runtime_root, label=key)
+        ids[key] = created.record.token_id
+        _set_created_at(runtime_root, created.record.token_id, ts)
+    store.revoke_token(ids["revoked_old"])
+    store.revoke_token(ids["revoked_new"])
+    return ids
+
+
+def _row_order(body: str, ids: dict[str, str]) -> list[str]:
+    """Return the fixture keys in the order their token_ids appear in the HTML."""
+    positions = {key: body.index(token_id) for key, token_id in ids.items()}
+    return sorted(positions, key=positions.get)
+
+
+def test_tokens_list_sorts_active_before_revoked_newest_first_within_group(tmp_path: Path) -> None:
+    runtime_root = tmp_path / "runtime"
+    ids = _ordering_fixture(runtime_root)
+
+    body = request_text("GET", "/tokens", runtime_root)[2]
+    order = _row_order(body, ids)
+
+    # (a) every active row precedes every revoked row
+    active_positions = [order.index("active_old"), order.index("active_new")]
+    revoked_positions = [order.index("revoked_old"), order.index("revoked_new")]
+    assert max(active_positions) < min(revoked_positions)
+
+    # (b) within active, newest created_at first (active_new before active_old)
+    assert order.index("active_new") < order.index("active_old")
+
+    # (c) within revoked, newest first (revoked_new before revoked_old)
+    assert order.index("revoked_new") < order.index("revoked_old")
+
+    # Exact expected order, since the fixture timestamps fully determine it.
+    assert order == ["active_new", "active_old", "revoked_new", "revoked_old"]
+
+
+def test_tokens_list_active_before_revoked_survives_label_filter(tmp_path: Path) -> None:
+    # The grouping is applied AFTER filtering, so a filter that keeps a mix of
+    # active/revoked rows must still surface all active before all revoked.
+    runtime_root = tmp_path / "runtime"
+    store = TokenStore(runtime_root / "field_capture_tokens.sqlite3")
+    keep_active = create_token(runtime_root, label="keep zulu")
+    _set_created_at(runtime_root, keep_active.record.token_id, "2026-01-01T00:00:00Z")
+    keep_revoked = create_token(runtime_root, label="keep yankee")
+    _set_created_at(runtime_root, keep_revoked.record.token_id, "2026-05-01T00:00:00Z")
+    store.revoke_token(keep_revoked.record.token_id)
+
+    # label_contains=keep matches both; revoked one is newer but must sort last.
+    body = request_text("GET", "/tokens?label_contains=keep", runtime_root)[2]
+    assert keep_active.record.token_id in body
+    assert keep_revoked.record.token_id in body
+    assert body.index(keep_active.record.token_id) < body.index(keep_revoked.record.token_id)
+
+
+def test_tokens_revoked_filters_return_correct_subsets(tmp_path: Path) -> None:
+    # The active/revoked grouping must not disturb the revoked=active|revoked
+    # filters: each filter returns exactly its subset.
+    runtime_root = tmp_path / "runtime"
+    ids = _ordering_fixture(runtime_root)
+
+    active_body = request_text("GET", "/tokens?revoked=active", runtime_root)[2]
+    assert ids["active_old"] in active_body
+    assert ids["active_new"] in active_body
+    assert ids["revoked_old"] not in active_body
+    assert ids["revoked_new"] not in active_body
+    # within the active-only view, newest still first
+    assert active_body.index(ids["active_new"]) < active_body.index(ids["active_old"])
+
+    revoked_body = request_text("GET", "/tokens?revoked=revoked", runtime_root)[2]
+    assert ids["revoked_old"] in revoked_body
+    assert ids["revoked_new"] in revoked_body
+    assert ids["active_old"] not in revoked_body
+    assert ids["active_new"] not in revoked_body
+    # within the revoked-only view, newest still first
+    assert revoked_body.index(ids["revoked_new"]) < revoked_body.index(ids["revoked_old"])

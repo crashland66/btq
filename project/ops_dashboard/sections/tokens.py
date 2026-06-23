@@ -264,6 +264,7 @@ def render_list(root: Path, query: dict[str, list[str]]) -> str:
     if label_filter:
         records = [record for record in records if label_filter in record.label.lower()]
     records = sorted(records, key=lambda record: record.created_at, reverse=True)
+    records = sorted(records, key=lambda record: bool(record.revoked))
     names = person_name_map()
     rows = [
         {
