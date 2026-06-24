@@ -16,6 +16,7 @@ Doc = Mapping[str, Any]
 
 DEFAULT_WEEKLY_QC_TARGET = 4
 DEFAULT_FIND_LIMIT = 10000
+QC_VISIT_TYPES = frozenset({"qc", "qc_inspection"})
 
 
 class VisitCoverageError(Exception):
@@ -34,7 +35,7 @@ def weekly_qc_count(
 ) -> dict[str, Any]:
     """Return this operator's completed QC visits for the ISO week.
 
-    Only canonical visit docs with ``visit_type`` equal to ``qc`` after
+    Only canonical visit docs with ``visit_type`` in ``QC_VISIT_TYPES`` after
     case-insensitive normalization count toward the weekly target. Generic
     visits remain recent activity but do not count as QCs.
     """
@@ -279,8 +280,12 @@ def _find_vault_docs(
     return [doc for doc in docs if isinstance(doc, dict)]
 
 
+def is_qc_visit_type(value: object) -> bool:
+    return str(value or "").strip().lower() in QC_VISIT_TYPES
+
+
 def _is_qc_visit(visit: Doc) -> bool:
-    return str(visit.get("visit_type") or "").strip().lower() == "qc"
+    return is_qc_visit_type(visit.get("visit_type"))
 
 
 def _visit_matches_operator(visit: Doc, aliases: set[str]) -> bool:
