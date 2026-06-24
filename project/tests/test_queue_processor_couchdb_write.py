@@ -11,7 +11,7 @@ import pytest
 
 import queue_processor.main as qp
 from btq_vault.entity_types import OPERATOR_ID_GREG
-from event_pipeline.visit_coverage import is_qc_visit_type
+from event_pipeline.visit_coverage import is_qc_visit_type, weekly_qc_count
 from queue_processor.handlers import _shared as shared
 from queue_processor.main import QueueJob, QueueJobError, RunContext
 from test_helpers.queue_processor_stores import RecordingVaultStore
@@ -2119,6 +2119,126 @@ def test_mark_record_archived_sets_archive_fields(
     assert doc["archived_by"] == "Jordan"
     assert doc["archive_note"] == "Duplicate."
     assert doc["btq_job_ids"] == ["job-one"]
+
+
+def test_mark_record_archived_accepts_full_visit_id_and_preserves_visit_fields(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    context = context_for(tmp_path)
+    visit_id = "visit_705_2026-06-23_5317fe43"
+    existing_doc = canonical_visit_doc(
+        doc_id=visit_id,
+        site_id="705",
+        date="2026-06-23",
+        evidence="Checked the office and dock.",
+        job_ids=["visit-create-job"],
+        timestamp="2026-06-23T13:30:00+00:00",
+        visit_type="qc",
+        visited_by="Jordan",
+        source="field_capture",
+    )
+    existing_doc.update(
+        {
+            "operator": "op_test",
+            "site": "Synthetic Site",
+            "merged_evidence": ["photo-a", "note-b"],
+            "raw_capture_id": "cap-synthetic-visit",
+        }
+    )
+    expected_preserved = dict(existing_doc)
+    store = RecordingRmwVaultStore([existing_doc])
+    monkeypatch.setattr(shared, "_VAULT_STORE", store)
+    queue_file = make_queue_file(context, "archive-visit-job")
+
+    qp.process_mark_record_archived_job(
+        queue_file,
+        job("mark_record_archived", archive_payload("visit", visit_id), job_id="archive-visit-job"),
+        context,
+        context.runtime_root / "processed",
+    )
+
+    doc = store.get_optional(visit_id)
+    assert doc is not None
+    for key, value in expected_preserved.items():
+        if key == "btq_job_ids":
+            assert doc[key] == ["visit-create-job", "archive-visit-job"]
+        else:
+            assert doc[key] == value
+    assert doc["archived"] is True
+    assert doc["archived_at"]
+    assert doc["archived_by"] == "Jordan"
+    assert doc["archive_note"] == "Duplicate."
+
+    before_archive = weekly_qc_count("op_test", now="2026-06-23", visits=[expected_preserved])
+    after_archive = weekly_qc_count("op_test", now="2026-06-23", visits=[doc])
+    assert before_archive["count"] == 1
+    assert after_archive["count"] == 0
+
+
+def test_mark_record_unarchived_accepts_full_visit_id_and_clears_archive_fields(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    context = context_for(tmp_path)
+    visit_id = "visit_705_2026-06-23_5317fe43"
+    archived_doc = canonical_visit_doc(
+        doc_id=visit_id,
+        site_id="705",
+        date="2026-06-23",
+        evidence="Checked the office and dock.",
+        job_ids=["archive-visit-job"],
+        timestamp="2026-06-23T13:30:00+00:00",
+        visit_type="qc",
+        visited_by="Jordan",
+    )
+    archived_doc.update(
+        {
+            "archived": True,
+            "archived_at": "2026-06-23T18:00:00+00:00",
+            "archived_by": "Jordan",
+            "archive_note": "Duplicate.",
+            "merged_evidence": ["photo-a", "note-b"],
+        }
+    )
+    store = RecordingRmwVaultStore([archived_doc])
+    monkeypatch.setattr(shared, "_VAULT_STORE", store)
+    queue_file = make_queue_file(context, "restore-visit-job")
+
+    qp.process_mark_record_unarchived_job(
+        queue_file,
+        job("mark_record_unarchived", archive_payload("visit", visit_id), job_id="restore-visit-job"),
+        context,
+        context.runtime_root / "processed",
+    )
+
+    doc = store.get_optional(visit_id)
+    assert doc is not None
+    assert doc["archived"] is False
+    assert "archived_at" not in doc
+    assert "archived_by" not in doc
+    assert "archive_note" not in doc
+    assert doc["visit_type"] == "qc"
+    assert doc["date"] == "2026-06-23"
+    assert doc["evidence"] == "Checked the office and dock."
+    assert doc["merged_evidence"] == ["photo-a", "note-b"]
+    assert doc["timestamp"] == "2026-06-23T13:30:00+00:00"
+    assert doc["btq_job_ids"] == ["archive-visit-job", "restore-visit-job"]
+
+
+def test_mark_record_archived_rejects_visit_short_id(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    context = context_for(tmp_path)
+    store = RecordingRmwVaultStore([canonical_visit_doc(doc_id="visit_705_2026-06-23_5317fe43")])
+    monkeypatch.setattr(shared, "_VAULT_STORE", store)
+    queue_file = make_queue_file(context, "archive-visit-job")
+
+    with pytest.raises(qp.QueueProcessorError, match="full canonical _id starting with visit_"):
+        qp.process_mark_record_archived_job(
+            queue_file,
+            job("mark_record_archived", archive_payload("visit", "705"), job_id="archive-visit-job"),
+            context,
+            context.runtime_root / "processed",
+        )
+
+    assert store.update_doc_calls == []
 
 
 @pytest.mark.parametrize(

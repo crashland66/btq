@@ -1158,6 +1158,18 @@ def test_validate_mark_record_archive_payload_passes_with_required_fields() -> N
     ) is True
     assert validate_job(
         {
+            "job_type": JOB_MARK_RECORD_ARCHIVED,
+            "payload": {"record_type": "visit", "record_id": "visit_705_2026-06-23_5317fe43", "actor": "Jordan"},
+        }
+    ) is True
+    assert validate_job(
+        {
+            "job_type": JOB_MARK_RECORD_UNARCHIVED,
+            "payload": {"record_type": "visit", "record_id": "visit_705_2026-06-23_5317fe43", "actor": "Jordan"},
+        }
+    ) is True
+    assert validate_job(
+        {
             "job_type": JOB_MARK_RECORD_UNARCHIVED,
             "payload": {
                 "record_type": "equipment_request",

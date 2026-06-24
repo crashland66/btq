@@ -120,7 +120,7 @@ AVAILABILITY_CONSTRAINT_TYPES = {"unavailable_date", "last_working_day"}
 ENTITY_STATUS_TYPES = {"site", "employee"}
 ENTITY_STATUSES = {"active", "inactive"}
 SITE_EQUIPMENT_ITEM_STATUSES = {"operational", "non_functional", "untested"}
-ARCHIVABLE_RECORD_TYPES = {"site_issue", "supply_need", "equipment_request"}
+ARCHIVABLE_RECORD_TYPES = {"site_issue", "supply_need", "equipment_request", "visit"}
 EDIT_RECORD_FIELD_ALLOWLISTS = {
     "site_issue": {"site_id", "title", "summary", "priority", "category", "resolution_trigger"},
     "supply_need": {"site_id", "item_name", "quantity_needed", "urgency", "notes"},

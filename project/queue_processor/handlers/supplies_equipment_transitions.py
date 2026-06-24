@@ -412,10 +412,11 @@ def _process_mark_issue_job(
     print(f"Job {job.job_id}: moved queue file to {moved_path}")
     _shared.write_log_line(context.log_path, f"job_id={job.job_id} action=mark-issue-{target_status} status=success error=")
 
-ARCHIVABLE_RECORD_TYPES = {"site_issue", "supply_need", "equipment_request"}
+ARCHIVABLE_RECORD_TYPES = {"site_issue", "supply_need", "equipment_request", "visit"}
 
 
 def _resolve_record_doc_id(record_type: str, record_id: str) -> str:
+    # Visits have no short-id form; archive jobs must use the full visit_* _id.
     if record_id.startswith(f"{record_type}_"):
         return record_id
     if record_type == "site_issue":
@@ -424,6 +425,8 @@ def _resolve_record_doc_id(record_type: str, record_id: str) -> str:
         return _resolve_supply_doc_id(record_id)
     if record_type == "equipment_request":
         return _resolve_equipment_doc_id(record_id)
+    if record_type == "visit":
+        raise _shared.QueueProcessorError(f"Visit records must be referenced by full canonical _id starting with visit_: {record_id}")
     raise _shared.QueueProcessorError(f"Unsupported archivable record_type: {record_type}")
 
 

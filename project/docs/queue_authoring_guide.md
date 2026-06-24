@@ -1937,9 +1937,10 @@ Example:
 Required payload fields for `mark_record_archived` and
 `mark_record_unarchived`:
 
-- `record_type`: one of `site_issue`, `supply_need`, `equipment_request`
+- `record_type`: one of `site_issue`, `supply_need`, `equipment_request`, `visit`
 - `record_id`: string; the canonical record id without the type prefix, or the
-  full canonical `_id`
+  full canonical `_id`. Visits must use the full canonical `_id` beginning with
+  `visit_`; there is no short visit id form.
 - `actor`: string
 
 Optional payload fields:
@@ -1952,6 +1953,11 @@ Archive transitions:
 | --- | --- |
 | `mark_record_archived` | Sets `archived=true`, `archived_at`, and `archived_by` on the canonical record. |
 | `mark_record_unarchived` | Sets `archived=false` and clears `archived_at`, `archived_by`, and `archive_note`. |
+
+Archiving a visit removes it from Visit/QC coverage while preserving the full
+canonical visit document, including `btq_job_ids`, evidence, and merged evidence
+for audit. Use `note` to record why the visit is being retired, for example
+`superseded duplicate of visit_705_2026-06-23_abcd1234`.
 
 Example:
 
