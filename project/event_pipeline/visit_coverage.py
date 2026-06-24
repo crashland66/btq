@@ -62,8 +62,11 @@ def weekly_qc_count(
         config=config,
     )
 
-    completed: list[dict[str, Any]] = []
+    completed_by_key: dict[tuple[str, str, str], tuple[dict[str, Any], Doc]] = {}
+    operator_identity = _operator_coverage_identity(operator, snapshot=snapshot)
     for visit in source_visits:
+        if _is_archived_visit(visit):
+            continue
         visit_date = _doc_date(visit)
         if visit_date is None or visit_date < week_start or visit_date > effective_end:
             continue
@@ -71,9 +74,19 @@ def weekly_qc_count(
             continue
         if not _is_qc_visit(visit):
             continue
-        completed.append(_completed_visit_shape(visit, visit_date))
+        site_id = _doc_site_id(visit)
+        key = (operator_identity, site_id, visit_date.isoformat())
+        candidate = (_completed_visit_shape(visit, visit_date), visit)
+        existing = completed_by_key.get(key)
+        if existing is None or (
+            _weekly_qc_preference_key(*candidate) > _weekly_qc_preference_key(*existing)
+        ):
+            completed_by_key[key] = candidate
 
-    completed.sort(key=lambda item: (item["date"], str(item.get("site_id") or ""), str(item.get("site") or "")))
+    completed = [candidate[0] for candidate in completed_by_key.values()]
+    completed.sort(
+        key=lambda item: (item["date"], str(item.get("site_id") or ""), str(item.get("site") or ""))
+    )
     count = len(completed)
     return {
         "week_start": week_start.isoformat(),
@@ -126,6 +139,8 @@ def account_coverage(
     visits_by_site: dict[str, list[tuple[dt.date, Doc]]] = {site_id: [] for site_id in site_ids}
     qc_by_site: dict[str, list[tuple[dt.date, Doc]]] = {site_id: [] for site_id in site_ids}
     for visit in source_visits:
+        if _is_archived_visit(visit):
+            continue
         site_id = _doc_site_id(visit)
         visit_date = _doc_date(visit)
         if site_id not in site_ids or visit_date is None or visit_date > as_of:
@@ -233,7 +248,7 @@ def _load_visit_docs(
     snapshot: Mapping[str, Any] | None = None,
     config: couchdb_config.CouchDBConfig | None = None,
 ) -> list[dict[str, Any]]:
-    selector: dict[str, Any] = {"type": "visit"}
+    selector: dict[str, Any] = {"type": "visit", "archived": {"$ne": True}}
     date_selector: dict[str, str] = {}
     if start_date is not None:
         date_selector["$gte"] = start_date.isoformat()
@@ -296,6 +311,81 @@ def is_qc_visit_type(value: object) -> bool:
 
 def _is_qc_visit(visit: Doc) -> bool:
     return is_qc_visit_type(visit.get("visit_type"))
+
+
+def _is_archived_visit(visit: Doc) -> bool:
+    return bool(visit.get("archived"))
+
+
+def _operator_coverage_identity(
+    operator: object, *, snapshot: Mapping[str, Any] | None = None
+) -> str:
+    raw = _clean_string(operator)
+    if raw:
+        return _normalize_text(raw)
+    aliases = sorted(_operator_aliases(operator, snapshot=snapshot))
+    return aliases[0] if aliases else ""
+
+
+def _weekly_qc_preference_key(
+    row: Mapping[str, Any], visit: Doc
+) -> tuple[int, int, str, str, str]:
+    return (
+        1 if _has_canonical_site_name(row) else 0,
+        _evidence_length(row.get("evidence")),
+        _timestamp_sort_value(visit.get("timestamp")),
+        _timestamp_sort_value(visit.get("timestamp_local")),
+        _stable_doc_sort_value(visit),
+    )
+
+
+def _has_canonical_site_name(row: Mapping[str, Any]) -> bool:
+    site = _clean_string(row.get("site"))
+    site_id = _clean_string(row.get("site_id"))
+    return bool(site and site != site_id)
+
+
+def _evidence_length(value: object) -> int:
+    if value is None:
+        return 0
+    if isinstance(value, str):
+        return len(value.strip())
+    try:
+        text = json.dumps(value, sort_keys=True, default=str)
+    except TypeError:
+        text = str(value)
+    return len(text.strip())
+
+
+def _timestamp_sort_value(value: object) -> str:
+    parsed = _parse_timestamp(value)
+    if parsed is not None:
+        if parsed.tzinfo is not None:
+            parsed = parsed.astimezone(dt.timezone.utc)
+        return parsed.isoformat()
+    return _clean_string(value)
+
+
+def _parse_timestamp(value: object) -> dt.datetime | None:
+    if isinstance(value, dt.datetime):
+        return value
+    if isinstance(value, dt.date):
+        return dt.datetime.combine(value, dt.time.min)
+    text = _clean_string(value)
+    if not text:
+        return None
+    normalized = text[:-1] + "+00:00" if text.endswith("Z") else text
+    try:
+        return dt.datetime.fromisoformat(normalized)
+    except ValueError:
+        return None
+
+
+def _stable_doc_sort_value(visit: Doc) -> str:
+    try:
+        return json.dumps(visit, sort_keys=True, default=str)
+    except TypeError:
+        return str(sorted((str(key), str(value)) for key, value in visit.items()))
 
 
 def _visit_matches_operator(visit: Doc, aliases: set[str]) -> bool:
