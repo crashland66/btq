@@ -42,6 +42,8 @@ from btq_vault.projector import (
     _Location,
     _SiteRecord,
 )
+from btq_vault.entity_types import current_operator_id
+from event_pipeline.visit_coverage import coverage_report
 import ops_dashboard.sections.inbox as _inbox_mod
 import ops_dashboard.sections.field_photos as _field_photos_mod
 
@@ -62,6 +64,8 @@ HOME_CARD_IDS = frozenset({
     "failed_queue_jobs",
     "pipeline_health",
 })
+
+COVERAGE_PANEL_LIMIT = 5
 
 
 def _render_card_rows(rows: list[dict], shape: str) -> str:
@@ -441,6 +445,118 @@ def _render_action_center(cards: list[dict[str, object]], notice: str = "") -> s
     )
     all_clear = _render_empty_strip(cards) if cards and all(int(card.get("count") or 0) == 0 for card in cards) else ""
     return action_section + all_clear
+
+
+def _coverage_int(value: object) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _coverage_site_label(row: dict) -> str:
+    return _string(row.get("site") or row.get("site_name") or row.get("site_id") or "Unknown site")
+
+
+def _coverage_date_label(value: object) -> str:
+    text = _string(value)
+    return text or "no date"
+
+
+def _render_coverage_panel(report: dict) -> str:
+    """Render the Visit/QC coverage read model without loading data."""
+    weekly = report.get("weekly") if isinstance(report.get("weekly"), dict) else {}
+    completed = weekly.get("completed") if isinstance(weekly.get("completed"), list) else []
+    overdue = report.get("overdue") if isinstance(report.get("overdue"), list) else []
+    gaps = report.get("gaps") if isinstance(report.get("gaps"), list) else []
+
+    count = _coverage_int(weekly.get("count"))
+    target = _coverage_int(weekly.get("target"))
+    remaining = _coverage_int(weekly.get("remaining"))
+    pill_class = "success" if target > 0 and count >= target else "warning"
+    remaining_text = f"{max(0, remaining)} remaining"
+
+    completed_rows: list[dict[str, object]] = []
+    for item in completed[:COVERAGE_PANEL_LIMIT]:
+        if not isinstance(item, dict):
+            continue
+        completed_rows.append(
+            {
+                "site": _coverage_site_label(item),
+                "date": _coverage_date_label(item.get("date")),
+            }
+        )
+
+    overdue_rows: list[dict[str, object]] = []
+    for item in overdue[:COVERAGE_PANEL_LIMIT]:
+        if not isinstance(item, dict):
+            continue
+        days = item.get("days_since_last_qc")
+        days_text = "never" if days is None else f"{_coverage_int(days)}d since last QC"
+        overdue_rows.append({"site": _coverage_site_label(item), "status": days_text})
+
+    gap_rows: list[dict[str, object]] = []
+    for item in gaps[:COVERAGE_PANEL_LIMIT]:
+        if not isinstance(item, dict):
+            continue
+        gap_rows.append(
+            {
+                "site": _coverage_site_label(item),
+                "date": _coverage_date_label(item.get("date")),
+            }
+        )
+
+    completed_more = max(0, len(completed) - COVERAGE_PANEL_LIMIT)
+    overdue_more = max(0, len(overdue) - COVERAGE_PANEL_LIMIT)
+    gaps_more = max(0, len(gaps) - COVERAGE_PANEL_LIMIT)
+    completed_note = f'<p class="subline">+{_esc(str(completed_more))} more completed this week</p>' if completed_more else ""
+    overdue_note = f'<p class="subline">+{_esc(str(overdue_more))} more overdue accounts</p>' if overdue_more else ""
+    gaps_note = f'<p class="subline">+{_esc(str(gaps_more))} more open gaps</p>' if gaps_more else ""
+
+    completed_table = render_table(
+        completed_rows,
+        [
+            {"key": "site", "label": f"Completed QCs · {len(completed)}"},
+            {"key": "date", "label": "Date", "nowrap": True},
+        ],
+        empty_text="No QCs completed this week.",
+        table_class="coverage-table",
+    )
+    overdue_table = render_table(
+        overdue_rows,
+        [
+            {"key": "site", "label": f"Overdue accounts · {len(overdue)}"},
+            {"key": "status", "label": "QC age", "nowrap": True},
+        ],
+        empty_text="No overdue QC accounts.",
+        table_class="coverage-table",
+    )
+    gaps_table = render_table(
+        gap_rows,
+        [
+            {"key": "site", "label": f"Open visit gaps · {len(gaps)}"},
+            {"key": "date", "label": "Date", "nowrap": True},
+        ],
+        empty_text="No open visit gaps.",
+        table_class="coverage-table",
+    )
+
+    body = (
+        '<div class="section-heading-row">'
+        f'<p><span class="pill {pill_class}">QCs this week: {_esc(str(count))} / {_esc(str(target))}</span> '
+        f'<span class="muted">{_esc(remaining_text)}</span></p>'
+        "</div>"
+        '<div class="dir-grid">'
+        f"<div>{completed_table}{completed_note}</div>"
+        f"<div>{overdue_table}{overdue_note}</div>"
+        f"<div>{gaps_table}{gaps_note}</div>"
+        "</div>"
+    )
+    return _section("Visit/QC Coverage", body)
+
+
+def _render_coverage_unavailable() -> str:
+    return _section("Visit/QC Coverage", '<p class="muted">Coverage unavailable.</p>')
 
 
 def _render_capture_surface(voice_card_html: str) -> str:
@@ -942,6 +1058,10 @@ def _handoff_home_voice_memo_to_transcription(runtime_root: Path, record: dict) 
 
 def render(ctx: object) -> str:
     action_cards, action_notice = _home_action_cards(ctx)
+    try:
+        coverage_html = _render_coverage_panel(coverage_report(current_operator_id()))
+    except Exception:  # noqa: BLE001 - homepage must degrade instead of 500ing.
+        coverage_html = _render_coverage_unavailable()
 
     try:
         cfg = couchdb_config.from_env()
@@ -1039,6 +1159,7 @@ def render(ctx: object) -> str:
             '<div class="home-grid">'
             + _render_home_header()
             + _render_action_center(action_cards, action_notice)
+            + coverage_html
             + capture_html
             + '<section><div class="section-heading-row"><h2>Needs attention</h2></div>'
             + attention_html
@@ -1056,6 +1177,7 @@ def render(ctx: object) -> str:
             '<div class="home-grid">'
             + _render_home_header()
             + _render_action_center(action_cards, action_notice)
+            + coverage_html
             + _group("capture", _render_capture_surface(_render_voice_card({}, [])))
             + "<p>Directory temporarily unavailable.</p>"
             + "</div>"
