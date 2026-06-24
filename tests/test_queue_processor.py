@@ -5177,6 +5177,11 @@ def test_visit_create_basic(tmp_path: Path, legacy_markdown_writes: None) -> Non
                 "confidence": "high",
                 "source": "ingestion",
                 "evidence": "I was at Western Gas Transmission.",
+                # Explicit operator-local event time pins the canonical date to the
+                # operational (America/New_York) date regardless of when the job is
+                # processed in UTC. 23:04 Eastern == the *next* UTC calendar day, so
+                # this also asserts the local date wins over the UTC processing date.
+                "occurred_at": "2026-04-19T23:04:30-04:00",
             },
         },
     )
@@ -5193,8 +5198,12 @@ def test_visit_create_basic(tmp_path: Path, legacy_markdown_writes: None) -> Non
     assert visit_doc["type"] == "visit"
     assert visit_doc["site"] == "Western Gas Transmission"
     assert visit_doc["site_id"] == "7030"
-    assert visit_doc["date"] == datetime.now(timezone.utc).replace(tzinfo=None).date().isoformat()
-    assert visit_doc["visit_key"] == f"Western Gas Transmission:{datetime.now(timezone.utc).replace(tzinfo=None).date().isoformat()}"
+    # Local NY date (2026-04-19), not the UTC processing date and not the UTC
+    # instant of occurred_at (which is 2026-04-20T03:04:30Z).
+    assert visit_doc["date"] == "2026-04-19"
+    assert visit_doc["visit_key"] == "Western Gas Transmission:2026-04-19"
+    assert visit_doc["timestamp"] == "2026-04-20T03:04:30+00:00"
+    assert visit_doc["date_timezone"] == "America/New_York"
     assert visit_doc["source"] == "ingestion"
     assert visit_doc["confidence"] == "high"
     assert visit_doc["evidence"] == "I was at Western Gas Transmission."

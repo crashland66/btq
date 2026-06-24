@@ -562,6 +562,40 @@ def test_validate_job_rejects_visit_create_missing_fields() -> None:
     ) is False
 
 
+def _visit_create_job_with(occurred_at: object) -> dict:
+    return {
+        "job_type": JOB_VISIT_CREATE,
+        "payload": {
+            "site": "Western Gas Transmission",
+            "confidence": "high",
+            "source": "ingestion",
+            "evidence": "I was at Western Gas Transmission.",
+            "occurred_at": occurred_at,
+        },
+    }
+
+
+def test_validate_job_accepts_visit_create_with_timezone_aware_occurred_at() -> None:
+    assert validate_job(_visit_create_job_with("2026-06-23T21:30:32-04:00")) is True
+
+
+def test_validate_job_accepts_visit_create_with_zulu_occurred_at() -> None:
+    assert validate_job(_visit_create_job_with("2026-06-24T01:30:32Z")) is True
+
+
+def test_validate_job_rejects_visit_create_with_naive_occurred_at() -> None:
+    # No timezone offset => must be rejected (the operator-local date is undefined).
+    assert validate_job(_visit_create_job_with("2026-06-23T21:30:32")) is False
+
+
+def test_validate_job_rejects_visit_create_with_non_datetime_occurred_at() -> None:
+    assert validate_job(_visit_create_job_with("yesterday evening")) is False
+
+
+def test_validate_job_rejects_visit_create_with_non_string_occurred_at() -> None:
+    assert validate_job(_visit_create_job_with(1750728632)) is False
+
+
 def test_validate_job_accepts_parse_supply_email_job() -> None:
     assert validate_job(
         {

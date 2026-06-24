@@ -4,6 +4,7 @@ import base64
 import re
 from datetime import datetime, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from btq_vault.entity_types import current_operator_id
 from queue_processor.canonical_rmw import (
@@ -23,6 +24,12 @@ PHOTO_MIME_EXTENSIONS = {
     "image/webp": ".webp",
 }
 
+# Site/operator timezone metadata should replace this default when that source
+# is available in the canonical model.
+DEFAULT_VISIT_DATE_TIMEZONE = "America/New_York"
+VISIT_DATE_ZONE = ZoneInfo(DEFAULT_VISIT_DATE_TIMEZONE)
+
+
 def _build_visit_entity_doc(
     payload: dict,
     job: _shared.QueueJob,
@@ -30,6 +37,8 @@ def _build_visit_entity_doc(
     site_id: str,
     visit_date: str,
     visit_timestamp: str,
+    visit_timestamp_local: str,
+    date_timezone: str,
     visit_key: str,
     source: str,
     confidence: str,
@@ -45,6 +54,8 @@ def _build_visit_entity_doc(
         "site_id": site_id,
         "date": visit_date,
         "timestamp": visit_timestamp,
+        "timestamp_local": visit_timestamp_local,
+        "date_timezone": date_timezone,
         "visit_key": visit_key,
         "source": source,
         "confidence": confidence,
@@ -54,11 +65,38 @@ def _build_visit_entity_doc(
         "btq_job_ids": [job.job_id],
     }
 
+
+def _parse_visit_occurred_at(value: object) -> datetime:
+    if not isinstance(value, str) or not value.strip():
+        raise QueueProcessorError("Field occurred_at must be an ISO datetime with timezone")
+    try:
+        parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise QueueProcessorError("Field occurred_at must be a valid ISO datetime with timezone") from exc
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise QueueProcessorError("Field occurred_at must include a timezone offset")
+    return parsed
+
+
+def _visit_event_times(payload: dict) -> tuple[str, str, str]:
+    occurred_at = payload.get("occurred_at")
+    if occurred_at is None:
+        event_utc = datetime.now(timezone.utc)
+    else:
+        event_utc = _parse_visit_occurred_at(occurred_at).astimezone(timezone.utc)
+
+    event_local = event_utc.astimezone(VISIT_DATE_ZONE)
+    return (
+        event_local.date().isoformat(),
+        event_utc.isoformat(),
+        event_local.isoformat(),
+    )
+
+
 def process_visit_create_job(job_path: Path, job: QueueJob, context: RunContext, processed_dir: Path) -> None:
     payload = job.payload
     site_id = resolve_site_context(_shared._vault_store(), str(payload["site"])).site_id
-    visit_date = datetime.now(timezone.utc).date().isoformat()
-    visit_timestamp = datetime.now(timezone.utc).isoformat()
+    visit_date, visit_timestamp, visit_timestamp_local = _visit_event_times(payload)
     visit_key = _shared.build_visit_key(str(payload["site"]).strip(), visit_date)
     processed_destination = processed_dir / job_path.name
     if not context.dry_run and processed_destination.exists():
@@ -131,6 +169,8 @@ def process_visit_create_job(job_path: Path, job: QueueJob, context: RunContext,
             site_id=site_id,
             visit_date=visit_date,
             visit_timestamp=visit_timestamp,
+            visit_timestamp_local=visit_timestamp_local,
+            date_timezone=DEFAULT_VISIT_DATE_TIMEZONE,
             visit_key=visit_key,
             source=source,
             confidence=confidence,

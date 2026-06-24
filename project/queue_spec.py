@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 import os
 import re
 
@@ -514,6 +515,16 @@ def _is_valid_idempotency_key(value: object) -> bool:
     if not stripped or len(stripped) > 160:
         return False
     return all(character.isalnum() or character in {"-", "_", ".", ":"} for character in stripped)
+
+
+def _is_timezone_aware_iso_datetime(value: object) -> bool:
+    if not isinstance(value, str) or not value.strip():
+        return False
+    try:
+        parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    return parsed.tzinfo is not None and parsed.utcoffset() is not None
 
 
 def _looks_like_payload_path(key: str, value: object) -> bool:
@@ -1150,6 +1161,9 @@ def validate_job(job: dict) -> bool:
             return False
         visited_by = payload.get("visited_by")
         if visited_by is not None and (not isinstance(visited_by, str) or not visited_by.strip()):
+            return False
+        occurred_at = payload.get("occurred_at")
+        if occurred_at is not None and not _is_timezone_aware_iso_datetime(occurred_at):
             return False
     if job_type == JOB_PARSE_SUPPLY_EMAIL:
         for field in ("html_path", "subject", "source_email_date"):

@@ -4,6 +4,7 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -483,13 +484,16 @@ def personnel_event_payload() -> dict:
     }
 
 
-def visit_payload() -> dict:
-    return {
+def visit_payload(*, occurred_at: str | None = None, evidence: str = "Walked the dock.") -> dict:
+    payload: dict[str, Any] = {
         "site": "7060",
         "source": "field_visit",
-        "evidence": "Walked the dock.",
+        "evidence": evidence,
         "confidence": "high",
     }
+    if occurred_at is not None:
+        payload["occurred_at"] = occurred_at
+    return payload
 
 
 def canonical_visit_doc(
@@ -631,14 +635,23 @@ def test_visit_create_skips_when_job_id_in_canonical_day_visit(
 ) -> None:
     context = context_for(tmp_path)
     write_site(context.vault_root)
-    store = RecordingRmwVaultStore([canonical_visit_doc(job_ids=["job-one"])])
+    # Pin the operational date deterministically: occurred_at is a fixed NY-evening
+    # instant, so the handler derives date 2026-05-30 (local) regardless of UTC wall
+    # clock, and the seeded canonical doc carries the same local date so the
+    # job-id-marker dedup check finds it.
+    store = RecordingRmwVaultStore([canonical_visit_doc(date="2026-05-30", job_ids=["job-one"])])
     monkeypatch.setattr(shared, "_VAULT_STORE", store)
     queue_file = make_queue_file(context, "job-one")
     processed_dir = context.runtime_root / "processed"
 
-    qp.process_visit_create_job(queue_file, job("visit_create", visit_payload(), job_id="job-one"), context, processed_dir)
+    qp.process_visit_create_job(
+        queue_file,
+        job("visit_create", visit_payload(occurred_at="2026-05-30T21:15:00-04:00"), job_id="job-one"),
+        context,
+        processed_dir,
+    )
 
-    assert store.docs == [canonical_visit_doc(job_ids=["job-one"])]
+    assert store.docs == [canonical_visit_doc(date="2026-05-30", job_ids=["job-one"])]
     assert (processed_dir / queue_file.name).exists()
 
 
@@ -648,15 +661,217 @@ def test_visit_create_skips_on_duplicate_canonical_evidence(
 ) -> None:
     context = context_for(tmp_path)
     write_site(context.vault_root)
-    store = RecordingRmwVaultStore([canonical_visit_doc(job_ids=["job-old"])])
+    # Same local date (2026-05-30) and same evidence => duplicate-evidence skip,
+    # keyed on the operational/local date rather than the UTC processing date.
+    store = RecordingRmwVaultStore([canonical_visit_doc(date="2026-05-30", job_ids=["job-old"])])
     monkeypatch.setattr(shared, "_VAULT_STORE", store)
     queue_file = make_queue_file(context, "job-one")
     processed_dir = context.runtime_root / "processed"
 
-    qp.process_visit_create_job(queue_file, job("visit_create", visit_payload(), job_id="job-one"), context, processed_dir)
+    qp.process_visit_create_job(
+        queue_file,
+        job("visit_create", visit_payload(occurred_at="2026-05-30T21:15:00-04:00"), job_id="job-one"),
+        context,
+        processed_dir,
+    )
 
-    assert store.docs == [canonical_visit_doc(job_ids=["job-old"])]
+    assert store.docs == [canonical_visit_doc(date="2026-05-30", job_ids=["job-old"])]
     assert (processed_dir / queue_file.name).exists()
+
+
+def test_visit_create_uses_operator_local_date_not_utc_processing_date(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Regression for the UTC-vs-local-date bug: an occurred_at on the evening of
+    # 2026-06-23 in America/New_York (which is the NEXT calendar day in UTC) must
+    # produce a canonical visit whose operational date is 2026-06-23, with the
+    # timestamp normalized to UTC and the dedupe identity keyed on the local date.
+    context = context_for(tmp_path)
+    write_site(context.vault_root)
+    store = RecordingRmwVaultStore()
+    monkeypatch.setattr(shared, "_VAULT_STORE", store)
+    queue_file = make_queue_file(context, "job-local-date")
+    processed_dir = context.runtime_root / "processed"
+
+    qp.process_visit_create_job(
+        queue_file,
+        job(
+            "visit_create",
+            visit_payload(occurred_at="2026-06-23T21:30:32-04:00"),
+            job_id="job-local-date",
+        ),
+        context,
+        processed_dir,
+    )
+
+    visit_docs = [doc for doc in store.docs if doc.get("type") == "visit"]
+    assert len(visit_docs) == 1
+    visit_doc = visit_docs[0]
+    assert visit_doc["date"] == "2026-06-23"
+    # occurred_at is 21:30:32-04:00 == 2026-06-24T01:30:32Z, normalized to UTC.
+    assert visit_doc["timestamp"] == "2026-06-24T01:30:32+00:00"
+    assert visit_doc["timestamp_local"] == "2026-06-23T21:30:32-04:00"
+    assert visit_doc["date_timezone"] == "America/New_York"
+    # _id and visit_key are keyed on the LOCAL date, not the UTC date (2026-06-24).
+    assert visit_doc["_id"] == "visit_7060_2026-06-23_job-loca"
+    assert visit_doc["visit_key"] == "7060:2026-06-23"
+    assert "2026-06-24" not in visit_doc["_id"]
+    assert (processed_dir / queue_file.name).exists()
+
+
+def test_visit_create_zulu_occurred_at_yields_local_date(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A Z-suffixed (UTC) occurred_at is accepted and converted to the NY-local date:
+    # 2026-06-24T01:30:32Z == 2026-06-23 21:30 Eastern.
+    context = context_for(tmp_path)
+    write_site(context.vault_root)
+    store = RecordingRmwVaultStore()
+    monkeypatch.setattr(shared, "_VAULT_STORE", store)
+    queue_file = make_queue_file(context, "job-zulu")
+    processed_dir = context.runtime_root / "processed"
+
+    qp.process_visit_create_job(
+        queue_file,
+        job("visit_create", visit_payload(occurred_at="2026-06-24T01:30:32Z"), job_id="job-zulu"),
+        context,
+        processed_dir,
+    )
+
+    visit_docs = [doc for doc in store.docs if doc.get("type") == "visit"]
+    assert len(visit_docs) == 1
+    assert visit_docs[0]["date"] == "2026-06-23"
+    assert visit_docs[0]["timestamp"] == "2026-06-24T01:30:32+00:00"
+    assert visit_docs[0]["date_timezone"] == "America/New_York"
+    assert (processed_dir / queue_file.name).exists()
+
+
+def test_visit_create_same_evening_duplicate_dedupes_on_local_date(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Two occurred_at on the same NY evening (one before, one after UTC midnight)
+    # are the same operational date 2026-06-23. With identical evidence the second
+    # is deduped — proving the dedupe key is the local date, not the UTC date
+    # (which would be 06-23 then 06-24 and therefore NOT dedupe).
+    context = context_for(tmp_path)
+    write_site(context.vault_root)
+    store = RecordingRmwVaultStore()
+    monkeypatch.setattr(shared, "_VAULT_STORE", store)
+    processed_dir = context.runtime_root / "processed"
+
+    first = make_queue_file(context, "job-evening-1")
+    qp.process_visit_create_job(
+        first,
+        job(
+            "visit_create",
+            # 23:50 Eastern == still 2026-06-23 local, 2026-06-24T03:50 UTC.
+            visit_payload(occurred_at="2026-06-23T23:50:00-04:00", evidence="Locked the gate."),
+            job_id="job-evening-1",
+        ),
+        context,
+        processed_dir,
+    )
+
+    second = make_queue_file(context, "job-evening-2")
+    qp.process_visit_create_job(
+        second,
+        job(
+            "visit_create",
+            # 22:10 Eastern earlier the SAME local evening == 2026-06-24T02:10 UTC.
+            visit_payload(occurred_at="2026-06-23T22:10:00-04:00", evidence="Locked the gate."),
+            job_id="job-evening-2",
+        ),
+        context,
+        processed_dir,
+    )
+
+    visit_docs = [doc for doc in store.docs if doc.get("type") == "visit"]
+    assert len(visit_docs) == 1
+    assert visit_docs[0]["date"] == "2026-06-23"
+    assert visit_docs[0]["btq_job_ids"] == ["job-evening-1"]
+    # Second job was skipped as duplicate evidence and moved to processed.
+    assert (processed_dir / second.name).exists()
+
+
+def test_visit_create_without_occurred_at_uses_local_date_back_compat(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Back-compat: omitting occurred_at is still valid and derives the operator's
+    # local (NY) date for "now" — NOT the UTC processing date. Computed in-test so
+    # it stays correct across the UTC-midnight-Eastern window.
+    context = context_for(tmp_path)
+    write_site(context.vault_root)
+    store = RecordingRmwVaultStore()
+    monkeypatch.setattr(shared, "_VAULT_STORE", store)
+    queue_file = make_queue_file(context, "job-now")
+    processed_dir = context.runtime_root / "processed"
+
+    expected_local_date = (
+        datetime.now(timezone.utc).astimezone(ZoneInfo("America/New_York")).date().isoformat()
+    )
+
+    qp.process_visit_create_job(
+        queue_file,
+        job("visit_create", visit_payload(), job_id="job-now"),
+        context,
+        processed_dir,
+    )
+
+    visit_docs = [doc for doc in store.docs if doc.get("type") == "visit"]
+    assert len(visit_docs) == 1
+    assert visit_docs[0]["date"] == expected_local_date
+    assert visit_docs[0]["date_timezone"] == "America/New_York"
+    assert (processed_dir / queue_file.name).exists()
+
+
+def test_visit_create_rejects_naive_occurred_at(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The handler must reject a naive occurred_at (no timezone) — the local date
+    # would be ambiguous.
+    context = context_for(tmp_path)
+    write_site(context.vault_root)
+    store = RecordingRmwVaultStore()
+    monkeypatch.setattr(shared, "_VAULT_STORE", store)
+    queue_file = make_queue_file(context, "job-naive")
+    processed_dir = context.runtime_root / "processed"
+
+    with pytest.raises(qp.QueueProcessorError):
+        qp.process_visit_create_job(
+            queue_file,
+            job("visit_create", visit_payload(occurred_at="2026-06-23T21:30:32"), job_id="job-naive"),
+            context,
+            processed_dir,
+        )
+
+    assert [doc for doc in store.docs if doc.get("type") == "visit"] == []
+
+
+def test_visit_create_rejects_non_datetime_occurred_at(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    context = context_for(tmp_path)
+    write_site(context.vault_root)
+    store = RecordingRmwVaultStore()
+    monkeypatch.setattr(shared, "_VAULT_STORE", store)
+    queue_file = make_queue_file(context, "job-bad")
+    processed_dir = context.runtime_root / "processed"
+
+    with pytest.raises(qp.QueueProcessorError):
+        qp.process_visit_create_job(
+            queue_file,
+            job("visit_create", visit_payload(occurred_at="not a datetime"), job_id="job-bad"),
+            context,
+            processed_dir,
+        )
+
+    assert [doc for doc in store.docs if doc.get("type") == "visit"] == []
 
 
 def test_visit_create_second_visit_same_day_different_evidence_creates_doc(

@@ -970,13 +970,19 @@ Do not use when:
 
 ### Optional payload fields
 
-- none in the executable contract
+- `occurred_at`: ISO-8601 datetime string with a timezone offset, such as
+  `2026-06-23T21:30:32-04:00`; naive datetimes without a timezone are rejected
 
 ### Runtime behavior notes
 
-- the runtime writes a `visit` record for the resolved site and current date
+- the runtime writes a `visit` record for the resolved site and local operational date
 - duplicate evidence in the same visit file is skipped
-- the visit date is the current UTC date at execution time
+- when `occurred_at` is supplied, `date` is derived from that instant in the
+  default operational timezone, currently `America/New_York`
+- when `occurred_at` is omitted, the processor runtime is used, but the visit
+  `date` is still derived from `America/New_York`, not the UTC calendar date
+- the canonical `timestamp` is stored as UTC-normalized event time, and the
+  canonical document records the timezone used for date derivation
 
 ### Valid example
 
@@ -988,7 +994,8 @@ Do not use when:
     "site": "Western Gas Transmission",
     "confidence": "high",
     "source": "ingestion",
-    "evidence": "I was at Western Gas Transmission this afternoon."
+    "evidence": "I was at Western Gas Transmission this afternoon.",
+    "occurred_at": "2026-04-20T14:30:00-04:00"
   }
 }
 ```
