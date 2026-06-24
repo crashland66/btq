@@ -155,21 +155,6 @@ def suppress_candidate_without_human_text_basis(candidate: dict[str, object], *,
     return True
 
 
-def require_candidate_human_text_basis(candidate: dict[str, object], *, context: str = "") -> None:
-    reason = candidate_missing_human_text_basis_reason(candidate)
-    if not reason:
-        return
-    message = reason.replace("suppressed:", "blocked:", 1)
-    LOGGER.warning(
-        "field action candidate %s: candidate_id=%s context=%s summary=%r",
-        message,
-        str(candidate.get("candidate_id") or ""),
-        context,
-        str(candidate.get("summary") or ""),
-    )
-    raise CandidateReviewError(message)
-
-
 def couchdb_candidate_store_configured() -> bool:
     """Return true when candidates must be written/read from CouchDB.
 

@@ -25,29 +25,28 @@ Contract pinned here (independent verification for 393):
 
 Sandbox identity only.
 
-Contract 3 -- direct-staging path retirement note:
+Contract 3 -- staging-guard retirement note:
    The original contract 3 also pinned the human-basis guard on a *direct
    action-candidate staging* path implemented in
    ``field_capture/candidate_staging.py``
    (``materialize_candidate_for_direct_staging``). That module was the retired
    pre-prompt-370 "direct action-candidate staging" path, superseded by the
    job_draft model (338) plus the 394/395 human-provenance work, and it had
-   ZERO production importers. It has been DELETED. With it gone there is no live
-   ``materialize_candidate_for_direct_staging`` equivalent to drive: the live
-   candidate->draft->queue path (approved ``action_candidate_review`` artifact ->
-   ``approved_job_drafts.create_approved_job_drafts`` -> ``draft_staging``) does
-   not route through ``require_candidate_human_text_basis`` at all. The two
-   former staging-materialization tests were therefore removed (they exercised
-   only the deleted function).
+   ZERO production importers. It was DELETED, and its sole remaining consumer --
+   the staging-time guard primitive ``require_candidate_human_text_basis`` --
+   was left orphaned with no production caller. That primitive has now itself
+   been DELETED (435). The live candidate->draft->queue path (approved
+   ``action_candidate_review`` artifact ->
+   ``approved_job_drafts.create_approved_job_drafts`` -> ``draft_staging``) never
+   routed through it. Contract 3 is therefore retired: the two former
+   staging-materialization tests and the two ``require_candidate_human_text_basis``
+   unit tests have all been removed.
 
-   The human-basis invariant is NOT weakened: in the live system a basis-less
-   candidate can never *originate* an approvable artifact -- it is suppressed at
-   origination by ``suppress_candidate_without_human_text_basis`` (contracts 1,2,
-   still tested below) -- so it never reaches the staging path in the first
-   place. The staging guard function itself
-   (``require_candidate_human_text_basis``) also remains directly covered by
-   ``test_require_human_text_basis_raises_for_basisless_record`` /
-   ``..._passes_for_human_record`` below, plus the 394/395 provenance suites.
+   The human-basis invariant is NOT weakened: it is now enforced SOLELY at
+   origination. In the live system a basis-less candidate can never *originate*
+   an approvable artifact -- it is suppressed at origination by
+   ``suppress_candidate_without_human_text_basis`` (contracts 1-2, still tested
+   below) -- so it never reaches the staging path in the first place.
 """
 
 from __future__ import annotations
@@ -232,37 +231,9 @@ def test_flag_on_record_not_suppressed(monkeypatch) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Criterion 3: a basis-less candidate is BLOCKED from staging (raises), never
-# silently staged, with the flag off.
+# Criterion 3 retirement: the staging-time human-basis guard primitive
+# (``require_candidate_human_text_basis``) has itself been deleted (435). Its
+# only production caller (the direct-staging path) was already gone, and the
+# invariant is now enforced SOLELY at origination (contracts 1-2 above). See the
+# module docstring (contract 3 retirement note) for the full rationale.
 # --------------------------------------------------------------------------- #
-def test_require_human_text_basis_raises_for_basisless_record(monkeypatch) -> None:
-    monkeypatch.delenv("BTQ_ALLOW_VISION_ORIGINATED_JOBS", raising=False)
-    record = _basisless_record()
-    with pytest.raises(fc.CandidateReviewError):
-        fc.require_candidate_human_text_basis(record, context="unit")
-
-
-def test_require_human_text_basis_passes_for_human_record(monkeypatch) -> None:
-    monkeypatch.delenv("BTQ_ALLOW_VISION_ORIGINATED_JOBS", raising=False)
-    from processing_core.action_candidates import action_candidate_payload
-
-    record = action_candidate_payload(
-        candidate_type=fc.FIELD_CAPTURE_CANDIDATE_TYPE,
-        summary="Order more soap.",
-        source_text="The dispenser in restroom 2 is empty, please reorder soap.",
-        provenance={"capture_id": "cap-393-human-staging-1"},
-    )
-    # Must NOT raise for a human-grounded record.
-    fc.require_candidate_human_text_basis(record, context="unit")
-
-
-# NOTE: The two former staging-materialization tests
-# (test_staging_materialization_blocks_basisless_candidate /
-# ..._allows_human_candidate) drove
-# field_capture.candidate_staging.materialize_candidate_for_direct_staging,
-# the retired direct-staging path that has been deleted. See the module
-# docstring (contract 3 retirement note) for why removing them does not
-# weaken the human-basis invariant: it is enforced at origination
-# (contracts 1-2 above) so a basis-less candidate never reaches staging, and
-# require_candidate_human_text_basis itself stays covered by the two unit
-# tests just above plus the 394/395 provenance suites.
