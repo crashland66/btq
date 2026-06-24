@@ -12,8 +12,7 @@ import vision_backends
 from field_capture import photo_vision
 from field_capture.photo_vision_couchdb import build_photo_vision_document, put_photo_vision_document
 from media_store import get_media_store
-from processing_core.artifacts import read_json_object, write_json_object
-from queue_processor.metrics import _append_json_line
+from processing_core.artifacts import append_json_line, read_json_object, write_json_object
 
 
 logger = logging.getLogger(__name__)
@@ -441,7 +440,7 @@ def _default_couchdb_put(doc: dict[str, object]) -> None:
 
 def _record_metric(runtime_root: Path, payload: dict[str, object]) -> None:
     try:
-        _append_json_line(runtime_root / "metrics" / DEEP_ANALYSIS_METRICS_FILENAME, payload)
+        append_json_line(runtime_root / "metrics" / DEEP_ANALYSIS_METRICS_FILENAME, payload)
     except Exception as exc:  # noqa: BLE001 - do not crash the operator-triggered worker callable.
         logger.warning("deep-analysis metric write failed for %s: %s", payload.get("photo_asset_id"), exc)
 

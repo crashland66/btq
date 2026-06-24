@@ -10,6 +10,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+from processing_core.artifacts import append_json_line
 from queue_processor.health import count_json_files
 from queue_processor.processed_index import index_path_for, iter_records
 from queue_processor.timeparse import parse_timestamp as _parse_timestamp
@@ -107,14 +108,7 @@ def sample_metrics(runtime_root: Path, now: float | None = None, window_hours: i
 
 
 def _append_json_line(path: Path, payload: dict) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    line = json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n"
-    fd = os.open(path, os.O_CREAT | os.O_APPEND | os.O_WRONLY, 0o644)
-    try:
-        os.write(fd, line.encode("utf-8"))
-        os.fsync(fd)
-    finally:
-        os.close(fd)
+    append_json_line(path, payload)
 
 
 def append_sample(metrics_path: Path, sample: dict) -> None:

@@ -33,8 +33,6 @@ class LocalFilesystemStore:
         self.upload_root = upload_root.expanduser().resolve(strict=False)
 
     def write(self, key: str, data: bytes) -> None:
-        from capture_ingest import atomic_write_bytes
-
         atomic_write_bytes(self._path_for_key(key), data)
 
     def read(self, key: str) -> bytes:
@@ -54,6 +52,13 @@ class LocalFilesystemStore:
         except ValueError as exc:
             raise ValueError(f"Media key escapes upload root: {key}") from exc
         return candidate
+
+
+def atomic_write_bytes(path: Path, data: bytes) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = path.with_name(f".{path.name}.tmp")
+    temp_path.write_bytes(data)
+    temp_path.replace(path)
 
 
 class MediaStoreConfigError(ValueError, NotImplementedError):

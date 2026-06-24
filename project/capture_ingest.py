@@ -299,12 +299,5 @@ def write_capture_media(media_records: list[object], uploads: list[UploadedFile]
             logging.warning("btq R2 mirror write failed for %s: %s", key, exc)
 
 
-def atomic_write_bytes(path: Path, data: bytes) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temp_path = path.with_name(f".{path.name}.tmp")
-    temp_path.write_bytes(data)
-    temp_path.replace(path)
-
-
 def utc_now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")

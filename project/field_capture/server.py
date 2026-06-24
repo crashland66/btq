@@ -21,7 +21,6 @@ from capture_ingest import (
     SubmissionError,
     UploadedFile,
     UploadedPhoto,
-    atomic_write_bytes,
     build_capture_document_envelope,
     build_capture_media_records,
     local_date_from_iso,
