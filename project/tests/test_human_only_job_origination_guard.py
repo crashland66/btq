@@ -24,6 +24,30 @@ Contract pinned here (independent verification for 393):
    0/false/no/off/disabled off, anything else on).
 
 Sandbox identity only.
+
+Contract 3 -- direct-staging path retirement note:
+   The original contract 3 also pinned the human-basis guard on a *direct
+   action-candidate staging* path implemented in
+   ``field_capture/candidate_staging.py``
+   (``materialize_candidate_for_direct_staging``). That module was the retired
+   pre-prompt-370 "direct action-candidate staging" path, superseded by the
+   job_draft model (338) plus the 394/395 human-provenance work, and it had
+   ZERO production importers. It has been DELETED. With it gone there is no live
+   ``materialize_candidate_for_direct_staging`` equivalent to drive: the live
+   candidate->draft->queue path (approved ``action_candidate_review`` artifact ->
+   ``approved_job_drafts.create_approved_job_drafts`` -> ``draft_staging``) does
+   not route through ``require_candidate_human_text_basis`` at all. The two
+   former staging-materialization tests were therefore removed (they exercised
+   only the deleted function).
+
+   The human-basis invariant is NOT weakened: in the live system a basis-less
+   candidate can never *originate* an approvable artifact -- it is suppressed at
+   origination by ``suppress_candidate_without_human_text_basis`` (contracts 1,2,
+   still tested below) -- so it never reaches the staging path in the first
+   place. The staging guard function itself
+   (``require_candidate_human_text_basis``) also remains directly covered by
+   ``test_require_human_text_basis_raises_for_basisless_record`` /
+   ``..._passes_for_human_record`` below, plus the 394/395 provenance suites.
 """
 
 from __future__ import annotations
@@ -34,8 +58,6 @@ from pathlib import Path
 import pytest
 
 import field_capture.action_candidates as fc
-from field_capture import candidate_staging
-from event_pipeline import couchdb_config
 from field_capture.text_semantics import run_text_semantic_pipeline
 from processing_core.capture_semantics import RuleCaptureEngine
 
@@ -234,76 +256,13 @@ def test_require_human_text_basis_passes_for_human_record(monkeypatch) -> None:
     fc.require_candidate_human_text_basis(record, context="unit")
 
 
-def test_staging_materialization_blocks_basisless_candidate(monkeypatch, tmp_path) -> None:
-    """Drive materialize_candidate_for_direct_staging with a CouchDB doc that has
-    no human-text basis; the staging guard must raise CandidateReviewError and
-    NOT write an approved artifact."""
-    monkeypatch.delenv("BTQ_ALLOW_VISION_ORIGINATED_JOBS", raising=False)
-
-    candidate_id = "cap-393-vision-staging-1"
-    # A CouchDB candidate doc whose review payload will carry NO source_text.
-    couch_doc = {
-        "_id": f"action_candidate:{candidate_id}",
-        "candidate_id": candidate_id,
-        "candidate_type": fc.FIELD_CAPTURE_CANDIDATE_TYPE,
-        "summary": "Inspect the affected area.",
-        "status": "pending_review",
-        "source": {"source_text": "", "source_context": ""},
-        "site_id": "SANDBOX",
-    }
-
-    monkeypatch.setattr(
-        candidate_staging.field_action_candidates,
-        "couchdb_candidate_config_or_none",
-        lambda: object(),  # non-None config so we proceed to the doc fetch
-    )
-    monkeypatch.setattr(
-        candidate_staging.field_action_candidates,
-        "get_action_candidate",
-        lambda config, db, cid: couch_doc,
-    )
-    monkeypatch.setattr(couchdb_config, "field_captures_database", lambda: "field_captures")
-
-    with pytest.raises(fc.CandidateReviewError):
-        candidate_staging.materialize_candidate_for_direct_staging(tmp_path, candidate_id)
-
-    # No approved candidate artifact should have been written.
-    candidate_dir = fc.default_candidate_dir(tmp_path)
-    written = list(candidate_dir.glob("**/*.json")) if candidate_dir.exists() else []
-    assert written == [], "basis-less candidate must not be materialized for staging"
-
-
-def test_staging_materialization_allows_human_candidate(monkeypatch, tmp_path) -> None:
-    """A human-grounded CouchDB candidate (non-empty source_text) materializes
-    fine -- the guard blocks nothing legitimate at staging."""
-    monkeypatch.delenv("BTQ_ALLOW_VISION_ORIGINATED_JOBS", raising=False)
-
-    candidate_id = "cap-393-human-staging-2"
-    couch_doc = {
-        "_id": f"action_candidate:{candidate_id}",
-        "candidate_id": candidate_id,
-        "candidate_type": fc.FIELD_CAPTURE_CANDIDATE_TYPE,
-        "summary": "Reorder soap.",
-        "status": "pending_review",
-        "source": {
-            "source_text": "The dispenser in restroom 2 is empty, please reorder soap.",
-            "source_context": "Restroom supplies low.",
-        },
-        "site_id": "SANDBOX",
-    }
-
-    monkeypatch.setattr(
-        candidate_staging.field_action_candidates,
-        "couchdb_candidate_config_or_none",
-        lambda: object(),
-    )
-    monkeypatch.setattr(
-        candidate_staging.field_action_candidates,
-        "get_action_candidate",
-        lambda config, db, cid: couch_doc,
-    )
-    monkeypatch.setattr(couchdb_config, "field_captures_database", lambda: "field_captures")
-
-    result = candidate_staging.materialize_candidate_for_direct_staging(tmp_path, candidate_id)
-    assert result is not None, "human-grounded candidate must materialize for staging"
-    assert result.exists()
+# NOTE: The two former staging-materialization tests
+# (test_staging_materialization_blocks_basisless_candidate /
+# ..._allows_human_candidate) drove
+# field_capture.candidate_staging.materialize_candidate_for_direct_staging,
+# the retired direct-staging path that has been deleted. See the module
+# docstring (contract 3 retirement note) for why removing them does not
+# weaken the human-basis invariant: it is enforced at origination
+# (contracts 1-2 above) so a basis-less candidate never reaches staging, and
+# require_candidate_human_text_basis itself stays covered by the two unit
+# tests just above plus the 394/395 provenance suites.
