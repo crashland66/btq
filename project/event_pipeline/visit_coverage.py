@@ -248,7 +248,10 @@ def _load_visit_docs(
     snapshot: Mapping[str, Any] | None = None,
     config: couchdb_config.CouchDBConfig | None = None,
 ) -> list[dict[str, Any]]:
-    selector: dict[str, Any] = {"type": "visit", "archived": {"$ne": True}}
+    # Do not filter archived visits in Mango: CouchDB `$ne: true` excludes
+    # documents missing `archived`, which are legitimate non-archived visits.
+    # Archived exclusion happens in-memory via `_is_archived_visit`.
+    selector: dict[str, Any] = {"type": "visit"}
     date_selector: dict[str, str] = {}
     if start_date is not None:
         date_selector["$gte"] = start_date.isoformat()

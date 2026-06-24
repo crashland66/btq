@@ -98,7 +98,7 @@ def test_generic_visit_same_site_date_does_not_merge_or_suppress_qc_credit():
     assert weekly["completed"][0]["date"] == "2034-07-17"
 
 
-def test_archived_visits_are_ignored_in_memory_and_couch_selector_excludes_them(monkeypatch):
+def test_archived_visits_are_ignored_in_memory_and_couch_selector_does_not_filter_them(monkeypatch):
     visits = [
         _visit("8101", "Helio Plant", "2034-07-17", visit_type="qc", archived=True),
         _visit("8102", "Nova Depot", "2034-07-18", visit_type="QC", archived=True),
@@ -130,7 +130,17 @@ def test_archived_visits_are_ignored_in_memory_and_couch_selector_excludes_them(
         config=object(),
     )
     assert captured["selector"]["type"] == "visit"
-    assert captured["selector"]["archived"] == {"$ne": True}
+    # Archived exclusion is in-memory because Mango `$ne` drops missing-field docs.
+    assert "archived" not in captured["selector"]
+
+
+def test_weekly_qc_count_counts_visit_missing_archived_field():
+    visits = [
+        _visit("8101", "Helio Plant", "2034-07-17", visit_type="qc"),
+    ]
+
+    weekly = visit_coverage.weekly_qc_count(OP, now=NOW, visits=visits)
+    assert weekly["count"] == 1
 
 
 def test_weekly_qc_tiebreak_prefers_latest_timestamp_independent_of_input_order():
