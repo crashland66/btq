@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 import os
 import re
+from zoneinfo import ZoneInfo
 
 from config import get_config
 
@@ -78,6 +79,7 @@ JOB_VOICE_MEMO_NOTE = "voice_memo_note"
 # current extraction or routing path. Add back to APPEND_DESTINATIONS only
 # when the queue processor handles it.
 _RESERVED_EMPLOYEE_NOTE = "employee_note"
+EVENT_DEFAULT_TIMEZONE = "America/New_York"
 
 APPEND_DESTINATIONS = {"missed", "journal_unknown", "site_note", "journal"}
 SITE_ISSUE_STATUSES = {"open", "monitoring", "resolved"}
@@ -525,6 +527,32 @@ def _is_timezone_aware_iso_datetime(value: object) -> bool:
     except ValueError:
         return False
     return parsed.tzinfo is not None and parsed.utcoffset() is not None
+
+
+def normalize_occurred_at(value: object, *, default_timezone: str = EVENT_DEFAULT_TIMEZONE) -> str | None:
+    """Coerce a capture/event timestamp into a valid visit_create occurred_at."""
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        parsed = value
+    elif isinstance(value, str):
+        stripped = value.strip()
+        if not stripped:
+            return None
+        try:
+            parsed = datetime.fromisoformat(stripped.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    else:
+        return None
+
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        parsed = parsed.replace(tzinfo=ZoneInfo(default_timezone))
+
+    normalized = parsed.isoformat()
+    if not _is_timezone_aware_iso_datetime(normalized):
+        return None
+    return normalized
 
 
 def _looks_like_payload_path(key: str, value: object) -> bool:

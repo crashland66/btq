@@ -29,6 +29,8 @@ from queue_spec import (
     JOB_RECLASSIFY_UNKNOWN,
     JOB_SET_ENTITY_STATUS,
     JOB_VISIT_CREATE,
+    _is_timezone_aware_iso_datetime,
+    normalize_occurred_at,
     validate_job,
 )
 from event_pipeline.sites import SITES, resolve_site_id
@@ -594,6 +596,45 @@ def test_validate_job_rejects_visit_create_with_non_datetime_occurred_at() -> No
 
 def test_validate_job_rejects_visit_create_with_non_string_occurred_at() -> None:
     assert validate_job(_visit_create_job_with(1750728632)) is False
+
+
+def test_normalize_occurred_at_preserves_timezone_aware_instant() -> None:
+    normalized = normalize_occurred_at("2026-06-23T21:30:32-04:00")
+
+    assert normalized == "2026-06-23T21:30:32-04:00"
+    assert _is_timezone_aware_iso_datetime(normalized) is True
+    assert validate_job(_visit_create_job_with(normalized)) is True
+
+
+def test_normalize_occurred_at_accepts_zulu_time() -> None:
+    normalized = normalize_occurred_at("2026-06-24T01:30:32Z")
+
+    assert normalized == "2026-06-24T01:30:32+00:00"
+    assert _is_timezone_aware_iso_datetime(normalized) is True
+
+
+def test_normalize_occurred_at_attaches_default_timezone_to_naive_time() -> None:
+    normalized = normalize_occurred_at("2026-06-23T21:30:32")
+
+    assert normalized == "2026-06-23T21:30:32-04:00"
+    assert _is_timezone_aware_iso_datetime(normalized) is True
+
+
+def test_normalize_occurred_at_attaches_winter_standard_offset_to_naive_time() -> None:
+    # DST correctness: a naive January time must get EST (-05:00), not a fixed
+    # summer EDT offset. ZoneInfo resolves the offset per-date.
+    normalized = normalize_occurred_at("2026-01-15T21:30:32")
+
+    assert normalized == "2026-01-15T21:30:32-05:00"
+    assert _is_timezone_aware_iso_datetime(normalized) is True
+    assert validate_job(_visit_create_job_with(normalized)) is True
+
+
+def test_normalize_occurred_at_returns_none_for_empty_or_unparseable_values() -> None:
+    assert normalize_occurred_at("") is None
+    assert normalize_occurred_at("   ") is None
+    assert normalize_occurred_at("not-a-datetime") is None
+    assert normalize_occurred_at(None) is None
 
 
 def test_validate_job_accepts_parse_supply_email_job() -> None:

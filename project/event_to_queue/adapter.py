@@ -13,6 +13,7 @@ from queue_spec import (
     JOB_TRIGGER_RECRUITING,
     JOB_VISIT_CREATE,
     JOB_VOICE_MEMO_NOTE,
+    normalize_occurred_at,
 )
 
 JOURNAL_EVENT_TYPES = {"employee_callout", "incident", "interview_note"}
@@ -95,6 +96,9 @@ def event_to_job(event: dict) -> dict | None:
             payload["visit_type"] = visit_type
         if visited_by:
             payload["visited_by"] = visited_by
+        occurred_at = normalize_occurred_at(event.get("timestamp") or event.get("captured_at"))
+        if occurred_at:
+            payload["occurred_at"] = occurred_at
         return {
             "job_id": event_id,
             "job_type": JOB_VISIT_CREATE,

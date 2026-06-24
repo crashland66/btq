@@ -8,7 +8,7 @@ from event_pipeline import main as pipeline_main
 from event_pipeline.sites import resolve_site, resolve_site_id, resolve_site_note_path
 from event_pipeline.validator import validate_event
 from processing_core.sentences import split_sentences
-from queue_spec import JOB_VISIT_CREATE, JOB_VOICE_MEMO_NOTE, validate_job
+from queue_spec import JOB_VISIT_CREATE, JOB_VOICE_MEMO_NOTE, _is_timezone_aware_iso_datetime, validate_job
 from transcription_pipeline.main import split_sentences as transcription_split_sentences
 
 
@@ -167,6 +167,43 @@ def test_event_to_job_visit_create_omits_visited_by_when_absent() -> None:
     assert job is not None
     assert job["job_type"] == JOB_VISIT_CREATE
     assert "visited_by" not in job["payload"]
+
+
+def test_event_to_job_visit_create_forwards_timezone_aware_occurred_at() -> None:
+    job = event_to_job(
+        {
+            "event_id": "evt-visit-occurred-at",
+            "type": "visit_create",
+            "site": "Synthetic Branch",
+            "confidence": "medium",
+            "capture_id": "field-audio-synthetic",
+            "timestamp": "2026-06-23T21:30:32-04:00",
+            "source_excerpt": "Synthetic quality check completed.",
+        }
+    )
+
+    assert job is not None
+    assert job["job_type"] == JOB_VISIT_CREATE
+    assert _is_timezone_aware_iso_datetime(job["payload"]["occurred_at"]) is True
+    assert validate_job(job) is True
+
+
+def test_event_to_job_visit_create_omits_unparseable_occurred_at() -> None:
+    job = event_to_job(
+        {
+            "event_id": "evt-visit-filename-stem",
+            "type": "visit_create",
+            "site": "Synthetic Branch",
+            "confidence": "medium",
+            "capture_id": "field-audio-synthetic",
+            "timestamp": "synthetic-voice-memo-stem",
+            "source_excerpt": "Synthetic quality check completed.",
+        }
+    )
+
+    assert job is not None
+    assert "occurred_at" not in job["payload"]
+    assert validate_job(job) is True
 
 
 def test_event_to_job_non_visit_voice_memo_still_maps_to_voice_memo_note() -> None:

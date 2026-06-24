@@ -5,6 +5,7 @@ from pathlib import Path
 
 from field_capture import approved_job_drafts
 from processing_core.action_candidates import STATUS_APPROVED, action_candidate_payload, write_action_candidate_review
+from queue_spec import JOB_VISIT_CREATE, _is_timezone_aware_iso_datetime, validate_job
 
 
 def write_named_candidate(runtime_root: Path, summary: str) -> dict[str, object]:
@@ -229,6 +230,53 @@ def test_visit_payload_omits_visited_by_when_submitter_person_id_empty() -> None
 
     assert payload is not None
     assert "visited_by" not in payload
+
+
+def test_visit_payload_includes_occurred_at_from_captured_at() -> None:
+    candidate = action_candidate_payload(
+        candidate_type="field_capture_follow_up",
+        summary="Synthetic completion note.",
+        rationale="Synthetic completion note.",
+        source_text="Synthetic completion note.",
+        source_context="Synthetic completion note.",
+        channel_metadata={
+            "channel": "field_capture",
+            "site_id": "site_synthetic_001",
+            "captured_at": "2026-06-23T21:30:32-04:00",
+            "visit_proposed": True,
+        },
+        status=STATUS_APPROVED,
+    )
+
+    payload = approved_job_drafts.default_field_capture_visit_payload(candidate)
+
+    assert payload is not None
+    assert payload["occurred_at"] == "2026-06-23T21:30:32-04:00"
+    assert _is_timezone_aware_iso_datetime(payload["occurred_at"]) is True
+    assert validate_job({"job_type": JOB_VISIT_CREATE, "payload": payload}) is True
+
+
+def test_visit_payload_omits_occurred_at_when_capture_time_unknown() -> None:
+    candidate = action_candidate_payload(
+        candidate_type="field_capture_follow_up",
+        summary="Synthetic completion note.",
+        rationale="Synthetic completion note.",
+        source_text="Synthetic completion note.",
+        source_context="Synthetic completion note.",
+        channel_metadata={
+            "channel": "field_capture",
+            "site_id": "site_synthetic_001",
+            "visit_proposed": True,
+        },
+        status=STATUS_APPROVED,
+    )
+    candidate.pop("created_at", None)
+
+    payload = approved_job_drafts.default_field_capture_visit_payload(candidate)
+
+    assert payload is not None
+    assert "occurred_at" not in payload
+    assert validate_job({"job_type": JOB_VISIT_CREATE, "payload": payload}) is True
 
 
 def test_proposed_queue_job_routes_supply_need_candidate_to_log_supply_need(tmp_path: Path) -> None:

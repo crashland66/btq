@@ -984,6 +984,16 @@ Do not use when:
 - the canonical `timestamp` is stored as UTC-normalized event time, and the
   canonical document records the timezone used for date derivation
 
+### Producer guidance
+
+Producers should forward the capture or event time as `occurred_at`, using
+`queue_spec.normalize_occurred_at` to coerce local or UTC timestamps into a
+validator-safe value. Voice and photo captures should use the device capture
+time, sent-email-derived QCs should use the sent-email timestamp, and
+operator-chat backfills should use the explicit local event time when known.
+When the event time is unknown, require review rather than silently using
+processing time.
+
 ### Valid example
 
 ```json

@@ -69,4 +69,5 @@
 - The dashboard Home renders the same read model as the Visit/QC Coverage panel in `project/ops_dashboard/sections/home.py`.
 - QC semantics are strict: only explicit QC visits count toward the weekly target. A QC is a canonical visit whose `visit_type` is in `QC_VISIT_TYPES` (`qc` or `qc_inspection`, case-insensitive via `is_qc_visit_type`). A generic site visit is recent activity, not a QC. Never count a note append or a planned/future visit as a QC.
 - Coverage is operator-aware: account scope comes from `operator_context_snapshot` / `./scripts/btq-context`, not from a hardcoded account list.
+- Visit/QC drafts and capture-derived visit jobs must carry the capture/event time as `occurred_at` (tz-aware) so the canonical local date is correct; never rely on processing time for a known event time.
 - Creating a visit or QC still flows through validated queue jobs such as `visit_create`, which carries `visit_type`, or through the approved capture/draft path. Never write directly to CouchDB.

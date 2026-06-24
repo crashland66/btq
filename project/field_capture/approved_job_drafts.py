@@ -36,6 +36,7 @@ from queue_spec import (
     JOB_LOG_SUPPLY_NEED,
     JOB_SET_ENTITY_STATUS,
     JOB_VISIT_CREATE,
+    normalize_occurred_at,
     validate_job,
 )
 
@@ -496,6 +497,9 @@ def default_field_capture_visit_payload(candidate: dict[str, object]) -> dict[st
         payload["visit_type"] = visit_type
     if visited_by:
         payload["visited_by"] = visited_by
+    occurred_at = normalize_occurred_at(channel_metadata.get("captured_at") or candidate.get("created_at"))
+    if occurred_at:
+        payload["occurred_at"] = occurred_at
     return payload
 
 
