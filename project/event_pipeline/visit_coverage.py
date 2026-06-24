@@ -1,3 +1,10 @@
+"""Visit/QC coverage read model.
+
+Week and as-of anchors are evaluated in the operator's local operational week.
+The current default mirrors visit_create's local date stamping; long term this
+should come from a site/operator timezone source.
+"""
+
 from __future__ import annotations
 
 import datetime as dt
@@ -7,6 +14,7 @@ import urllib.parse
 import urllib.request
 from collections.abc import Iterable, Mapping
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from event_pipeline import couchdb_config
 from event_pipeline.context_resolver import operator_context_snapshot
@@ -16,6 +24,8 @@ Doc = Mapping[str, Any]
 
 DEFAULT_WEEKLY_QC_TARGET = 4
 DEFAULT_FIND_LIMIT = 10000
+DEFAULT_COVERAGE_TIMEZONE = "America/New_York"
+DEFAULT_COVERAGE_ZONE = ZoneInfo(DEFAULT_COVERAGE_TIMEZONE)
 QC_VISIT_TYPES = frozenset({"qc", "qc_inspection"})
 
 
@@ -398,10 +408,33 @@ def _parse_date(value: object) -> dt.date | None:
 
 
 def _coerce_date(value: dt.datetime | dt.date | str | None) -> dt.date:
-    parsed = _parse_date(value)
-    if parsed is not None:
-        return parsed
-    return dt.datetime.now(dt.timezone.utc).date()
+    if isinstance(value, dt.datetime):
+        if value.tzinfo is not None:
+            return value.astimezone(DEFAULT_COVERAGE_ZONE).date()
+        return value.date()
+    if isinstance(value, dt.date):
+        return value
+    text = _clean_string(value)
+    if text:
+        parsed_datetime = _parse_anchor_datetime(text)
+        if parsed_datetime is not None:
+            if parsed_datetime.tzinfo is not None:
+                return parsed_datetime.astimezone(DEFAULT_COVERAGE_ZONE).date()
+            return parsed_datetime.date()
+        parsed = _parse_date(text)
+        if parsed is not None:
+            return parsed
+    return dt.datetime.now(dt.timezone.utc).astimezone(DEFAULT_COVERAGE_ZONE).date()
+
+
+def _parse_anchor_datetime(text: str) -> dt.datetime | None:
+    if len(text) <= 10:
+        return None
+    normalized = text[:-1] + "+00:00" if text.endswith("Z") else text
+    try:
+        return dt.datetime.fromisoformat(normalized)
+    except ValueError:
+        return None
 
 
 def _generated_at(value: dt.datetime | dt.date | str | None) -> str:
