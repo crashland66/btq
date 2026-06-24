@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
@@ -10,6 +11,7 @@ import pytest
 
 import queue_processor.main as qp
 from btq_vault.entity_types import OPERATOR_ID_GREG
+from event_pipeline.visit_coverage import is_qc_visit_type
 from queue_processor.handlers import _shared as shared
 from queue_processor.main import QueueJob, QueueJobError, RunContext
 from test_helpers.queue_processor_stores import RecordingVaultStore
@@ -484,15 +486,26 @@ def personnel_event_payload() -> dict:
     }
 
 
-def visit_payload(*, occurred_at: str | None = None, evidence: str = "Walked the dock.") -> dict:
+def visit_payload(
+    *,
+    occurred_at: str | None = None,
+    evidence: str = "Walked the dock.",
+    source: str = "field_visit",
+    visit_type: str | None = None,
+    visited_by: str | None = None,
+) -> dict:
     payload: dict[str, Any] = {
         "site": "7060",
-        "source": "field_visit",
+        "source": source,
         "evidence": evidence,
         "confidence": "high",
     }
     if occurred_at is not None:
         payload["occurred_at"] = occurred_at
+    if visit_type is not None:
+        payload["visit_type"] = visit_type
+    if visited_by is not None:
+        payload["visited_by"] = visited_by
     return payload
 
 
@@ -503,9 +516,13 @@ def canonical_visit_doc(
     date: str | None = None,
     evidence: str = "Walked the dock.",
     job_ids: list[str] | None = None,
+    timestamp: str | None = None,
+    visit_type: str | None = None,
+    visited_by: str | None = None,
+    source: str | None = None,
 ) -> dict[str, Any]:
     visit_date = date or datetime.now(timezone.utc).date().isoformat()
-    return {
+    doc: dict[str, Any] = {
         "_id": doc_id,
         "type": "visit",
         "site_id": site_id,
@@ -513,6 +530,15 @@ def canonical_visit_doc(
         "evidence": evidence,
         "btq_job_ids": list(job_ids or []),
     }
+    if timestamp is not None:
+        doc["timestamp"] = timestamp
+    if visit_type is not None:
+        doc["visit_type"] = visit_type
+    if visited_by is not None:
+        doc["visited_by"] = visited_by
+    if source is not None:
+        doc["source"] = source
+    return doc
 
 
 def set_entity_status_payload(entity_type: str, entity_id: str, status: str) -> dict:
@@ -891,6 +917,357 @@ def test_visit_create_second_visit_same_day_different_evidence_creates_doc(
     assert len(visit_docs) == 2
     assert {doc["evidence"] for doc in visit_docs} == {"Checked the entry gate.", "Walked the dock."}
     assert (processed_dir / queue_file.name).exists()
+
+
+def test_visit_create_merges_qc_duplicate_with_different_evidence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    context = context_for(tmp_path)
+    write_site(context.vault_root)
+    store = RecordingRmwVaultStore()
+    monkeypatch.setattr(shared, "_VAULT_STORE", store)
+    processed_dir = context.runtime_root / "processed"
+
+    first = make_queue_file(context, "job-qc-one")
+    qp.process_visit_create_job(
+        first,
+        job(
+            "visit_create",
+            visit_payload(
+                occurred_at="2026-06-23T10:00:00-04:00",
+                evidence="Producer A formal QC.",
+                source="producer_a",
+                visit_type="QC",
+                visited_by=" Operator One ",
+            ),
+            job_id="job-qc-one",
+        ),
+        context,
+        processed_dir,
+    )
+
+    second = make_queue_file(context, "job-qc-two")
+    qp.process_visit_create_job(
+        second,
+        job(
+            "visit_create",
+            visit_payload(
+                occurred_at="2026-06-23T10:07:00-04:00",
+                evidence="Producer B formal QC.",
+                source="producer_b",
+                visit_type="qc_inspection",
+                visited_by="operator one",
+            ),
+            job_id="job-qc-two",
+        ),
+        context,
+        processed_dir,
+    )
+
+    visit_docs = [doc for doc in store.docs if doc.get("type") == "visit"]
+    # Exactly one canonical visit doc survives for the site/date after merge.
+    assert len(visit_docs) == 1
+    assert len([doc for doc in visit_docs if is_qc_visit_type(doc.get("visit_type"))]) == 1
+    surviving = visit_docs[0]
+    assert surviving["btq_job_ids"] == ["job-qc-one", "job-qc-two"]
+    assert surviving["evidence"] == "Producer A formal QC."
+    assert surviving["merged_evidence"] == [
+        {"job_id": "job-qc-two", "evidence": "Producer B formal QC.", "source": "producer_b"}
+    ]
+    # No field loss: every non-key field minted on the surviving (producer A) doc
+    # must remain intact after the producer-B merge RMW + upsert.
+    assert surviving["_id"] == "visit_7060_2026-06-23_job-qc-o"
+    assert surviving["visit_type"] == "QC"
+    assert surviving["visited_by"] == "Operator One"
+    assert surviving["source"] == "producer_a"
+    assert surviving["date"] == "2026-06-23"
+    assert surviving["date_timezone"] == "America/New_York"
+    assert surviving["timestamp"] == "2026-06-23T14:00:00+00:00"
+    assert surviving["timestamp_local"] == "2026-06-23T10:00:00-04:00"
+    assert surviving["visit_key"] == shared.build_visit_key("7060", "2026-06-23")
+    assert surviving["confidence"] == "high"
+    assert surviving["operator"] == OPERATOR_ID_GREG
+    assert (processed_dir / second.name).exists()
+    assert "reason=duplicate-qc-merged" in context.log_path.read_text(encoding="utf-8")
+
+
+def test_visit_create_qc_duplicate_timestamp_tolerance_boundary(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    context = context_for(tmp_path)
+    write_site(context.vault_root)
+    store = RecordingRmwVaultStore()
+    monkeypatch.setattr(shared, "_VAULT_STORE", store)
+    processed_dir = context.runtime_root / "processed"
+
+    first = make_queue_file(context, "job-qc-early")
+    qp.process_visit_create_job(
+        first,
+        job(
+            "visit_create",
+            visit_payload(
+                occurred_at="2026-06-23T08:00:00-04:00",
+                evidence="Morning QC.",
+                visit_type="QC",
+                visited_by="operator one",
+            ),
+            job_id="job-qc-early",
+        ),
+        context,
+        processed_dir,
+    )
+
+    within_tolerance = make_queue_file(context, "job-qc-within")
+    qp.process_visit_create_job(
+        within_tolerance,
+        job(
+            "visit_create",
+            visit_payload(
+                occurred_at="2026-06-23T08:45:00-04:00",
+                evidence="Morning QC from another producer.",
+                visit_type="qc_inspection",
+                visited_by="operator one",
+            ),
+            job_id="job-qc-within",
+        ),
+        context,
+        processed_dir,
+    )
+
+    beyond_tolerance = make_queue_file(context, "job-qc-late")
+    qp.process_visit_create_job(
+        beyond_tolerance,
+        job(
+            "visit_create",
+            visit_payload(
+                occurred_at="2026-06-23T11:30:00-04:00",
+                evidence="Late separate QC.",
+                visit_type="QC",
+                visited_by="operator one",
+            ),
+            job_id="job-qc-late",
+        ),
+        context,
+        processed_dir,
+    )
+
+    visit_docs = [doc for doc in store.docs if doc.get("type") == "visit"]
+    assert len(visit_docs) == 2
+    merged_doc = next(doc for doc in visit_docs if "job-qc-within" in doc.get("btq_job_ids", []))
+    late_doc = next(doc for doc in visit_docs if doc.get("btq_job_ids") == ["job-qc-late"])
+    assert merged_doc["btq_job_ids"] == ["job-qc-early", "job-qc-within"]
+    assert merged_doc["merged_evidence"] == [
+        {"job_id": "job-qc-within", "evidence": "Morning QC from another producer.", "source": "field_visit"}
+    ]
+    assert late_doc["evidence"] == "Late separate QC."
+
+
+def test_visit_create_qc_duplicate_different_visited_by_does_not_merge(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    context = context_for(tmp_path)
+    write_site(context.vault_root)
+    store = RecordingRmwVaultStore()
+    monkeypatch.setattr(shared, "_VAULT_STORE", store)
+    processed_dir = context.runtime_root / "processed"
+
+    first = make_queue_file(context, "job-qc-alpha")
+    qp.process_visit_create_job(
+        first,
+        job(
+            "visit_create",
+            visit_payload(
+                occurred_at="2026-06-23T09:00:00-04:00",
+                evidence="Alpha QC.",
+                visit_type="QC",
+                visited_by="operator alpha",
+            ),
+            job_id="job-qc-alpha",
+        ),
+        context,
+        processed_dir,
+    )
+
+    second = make_queue_file(context, "job-qc-beta")
+    qp.process_visit_create_job(
+        second,
+        job(
+            "visit_create",
+            visit_payload(
+                occurred_at="2026-06-23T09:10:00-04:00",
+                evidence="Beta QC.",
+                visit_type="qc_inspection",
+                visited_by="operator beta",
+            ),
+            job_id="job-qc-beta",
+        ),
+        context,
+        processed_dir,
+    )
+
+    visit_docs = [doc for doc in store.docs if doc.get("type") == "visit"]
+    assert len(visit_docs) == 2
+    assert {tuple(doc["btq_job_ids"]) for doc in visit_docs} == {("job-qc-alpha",), ("job-qc-beta",)}
+
+
+def test_visit_create_generic_visit_and_qc_same_day_do_not_merge(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    context = context_for(tmp_path)
+    write_site(context.vault_root)
+    store = RecordingRmwVaultStore()
+    monkeypatch.setattr(shared, "_VAULT_STORE", store)
+    processed_dir = context.runtime_root / "processed"
+
+    generic = make_queue_file(context, "job-generic")
+    qp.process_visit_create_job(
+        generic,
+        job(
+            "visit_create",
+            visit_payload(
+                occurred_at="2026-06-23T12:00:00-04:00",
+                evidence="Generic site visit.",
+                visit_type="site_visit",
+                visited_by="operator one",
+            ),
+            job_id="job-generic",
+        ),
+        context,
+        processed_dir,
+    )
+
+    qc = make_queue_file(context, "job-qc")
+    qp.process_visit_create_job(
+        qc,
+        job(
+            "visit_create",
+            visit_payload(
+                occurred_at="2026-06-23T12:10:00-04:00",
+                evidence="Formal QC.",
+                visit_type="QC",
+                visited_by="operator one",
+            ),
+            job_id="job-qc",
+        ),
+        context,
+        processed_dir,
+    )
+
+    visit_docs = [doc for doc in store.docs if doc.get("type") == "visit"]
+    assert len(visit_docs) == 2
+    assert {doc.get("visit_type") for doc in visit_docs} == {"site_visit", "QC"}
+    assert all("merged_evidence" not in doc for doc in visit_docs)
+
+
+def test_visit_create_qc_duplicate_merge_is_idempotent_on_rerun(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    context = context_for(tmp_path)
+    write_site(context.vault_root)
+    store = RecordingRmwVaultStore()
+    monkeypatch.setattr(shared, "_VAULT_STORE", store)
+    processed_dir = context.runtime_root / "processed"
+
+    first = make_queue_file(context, "job-qc-one")
+    qp.process_visit_create_job(
+        first,
+        job(
+            "visit_create",
+            visit_payload(
+                occurred_at="2026-06-23T10:00:00-04:00",
+                evidence="Producer A formal QC.",
+                visit_type="QC",
+                visited_by="operator one",
+            ),
+            job_id="job-qc-one",
+        ),
+        context,
+        processed_dir,
+    )
+    second = make_queue_file(context, "job-qc-two")
+    second_job = job(
+        "visit_create",
+        visit_payload(
+            occurred_at="2026-06-23T10:05:00-04:00",
+            evidence="Producer B formal QC.",
+            visit_type="qc_inspection",
+            visited_by="operator one",
+        ),
+        job_id="job-qc-two",
+    )
+    qp.process_visit_create_job(second, second_job, context, processed_dir)
+
+    rerun = make_queue_file(context, "job-qc-two-rerun")
+    qp.process_visit_create_job(rerun, second_job, context, processed_dir)
+
+    visit_docs = [doc for doc in store.docs if doc.get("type") == "visit"]
+    assert len(visit_docs) == 1
+    assert visit_docs[0]["btq_job_ids"] == ["job-qc-one", "job-qc-two"]
+    assert visit_docs[0]["merged_evidence"] == [
+        {"job_id": "job-qc-two", "evidence": "Producer B formal QC.", "source": "field_visit"}
+    ]
+    assert "reason=job-id-marker-present" in context.log_path.read_text(encoding="utf-8")
+
+
+def test_visit_create_qc_duplicate_dry_run_logs_without_write(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    context = context_for(tmp_path)
+    write_site(context.vault_root)
+    store = RecordingRmwVaultStore()
+    monkeypatch.setattr(shared, "_VAULT_STORE", store)
+    processed_dir = context.runtime_root / "processed"
+
+    first = make_queue_file(context, "job-qc-one")
+    qp.process_visit_create_job(
+        first,
+        job(
+            "visit_create",
+            visit_payload(
+                occurred_at="2026-06-23T10:00:00-04:00",
+                evidence="Producer A formal QC.",
+                visit_type="QC",
+                visited_by="operator one",
+            ),
+            job_id="job-qc-one",
+        ),
+        context,
+        processed_dir,
+    )
+
+    dry_context = replace(context, dry_run=True)
+    second = make_queue_file(context, "job-qc-two")
+    qp.process_visit_create_job(
+        second,
+        job(
+            "visit_create",
+            visit_payload(
+                occurred_at="2026-06-23T10:05:00-04:00",
+                evidence="Producer B formal QC.",
+                visit_type="qc_inspection",
+                visited_by="operator one",
+            ),
+            job_id="job-qc-two",
+        ),
+        dry_context,
+        processed_dir,
+    )
+
+    visit_docs = [doc for doc in store.docs if doc.get("type") == "visit"]
+    assert len(visit_docs) == 1
+    assert visit_docs[0]["btq_job_ids"] == ["job-qc-one"]
+    assert "merged_evidence" not in visit_docs[0]
+    assert second.exists()
+    assert not (processed_dir / second.name).exists()
+    assert "would merge duplicate QC visit" in capsys.readouterr().out
+    assert "reason=duplicate-qc-merged" in context.log_path.read_text(encoding="utf-8")
 
 
 def test_visit_create_stale_markdown_does_not_cause_skip(

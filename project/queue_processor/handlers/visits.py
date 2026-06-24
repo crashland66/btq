@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import base64
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from btq_vault.entity_types import current_operator_id
+from event_pipeline.visit_coverage import is_qc_visit_type
 from queue_processor.canonical_rmw import (
     CanonicalEntityState,
     CanonicalMutation,
@@ -28,6 +29,7 @@ PHOTO_MIME_EXTENSIONS = {
 # is available in the canonical model.
 DEFAULT_VISIT_DATE_TIMEZONE = "America/New_York"
 VISIT_DATE_ZONE = ZoneInfo(DEFAULT_VISIT_DATE_TIMEZONE)
+QC_DUPLICATE_TIMESTAMP_TOLERANCE = timedelta(hours=1)
 
 
 def _build_visit_entity_doc(
@@ -93,6 +95,77 @@ def _visit_event_times(payload: dict) -> tuple[str, str, str]:
     )
 
 
+def _parse_aware_datetime_or_none(value: object) -> datetime | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        return None
+    return parsed.astimezone(timezone.utc)
+
+
+def _normalize_visit_actor(value: object) -> str:
+    return str(value or "").strip().lower()
+
+
+def _qc_duplicate_match(
+    doc: dict,
+    *,
+    visit_type: str,
+    visited_by: str,
+    visit_timestamp: str,
+) -> bool:
+    if not is_qc_visit_type(visit_type) or not is_qc_visit_type(doc.get("visit_type")):
+        return False
+
+    incoming_visited_by = _normalize_visit_actor(visited_by)
+    existing_visited_by = _normalize_visit_actor(doc.get("visited_by"))
+    if incoming_visited_by and existing_visited_by and incoming_visited_by != existing_visited_by:
+        return False
+
+    incoming_timestamp = _parse_aware_datetime_or_none(visit_timestamp)
+    existing_timestamp = _parse_aware_datetime_or_none(doc.get("timestamp"))
+    if (
+        incoming_timestamp is not None
+        and existing_timestamp is not None
+        and abs(incoming_timestamp - existing_timestamp) > QC_DUPLICATE_TIMESTAMP_TOLERANCE
+    ):
+        return False
+
+    return True
+
+
+def _merge_qc_duplicate_doc(
+    existing_doc: dict,
+    *,
+    job: QueueJob,
+    evidence: str,
+    source: str,
+) -> dict:
+    merged_doc = dict(existing_doc)
+    job_ids = _string_list(merged_doc.get("btq_job_ids"))
+    if job.job_id not in job_ids:
+        job_ids.append(job.job_id)
+    merged_doc["btq_job_ids"] = job_ids
+
+    existing_evidence = str(merged_doc.get("evidence") or "").strip()
+    if existing_evidence != evidence:
+        raw_merged_evidence = merged_doc.get("merged_evidence")
+        merged_evidence = list(raw_merged_evidence) if isinstance(raw_merged_evidence, list) else []
+        already_recorded = any(
+            isinstance(record, dict) and str(record.get("job_id") or "").strip() == job.job_id
+            for record in merged_evidence
+        )
+        if not already_recorded:
+            merged_evidence.append({"job_id": job.job_id, "evidence": evidence, "source": source})
+        merged_doc["merged_evidence"] = merged_evidence
+
+    return merged_doc
+
+
 def process_visit_create_job(job_path: Path, job: QueueJob, context: RunContext, processed_dir: Path) -> None:
     payload = job.payload
     site_id = resolve_site_context(_shared._vault_store(), str(payload["site"])).site_id
@@ -148,6 +221,52 @@ def process_visit_create_job(job_path: Path, job: QueueJob, context: RunContext,
         _shared.write_log_line(
             context.log_path,
             f"job_id={job.job_id} action=skip status=success reason=duplicate-visit-evidence",
+        )
+        return
+
+    duplicate_qc_doc = next(
+        (
+            doc
+            for doc in existing_visit_docs
+            if _qc_duplicate_match(
+                doc,
+                visit_type=visit_type,
+                visited_by=visited_by,
+                visit_timestamp=visit_timestamp,
+            )
+        ),
+        None,
+    )
+    if duplicate_qc_doc is not None:
+        merged_doc = _merge_qc_duplicate_doc(
+            duplicate_qc_doc,
+            job=job,
+            evidence=evidence,
+            source=source,
+        )
+        target_id = str(merged_doc.get("_id") or "").strip()
+        if context.dry_run:
+            print(f"Job {job.job_id}: would merge duplicate QC visit {target_id}")
+            _shared.write_log_line(
+                context.log_path,
+                f"job_id={job.job_id} action=skip status=success reason=duplicate-qc-merged",
+            )
+            return
+
+        canonical_doc = _shared._canonical_vault_upsert(job, merged_doc, site_id=site_id)
+        _shared.write_mutation_evidence(
+            context,
+            job,
+            canonical_doc,
+            f"visit {visit_key} merged duplicate QC job {job.job_id}",
+            pre_doc=duplicate_qc_doc,
+        )
+        print(f"Job {job.job_id}: duplicate QC merged into {target_id}")
+        moved_path = _shared.move_job_file(job_path, processed_dir)
+        print(f"Job {job.job_id}: moved queue file to {moved_path}")
+        _shared.write_log_line(
+            context.log_path,
+            f"job_id={job.job_id} action=skip status=success reason=duplicate-qc-merged",
         )
         return
 

@@ -244,7 +244,6 @@ class CouchDBEntityStore:
             "_find",
             {
                 "selector": {"type": "visit", "site_id": site_id, "date": date},
-                "fields": ["_id", "type", "site_id", "date", "evidence", "btq_job_ids"],
                 "limit": limit,
             },
         )
