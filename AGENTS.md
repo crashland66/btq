@@ -61,3 +61,12 @@
 - Three-store rule: workspace = durable local agent scratch and working material; CouchDB = canonical operational state for accounts, people, sites, and queue results, mutated only via queue jobs; ai-methodology inbox = design items, planning specs, and prompt arcs.
 - Never put secrets, credentials, Gmail content, or private spreadsheet contents into the open-source repo; keep that material in the operator workspace.
 - Example: for an account analysis, run `new-run`, resolve the operator/account context with `./scripts/btq-context` into `context/`, put spreadsheet or OCR extracts in `evidence/`, stage draft queue JSON in `drafts/`, submit the real change through a validated queue job so CouchDB mutates, then leave a `handoffs/` note for the next context.
+
+## Visit / QC Coverage
+
+- Before recommending where Greg should go, or answering whether he is on track for QCs, read the canonical Visit/QC coverage readout; do not re-derive coverage from chat, spreadsheets, or recent examples.
+- Use `project/event_pipeline/visit_coverage.py`: `coverage_report(operator)` is read-only and returns weekly QC count vs target 4, remaining QCs, completed QCs, per-account last-visit/last-QC dates and days-since values, overdue accounts, and open visit gaps.
+- The dashboard Home renders the same read model as the Visit/QC Coverage panel in `project/ops_dashboard/sections/home.py`.
+- QC semantics are strict: only explicit QC visits count toward the weekly target. A QC is a canonical visit whose `visit_type` is in `QC_VISIT_TYPES` (`qc` or `qc_inspection`, case-insensitive via `is_qc_visit_type`). A generic site visit is recent activity, not a QC. Never count a note append or a planned/future visit as a QC.
+- Coverage is operator-aware: account scope comes from `operator_context_snapshot` / `./scripts/btq-context`, not from a hardcoded account list.
+- Creating a visit or QC still flows through validated queue jobs such as `visit_create`, which carries `visit_type`, or through the approved capture/draft path. Never write directly to CouchDB.
