@@ -53,6 +53,7 @@ from field_capture.server import (
     load_prospect,
     query_captures_by_person_id,
     resolve_display_categories,
+    resolve_submit_categories,
     resolve_submission_attribution,
     can_override_submission_attribution,
     TERMINAL_PROSPECT_STATUSES,
@@ -765,20 +766,7 @@ class UnifiedCaptureHandler(BaseHTTPRequestHandler):
             )
 
     def resolve_submit_categories(self, site_id: str) -> list[dict[str, str]]:
-        registry = getattr(self.server, "site_registry", None)
-        display_categories = None
-        if registry is not None:
-            try:
-                display_categories = registry.get_display_categories(site_id)
-            except Exception as error:
-                self.log_message("WARNING: display_categories lookup failed site_id=%s error=%s", site_id, error)
-        default_categories = None
-        try:
-            system_defaults = load_system_defaults()
-            default_categories = system_defaults.get("default_display_categories") if isinstance(system_defaults, dict) else None
-        except Exception as error:
-            self.log_message("WARNING: system_defaults unavailable for /api/submit: %s", error)
-        return apply_role_category_filter(resolve_display_categories(display_categories, default_categories), "site_admin")
+        return resolve_submit_categories(getattr(self.server, "site_registry", None), site_id, self.log_message)
 
     def build_submit_document(
         self,
