@@ -23,6 +23,7 @@ def sample_row(token_id: str = "fct_test", *, revoked: int = 0) -> dict[str, obj
         "last_used_at": None,
         "can_submit": 1,
         "can_view_site": 1,
+        "role": "site_admin",
         "token_type": "capture",
         "site_ids": '["*"]',
     }
@@ -57,6 +58,7 @@ def test_sync_token_upsert_inserts_new_row(tmp_path: Path, monkeypatch: pytest.M
 
     assert row is not None
     assert row["token_hash"] == "hash_fct_test"
+    assert row["role"] == "site_admin"
     assert row["site_ids"] == '["*"]'
 
 
@@ -115,3 +117,7 @@ def test_sync_token_unknown_action_returns_error_exit_code(tmp_path: Path, monke
 
 def test_sync_token_payload_omits_token_value_column() -> None:
     assert "token_value" not in sync_token.SYNC_COLUMNS
+
+
+def test_sync_token_payload_preserves_role_column() -> None:
+    assert "role" in sync_token.SYNC_COLUMNS

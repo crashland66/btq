@@ -33,6 +33,14 @@ def bool_label(value: bool) -> str:
     return f'<span class="pill {"success" if value else "warning"}">{"Yes" if value else "No"}</span>'
 
 
+def render_role_cell(value: object, _row: dict[str, object]) -> str:
+    role = str(value or "cleaner")
+    label = humanize_key(role)
+    if role == "site_admin":
+        return f'<span class="pill success">{html.escape(label)}</span>'
+    return f'<span class="pill">{html.escape(label)}</span>'
+
+
 def short_token_id(token_id: str) -> str:
     return token_id if len(token_id) <= 12 else f"{token_id[:12]}..."
 
@@ -233,6 +241,7 @@ def render_new_form(query: dict[str, list[str]] | None = None) -> str:
         <label><input type="radio" name="token_type" value="admin_viewer"> Admin Viewer</label>
         <label><input type="radio" name="token_type" value="import"> Import</label>
         <label>Role <select name="role"><option value="cleaner" selected>Cleaner</option><option value="site_admin">Site Admin</option></select></label>
+        <p class="muted">Use Site Admin for operator capture tokens that need QC, Baseline, or Pre-Engagement categories.</p>
         <label><input type="checkbox" name="can_submit" value="1" checked> Can Submit</label>
         <label><input type="checkbox" name="can_view_site" value="1" checked> Can View Site</label>
         <label>Site IDs <textarea name="site_ids">*</textarea></label>
@@ -295,9 +304,9 @@ def render_list(root: Path, query: dict[str, list[str]]) -> str:
     all_columns = [
         {"key": "token_id", "label": "Token ID", "format": lambda value, row: render_token_id_cell(value, row), "nowrap": True},
         {"key": "person_id", "label": "Person", "format": render_person_cell, "nowrap": True},
-        {"key": "label", "label": "Label"},
         {"key": "token_type", "label": "Token Type", "format": lambda value, _row: html.escape(humanize_key(value)), "priority": 2, "nowrap": True, "detail": True},
-        {"key": "role", "label": "Role", "format": lambda value, _row: html.escape(humanize_key(value)), "priority": 2, "nowrap": True, "detail": True},
+        {"key": "role", "label": "Role", "format": render_role_cell, "nowrap": True},
+        {"key": "label", "label": "Label"},
         {"key": "site_scope", "label": "Site Scope", "priority": 2, "nowrap": True},
         {"key": "can_submit", "label": "Can Submit", "format": lambda value, _row: bool_label(bool(value)), "priority": 3, "nowrap": True, "detail": True},
         {"key": "can_view_site", "label": "Can View Site", "format": lambda value, _row: bool_label(bool(value)), "priority": 3, "nowrap": True, "detail": True},

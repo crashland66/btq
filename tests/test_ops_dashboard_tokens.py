@@ -152,11 +152,11 @@ def test_tokens_compact_default_hides_detail_columns_and_toggle_shows_all(tmp_pa
     # essential columns (incl. Person + pinned Actions) always present.
     # Site Scope + Active stay in compact so the active status is visible
     # without horizontal scroll (the regression this fix protects).
-    for header in ("Token ID", "Person", "Label", "Site Scope", "Active", "Actions"):
+    for header in ("Token ID", "Person", "Role", "Label", "Site Scope", "Active", "Actions"):
         assert f">{header}</th>" in compact
     # noisy detail columns hidden in the compact default. Token Type and
     # Last Used are now detail-only so the table fits without scrolling.
-    for header in ("Token Type", "Last Used", "Role", "Can Submit", "Can View Site", "Created At", "Expires At"):
+    for header in ("Token Type", "Last Used", "Can Submit", "Can View Site", "Created At", "Expires At"):
         assert f">{header}</th>" not in compact
 
     full = request_text("GET", "/tokens?columns=all", runtime_root)[2]
@@ -166,7 +166,7 @@ def test_tokens_compact_default_hides_detail_columns_and_toggle_shows_all(tmp_pa
 
 def test_tokens_compact_default_visible_set_is_exactly_essential_columns(tmp_path: Path) -> None:
     # Focused regression: the compact default shows exactly these columns in
-    # order — token_id, person_id, label, site_scope, revoked("Active"),
+    # order — token_id, person_id, role, label, site_scope, revoked("Active"),
     # actions — so the table fits and Active is visible without scrolling.
     import re
 
@@ -175,7 +175,7 @@ def test_tokens_compact_default_visible_set_is_exactly_essential_columns(tmp_pat
 
     compact = request_text("GET", "/tokens", runtime_root)[2]
     headers = re.findall(r"<th[^>]*>([^<]+)</th>", compact)
-    assert headers == ["Token ID", "Person", "Label", "Site Scope", "Active", "Actions"]
+    assert headers == ["Token ID", "Person", "Role", "Label", "Site Scope", "Active", "Actions"]
 
 
 def test_build_person_name_map_resolves_token_slug_from_employee_doc() -> None:

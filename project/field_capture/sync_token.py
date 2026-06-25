@@ -41,6 +41,7 @@ SYNC_COLUMNS = (
     "last_used_at",
     "can_submit",
     "can_view_site",
+    "role",
     "token_type",
     "site_ids",
 )
@@ -66,6 +67,8 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE field_capture_tokens ADD COLUMN can_submit INTEGER NOT NULL DEFAULT 1")
     if "can_view_site" not in columns:
         conn.execute("ALTER TABLE field_capture_tokens ADD COLUMN can_view_site INTEGER NOT NULL DEFAULT 1")
+    if "role" not in columns:
+        conn.execute("ALTER TABLE field_capture_tokens ADD COLUMN role TEXT NOT NULL DEFAULT 'cleaner'")
     if "token_type" not in columns:
         conn.execute("ALTER TABLE field_capture_tokens ADD COLUMN token_type TEXT NOT NULL DEFAULT 'capture'")
     if "site_ids" not in columns:

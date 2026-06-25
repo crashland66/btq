@@ -929,6 +929,8 @@ class UnifiedCaptureHandler(BaseHTTPRequestHandler):
             "token": {
                 "token_id": session.record.token_id,
                 "label": session.record.label,
+                "role": session.record.role,
+                "token_type": session.record.token_type,
             },
             "sites": [
                 self.session_site_payload(site, registry, default_categories, session.record.role) for site in session.sites

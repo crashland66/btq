@@ -488,6 +488,8 @@ class SessionHappyPathTests(unittest.TestCase):
         self.assertEqual(body["person"]["name"], "Casey Worker")
         self.assertEqual(body["token"]["label"], "unified")
         self.assertIn("token_id", body["token"])
+        self.assertEqual(body["token"]["role"], "cleaner")
+        self.assertEqual(body["token"]["token_type"], "capture")
         self.assertTrue(body["can_submit"])
         self.assertEqual(len(body["sites"]), 1)
         self.assertEqual(body["sites"][0]["site_id"], "7060")
@@ -497,6 +499,20 @@ class SessionHappyPathTests(unittest.TestCase):
         # capture_guidance key is always present (empty here; registry path is
         # unit-tested in SessionSitePayloadTests below).
         self.assertIn("capture_guidance", body["sites"][0])
+
+    def test_site_admin_session_includes_operator_qc_categories(self) -> None:
+        store, token = make_store(self.tmp.name, site_ids=["7060"], can_submit=True, role="site_admin")
+        started = install_couch_fakes(EMP_SINGLE, SITES_TWO)
+        try:
+            resp = drive_request(store, self.vault, "GET", "/api/session", {"Authorization": f"Bearer {token}"})
+        finally:
+            stop_all(started)
+        self.assertEqual(resp.status, 200, resp.text)
+        categories = resp.json()["sites"][0]["display_categories"]
+        by_canonical = {category["canonical"]: category["label"] for category in categories}
+        self.assertEqual(by_canonical["qc"], "QC")
+        self.assertEqual(by_canonical["baseline"], "Baseline")
+        self.assertEqual(by_canonical["pre_engagement"], "Pre-Engagement")
 
     def test_site_scoping_excludes_ungranted_site(self) -> None:
         # Token granted only 1200; 1300 exists in the registry but must NOT appear.
