@@ -151,6 +151,8 @@ def route_response_with_headers(method: str, path: str, runtime_root: Path, body
     route_path = parsed.path
     ctx = request_context(path, runtime_root)
     if method == "POST":
+        if route_path == "/field-photos/export":
+            return field_photos.handle_export_post(ctx, body)
         post_response = dispatch_post_route(route_path, ctx, body, content_type, SECTION_ROUTES)
         if post_response is not None:
             return post_response

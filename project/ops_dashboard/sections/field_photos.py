@@ -1,12 +1,18 @@
 from __future__ import annotations
 
 import html
+import io
 import json
 import logging
+import re
+import zipfile
+from http import HTTPStatus
 from pathlib import Path
-from urllib.parse import urlencode
+from urllib.parse import parse_qs, urlencode
 
 from field_capture.deep_analysis import DEEP_ANALYSIS_PRESETS
+from field_capture.site_viewer import UnsafeMediaPath, resolve_media_request, upload_id_for_path
+from media_store import get_media_store
 from ops_dashboard.common import (
     DEEP_ANALYSIS_LABELS,
     deep_analysis_prompt_label,
@@ -39,6 +45,7 @@ def _build_mango_selector(
     date_from: str,
     date_to: str,
     *,
+    capture_id: str = "",
     has_deep_analysis: bool = False,
     target_type: str = "",
     target_id: str = "",
@@ -48,6 +55,8 @@ def _build_mango_selector(
         must.append({"search_text": {"$regex": q.lower()}})
     if site_id:
         must.append({"site_id": site_id})
+    if capture_id:
+        must.append({"capture_id": capture_id})
     if target_type:
         must.append({"target_type": target_type})
         if target_id:
@@ -172,6 +181,7 @@ def _in_memory_filter(
     date_from: str,
     date_to: str,
     *,
+    capture_id: str = "",
     has_deep_analysis: bool = False,
 ) -> list[dict[str, object]]:
     results = sidecars
@@ -180,6 +190,8 @@ def _in_memory_filter(
         results = [s for s in results if ql in _search_text(s)]
     if site_id:
         results = [s for s in results if str(s.get("site_id") or "") == site_id]
+    if capture_id:
+        results = [s for s in results if str(s.get("capture_id") or "") == capture_id]
     if area_guess:
         results = [s for s in results if str(s.get("area_guess") or "") == area_guess]
     if date_from:
@@ -313,17 +325,39 @@ def _render_deep_analysis_actions(sidecar: dict[str, object]) -> str:
     )
 
 
+def _media_key_from_url(url: str) -> str:
+    return url.removeprefix("/media/") if url.startswith("/media/") else ""
+
+
+_FILENAME_SAFE_RE = re.compile(r"[^A-Za-z0-9._-]+")
+
+
+def _safe_filename_part(value: object, *, fallback: str) -> str:
+    text = _FILENAME_SAFE_RE.sub("-", str(value or "").strip()).strip("-._")
+    return text[:80] if text else fallback
+
+
+def _photo_filename_hint(sidecar: dict[str, object], index: int, media_key: str) -> str:
+    capture = _safe_filename_part(sidecar.get("capture_id"), fallback="capture")
+    area = _safe_filename_part(sidecar.get("area_guess"), fallback="area")
+    stem = _safe_filename_part(Path(media_key).stem, fallback=f"photo-{index + 1:03d}")
+    return f"{capture}-{area}-{index + 1:03d}-{stem}.jpg"
+
+
 def _render_card(
     sidecar: dict[str, object],
     submitters: dict[str, dict[str, str]],
     vault_root: Path,
     *,
+    card_index: int = 0,
+    show_selection_controls: bool = True,
     show_deep_analysis_controls: bool = True,
 ) -> str:
     capture_id = str(sidecar.get("capture_id") or "")
     provenance = sidecar.get("provenance") if isinstance(sidecar.get("provenance"), dict) else {}
     raw_url = (provenance.get("image_media_url") if isinstance(provenance, dict) else None) or sidecar.get("image_media_url")
     url = safe_media_url(raw_url)
+    media_key = _media_key_from_url(url)
 
     area = str(sidecar.get("area_guess") or "")
     site_id_val = str(sidecar.get("site_id") or "")
@@ -383,12 +417,112 @@ def _render_card(
     if pills_html:
         inner += f'<div style="margin-top:4px">{pills_html}</div>'
 
+    selection_html = ""
+    if show_selection_controls and media_key:
+        filename_hint = _photo_filename_hint(sidecar, card_index, media_key)
+        label = "Select photo"
+        label_bits = [area, capture_id, filename_hint]
+        label_detail = " · ".join(bit for bit in label_bits if bit)
+        if label_detail:
+            label = f"Select photo: {label_detail}"
+        escaped_media_key = html.escape(media_key, quote=True)
+        escaped_filename = html.escape(filename_hint, quote=True)
+        selection_html = (
+            '<div style="display:flex;align-items:center;gap:8px;margin:0 0 8px">'
+            f'<input type="checkbox" name="media_key" value="{escaped_media_key}" '
+            f'data-filename-hint="{escaped_filename}" aria-label="{html.escape(label, quote=True)}">'
+            f'<span class="muted" style="font-size:.85rem">JPEG export: {html.escape(filename_hint)}</span>'
+            "</div>"
+        )
+
     return (
         f'<article style="border:1px solid var(--line);border-radius:8px;overflow:hidden;background:var(--panel)">'
         f"{img_html}"
-        f'<div style="padding:10px">{inner}</div>'
+        f'<div style="padding:10px">{selection_html}{inner}</div>'
         f"</article>"
     )
+
+
+def _filename_hints_from_form(form: dict[str, list[str]]) -> dict[str, str]:
+    hints: dict[str, str] = {}
+    for raw in form.get("filename_hint", []):
+        key, sep, filename = raw.partition("\t")
+        key = key.strip()
+        if sep and key and filename.strip():
+            hints[key] = _safe_zip_filename(filename.strip())
+    return hints
+
+
+def _safe_zip_filename(value: object) -> str:
+    filename = Path(str(value or "").replace("\\", "/")).name
+    stem = _safe_filename_part(Path(filename).stem, fallback="photo")
+    suffix = ".jpg"
+    return f"{stem}{suffix}"
+
+
+def _zip_entry_name(media_key: str, hint: str, index: int, used: set[str]) -> str:
+    name = _safe_zip_filename(hint) if hint else _safe_zip_filename(media_key)
+    if not name or name == "photo.jpg":
+        name = f"photo-{index + 1:03d}.jpg"
+    base = Path(name).stem
+    candidate = name
+    counter = 2
+    while candidate in used:
+        candidate = f"{base}-{counter}.jpg"
+        counter += 1
+    used.add(candidate)
+    return candidate
+
+
+def handle_export_post(ctx: object, body: bytes) -> tuple[HTTPStatus, str, bytes, dict[str, str]]:
+    form = parse_qs(body.decode("utf-8", errors="replace"), keep_blank_values=True)
+    selected = [key.removeprefix("/media/").strip() for key in form.get("media_key", []) if key.strip()]
+    if not selected:
+        return (
+            HTTPStatus.BAD_REQUEST,
+            "application/json; charset=utf-8",
+            json.dumps({"error": "no_photos_selected"}).encode("utf-8"),
+            {},
+        )
+
+    upload_dir = ctx.runtime_root.expanduser().resolve(strict=False) / "uploads"
+    resolved: list[tuple[str, str]] = []
+    for key in selected:
+        try:
+            path = resolve_media_request(key, upload_dir)
+        except UnsafeMediaPath:
+            return (
+                HTTPStatus.BAD_REQUEST,
+                "application/json; charset=utf-8",
+                json.dumps({"error": "unsafe_media_key"}).encode("utf-8"),
+                {},
+            )
+        resolved.append((key, upload_id_for_path(path, upload_dir)))
+
+    store = get_media_store(upload_dir)
+    missing = [key for _posted_key, key in resolved if not store.exists(key)]
+    if missing:
+        return (
+            HTTPStatus.NOT_FOUND,
+            "application/json; charset=utf-8",
+            json.dumps({"error": "media_not_found", "keys": missing}).encode("utf-8"),
+            {},
+        )
+
+    hints = _filename_hints_from_form(form)
+    used_names: set[str] = set()
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        for index, (posted_key, key) in enumerate(resolved):
+            entry_name = _zip_entry_name(key, hints.get(posted_key, ""), index, used_names)
+            archive.writestr(entry_name, store.read(key))
+
+    archive_label = _safe_filename_part((form.get("capture_id") or ["selected"])[0], fallback="selected")
+    headers = {
+        "Content-Disposition": f'attachment; filename="qc-photos-{archive_label}.zip"',
+        "Cache-Control": "no-store",
+    }
+    return HTTPStatus.OK, "application/zip", buffer.getvalue(), headers
 
 
 def _asset_matches_filters(
@@ -396,15 +530,19 @@ def _asset_matches_filters(
     *,
     q: str,
     site_id: str,
+    capture_id: str = "",
     area_guess: str,
     date_from: str,
     date_to: str,
     submitter_name: str,
 ) -> bool:
     asset_site_id = str(getattr(asset, "site_id", "") or "")
+    asset_capture_id = str(getattr(asset, "capture_id", "") or "")
     captured_at = str(getattr(asset, "captured_at", "") or "")
     submitted_area = str(getattr(asset, "area", "") or "")
     if site_id and asset_site_id != site_id:
+        return False
+    if capture_id and asset_capture_id != capture_id:
         return False
     if area_guess and submitted_area.lower() != area_guess.lower():
         return False
@@ -433,6 +571,7 @@ def _pending_photo_records(
     terminal_capture_ids: set[str] | None = None,
     q: str,
     site_id: str,
+    capture_id: str = "",
     area_guess: str,
     date_from: str,
     date_to: str,
@@ -457,6 +596,7 @@ def _pending_photo_records(
             asset,
             q=q,
             site_id=site_id,
+            capture_id=capture_id,
             area_guess=area_guess,
             date_from=date_from,
             date_to=date_to,
@@ -559,6 +699,7 @@ def _filter_form(
     date_to: str,
     has_deep_analysis: bool,
     *,
+    capture_id: str = "",
     site_options: list[tuple[str, str]],
     area_options: list[str],
 ) -> str:
@@ -571,6 +712,7 @@ def _filter_form(
         f'<label style="flex:1 1 18em">Search<input name="q" value="{html.escape(q)}" placeholder="keyword…" style="width:100%"></label>'
         f'<label style="flex:1 1 14em">Site<select name="site_id" style="width:100%">{site_opts}</select></label>'
         f'<label style="flex:1 1 10em">Area<select name="area_guess" style="width:100%">{area_opts}</select></label>'
+        f'<label style="flex:1 1 18em">Capture ID<input name="capture_id" value="{html.escape(capture_id, quote=True)}" placeholder="cap-…" style="width:100%"></label>'
         f'<label>From<input type="date" name="date_from" value="{html.escape(date_from)}"></label>'
         f'<label>To<input type="date" name="date_to" value="{html.escape(date_to)}"></label>'
         f'<label><input type="checkbox" name="deep_analysis" value="1"{deep_checked}> Flagged for deeper analysis</label>'
@@ -584,6 +726,7 @@ def render_filter_form(
     q: str = "",
     site_id: str = "",
     area_guess: str = "",
+    capture_id: str = "",
     date_from: str = "",
     date_to: str = "",
     has_deep_analysis: bool = False,
@@ -598,9 +741,70 @@ def render_filter_form(
         date_from,
         date_to,
         has_deep_analysis,
+        capture_id=capture_id,
         site_options=site_options,
         area_options=area_options,
     )
+
+
+def _render_export_form(cards_html: str, capture_id: str) -> str:
+    if not cards_html:
+        return '<p class="zero-state">No photos match this query.</p>'
+    return (
+        '<form method="post" action="/field-photos/export" id="field-photo-export-form" data-photo-export-form>'
+        f'<input type="hidden" name="capture_id" value="{html.escape(capture_id, quote=True)}">'
+        '<div style="display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin:12px 0">'
+        '<button type="button" data-select-all-photos>Select all in view</button>'
+        '<button type="button" data-clear-photo-selection>Clear</button>'
+        '<span class="muted" data-selected-photo-count>0 selected</span>'
+        '<button type="submit" data-export-selected-photos disabled>Download selected as JPEGs</button>'
+        '</div>'
+        f'<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:16px;margin-top:12px">{cards_html}</div>'
+        "</form>"
+    )
+
+
+def _render_selection_script() -> str:
+    return """
+    <script>
+      document.addEventListener('DOMContentLoaded', function () {
+        const form = document.querySelector('[data-photo-export-form]');
+        if (!form) return;
+        const checkboxes = Array.from(form.querySelectorAll('input[name="media_key"]'));
+        const count = form.querySelector('[data-selected-photo-count]');
+        const submit = form.querySelector('[data-export-selected-photos]');
+        function selectedBoxes() {
+          return checkboxes.filter(function (box) { return box.checked; });
+        }
+        function sync() {
+          const total = selectedBoxes().length;
+          if (count) count.textContent = total + ' selected';
+          if (submit) submit.disabled = total === 0;
+        }
+        form.querySelector('[data-select-all-photos]')?.addEventListener('click', function () {
+          checkboxes.forEach(function (box) { box.checked = true; });
+          sync();
+        });
+        form.querySelector('[data-clear-photo-selection]')?.addEventListener('click', function () {
+          checkboxes.forEach(function (box) { box.checked = false; });
+          sync();
+        });
+        checkboxes.forEach(function (box) { box.addEventListener('change', sync); });
+        form.addEventListener('submit', function () {
+          form.querySelectorAll('input[data-generated-filename-hint]').forEach(function (node) { node.remove(); });
+          selectedBoxes().forEach(function (box) {
+            const hint = document.createElement('input');
+            hint.type = 'hidden';
+            hint.name = 'filename_hint';
+            hint.value = (box.value || '') + '\\t' + (box.dataset.filenameHint || '');
+            hint.setAttribute('data-generated-filename-hint', '1');
+            form.appendChild(hint);
+          });
+        });
+        sync();
+      });
+    </script>
+    """
 
 
 def latest_photo_cards(
@@ -650,7 +854,10 @@ def latest_photo_cards(
     submitters = submitters_by_capture(runtime_root)
     vault_root = Path(getattr(ctx.config, "vault_root", runtime_root / "vault")).expanduser()
     return (
-        "".join(_render_card(s, submitters, vault_root, show_deep_analysis_controls=False) for s in sidecars),
+        "".join(
+            _render_card(s, submitters, vault_root, show_selection_controls=False, show_deep_analysis_controls=False)
+            for s in sidecars
+        ),
         fallback,
     )
 
@@ -884,6 +1091,7 @@ def render(ctx: object) -> str:
     q = first_filter_value(query, "q")
     site_id = first_filter_value(query, "site_id")
     area_guess = first_filter_value(query, "area_guess")
+    capture_id = first_filter_value(query, "capture_id")
     date_from = first_filter_value(query, "date_from")
     date_to = first_filter_value(query, "date_to")
     has_deep_analysis = first_filter_value(query, "deep_analysis").lower() in {"1", "true", "yes", "on"}
@@ -894,7 +1102,15 @@ def render(ctx: object) -> str:
     has_more = False
 
     if cdb_config is not None:
-        mango = _build_mango_selector(q, site_id, area_guess, date_from, date_to, has_deep_analysis=has_deep_analysis)
+        mango = _build_mango_selector(
+            q,
+            site_id,
+            area_guess,
+            date_from,
+            date_to,
+            capture_id=capture_id,
+            has_deep_analysis=has_deep_analysis,
+        )
         docs = _query_couchdb(cdb_config, mango)
         if docs is not None:
             has_more = len(docs) > PAGE_LIMIT
@@ -922,6 +1138,7 @@ def render(ctx: object) -> str:
             area_guess,
             date_from,
             date_to,
+            capture_id=capture_id,
             has_deep_analysis=has_deep_analysis,
         )
         processed_asset_ids = {str(s.get("photo_asset_id") or "") for s in all_sidecars}
@@ -936,6 +1153,7 @@ def render(ctx: object) -> str:
             terminal_capture_ids=terminal_capture_ids,
             q=q,
             site_id=site_id,
+            capture_id=capture_id,
             area_guess=area_guess,
             date_from=date_from,
             date_to=date_to,
@@ -946,17 +1164,14 @@ def render(ctx: object) -> str:
         q=q,
         site_id=site_id,
         area_guess=area_guess,
+        capture_id=capture_id,
         date_from=date_from,
         date_to=date_to,
         has_deep_analysis=has_deep_analysis,
     )
 
-    cards_html = "".join(_render_card(s, submitters, vault_root) for s in sidecars)
-    grid_html = (
-        f'<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:16px;margin-top:12px">{cards_html}</div>'
-        if cards_html
-        else '<p class="zero-state">No photos match this query.</p>'
-    )
+    cards_html = "".join(_render_card(s, submitters, vault_root, card_index=index) for index, s in enumerate(sidecars))
+    grid_html = _render_export_form(cards_html, capture_id)
 
     n = len(sidecars)
     if has_more:
@@ -978,6 +1193,7 @@ def render(ctx: object) -> str:
       <p class="muted" style="margin-top:.5rem">{html.escape(count_text)}</p>
       {grid_html}
     </section>
+    {_render_selection_script()}
     {_render_deep_analysis_dialogs(_field_photos_return_to(query))}
     """
     return html_page("Field Photos — BTQ Ops", body, active_section="field_photos")
