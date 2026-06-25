@@ -15,6 +15,7 @@ project/.runtime-dry/
 *.egg-info/
 
 .claude/
+.understand-anything/
 
 # Real customer site registry — synthetic example is committed (prompt 301)
 project/event_pipeline/site_registry.json
