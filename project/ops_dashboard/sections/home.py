@@ -454,8 +454,13 @@ def _coverage_int(value: object) -> int:
         return 0
 
 
-def _coverage_site_label(row: dict) -> str:
-    return _string(row.get("site") or row.get("site_name") or row.get("site_id") or "Unknown site")
+def _coverage_site_label(row: dict, site_names: dict[str, str] | None = None) -> str:
+    site_id = _string(row.get("site_id"))
+    site_names = site_names or {}
+    raw_label = _string(row.get("site") or row.get("site_name") or row.get("account"))
+    if site_id and (not raw_label or raw_label == site_id):
+        raw_label = _string(site_names.get(site_id)) or raw_label
+    return raw_label or site_id or "Unknown site"
 
 
 def _coverage_date_label(value: object) -> str:
@@ -463,12 +468,23 @@ def _coverage_date_label(value: object) -> str:
     return text or "no date"
 
 
-def _render_coverage_panel(report: dict) -> str:
+def _render_coverage_panel(report: dict, site_records: dict[str, _SiteRecord] | None = None) -> str:
     """Render the Visit/QC coverage read model without loading data."""
     weekly = report.get("weekly") if isinstance(report.get("weekly"), dict) else {}
     completed = weekly.get("completed") if isinstance(weekly.get("completed"), list) else []
     overdue = report.get("overdue") if isinstance(report.get("overdue"), list) else []
     gaps = report.get("gaps") if isinstance(report.get("gaps"), list) else []
+    accounts = report.get("accounts") if isinstance(report.get("accounts"), list) else []
+    site_names = {
+        _string(item.get("site_id")): _string(item.get("site_name"))
+        for item in accounts
+        if isinstance(item, dict) and _string(item.get("site_id")) and _string(item.get("site_name"))
+    }
+    if site_records:
+        for site_id, record in site_records.items():
+            normalized_site_id = _string(site_id)
+            if normalized_site_id and normalized_site_id not in site_names:
+                site_names[normalized_site_id] = _string(getattr(record, "name", ""))
 
     count = _coverage_int(weekly.get("count"))
     target = _coverage_int(weekly.get("target"))
@@ -482,7 +498,7 @@ def _render_coverage_panel(report: dict) -> str:
             continue
         completed_rows.append(
             {
-                "site": _coverage_site_label(item),
+                "site": _coverage_site_label(item, site_names),
                 "date": _coverage_date_label(item.get("date")),
             }
         )
@@ -493,7 +509,7 @@ def _render_coverage_panel(report: dict) -> str:
             continue
         days = item.get("days_since_last_qc")
         days_text = "never" if days is None else f"{_coverage_int(days)}d since last QC"
-        overdue_rows.append({"site": _coverage_site_label(item), "status": days_text})
+        overdue_rows.append({"site": _coverage_site_label(item, site_names), "status": days_text})
 
     gap_rows: list[dict[str, object]] = []
     for item in gaps[:COVERAGE_PANEL_LIMIT]:
@@ -501,7 +517,7 @@ def _render_coverage_panel(report: dict) -> str:
             continue
         gap_rows.append(
             {
-                "site": _coverage_site_label(item),
+                "site": _coverage_site_label(item, site_names),
                 "date": _coverage_date_label(item.get("date")),
             }
         )
@@ -1058,8 +1074,10 @@ def _handoff_home_voice_memo_to_transcription(runtime_root: Path, record: dict) 
 
 def render(ctx: object) -> str:
     action_cards, action_notice = _home_action_cards(ctx)
+    coverage_data: dict | None = None
     try:
-        coverage_html = _render_coverage_panel(coverage_report(current_operator_id()))
+        coverage_data = coverage_report(current_operator_id())
+        coverage_html = _render_coverage_panel(coverage_data)
     except Exception:  # noqa: BLE001 - homepage must degrade instead of 500ing.
         coverage_html = _render_coverage_unavailable()
 
@@ -1096,6 +1114,8 @@ def render(ctx: object) -> str:
                     site_records[sid] = _SiteRecord(sid)
         for sid in inactive_site_ids:
             site_records.pop(sid, None)
+        if coverage_data is not None:
+            coverage_html = _render_coverage_panel(coverage_data, site_records)
 
         open_opportunities = _rows_by_site(_status_rows(opportunity_rows, {"open"}))
         for sid in inactive_site_ids:

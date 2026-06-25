@@ -64,6 +64,40 @@ def test_panel_lists_completed_sites_and_dates() -> None:
     assert "2026-06-21" in html
 
 
+def test_panel_uses_account_name_when_completed_site_is_only_site_id() -> None:
+    report = {
+        "weekly": {
+            "count": 1,
+            "target": 4,
+            "remaining": 3,
+            "completed": [{"site_id": "592", "site": "592", "date": "2026-06-24"}],
+        },
+        "accounts": [{"site_id": "592", "site_name": "Altoona Community Health"}],
+        "overdue": [],
+        "gaps": [],
+    }
+    html = home._render_coverage_panel(report)
+    assert "Altoona Community Health" in html
+    assert ">592<" not in html
+
+
+def test_panel_uses_site_record_name_when_accounts_are_not_in_report() -> None:
+    report = {
+        "weekly": {
+            "count": 1,
+            "target": 4,
+            "remaining": 3,
+            "completed": [{"site_id": "222", "site": "222", "date": "2026-06-24"}],
+        },
+        "overdue": [],
+        "gaps": [],
+    }
+    site_records = {"222": SimpleNamespace(name="Interfuse Manufacturing - Woodland")}
+    html = home._render_coverage_panel(report, site_records)
+    assert "Interfuse Manufacturing - Woodland" in html
+    assert ">222<" not in html
+
+
 def test_panel_overdue_shows_days_and_never() -> None:
     html = home._render_coverage_panel(_populated_report())
     assert "Cedar Commons" in html
