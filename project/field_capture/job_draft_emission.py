@@ -24,6 +24,11 @@ from processing_core.status import STATUS_COMPLETE
 
 
 LOGGER = logging.getLogger(__name__)
+SUPPLY_LEVELS_AREA = "Supply Levels"
+SUPPLY_LEVELS_AUTO_APPROVER = "field_capture_supply_levels_auto_approval"
+SUPPLY_LEVELS_AUTO_APPROVAL_RATIONALE = (
+    "Supply Levels captures skip draft review and enter the supply approval workflow."
+)
 
 
 def job_drafts_from_semantic(
@@ -50,12 +55,16 @@ def job_drafts_from_semantic(
                 continue
             ordinal = len(drafts)
             channel_metadata = _dict_field(candidate, "channel_metadata")
+            review_status = _initial_review_status(candidate, job_type_text)
+            reviewed_at = created_at if review_status == "approved" else None
+            reviewed_by = SUPPLY_LEVELS_AUTO_APPROVER if review_status == "approved" else None
+            review_rationale = SUPPLY_LEVELS_AUTO_APPROVAL_RATIONALE if review_status == "approved" else None
             drafts.append(
                 {
                     "draft_id": f"{group_id}-{job_type_text}-{ordinal}",
                     "job_type": job_type_text,
                     "payload": payload_dict if isinstance(payload_dict, dict) else {},
-                    "review_status": JOB_DRAFT_REVIEW_STATUS_DEFAULT,
+                    "review_status": review_status,
                     "validation_error": str(error) if error else None,
                     "message": _message(candidate),
                     "site_id": _site_id(candidate),
@@ -67,6 +76,9 @@ def job_drafts_from_semantic(
                     "confidence": candidate.get("confidence"),
                     "group_id": group_id,
                     "created_at": created_at,
+                    "reviewed_at": reviewed_at,
+                    "reviewed_by": reviewed_by,
+                    "review_rationale": review_rationale,
                     "source": "field_capture_pipeline",
                 }
             )
@@ -132,6 +144,17 @@ def couchdb_job_draft_exists(config: couchdb_config.CouchDBConfig, db: str, draf
 def _dict_field(candidate: dict[str, object], field: str) -> dict[str, object]:
     value = candidate.get(field)
     return value if isinstance(value, dict) else {}
+
+
+def _initial_review_status(candidate: dict[str, object], job_type: str) -> str:
+    if job_type == "log_supply_need" and _field_capture_area(candidate).lower() == SUPPLY_LEVELS_AREA.lower():
+        return "approved"
+    return JOB_DRAFT_REVIEW_STATUS_DEFAULT
+
+
+def _field_capture_area(candidate: dict[str, object]) -> str:
+    channel_metadata = _dict_field(candidate, "channel_metadata")
+    return str(candidate.get("area") or channel_metadata.get("area") or "")
 
 
 def _capture_id(candidate: dict[str, object]) -> str:

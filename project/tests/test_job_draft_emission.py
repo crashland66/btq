@@ -156,6 +156,38 @@ def test_multi_job_source_shares_group_id_distinct_draft_ids() -> None:
     assert supply_draft["payload"].get("site_id") == "SANDBOX"
 
 
+def test_supply_levels_supply_need_auto_approves_for_supply_workflow() -> None:
+    art = _artifact(
+        "We need toilet bowl cleaner.",
+        "cap-supply-levels-toilet-cleaner",
+        area="Supply Levels",
+    )
+    drafts = job_drafts_from_semantic(Path("supply-levels.json"), art)
+
+    supply_drafts = [draft for draft in drafts if draft["job_type"] == "log_supply_need"]
+    assert len(supply_drafts) == 1, drafts
+    draft = supply_drafts[0]
+
+    assert draft["review_status"] == "approved"
+    assert draft["reviewed_by"] == "field_capture_supply_levels_auto_approval"
+    assert draft["reviewed_at"] == draft["created_at"]
+    assert draft["review_rationale"] == (
+        "Supply Levels captures skip draft review and enter the supply approval workflow."
+    )
+    assert draft["payload"]["item_name"] == "toilet bowl cleaner"
+
+
+def test_regular_supply_need_still_requires_draft_review() -> None:
+    art = _artifact(SUPPLY_NOTE, "cap-regular-supply")
+    drafts = job_drafts_from_semantic(Path("regular-supply.json"), art)
+
+    supply_draft = next(draft for draft in drafts if draft["job_type"] == "log_supply_need")
+    assert supply_draft["review_status"] == "pending_approval"
+    assert supply_draft["reviewed_by"] is None
+    assert supply_draft["reviewed_at"] is None
+    assert supply_draft["review_rationale"] is None
+
+
 # --------------------------------------------------------------------------- #
 # No-job -> nothing. THE structural win: genuinely zero drafts.
 # --------------------------------------------------------------------------- #
