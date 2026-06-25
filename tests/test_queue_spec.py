@@ -1256,3 +1256,14 @@ def test_job_schemas_register_mark_record_archive_jobs() -> None:
     assert JOB_SCHEMAS[JOB_MARK_RECORD_ARCHIVED] == ["record_type", "record_id", "actor"]
     assert JOB_SCHEMAS[JOB_MARK_RECORD_UNARCHIVED] == ["record_type", "record_id", "actor"]
     assert JOB_SCHEMAS[JOB_EDIT_RECORD_FIELDS] == ["record_type", "record_id", "fields", "actor"]
+
+
+def test_archivable_record_types_stay_in_sync() -> None:
+    """ARCHIVABLE_RECORD_TYPES is duplicated in queue_spec and the handler;
+    they must stay identical. Edit one without the other and this fails."""
+    from queue_spec import ARCHIVABLE_RECORD_TYPES as spec_types
+    from queue_processor.handlers.supplies_equipment_transitions import (
+        ARCHIVABLE_RECORD_TYPES as handler_types,
+    )
+
+    assert spec_types == handler_types
