@@ -30,6 +30,6 @@ public extension BTQSession {
         ],
         canSubmit: true,
         canReview: false,
-        maxImages: 6
+        maxImages: FieldCaptureModel.defaultMaxImagesPerCapture
     )
 }

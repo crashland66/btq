@@ -33,6 +33,7 @@ struct SettingsView: View {
             Section("Account") {
                 LabeledContent("Server", value: model.account.baseURL.absoluteString)
                 LabeledContent("Person", value: model.session?.person.name ?? "Not connected")
+                LabeledContent("Role", value: roleLabel(for: model.account.tokenRole ?? model.session?.token.role))
                 LabeledContent("Token", value: model.session?.token.label ?? "None")
             }
 
@@ -161,6 +162,7 @@ struct SettingsView: View {
         } label: {
             AccountSwitchRow(
                 title: account.personName ?? account.label,
+                role: account.tokenRole,
                 subtitle: account.baseURL.host() ?? account.baseURL.absoluteString,
                 isSelected: isSelected
             )
@@ -203,6 +205,7 @@ struct SettingsView: View {
 
 private struct AccountSwitchRow: View {
     let title: String
+    let role: String?
     let subtitle: String
     let isSelected: Bool
 
@@ -212,9 +215,14 @@ private struct AccountSwitchRow: View {
                 Text(title)
                     .fontWeight(isSelected ? .semibold : .regular)
                     .foregroundStyle(isSelected ? Color.btqAccent : Color.primary)
-                Text(subtitle)
-                    .font(.caption)
-                    .foregroundStyle(isSelected ? Color.btqAccent.opacity(0.8) : Color.secondary)
+                HStack(spacing: 6) {
+                    Text(roleLabel(for: role))
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(role == "site_admin" ? Color.btqAccent : Color.secondary)
+                    Text(subtitle)
+                        .font(.caption)
+                        .foregroundStyle(isSelected ? Color.btqAccent.opacity(0.8) : Color.secondary)
+                }
             }
             Spacer()
             if isSelected {
@@ -223,5 +231,21 @@ private struct AccountSwitchRow: View {
                     .foregroundStyle(Color.btqAccent)
             }
         }
+    }
+}
+
+private func roleLabel(for role: String?) -> String {
+    switch role {
+    case "site_admin":
+        "Site Admin"
+    case "cleaner":
+        "Cleaner"
+    case let role? where !role.isEmpty:
+        role
+            .split(separator: "_")
+            .map { word in word.prefix(1).uppercased() + word.dropFirst() }
+            .joined(separator: " ")
+    default:
+        "Role unknown"
     }
 }

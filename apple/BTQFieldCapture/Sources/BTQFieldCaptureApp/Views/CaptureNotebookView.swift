@@ -437,8 +437,7 @@ struct CaptureNotebookView: View {
         Binding {
             model.selectedSiteID
         } set: { newValue in
-            model.selectedSiteID = newValue
-            model.selectedCategoryValue = nil
+            model.selectSite(id: newValue)
         }
     }
 

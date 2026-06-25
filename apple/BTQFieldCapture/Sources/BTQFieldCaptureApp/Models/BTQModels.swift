@@ -7,6 +7,7 @@ public struct BTQAccount: Identifiable, Codable, Equatable, Sendable {
     public var tokenID: String?
     public var personID: String?
     public var personName: String?
+    public var tokenRole: String?
 
     public init(
         id: UUID = UUID(),
@@ -14,7 +15,8 @@ public struct BTQAccount: Identifiable, Codable, Equatable, Sendable {
         baseURL: URL,
         tokenID: String? = nil,
         personID: String? = nil,
-        personName: String? = nil
+        personName: String? = nil,
+        tokenRole: String? = nil
     ) {
         self.id = id
         self.label = label
@@ -22,6 +24,7 @@ public struct BTQAccount: Identifiable, Codable, Equatable, Sendable {
         self.tokenID = tokenID
         self.personID = personID
         self.personName = personName
+        self.tokenRole = tokenRole
     }
 }
 
@@ -104,15 +107,21 @@ public struct BTQPerson: Codable, Equatable, Sendable {
 public struct BTQToken: Codable, Equatable, Sendable {
     public var tokenID: String
     public var label: String
+    public var role: String?
+    public var tokenType: String?
 
-    public init(tokenID: String, label: String) {
+    public init(tokenID: String, label: String, role: String? = nil, tokenType: String? = nil) {
         self.tokenID = tokenID
         self.label = label
+        self.role = role
+        self.tokenType = tokenType
     }
 
     enum CodingKeys: String, CodingKey {
         case tokenID = "token_id"
         case label
+        case role
+        case tokenType = "token_type"
     }
 }
 
@@ -575,7 +584,7 @@ public struct BTQDisplayCategory: Identifiable, Codable, Equatable, Sendable {
         )
         let valueCandidate = Self.firstPresentString(
             in: container,
-            keys: [.value, .canonical, .slug, .id, .key, .name, .label]
+            keys: [.canonical, .value, .slug, .id, .key, .name, .label]
         )
 
         guard let resolvedValue = valueCandidate ?? labelCandidate else {

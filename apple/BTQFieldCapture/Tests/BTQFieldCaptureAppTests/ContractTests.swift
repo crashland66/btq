@@ -9,7 +9,7 @@ import UniformTypeIdentifiers
     let json = """
     {
       "person": {"person_id": "employee_1", "name": "Field Person"},
-      "token": {"token_id": "token_1", "label": "Pilot"},
+      "token": {"token_id": "token_1", "label": "Pilot", "role": "site_admin", "token_type": "capture"},
       "sites": [
         {
           "site_id": "site_1",
@@ -28,6 +28,8 @@ import UniformTypeIdentifiers
     let session = try JSONDecoder().decode(BTQSession.self, from: json)
 
     #expect(session.person.personID == "employee_1")
+    #expect(session.token.role == "site_admin")
+    #expect(session.token.tokenType == "capture")
     #expect(session.sites.first?.displayCategories.first?.value == "supplies")
     #expect(session.maxImages == 6)
 }
@@ -60,6 +62,35 @@ import UniformTypeIdentifiers
 
     #expect(categories.map(\.value) == ["general_note", "Supply request", "incident"])
     #expect(categories.map(\.label) == ["General note", "Supply request", "incident"])
+}
+
+@Test func sessionDecodesCanonicalCategoryAsSubmissionValue() throws {
+    let json = """
+    {
+      "person": {"person_id": "operator_1", "name": "Operator"},
+      "token": {"token_id": "token_operator", "label": "Operator"},
+      "sites": [
+        {
+          "site_id": "site_qc",
+          "label": "QC Site",
+          "display_categories": [
+            {"value": "legacy_qc", "canonical": "qc", "label": "QC"}
+          ]
+        }
+      ],
+      "can_submit": true,
+      "can_review": true,
+      "max_images": 100,
+      "inbox_count": 0
+    }
+    """.data(using: .utf8)!
+
+    let session = try JSONDecoder().decode(BTQSession.self, from: json)
+    let category = try #require(session.sites.first?.displayCategories.first)
+
+    #expect(category.value == "qc")
+    #expect(category.label == "QC")
+    #expect(session.maxImages == 100)
 }
 
 @Test func mySubmissionsDecodesBackendShape() throws {
@@ -844,6 +875,44 @@ import UniformTypeIdentifiers
     #expect(apiClientSource.contains("read(upToCount: 256 * 1024)"))
 }
 
+@Test func fileBackedMultipartBodyCarriesOneHundredPhotoParts() throws {
+    let temp = FileManager.default.temporaryDirectory.appendingPathComponent("btq-hundred-photo-test-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: temp, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: temp) }
+
+    let photos = try (1...100).map { index in
+        let filename = "qc-\(index).jpg"
+        let photoURL = temp.appendingPathComponent(filename)
+        try Data("fake-photo-\(index)".utf8).write(to: photoURL)
+        return CapturePhoto(filename: filename, fileURL: photoURL)
+    }
+
+    let capture = LocalCapture(
+        captureID: "cap-qc-hundred-photo-test",
+        jobID: "job-qc-hundred-photo-test",
+        visitID: nil,
+        siteID: "site_qc",
+        siteLabel: "QC Site",
+        targetID: "site_qc",
+        qcCategory: "qc",
+        note: "Large QC walk",
+        capturedAt: Date(timeIntervalSince1970: 1_800_000_000),
+        exportedAt: Date(timeIntervalSince1970: 1_800_000_001),
+        photos: photos
+    )
+
+    let bodyURL = temp.appendingPathComponent("body.multipart")
+    try MultipartCaptureBuilder.writeBody(for: capture, boundary: "TestBoundary", to: bodyURL)
+    let body = try String(contentsOf: bodyURL, encoding: .utf8)
+
+    let photoPartCount = body.components(separatedBy: "name=\"photos\"; filename=").count - 1
+    #expect(photoPartCount == 100)
+    #expect(body.contains("name=\"qc_category\""))
+    #expect(body.contains("qc"))
+    #expect(body.contains("qc-1.jpg"))
+    #expect(body.contains("qc-100.jpg"))
+}
+
 @Test func sqliteStoreRoundTripsOfflineSnapshot() async throws {
     let temp = FileManager.default.temporaryDirectory.appendingPathComponent("btq-sqlite-\(UUID().uuidString)", isDirectory: true)
     try FileManager.default.createDirectory(at: temp, withIntermediateDirectories: true)
@@ -1371,7 +1440,7 @@ import UniformTypeIdentifiers
     #expect(model.sites.map(\.siteID) == ["site_saved"])
     #expect(model.selectedSiteID == "site_saved")
     #expect(model.selectedCategoryValue == nil)
-    #expect(model.maxImagesPerCapture == 4)
+    #expect(model.maxImagesPerCapture == 100)
     #expect(model.isOfflineMode == false)
     #expect(model.statusMessage == "Session refreshed")
 }
@@ -1412,6 +1481,121 @@ import UniformTypeIdentifiers
     #expect(model.selectedCategoryValue == nil)
     #expect(didSave)
     #expect(model.captures.first?.qcCategory == "general_note")
+}
+
+@Test @MainActor func legacySessionPhotoLimitIsFlooredToNativeHundredPhotoCap() async {
+    let site = BTQSite(siteID: "site_legacy", label: "Legacy Limit Site")
+    let snapshot = FieldCaptureSnapshot(
+        account: .defaultProduction,
+        session: BTQSession(
+            person: BTQPerson(personID: "person_field", name: "Field User"),
+            token: BTQToken(tokenID: "token_field", label: "Pilot"),
+            sites: [site],
+            canSubmit: true,
+            canReview: false,
+            maxImages: 6
+        ),
+        sites: [site]
+    )
+    let model = FieldCaptureModel(
+        store: MemoryFieldCaptureStore(snapshot: snapshot),
+        apiClient: MockCaptureAPIClient(),
+        tokenStore: MemoryTokenStore(),
+        notificationScheduler: NoopUploadNotificationScheduler()
+    )
+
+    await model.load()
+
+    #expect(model.session?.maxImages == 6)
+    #expect(model.maxImagesPerCapture == 100)
+}
+
+@Test @MainActor func operatorQCCategoryAutoSelectsWhenServerOffersQC() async {
+    let site = BTQSite(
+        siteID: "site_qc",
+        label: "QC Site",
+        displayCategories: [
+            BTQDisplayCategory(value: "qc", label: "QC"),
+            BTQDisplayCategory(value: "baseline", label: "Baseline"),
+        ]
+    )
+    let snapshot = FieldCaptureSnapshot(
+        account: .defaultProduction,
+        session: BTQSession(
+            person: BTQPerson(personID: "person_operator", name: "Operator"),
+            token: BTQToken(tokenID: "token_operator", label: "Operator"),
+            sites: [site],
+            canSubmit: true,
+            canReview: true,
+            maxImages: 100
+        ),
+        sites: [site]
+    )
+    let model = FieldCaptureModel(
+        store: MemoryFieldCaptureStore(snapshot: snapshot),
+        apiClient: MockCaptureAPIClient(),
+        tokenStore: MemoryTokenStore(),
+        notificationScheduler: NoopUploadNotificationScheduler()
+    )
+
+    await model.load()
+    model.observationText = "QC walk photos"
+
+    let didSave = await model.saveQuickObservation(
+        photos: (1...100).map { CapturePhoto(filename: "qc-\($0).jpg") }
+    )
+
+    #expect(model.maxImagesPerCapture == 100)
+    #expect(model.selectedCategoryValue == "qc")
+    #expect(didSave)
+    #expect(model.captures.first?.qcCategory == "qc")
+    #expect(model.captures.first?.photos.count == 100)
+}
+
+@Test @MainActor func siteSelectionAppliesQCDefaultOnlyWhenNewSiteOffersQC() async {
+    let ordinarySite = BTQSite(
+        siteID: "site_ordinary",
+        label: "Ordinary Site",
+        displayCategories: [
+            BTQDisplayCategory(value: "cleaning_quality", label: "Cleaning quality"),
+        ]
+    )
+    let qcSite = BTQSite(
+        siteID: "site_qc",
+        label: "QC Site",
+        displayCategories: [
+            BTQDisplayCategory(value: "qc", label: "QC"),
+            BTQDisplayCategory(value: "baseline", label: "Baseline"),
+        ]
+    )
+    let snapshot = FieldCaptureSnapshot(
+        account: .defaultProduction,
+        session: BTQSession(
+            person: BTQPerson(personID: "person_operator", name: "Operator"),
+            token: BTQToken(tokenID: "token_operator", label: "Operator"),
+            sites: [ordinarySite, qcSite],
+            canSubmit: true,
+            canReview: true,
+            maxImages: 100
+        ),
+        sites: [ordinarySite, qcSite]
+    )
+    let model = FieldCaptureModel(
+        store: MemoryFieldCaptureStore(snapshot: snapshot),
+        apiClient: MockCaptureAPIClient(),
+        tokenStore: MemoryTokenStore(),
+        notificationScheduler: NoopUploadNotificationScheduler()
+    )
+
+    await model.load()
+    #expect(model.selectedSiteID == "site_ordinary")
+    #expect(model.selectedCategoryValue == nil)
+
+    model.selectSite(id: "site_qc")
+    #expect(model.selectedCategoryValue == "qc")
+
+    model.selectSite(id: "site_ordinary")
+    #expect(model.selectedCategoryValue == nil)
 }
 
 @Test @MainActor func sessionRefreshPreservesValidSelectedCategory() async {
@@ -1577,7 +1761,7 @@ import UniformTypeIdentifiers
     #expect(model.statusMessage == "Could not save locally. Try again.")
 }
 
-@Test @MainActor func saveQuickObservationRejectsTooManyPhotosForSessionLimit() async {
+@Test @MainActor func saveQuickObservationRejectsMoreThanNativeHundredPhotoCap() async {
     let snapshot = FieldCaptureSnapshot(
         account: .defaultProduction,
         session: BTQSession(
@@ -1598,14 +1782,13 @@ import UniformTypeIdentifiers
     )
     await model.load()
 
-    let didSave = await model.saveQuickObservation(photos: [
-        CapturePhoto(filename: "one.jpg"),
-        CapturePhoto(filename: "two.jpg"),
-    ])
+    let didSave = await model.saveQuickObservation(
+        photos: (1...101).map { CapturePhoto(filename: "photo-\($0).jpg") }
+    )
 
     #expect(didSave == false)
     #expect(model.captures.isEmpty)
-    #expect(model.statusMessage == "Limit is 1 photo per capture.")
+    #expect(model.statusMessage == "Limit is 100 photos per capture.")
 }
 
 @Test @MainActor func quickObservationDraftPreflightMatchesSaveValidation() async {
@@ -1632,8 +1815,9 @@ import UniformTypeIdentifiers
     #expect(model.validateQuickObservationDraft(photoCount: 0, hasAudio: false) == false)
     #expect(model.statusMessage == "Add a note, photo, or voice memo.")
     #expect(model.validateQuickObservationDraft(photoCount: 0, hasAudio: true))
-    #expect(model.validateQuickObservationDraft(photoCount: 2, hasAudio: true) == false)
-    #expect(model.statusMessage == "Limit is 1 photo per capture.")
+    #expect(model.validateQuickObservationDraft(photoCount: 100, hasAudio: true))
+    #expect(model.validateQuickObservationDraft(photoCount: 101, hasAudio: true) == false)
+    #expect(model.statusMessage == "Limit is 100 photos per capture.")
 }
 
 @Test @MainActor func saveQuickObservationRejectsViewOnlyToken() async {
@@ -2433,7 +2617,7 @@ import UniformTypeIdentifiers
     let apiClient = SequencedSessionAPIClient(sessions: [
         BTQSession(
             person: BTQPerson(personID: "person_alpha", name: "Alpha User"),
-            token: BTQToken(tokenID: "token_alpha", label: "Alpha"),
+            token: BTQToken(tokenID: "token_alpha", label: "Alpha", role: "cleaner"),
             sites: [BTQSite(siteID: "site_alpha", label: "Alpha Site")],
             canSubmit: true,
             canReview: false,
@@ -2441,7 +2625,7 @@ import UniformTypeIdentifiers
         ),
         BTQSession(
             person: BTQPerson(personID: "person_beta", name: "Beta User"),
-            token: BTQToken(tokenID: "token_beta", label: "Beta"),
+            token: BTQToken(tokenID: "token_beta", label: "Beta", role: "site_admin"),
             sites: [BTQSite(siteID: "site_beta", label: "Beta Site")],
             canSubmit: true,
             canReview: false,
@@ -2461,6 +2645,7 @@ import UniformTypeIdentifiers
 
     #expect(didConnectAlpha)
     #expect(model.account.personName == "Alpha User")
+    #expect(model.account.tokenRole == "cleaner")
     #expect(model.sites.map(\.siteID) == ["site_alpha"])
 
     model.observationText = "Draft should not cross accounts"
@@ -2471,6 +2656,7 @@ import UniformTypeIdentifiers
     #expect(betaAccountID != alphaAccountID)
     #expect(model.accounts.count == 2)
     #expect(model.account.personName == "Beta User")
+    #expect(model.account.tokenRole == "site_admin")
     #expect(model.sites.map(\.siteID) == ["site_beta"])
     #expect(model.observationText.isEmpty)
 
@@ -2479,6 +2665,7 @@ import UniformTypeIdentifiers
 
     #expect(model.account.id == alphaAccountID)
     #expect(model.account.personName == "Alpha User")
+    #expect(model.account.tokenRole == "cleaner")
     #expect(model.sites.map(\.siteID) == ["site_alpha"])
     #expect(model.observationText.isEmpty)
 }

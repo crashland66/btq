@@ -4,6 +4,8 @@ import Observation
 @MainActor
 @Observable
 public final class FieldCaptureModel {
+    public nonisolated static let defaultMaxImagesPerCapture = 100
+
     public private(set) var account: BTQAccount
     public private(set) var session: BTQSession?
     public private(set) var sites: [BTQSite]
@@ -72,7 +74,7 @@ public final class FieldCaptureModel {
         }
         set {
             selectedSiteID = newValue?.siteID
-            selectedCategoryValue = nil
+            selectedCategoryValue = defaultCategoryValue(for: newValue)
         }
     }
 
@@ -125,7 +127,7 @@ public final class FieldCaptureModel {
     }
 
     public var maxImagesPerCapture: Int {
-        max(0, session?.maxImages ?? 6)
+        max(Self.defaultMaxImagesPerCapture, session?.maxImages ?? Self.defaultMaxImagesPerCapture)
     }
 
     public var canSubmitCaptures: Bool {
@@ -299,6 +301,7 @@ public final class FieldCaptureModel {
             updatedAccount.tokenID = liveSession.token.tokenID
             updatedAccount.personID = liveSession.person.personID
             updatedAccount.personName = liveSession.person.name
+            updatedAccount.tokenRole = liveSession.token.role
             try await tokenStore.saveToken(token, accountID: updatedAccount.id)
             upsertCurrentWorkspace()
             if accountID != account.id {
@@ -639,6 +642,11 @@ public final class FieldCaptureModel {
         try? await persist()
     }
 
+    public func selectSite(id siteID: String?) {
+        selectedSiteID = siteID
+        selectedCategoryValue = defaultCategoryValue(for: selectedSite)
+    }
+
     @discardableResult
     public func validateQuickObservationDraft(photoCount: Int = 0, hasAudio: Bool = false) -> Bool {
         guard selectedSite != nil else {
@@ -671,7 +679,7 @@ public final class FieldCaptureModel {
             statusMessage = "Choose a site before saving."
             return false
         }
-        let category = selectedCategoryValue ?? "general_note"
+        let category = selectedCategoryValue ?? defaultCategoryValue(for: site) ?? "general_note"
         let note = observationText.trimmingCharacters(in: .whitespacesAndNewlines)
         let now = Date()
         let suffix = String(UUID().uuidString.prefix(8)).lowercased()
@@ -892,14 +900,14 @@ public final class FieldCaptureModel {
         inboxItems = []
         requiresReconnect = false
         selectedSiteID = prioritizedSites.first?.siteID
-        selectedCategoryValue = nil
+        selectedCategoryValue = defaultCategoryValue(for: selectedSite)
     }
 
     private func applyDemoSession() {
         session = .demo
         sites = BTQSession.demo.sites
         selectedSiteID = sites.first?.siteID
-        selectedCategoryValue = nil
+        selectedCategoryValue = defaultCategoryValue(for: selectedSite)
         upsertCurrentWorkspace()
     }
 
@@ -924,6 +932,7 @@ public final class FieldCaptureModel {
         updatedAccount.tokenID = liveSession.token.tokenID
         updatedAccount.personID = liveSession.person.personID
         updatedAccount.personName = liveSession.person.name
+        updatedAccount.tokenRole = liveSession.token.role
         account = updatedAccount
         session = liveSession
         requiresReconnect = false
@@ -978,7 +987,7 @@ public final class FieldCaptureModel {
            selectedSite?.displayCategories.contains(where: { $0.value == previousCategoryValue }) == true {
             selectedCategoryValue = previousCategoryValue
         } else {
-            selectedCategoryValue = nil
+            selectedCategoryValue = defaultCategoryValue(for: selectedSite)
         }
     }
 
@@ -1025,6 +1034,12 @@ public final class FieldCaptureModel {
             }
         }
         return nil
+    }
+
+    private func defaultCategoryValue(for site: BTQSite?) -> String? {
+        site?.displayCategories.first { category in
+            category.value.compare("qc", options: [.caseInsensitive, .diacriticInsensitive]) == .orderedSame
+        }?.value
     }
 
     private func nextRetryDate(attempts: Int, now: Date = .now) -> Date {
