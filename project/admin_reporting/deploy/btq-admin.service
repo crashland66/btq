@@ -1,0 +1,32 @@
+[Unit]
+Description=BTQ Admin Reporting (admin.gregstoltz.com) — read-only, token-gated
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=btq-admin
+Group=btq-admin
+WorkingDirectory=/srv/btq/apps/admin/source
+Environment=PYTHONPATH=/srv/btq/apps/admin/source
+# CouchDB reader creds (BTQ_COUCHDB_URL/USER/PASSWORD, optional BTQ_REFERENCES_DB)
+# live outside version control in this machine-local drop-in. Least-privilege:
+# a read-only reporting user scoped to btq_references. Without it the app cannot
+# read the report data.
+EnvironmentFile=-/etc/gregstoltz/admin.env
+ExecStart=/usr/bin/python3 -m admin_reporting.server --host 127.0.0.1 --port 8083 --token-db /srv/btq/data/field_capture_tokens.sqlite3
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+# The shared field-capture token DB (read for auth; the store writes last_used_at
+# on authenticate, so its directory must be writable, incl. SQLite WAL/journal).
+ReadWritePaths=/srv/btq/data
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+LockPersonality=true
+MemoryDenyWriteExecute=true
+
+[Install]
+WantedBy=multi-user.target
