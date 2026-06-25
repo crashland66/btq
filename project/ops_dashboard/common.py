@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib import request as urllib_request
 
-from urllib.parse import parse_qs, quote
+from urllib.parse import parse_qs, quote, urlencode
 
 from event_pipeline.sites import SITES
 from event_pipeline import couchdb_config
@@ -2116,6 +2116,29 @@ def render_thumb(url: str, *, size: int = 60) -> str:
     )
 
 
+LIST_RETURN_SIGNAL_FIELD = "return"
+LIST_RETURN_SIGNAL_VALUE = "list"
+LIST_REDIRECT_PARAM_KEYS = ("status", "site_id", "sort", "archived")
+
+
+def _return_to_list_requested(form: dict[str, list[str]]) -> bool:
+    return first_query_value(form, LIST_RETURN_SIGNAL_FIELD).strip() == LIST_RETURN_SIGNAL_VALUE
+
+
+def _list_redirect_location(redirect_path: str, form: dict[str, list[str]], *, message: str = "", error: str = "") -> str:
+    params = [
+        (key, value)
+        for key in LIST_REDIRECT_PARAM_KEYS
+        if (value := first_query_value(form, key).strip())
+    ]
+    if message:
+        params.append(("message", message))
+    if error:
+        params.append(("error", error))
+    query = urlencode(params)
+    return f"{redirect_path}?{query}" if query else redirect_path
+
+
 def handle_mark_transition_post(
     ctx: object,
     body: bytes,
@@ -2152,8 +2175,12 @@ def handle_mark_transition_post(
     def _redirect(location: str) -> tuple:
         return 303, "text/html; charset=utf-8", f'<a href="{html.escape(location)}">Return</a>'.encode(), {"Location": location}
 
+    return_to_list = _return_to_list_requested(form)
+
     if first_query_value(form, "confirm") != "1":
         _audit_append("failed: confirm_required")
+        if return_to_list:
+            return _redirect(_list_redirect_location(redirect_path, form, error="confirm_required"))
         return _redirect(f"{redirect_path}?error=confirm_required")
 
     entity_id = first_query_value(form, id_field).strip()
@@ -2162,6 +2189,8 @@ def handle_mark_transition_post(
 
     if not entity_id or not actor:
         _audit_append(f"failed: missing {id_field} or actor")
+        if return_to_list:
+            return _redirect(_list_redirect_location(redirect_path, form, error="missing_field"))
         return _redirect(f"{redirect_path}?error=missing_field")
 
     try:
@@ -2176,9 +2205,13 @@ def handle_mark_transition_post(
         )
     except Exception as exc:  # noqa: BLE001
         _audit_append(f"failed: {exc}")
+        if return_to_list:
+            return _redirect(_list_redirect_location(redirect_path, form, error=str(exc)))
         return _redirect(f"{redirect_path}?{id_field}={quote(entity_id)}&error={quote(str(exc))}")
 
     _audit_append(f"success: staged {id_field}={entity_id} queue_path={queue_path}")
+    if return_to_list:
+        return _redirect(_list_redirect_location(redirect_path, form, message="staged"))
     return _redirect(f"{redirect_path}?{id_field}={quote(entity_id)}&message=staged")
 
 

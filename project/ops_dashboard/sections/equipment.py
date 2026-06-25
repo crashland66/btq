@@ -98,7 +98,7 @@ def render_field_capture_equipment_body(ctx: object, *, embedded: bool = False) 
     </section>
     <section>
       <h2>Equipment</h2>
-      {render_equipment_list(exported)}
+      {render_equipment_list(exported, list_filters=list_filters(site_id=site_id, status=status, sort=sort, archived=archived))}
     </section>
 """
 
@@ -152,7 +152,27 @@ def render_filter_form(
       </form>"""
 
 
-def render_equipment_list(equipment: list[object]) -> str:
+def list_filters(*, site_id: str | None, status: str | None, sort: str, archived: bool) -> dict[str, str]:
+    return {
+        "status": status or "",
+        "site_id": site_id or "",
+        "sort": sort,
+        "archived": "1" if archived else "",
+    }
+
+
+def render_list_return_inputs(filters: dict[str, str] | None) -> str:
+    if filters is None:
+        return ""
+    inputs = ['<input type="hidden" name="return" value="list">']
+    for key in ("status", "site_id", "sort", "archived"):
+        value = str(filters.get(key) or "").strip()
+        if value:
+            inputs.append(f'<input type="hidden" name="{key}" value="{html.escape(value, quote=True)}">')
+    return "\n        ".join(inputs)
+
+
+def render_equipment_list(equipment: list[object], *, list_filters: dict[str, str] | None = None) -> str:
     rows = [request for request in equipment if isinstance(request, dict)]
     if not rows:
         return "<p>No equipment requests found.</p>"
@@ -173,7 +193,7 @@ def render_equipment_list(equipment: list[object]) -> str:
             meta_lines.append(f'<div><span style="color:var(--muted)">ID:</span> {html.escape(record_id)}</div>')
         reason_html = f'<p style="margin:10px 0 0">{html.escape(reason)}</p>' if reason else ""
         archived_notice = render_archived_notice(request)
-        actions = render_row_actions(request)
+        actions = render_row_actions(request, list_filters=list_filters)
         actions_footer = f'<footer style="margin-top:12px">{actions}</footer>' if actions else ""
         cards.append(
             f"""<article style="border:1px solid var(--line);border-radius:8px;background:var(--panel);padding:14px">
@@ -308,15 +328,17 @@ def render_edit_panel(request: dict[str, object]) -> str:
     return f"<section><h2>Edit</h2>{form}</section>"
 
 
-def render_row_actions(request: dict[str, object]) -> str:
+def render_row_actions(request: dict[str, object], *, list_filters: dict[str, str] | None = None) -> str:
     equipment_id = str(request.get("equipment_id") or "")
     if is_archived(request):
         return render_restore_form(equipment_id)
+    list_return_inputs = render_list_return_inputs(list_filters)
     forms = [
         f"""<form method="post" action="{html.escape(str(config["post_route"]))}" style="display:inline">
         <input type="hidden" name="equipment_id" value="{html.escape(equipment_id)}">
         <input type="hidden" name="actor" value="{html.escape(default_actor())}">
         <input type="hidden" name="confirm" value="1">
+        {list_return_inputs}
         <button type="submit">{html.escape(str(config["label"]))}</button>
       </form>"""
         for _name, config in valid_transitions(request.get("status"))

@@ -5,6 +5,7 @@ import json
 from http import HTTPStatus
 from io import BytesIO
 from pathlib import Path
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 
@@ -1633,6 +1634,11 @@ def read_single_queue_job(runtime_root: Path) -> dict[str, object]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def redirect_query(location: str) -> tuple[str, dict[str, list[str]]]:
+    parsed = urlsplit(location)
+    return parsed.path, parse_qs(parsed.query, keep_blank_values=True)
+
+
 def edit_section(body: str) -> str:
     start = body.index("<h2>Edit</h2>")
     end = body.index("<h2>Archive</h2>", start)
@@ -1758,6 +1764,92 @@ def test_supplies_mark_ordered_post_writes_queue_file(tmp_path: Path) -> None:
     assert job["job_type"] == "mark_supply_ordered"
     assert job["job_id"].startswith("mark-mark_supply_ordered-")
     assert job["payload"] == {"actor": "Jordan", "note": "ordered", "supply_id": "sup_cleaner"}
+
+
+def test_supplies_list_card_mark_post_redirects_to_filtered_list(tmp_path: Path) -> None:
+    runtime_root = tmp_path / "runtime"
+
+    status, _content_type, _body, headers = route_response_with_headers(
+        "POST",
+        "/supplies/mark-ordered",
+        runtime_root,
+        b"supply_id=sup_cleaner&actor=Jordan&confirm=1&return=list&status=open",
+    )
+    path, query = redirect_query(headers["Location"])
+
+    assert status == HTTPStatus.SEE_OTHER
+    assert path == "/supplies"
+    assert query == {"status": ["open"], "message": ["staged"]}
+    assert "supply_id" not in headers["Location"]
+
+
+def test_supplies_list_card_mark_post_preserves_only_whitelisted_filters(tmp_path: Path) -> None:
+    runtime_root = tmp_path / "runtime"
+
+    _status, _content_type, _body, headers = route_response_with_headers(
+        "POST",
+        "/supplies/mark-ordered",
+        runtime_root,
+        b"supply_id=sup_cleaner&actor=Jordan&confirm=1&return=list&status=open&site_id=705&sort=urgency&archived=1&junk=bad",
+    )
+    path, query = redirect_query(headers["Location"])
+
+    assert path == "/supplies"
+    assert query == {
+        "status": ["open"],
+        "site_id": ["705"],
+        "sort": ["urgency"],
+        "archived": ["1"],
+        "message": ["staged"],
+    }
+    assert "supply_id" not in query
+    assert "junk" not in query
+
+
+def test_supplies_detail_mark_post_redirect_stays_on_detail(tmp_path: Path) -> None:
+    runtime_root = tmp_path / "runtime"
+
+    status, _content_type, _body, headers = route_response_with_headers(
+        "POST",
+        "/supplies/mark-ordered",
+        runtime_root,
+        b"supply_id=sup_cleaner&actor=Jordan&confirm=1",
+    )
+
+    assert status == HTTPStatus.SEE_OTHER
+    assert headers["Location"] == "/supplies?supply_id=sup_cleaner&message=staged"
+
+
+def test_supplies_list_card_mark_error_redirects_to_filtered_list(tmp_path: Path) -> None:
+    runtime_root = tmp_path / "runtime"
+
+    status, _content_type, _body, headers = route_response_with_headers(
+        "POST",
+        "/supplies/mark-ordered",
+        runtime_root,
+        b"supply_id=sup_cleaner&confirm=1&return=list&status=open&junk=bad",
+    )
+    path, query = redirect_query(headers["Location"])
+
+    assert status == HTTPStatus.SEE_OTHER
+    assert path == "/supplies"
+    assert query == {"status": ["open"], "error": ["missing_field"]}
+    assert "supply_id" not in query
+    assert "junk" not in query
+
+
+def test_supplies_detail_mark_error_redirect_is_unchanged(tmp_path: Path) -> None:
+    runtime_root = tmp_path / "runtime"
+
+    status, _content_type, _body, headers = route_response_with_headers(
+        "POST",
+        "/supplies/mark-ordered",
+        runtime_root,
+        b"supply_id=sup_cleaner&confirm=1",
+    )
+
+    assert status == HTTPStatus.SEE_OTHER
+    assert headers["Location"] == "/supplies?error=missing_field"
 
 
 def test_supplies_mark_ordered_post_refuses_without_confirm(tmp_path: Path) -> None:
@@ -2111,6 +2203,92 @@ def test_equipment_mark_approved_post_writes_queue_file(tmp_path: Path) -> None:
     assert job["job_type"] == "mark_equipment_approved"
     assert job["job_id"].startswith("mark-mark_equipment_approved-")
     assert job["payload"] == {"actor": "Jordan", "equipment_id": "eqr_vacuum", "note": "approved"}
+
+
+def test_equipment_list_card_mark_post_redirects_to_filtered_list(tmp_path: Path) -> None:
+    runtime_root = tmp_path / "runtime"
+
+    status, _content_type, _body, headers = route_response_with_headers(
+        "POST",
+        "/equipment/mark-approved",
+        runtime_root,
+        b"equipment_id=eqr_vacuum&actor=Jordan&confirm=1&return=list&status=open",
+    )
+    path, query = redirect_query(headers["Location"])
+
+    assert status == HTTPStatus.SEE_OTHER
+    assert path == "/equipment"
+    assert query == {"status": ["open"], "message": ["staged"]}
+    assert "equipment_id" not in headers["Location"]
+
+
+def test_equipment_list_card_mark_post_preserves_only_whitelisted_filters(tmp_path: Path) -> None:
+    runtime_root = tmp_path / "runtime"
+
+    _status, _content_type, _body, headers = route_response_with_headers(
+        "POST",
+        "/equipment/mark-approved",
+        runtime_root,
+        b"equipment_id=eqr_vacuum&actor=Jordan&confirm=1&return=list&status=open&site_id=705&sort=priority&archived=1&junk=bad",
+    )
+    path, query = redirect_query(headers["Location"])
+
+    assert path == "/equipment"
+    assert query == {
+        "status": ["open"],
+        "site_id": ["705"],
+        "sort": ["priority"],
+        "archived": ["1"],
+        "message": ["staged"],
+    }
+    assert "equipment_id" not in query
+    assert "junk" not in query
+
+
+def test_equipment_detail_mark_post_redirect_stays_on_detail(tmp_path: Path) -> None:
+    runtime_root = tmp_path / "runtime"
+
+    status, _content_type, _body, headers = route_response_with_headers(
+        "POST",
+        "/equipment/mark-approved",
+        runtime_root,
+        b"equipment_id=eqr_vacuum&actor=Jordan&confirm=1",
+    )
+
+    assert status == HTTPStatus.SEE_OTHER
+    assert headers["Location"] == "/equipment?equipment_id=eqr_vacuum&message=staged"
+
+
+def test_equipment_list_card_mark_error_redirects_to_filtered_list(tmp_path: Path) -> None:
+    runtime_root = tmp_path / "runtime"
+
+    status, _content_type, _body, headers = route_response_with_headers(
+        "POST",
+        "/equipment/mark-approved",
+        runtime_root,
+        b"equipment_id=eqr_vacuum&confirm=1&return=list&status=open&junk=bad",
+    )
+    path, query = redirect_query(headers["Location"])
+
+    assert status == HTTPStatus.SEE_OTHER
+    assert path == "/equipment"
+    assert query == {"status": ["open"], "error": ["missing_field"]}
+    assert "equipment_id" not in query
+    assert "junk" not in query
+
+
+def test_equipment_detail_mark_error_redirect_is_unchanged(tmp_path: Path) -> None:
+    runtime_root = tmp_path / "runtime"
+
+    status, _content_type, _body, headers = route_response_with_headers(
+        "POST",
+        "/equipment/mark-approved",
+        runtime_root,
+        b"equipment_id=eqr_vacuum&confirm=1",
+    )
+
+    assert status == HTTPStatus.SEE_OTHER
+    assert headers["Location"] == "/equipment?error=missing_field"
 
 
 def test_equipment_mark_approved_post_refuses_without_confirm(tmp_path: Path) -> None:

@@ -89,7 +89,7 @@ def render_field_capture_supplies_body(ctx: object, *, embedded: bool = False) -
     </section>
     <section>
       <h2>Supplies</h2>
-      {render_supply_list(exported)}
+      {render_supply_list(exported, list_filters=list_filters(site_id=site_id, status=status, sort=sort, archived=archived))}
     </section>
 """
 
@@ -143,7 +143,27 @@ def render_filter_form(
       </form>"""
 
 
-def render_supply_list(supplies: list[object]) -> str:
+def list_filters(*, site_id: str | None, status: str | None, sort: str, archived: bool) -> dict[str, str]:
+    return {
+        "status": status or "",
+        "site_id": site_id or "",
+        "sort": sort,
+        "archived": "1" if archived else "",
+    }
+
+
+def render_list_return_inputs(filters: dict[str, str] | None) -> str:
+    if filters is None:
+        return ""
+    inputs = ['<input type="hidden" name="return" value="list">']
+    for key in ("status", "site_id", "sort", "archived"):
+        value = str(filters.get(key) or "").strip()
+        if value:
+            inputs.append(f'<input type="hidden" name="{key}" value="{html.escape(value, quote=True)}">')
+    return "\n        ".join(inputs)
+
+
+def render_supply_list(supplies: list[object], *, list_filters: dict[str, str] | None = None) -> str:
     rows = [supply for supply in supplies if isinstance(supply, dict)]
     if not rows:
         return "<p>No supply needs found.</p>"
@@ -167,7 +187,7 @@ def render_supply_list(supplies: list[object]) -> str:
             meta_lines.append(f'<div><span style="color:var(--muted)">ID:</span> {html.escape(record_id)}</div>')
         notes_html = f'<p style="margin:10px 0 0">{html.escape(notes)}</p>' if notes else ""
         archived_notice = render_archived_notice(supply)
-        actions = render_row_actions(supply)
+        actions = render_row_actions(supply, list_filters=list_filters)
         actions_footer = f'<footer style="margin-top:12px">{actions}</footer>' if actions else ""
         cards.append(
             f"""<article style="border:1px solid var(--line);border-radius:8px;background:var(--panel);padding:14px">
@@ -290,15 +310,17 @@ def render_edit_panel(supply: dict[str, object]) -> str:
     return f"<section><h2>Edit</h2>{form}</section>"
 
 
-def render_row_actions(supply: dict[str, object]) -> str:
+def render_row_actions(supply: dict[str, object], *, list_filters: dict[str, str] | None = None) -> str:
     supply_id = str(supply.get("supply_id") or "")
     if is_archived(supply):
         return render_restore_form(supply_id)
+    list_return_inputs = render_list_return_inputs(list_filters)
     forms = [
         f"""<form method="post" action="{html.escape(str(config["post_route"]))}" style="display:inline">
         <input type="hidden" name="supply_id" value="{html.escape(supply_id)}">
         <input type="hidden" name="actor" value="{html.escape(default_actor())}">
         <input type="hidden" name="confirm" value="1">
+        {list_return_inputs}
         <button type="submit">{html.escape(str(config["label"]))}</button>
       </form>"""
         for _name, config in valid_transitions(supply.get("status"))
