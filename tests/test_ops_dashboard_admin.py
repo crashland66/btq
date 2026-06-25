@@ -5,6 +5,7 @@ import json
 from http import HTTPStatus
 from io import BytesIO
 from pathlib import Path
+from types import SimpleNamespace
 from urllib.parse import parse_qs, urlsplit
 
 import pytest
@@ -16,7 +17,9 @@ import ops_dashboard.common as common
 from ops_dashboard.app import request_context, route_response, route_response_with_headers
 from ops_dashboard.common import SectionContext
 from ops_dashboard.layout import NAV_ITEMS, _VERSION, nav_html
+import ops_dashboard.sections.equipment as equipment_section
 from ops_dashboard.sections.inbox import candidate_inbox_row, unknown_capture_rows
+import ops_dashboard.sections.supplies as supplies_section
 from processing_core.approved_job_drafts import write_approved_job_draft
 from processing_core.action_candidates import action_candidate_payload, write_action_candidate_review
 from processing_core.artifacts import write_json_object
@@ -1614,7 +1617,62 @@ def test_supplies_status_filter_options_show_counts(tmp_path: Path, monkeypatch)
     status, _content_type, body = request_text("GET", "/supplies", tmp_path / "runtime")
 
     assert status == HTTPStatus.OK
-    assert '<option value="open">Open (2)</option>' in body
+    assert 'type="radio" name="status" value="open"' in body
+    assert "Open <strong>2</strong>" in body
+
+
+@pytest.mark.parametrize(
+    ("embedded", "expected_action", "expected_tab"),
+    ((False, 'action="/supplies"', ""), (True, 'action="/"', 'name="tab" value="supplies"')),
+)
+def test_supplies_body_compacts_summary_filters_and_preserves_list_filters(monkeypatch: pytest.MonkeyPatch, embedded: bool, expected_action: str, expected_tab: str) -> None:
+    row = {
+        "supply_id": "sup_cleaner",
+        "site_id": "7050",
+        "site_name": "Summit Wire",
+        "item_name": "BrightWash cleaner",
+        "quantity_needed": "2 bottles",
+        "urgency": "high",
+        "requested_by": "Tom Walsh",
+        "status": "open",
+        "notes": "Supply closet is empty.",
+        "_id": "supply_need_sup_cleaner",
+    }
+    report = {"supplies": [row], "counts": {"total": 1, "by_status": {"open": 1}}}
+    monkeypatch.setattr(supplies_section, "discover_site_supplies", lambda **_kwargs: report)
+    monkeypatch.setattr(supplies_section, "supplies_from_report", lambda discovered: discovered["supplies"])
+
+    ctx = SimpleNamespace(query={"site_id": ["7050"], "status": ["open"], "sort": ["urgency"], "archived": ["1"]})
+    body = supplies_section.render_field_capture_supplies_body(ctx, embedded=embedded)
+
+    assert expected_action in body
+    assert expected_tab in body
+    assert 'class="list-toolbar"' in body
+    assert 'data-submit-on-change' in body
+    assert 'name="site_id"' in body
+    assert 'name="status" value="open" checked' in body
+    assert 'name="sort"' in body
+    assert 'value="urgency" selected' in body
+    assert 'name="archived" value="1" checked' in body
+    assert "Apply filters" not in body
+    assert "<h2>Summary</h2>" not in body
+    assert "<h2>Filters</h2>" not in body
+    assert body.index('class="list-toolbar"') < body.index("<article")
+    # a11y: status pills are real keyboard-operable controls inside a labeled
+    # fieldset (not click-only spans), and every field has an accessible label.
+    assert '<fieldset class="status-filter">' in body
+    assert "<legend>Status</legend>" in body
+    assert '<label class="status-filter-pill is-selected" for="status_open">' in body
+    assert '<input id="status_open" type="radio" name="status" value="open" checked>' in body
+    assert '<label class="toolbar-field" for="site_id">' in body
+    assert '<input id="site_id" name="site_id"' in body
+    assert '<label class="toolbar-field" for="sort">' in body
+    assert '<select id="sort" name="sort">' in body
+    assert '<input type="hidden" name="return" value="list">' in body
+    assert '<input type="hidden" name="status" value="open">' in body
+    assert '<input type="hidden" name="site_id" value="7050">' in body
+    assert '<input type="hidden" name="sort" value="urgency">' in body
+    assert '<input type="hidden" name="archived" value="1">' in body
 
 
 def test_supplies_nav_entry_present_and_active_on_supplies_page(tmp_path: Path, monkeypatch) -> None:
@@ -2080,6 +2138,60 @@ def test_equipment_route_filters_by_status_query_param(tmp_path: Path, monkeypat
     assert status == HTTPStatus.OK
     assert "floor buffer" in body
     assert "vacuum" not in body
+
+
+@pytest.mark.parametrize(
+    ("embedded", "expected_action", "expected_tab"),
+    ((False, 'action="/equipment"', ""), (True, 'action="/"', 'name="tab" value="equipment"')),
+)
+def test_equipment_body_compacts_summary_filters_and_preserves_list_filters(monkeypatch: pytest.MonkeyPatch, embedded: bool, expected_action: str, expected_tab: str) -> None:
+    row = {
+        "equipment_id": "eqr_vacuum",
+        "site_id": "7050",
+        "site_name": "Summit Wire",
+        "equipment_name": "vacuum",
+        "reason": "Current unit will not start.",
+        "priority": "urgent",
+        "requested_by": "Tom Walsh",
+        "status": "open",
+        "notes": "Needed for night crew.",
+        "_id": "equipment_request_eqr_vacuum",
+    }
+    report = {"equipment": [row], "counts": {"total": 1, "by_status": {"open": 1}}}
+    monkeypatch.setattr(equipment_section, "discover_site_equipment", lambda **_kwargs: report)
+    monkeypatch.setattr(equipment_section, "equipment_from_report", lambda discovered: discovered["equipment"])
+
+    ctx = SimpleNamespace(query={"site_id": ["7050"], "status": ["open"], "sort": ["priority"], "archived": ["1"]})
+    body = equipment_section.render_field_capture_equipment_body(ctx, embedded=embedded)
+
+    assert expected_action in body
+    assert expected_tab in body
+    assert 'class="list-toolbar"' in body
+    assert 'data-submit-on-change' in body
+    assert 'name="site_id"' in body
+    assert 'name="status" value="open" checked' in body
+    assert 'name="sort"' in body
+    assert 'value="priority" selected' in body
+    assert 'name="archived" value="1" checked' in body
+    assert "Apply filters" not in body
+    assert "<h2>Summary</h2>" not in body
+    assert "<h2>Filters</h2>" not in body
+    assert body.index('class="list-toolbar"') < body.index("<article")
+    # a11y: status pills are real keyboard-operable controls inside a labeled
+    # fieldset (not click-only spans), and every field has an accessible label.
+    assert '<fieldset class="status-filter">' in body
+    assert "<legend>Status</legend>" in body
+    assert '<label class="status-filter-pill is-selected" for="status_open">' in body
+    assert '<input id="status_open" type="radio" name="status" value="open" checked>' in body
+    assert '<label class="toolbar-field" for="site_id">' in body
+    assert '<input id="site_id" name="site_id"' in body
+    assert '<label class="toolbar-field" for="sort">' in body
+    assert '<select id="sort" name="sort">' in body
+    assert '<input type="hidden" name="return" value="list">' in body
+    assert '<input type="hidden" name="status" value="open">' in body
+    assert '<input type="hidden" name="site_id" value="7050">' in body
+    assert '<input type="hidden" name="sort" value="priority">' in body
+    assert '<input type="hidden" name="archived" value="1">' in body
 
 
 def test_equipment_detail_renders_edit_form_with_site_dropdown(tmp_path: Path, monkeypatch) -> None:

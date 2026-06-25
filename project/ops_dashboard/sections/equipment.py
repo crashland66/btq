@@ -83,20 +83,15 @@ def render_field_capture_equipment_body(ctx: object, *, embedded: bool = False) 
     title = f"Archived {build_title(site_id, status)}" if archived else build_title(site_id, status)
     action = "/" if embedded else "/equipment"
     tab = "equipment" if embedded else None
+    counts = report.get("counts") if isinstance(report.get("counts"), dict) else {}
     return f"""
-    <header>
+    <header class="compact-list-header">
       <h1>{html.escape(title)}</h1>
-      <p class="muted">Read-only structured equipment request records from the vault.</p>
     </header>
-    <section>
-      <h2>Summary</h2>
-      {render_kv(report.get("counts") if isinstance(report.get("counts"), dict) else {})}
+    <section class="list-toolbar" aria-label="Equipment filters and status summary">
+      {render_filter_form(site_id, status, counts, action=action, tab=tab, sort=sort, archived=archived)}
     </section>
-    <section>
-      <h2>Filters</h2>
-      {render_filter_form(site_id, status, report.get("counts") if isinstance(report.get("counts"), dict) else {}, action=action, tab=tab, sort=sort, archived=archived)}
-    </section>
-    <section>
+    <section class="list-results">
       <h2>Equipment</h2>
       {render_equipment_list(exported, list_filters=list_filters(site_id=site_id, status=status, sort=sort, archived=archived))}
     </section>
@@ -122,18 +117,7 @@ def render_filter_form(
     sort: str = "",
     archived: bool = False,
 ) -> str:
-    options = []
     counts = counts if isinstance(counts, dict) else {}
-    status_counts = counts.get("by_status") if isinstance(counts.get("by_status"), dict) else counts
-    for value in EQUIPMENT_STATUS_OPTIONS:
-        selected = ' selected' if (status or "") == value else ""
-        label = "Any status" if not value else humanize_key(value)
-        count_text = ""
-        if value:
-            count = status_counts.get(value)
-            if isinstance(count, int):
-                count_text = f" ({count})"
-        options.append(f'<option value="{html.escape(value)}"{selected}>{html.escape(label)}{count_text}</option>')
     tab_input = f'<input type="hidden" name="tab" value="{html.escape(tab)}">' if tab else ""
     sort_options = []
     for value, label in (("", "Default order"), ("priority", "Priority"), ("site", "Site"), ("recency", "Most recent")):
@@ -141,15 +125,40 @@ def render_filter_form(
         sort_options.append(f'<option value="{html.escape(value)}"{selected}>{html.escape(label)}</option>')
     return f"""<form method="get" action="{html.escape(action)}" data-submit-on-change>
         {tab_input}
-        <label for="site_id">Site ID</label>
-        <input id="site_id" name="site_id" value="{html.escape(site_id or '')}">
-        <label for="status">Status</label>
-        <select id="status" name="status">{"".join(options)}</select>
-        <label for="sort">Sort</label>
-        <select id="sort" name="sort">{"".join(sort_options)}</select>
-        <label><input type="checkbox" name="archived" value="1"{' checked' if archived else ''}> Archived</label>
-        <p><button type="submit">Apply filters</button></p>
+        <label class="toolbar-field" for="site_id">
+          <span>Site ID</span>
+          <input id="site_id" name="site_id" value="{html.escape(site_id or '')}">
+        </label>
+        {render_status_filter(status, counts)}
+        <label class="toolbar-field" for="sort">
+          <span>Sort</span>
+          <select id="sort" name="sort">{"".join(sort_options)}</select>
+        </label>
+        <label class="toolbar-checkbox"><input type="checkbox" name="archived" value="1"{' checked' if archived else ''}> Archived</label>
       </form>"""
+
+
+def render_status_filter(status: str | None, counts: dict[str, object]) -> str:
+    status_counts = counts.get("by_status") if isinstance(counts.get("by_status"), dict) else {}
+    total = counts.get("total")
+    controls = []
+    for value in EQUIPMENT_STATUS_OPTIONS:
+        checked = ' checked' if (status or "") == value else ""
+        selected_class = " is-selected" if checked else ""
+        label = "Any" if not value else humanize_key(value)
+        count = total if not value else status_counts.get(value)
+        count_html = f' <strong>{int(count)}</strong>' if isinstance(count, int) else ""
+        control_id = f"status_{slugify_status(value or 'any')}"
+        controls.append(
+            f"""<label class="status-filter-pill{selected_class}" for="{html.escape(control_id)}">
+              <input id="{html.escape(control_id)}" type="radio" name="status" value="{html.escape(value)}"{checked}>
+              <span>{html.escape(label)}{count_html}</span>
+            </label>"""
+        )
+    return f"""<fieldset class="status-filter">
+          <legend>Status</legend>
+          <div class="status-filter-options">{"".join(controls)}</div>
+        </fieldset>"""
 
 
 def list_filters(*, site_id: str | None, status: str | None, sort: str, archived: bool) -> dict[str, str]:

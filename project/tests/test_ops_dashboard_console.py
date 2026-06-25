@@ -154,7 +154,8 @@ def test_console_supplies_tab_renders_open_full_list_with_filters_and_actions(
     assert '<h1>Supply Needs with status open</h1>' in body
     assert '<form method="get" action="/" data-submit-on-change>' in body
     assert 'name="tab" value="supplies"' in body
-    assert '<option value="open" selected>Open (1)</option>' in body
+    assert 'type="radio" name="status" value="open" checked' in body
+    assert "Open <strong>1</strong>" in body
     assert "BrightWash cleaner" in body
     assert "Mop heads" not in body
     # 349: supplies list is now a responsive card GRID, not a <table>. Actions live
@@ -185,7 +186,8 @@ def test_console_equipment_tab_renders_open_full_list_with_filters_and_actions(
     assert '<h1>Equipment Requests with status open</h1>' in body
     assert '<form method="get" action="/" data-submit-on-change>' in body
     assert 'name="tab" value="equipment"' in body
-    assert '<option value="open" selected>Open (1)</option>' in body
+    assert 'type="radio" name="status" value="open" checked' in body
+    assert "Open <strong>1</strong>" in body
     assert "vacuum" in body
     assert "floor buffer" not in body
     # 352: equipment list is now a responsive card GRID, not a <table>. Actions live
@@ -213,7 +215,8 @@ def test_console_state_filters_round_trip_in_tab_urls(monkeypatch: pytest.Monkey
     assert 'href="/?tab=supplies&amp;site_id=7050&amp;sort=site&amp;status=ordered" role="tab" aria-current="page" aria-selected="true"' in body
     assert 'href="/?tab=equipment&amp;site_id=7050&amp;sort=site&amp;status=ordered" role="tab" aria-selected="false"' in body
     assert 'name="site_id" value="7050"' in body
-    assert '<option value="ordered" selected>Ordered (1)</option>' in body
+    assert 'type="radio" name="status" value="ordered" checked' in body
+    assert "Ordered <strong>1</strong>" in body
     assert '<option value="site" selected>Site</option>' in body
 
 

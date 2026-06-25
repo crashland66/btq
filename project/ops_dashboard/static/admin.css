@@ -680,6 +680,90 @@ button.reject { background: var(--reject-bg); border-color: var(--reject-border)
 .inbox-summary-strip { display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: center; }
 .inbox-summary-strip a { font-weight: 600; text-decoration: none; }
 .summary-separator { color: var(--muted); }
+.compact-list-header {
+  padding: 10px 14px;
+  margin-bottom: 10px;
+}
+.compact-list-header h1 {
+  margin: 0;
+  font-size: 1.45rem;
+  line-height: 1.2;
+}
+.list-toolbar {
+  padding: 10px 12px;
+  margin-bottom: 10px;
+}
+.list-toolbar form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 8px 12px;
+}
+.list-toolbar form .toolbar-field {
+  display: grid;
+  gap: 3px;
+  margin: 0;
+  color: var(--muted);
+  font-size: .82rem;
+  min-width: 9rem;
+}
+.list-toolbar form .toolbar-field input,
+.list-toolbar form .toolbar-field select {
+  width: 100%;
+  max-width: none;
+  padding: 6px 8px;
+}
+.status-filter {
+  border: 0;
+  padding: 0;
+  margin: 0;
+  min-inline-size: 0;
+}
+.status-filter legend {
+  padding: 0;
+  color: var(--muted);
+  font-size: .82rem;
+  font-weight: 600;
+}
+.status-filter-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.status-filter-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin: 0;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  padding: 4px 7px;
+  background: var(--pill-bg);
+  color: var(--text);
+  font-size: .85rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+.status-filter-pill input {
+  width: auto;
+  margin: 0;
+}
+.status-filter-pill.is-selected {
+  border-color: var(--accent);
+  background: var(--highlight-bg);
+}
+.toolbar-checkbox {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 0 6px;
+  color: var(--text);
+  font-size: .9rem;
+  font-weight: 600;
+}
+.list-results {
+  margin-top: 0;
+}
 .notice { border-left: 4px solid var(--accent); }
 .error { border-left: 4px solid var(--danger); }
 .success { border-left: 4px solid var(--success); }
@@ -889,6 +973,8 @@ details.raw-json pre { margin-top: 4px; }
   .admin-shell.nav-collapsed .admin-nav a { justify-content: flex-start; padding: 9px 10px; }
   .admin-content { padding: 16px; }
   .content-with-rail, .candidate-group-header, .inbox-primary, .stat-strip { grid-template-columns: 1fr; }
+  .list-toolbar form .toolbar-field { flex: 1 1 9rem; }
+  .status-filter { flex: 1 1 100%; }
 }
 
 /* Tape deck voice controls */
