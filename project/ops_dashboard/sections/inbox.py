@@ -32,6 +32,7 @@ from .health_pipeline import pipeline_status
 from site_equipment import discover_site_equipment, priority_sort
 from site_issues import discover_site_issues
 from site_supplies import discover_site_supplies, urgency_sort
+from . import site_orders
 
 INBOX_SHAPE_CAPTURE = "capture"
 INBOX_SHAPE_STRUCTURED = "structured"
@@ -452,6 +453,10 @@ def open_equipment_requests_rows(limit: int = 5) -> tuple[int, list[dict[str, ob
     return len(open_equipment), rows
 
 
+def dashboard_work_item_rows(limit: int = 5) -> tuple[int, list[dict[str, object]]]:
+    return site_orders.dashboard_work_items(limit=limit)
+
+
 def console_review_queue_counts(ctx: object) -> dict[str, int]:
     cached = getattr(ctx, "_btq_console_review_queue_counts", None)
     if isinstance(cached, dict):
@@ -545,6 +550,7 @@ def inbox_cards(ctx: object) -> list[dict[str, object]]:
         runtime_resolved, submitters=submitters, all_candidates=all_candidates
     )
     console_state_cards = console_cards(ctx)
+    dashboard_work_count, dashboard_work_rows = dashboard_work_item_rows()
     pipeline = pipeline_status(runtime_resolved)
     pipeline_summary = pipeline.get("summary") if isinstance(pipeline.get("summary"), dict) else {}
     pipeline_failing = pipeline_summary.get("failing") if isinstance(pipeline_summary.get("failing"), list) else []
@@ -592,6 +598,7 @@ def inbox_cards(ctx: object) -> list[dict[str, object]]:
         console_state_cards["issues"],
         console_state_cards["supplies"],
         console_state_cards["equipment"],
+        {"id": "dashboard_work_items", "title": "Dashboard work items", "count": dashboard_work_count, "top": dashboard_work_rows, "see_all": "/site-orders", "shape": INBOX_SHAPE_GAP},
         {"id": "pipeline_health", "title": "Pipeline health", "count": 0 if pipeline_summary.get("ok") else len(pipeline_failing), "top": fail_rows, "see_all": "/health/pipeline", "shape": INBOX_SHAPE_GAP},
     ]
     return cards
@@ -700,6 +707,7 @@ def render_inbox(ctx: object) -> str:
         ("uploaded_without_candidate", "Uploads w/o candidate"),
         ("open_supply_needs", "Supply"),
         ("open_equipment_requests", "Equipment"),
+        ("dashboard_work_items", "Dashboard"),
     ]
     stat_strip = "".join(_render_stat_badge(_card_by_id(cards, card_id)) for card_id in stat_ids)
     primary_cards = "".join(_render_primary_card(_card_by_id(cards, card_id), vault_root) for card_id in primary_ids)

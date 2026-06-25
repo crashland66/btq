@@ -227,6 +227,7 @@ EXPECTED_INBOX_CARD_IDS = [
     "open_site_issues",
     "open_supply_needs",
     "open_equipment_requests",
+    "dashboard_work_items",
 ]
 
 
@@ -288,11 +289,12 @@ def test_layout_nav_items_render_glyphs(tmp_path: Path) -> None:
 
 
 def test_nav_items_include_field_photos() -> None:
-    assert len(NAV_ITEMS) == 7
+    assert len(NAV_ITEMS) == 8
     # "Candidates" (/candidates) added in 320/A: the console replaced the home preview card that was
     # the only link to the full candidates route, so it gets its own nav entry.
+    # "Site Orders" (/site-orders) added to inspect imported Staples usage by ship-to site.
     # "Records" (/records) added in 359: browse canonical shift reports.
-    assert [label for _section, label, _href, _glyph in NAV_ITEMS] == ["Home", "Review", "Candidates", "Records", "Field Photos", "Admin", "Help"]
+    assert [label for _section, label, _href, _glyph in NAV_ITEMS] == ["Home", "Review", "Candidates", "Site Orders", "Records", "Field Photos", "Admin", "Help"]
 
 
 def test_admin_nav_entry_active_on_health_page() -> None:
@@ -778,6 +780,7 @@ def test_inbox_route_renders_200_and_has_expected_cards(tmp_path: Path) -> None:
         "uploaded_without_candidate",
         "open_supply_needs",
         "open_equipment_requests",
+        "dashboard_work_items",
     ):
         assert f'data-summary-id="{card_id}"' in body
 
@@ -824,7 +827,7 @@ def test_inbox_compact_summary_row_lists_low_signal_cards(tmp_path: Path) -> Non
 
     assert status == HTTPStatus.OK
     summary = body[body.index('class="inbox-summary-strip"') :]
-    for label in ("Missing drafts:", "Unstaged drafts:", "Vision sidecars:", "Uploads w/o candidate:", "Supply:", "Equipment:"):
+    for label in ("Missing drafts:", "Unstaged drafts:", "Vision sidecars:", "Uploads w/o candidate:", "Supply:", "Equipment:", "Dashboard:"):
         assert label in summary
 
 
@@ -910,7 +913,7 @@ def test_candidate_inbox_row_has_note_false_when_no_transcript_path() -> None:
     assert result["has_note"] is False
 
 
-def test_inbox_api_json_still_lists_twelve_cards(tmp_path: Path) -> None:
+def test_inbox_api_json_still_lists_expected_cards(tmp_path: Path) -> None:
     status, _content_type, body = request_text("GET", "/api/inbox.json", tmp_path / "runtime")
 
     assert status == HTTPStatus.OK

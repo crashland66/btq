@@ -12,6 +12,7 @@ NAV_ITEMS = (
     ("home", "Home", "/", "H"),
     ("swipe", "Review", "/swipe", "R"),
     ("candidates", "Candidates", "/candidates", "C"),
+    ("site_orders", "Site Orders", "/site-orders", "$"),
     ("records", "Records", "/records", "D"),
     ("field_photos", "Field Photos", "/field-photos", "P"),
     ("admin", "Admin", "/admin", "A"),
