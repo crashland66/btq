@@ -6,10 +6,13 @@ from types import SimpleNamespace
 
 import pytest
 
+from capture_ingest import IMPORT_MAX_IMAGES, validate_content_length
 from field_capture.server import (
     SubmissionError,
     build_capture_document,
+    build_parser,
     build_submission_job,
+    can_override_submission_attribution,
     parse_multipart,
     validate_uploaded_audio,
     validate_uploaded_photos,
@@ -55,6 +58,13 @@ def fake_session() -> SimpleNamespace:
     )
 
 
+def uploaded_photos(count: int) -> list[SimpleNamespace]:
+    return [
+        SimpleNamespace(filename=f"qc-{index}.jpg", content_type="image/jpeg", content=b"\xff\xd8photo")
+        for index in range(count)
+    ]
+
+
 def test_submit_with_photo_builds_capture_document_and_stores_file(tmp_path: Path) -> None:
     body, content_type = multipart_body(valid_fields(), [("photos", "C:\\fakepath\\sink.jpg", "image/jpeg", b"\xff\xd8photo")])
     fields, uploads = parse_multipart(body, content_type)
@@ -81,6 +91,42 @@ def test_submit_with_photo_builds_capture_document_and_stores_file(tmp_path: Pat
     assert photo["upload_id"] == "2026-05-02/cap-photo-test/sink.jpg"
     assert "fakepath" not in json.dumps(doc)
     assert "data_url" not in photo
+
+
+def test_default_capture_photo_limit_accepts_full_qc_and_rejects_over_cap() -> None:
+    args = build_parser().parse_args([])
+
+    assert args.max_images == 100
+    validate_uploaded_photos(uploaded_photos(50), max_images=args.max_images, max_upload_bytes=args.max_upload_bytes)
+
+    with pytest.raises(SubmissionError) as old_limit_error:
+        validate_uploaded_photos(uploaded_photos(50), max_images=6, max_upload_bytes=args.max_upload_bytes)
+    assert old_limit_error.value.code == "too_many_photos"
+
+    with pytest.raises(SubmissionError) as new_limit_error:
+        validate_uploaded_photos(uploaded_photos(101), max_images=args.max_images, max_upload_bytes=args.max_upload_bytes)
+    assert new_limit_error.value.code == "too_many_photos"
+
+
+def test_default_capture_request_limit_fits_full_qc_body_and_keeps_per_photo_cap() -> None:
+    args = build_parser().parse_args([])
+    expected_request_limit = 512 * 1024 * 1024
+    realistic_hundred_photo_body = 100 * 5 * 1024 * 1024 + 1024 * 1024
+
+    assert args.request_max_bytes == expected_request_limit
+    assert args.max_upload_bytes == 10 * 1024 * 1024
+    assert validate_content_length(str(realistic_hundred_photo_body), args.request_max_bytes) == realistic_hundred_photo_body
+
+
+def test_import_token_override_remains_aligned_with_regular_capture_cap() -> None:
+    args = build_parser().parse_args([])
+    import_session = SimpleNamespace(record=SimpleNamespace(token_type="import"))
+    regular_session = SimpleNamespace(record=SimpleNamespace(token_type="field_capture"))
+
+    assert can_override_submission_attribution(import_session) is True
+    assert can_override_submission_attribution(regular_session) is False
+    assert IMPORT_MAX_IMAGES == 100
+    assert max(args.max_images, IMPORT_MAX_IMAGES) == 100
 
 
 def test_submit_without_photo_is_rejected() -> None:

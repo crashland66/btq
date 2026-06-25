@@ -42,11 +42,11 @@ UploadedPhoto = UploadedFile
 
 
 # Per-submission photo ceiling for the dedicated batch-image import token only.
-# Regular capture tokens (the field-capture/unified apps) keep their own much
-# smaller server max_images; this higher ceiling lets the ops-dashboard batch
-# importer ingest a WhatsApp-fallback dump (e.g. 31 photos) as one capture. The
-# real upper bound for a batch is the server request_max_bytes total-body cap.
-IMPORT_MAX_IMAGES = 50
+# Regular capture tokens (the field-capture/unified apps) keep their own server
+# max_images; this ceiling keeps the ops-dashboard batch importer explicitly
+# aligned with full-QC capture batches. The real upper bound for a batch is the
+# server request_max_bytes total-body cap.
+IMPORT_MAX_IMAGES = 100
 
 
 @dataclass(frozen=True)
