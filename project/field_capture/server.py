@@ -130,10 +130,14 @@ BUILTIN_FALLBACK_CATEGORIES = [
     {"label": "Other", "canonical": "Other"},
 ]
 OPERATOR_ONLY_CATEGORIES = [
+    # Native operator clients default QC walks to canonical "qc"; keep the
+    # public category contract to exactly {label, canonical}.
+    {"label": "QC", "canonical": "qc"},
     {"label": "Baseline", "canonical": "baseline"},
     {"label": "Pre-Engagement", "canonical": "pre_engagement"},
 ]
 OPERATOR_ONLY_CANONICALS = frozenset(entry["canonical"] for entry in OPERATOR_ONLY_CATEGORIES)
+OPERATOR_ONLY_LABELS = frozenset(entry["label"] for entry in OPERATOR_ONLY_CATEGORIES)
 
 
 @dataclass(frozen=True)
@@ -198,6 +202,8 @@ def canonicalize_qc_category(raw_value: str, categories: list[dict[str, str]]) -
         label = str(entry.get("label") or "").strip()
         if value == canonical or value == label:
             return canonical
+    if value in OPERATOR_ONLY_CANONICALS or value in OPERATOR_ONLY_LABELS:
+        return ""
     return value
 
 

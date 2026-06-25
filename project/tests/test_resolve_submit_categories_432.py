@@ -20,7 +20,7 @@ Contract under test:
      categories are appended) and is NOT parameterized.
 
 The "site_admin" role filter is made observable by checking for the
-operator-only canonicals (``baseline`` / ``pre_engagement``) that
+operator-only canonicals (``qc`` / ``baseline`` / ``pre_engagement``) that
 ``apply_role_category_filter(..., "site_admin")`` appends — these are absent for
 any other role, so an assertion on their presence is a real (non-vacuous) gate.
 """
@@ -33,17 +33,22 @@ from field_capture import server as fc_server
 from field_capture.server import (
     BUILTIN_FALLBACK_CATEGORIES,
     OPERATOR_ONLY_CATEGORIES,
+    apply_role_category_filter,
+    canonicalize_qc_category,
     resolve_submit_categories,
 )
+from queue_spec import validate_job
 
 
 # --------------------------------------------------------------------------- #
 # Helpers / fakes
 # --------------------------------------------------------------------------- #
 
-OPERATOR_CANONICALS = {entry["canonical"] for entry in OPERATOR_ONLY_CATEGORIES}
+OPERATOR_CANONICAL_ORDER = [entry["canonical"] for entry in OPERATOR_ONLY_CATEGORIES]
+OPERATOR_CANONICALS = set(OPERATOR_CANONICAL_ORDER)
 # Sanity: the extraction's literal "site_admin" gate is what appends these.
-assert OPERATOR_CANONICALS == {"baseline", "pre_engagement"}, OPERATOR_ONLY_CATEGORIES
+assert OPERATOR_CANONICAL_ORDER == ["qc", "baseline", "pre_engagement"], OPERATOR_ONLY_CATEGORIES
+assert OPERATOR_CANONICALS == {"qc", "baseline", "pre_engagement"}, OPERATOR_ONLY_CATEGORIES
 
 
 class _LogSink:
@@ -124,7 +129,7 @@ def test_happy_path_uses_registry_categories_and_appends_operator_only():
     # returns site categories first when they normalize non-empty).
     assert canon[: len(SITE_CATS)] == ["loading_dock", "stairwell"]
     # site_admin filter APPENDED the operator-only categories at the end.
-    assert canon[-2:] == ["baseline", "pre_engagement"]
+    assert canon[-3:] == OPERATOR_CANONICAL_ORDER
     assert OPERATOR_CANONICALS.issubset(set(canon))
     # The default categories were NOT used (site categories took precedence).
     assert "lobby_default" not in canon
@@ -146,7 +151,7 @@ def test_happy_path_result_is_independent_list_not_shared_mutable_state():
     first[0]["label"] = "MUTATED"
 
     second = resolve_submit_categories(_FakeRegistry(categories=SITE_CATS), "s2", log)
-    assert _canonicals(second)[-2:] == ["baseline", "pre_engagement"]
+    assert _canonicals(second)[-3:] == OPERATOR_CANONICAL_ORDER
     assert "x" not in _canonicals(second)
     # Module-level template untouched.
     assert {e["canonical"] for e in OPERATOR_ONLY_CATEGORIES} == OPERATOR_CANONICALS
@@ -171,7 +176,7 @@ def test_registry_lookup_raises_falls_back_to_system_defaults_and_logs(monkeypat
     # Did NOT raise; fell back to the system-default categories.
     assert canon[: len(DEFAULT_CATS)] == ["lobby_default", "hallway_default"]
     # site_admin filter still applied on the fallback path.
-    assert canon[-2:] == ["baseline", "pre_engagement"]
+    assert canon[-3:] == OPERATOR_CANONICAL_ORDER
     # Exactly one WARNING about the failed display_categories lookup, with site_id+error.
     assert len(log.calls) == 1
     msg = log.messages[0]
@@ -188,7 +193,7 @@ def test_registry_lookup_raises_arbitrary_exception_does_not_propagate():
     # Must not raise. With empty defaults this lands on BUILTIN fallback.
     result = resolve_submit_categories(registry, "s", log)
     canon = _canonicals(result)
-    assert canon[-2:] == ["baseline", "pre_engagement"]
+    assert canon[-3:] == OPERATOR_CANONICAL_ORDER
     assert len(log.calls) == 1
     assert "display_categories lookup failed" in log.messages[0]
 
@@ -210,7 +215,7 @@ def test_system_defaults_raises_is_caught_logged_and_still_returns(monkeypatch):
     canon = _canonicals(result)
     # Registry categories still used; site_admin filter still applied.
     assert canon[: len(SITE_CATS)] == ["loading_dock", "stairwell"]
-    assert canon[-2:] == ["baseline", "pre_engagement"]
+    assert canon[-3:] == OPERATOR_CANONICAL_ORDER
     # The system_defaults failure was logged as a WARNING for /api/submit.
     assert any(
         m.startswith("WARNING:") and "system_defaults unavailable for /api/submit" in m
@@ -234,7 +239,7 @@ def test_system_defaults_raises_with_no_registry_falls_to_builtin(monkeypatch):
     canon = _canonicals(result)
     builtin_canon = [c["canonical"] for c in BUILTIN_FALLBACK_CATEGORIES]
     assert canon[: len(builtin_canon)] == builtin_canon
-    assert canon[-2:] == ["baseline", "pre_engagement"]
+    assert canon[-3:] == OPERATOR_CANONICAL_ORDER
     assert any("system_defaults unavailable" in m for m in log.messages)
 
 
@@ -248,7 +253,7 @@ def test_system_defaults_non_dict_is_tolerated(monkeypatch):
     result = resolve_submit_categories(registry, "s", log)
 
     assert _canonicals(result)[: len(SITE_CATS)] == ["loading_dock", "stairwell"]
-    assert _canonicals(result)[-2:] == ["baseline", "pre_engagement"]
+    assert _canonicals(result)[-3:] == OPERATOR_CANONICAL_ORDER
     # Non-dict is not an exception path -> no WARNING logged.
     assert log.calls == []
 
@@ -269,7 +274,7 @@ def test_none_registry_uses_system_defaults_only(monkeypatch):
 
     canon = _canonicals(result)
     assert canon[: len(DEFAULT_CATS)] == ["lobby_default", "hallway_default"]
-    assert canon[-2:] == ["baseline", "pre_engagement"]
+    assert canon[-3:] == OPERATOR_CANONICAL_ORDER
     # No registry => no registry-failure WARNING.
     assert all("display_categories lookup failed" not in m for m in log.messages)
 
@@ -285,7 +290,7 @@ def test_none_registry_with_empty_defaults_uses_builtin(monkeypatch):
     canon = _canonicals(result)
     builtin_canon = [c["canonical"] for c in BUILTIN_FALLBACK_CATEGORIES]
     assert canon[: len(builtin_canon)] == builtin_canon
-    assert canon[-2:] == ["baseline", "pre_engagement"]
+    assert canon[-3:] == OPERATOR_CANONICAL_ORDER
     assert log.calls == []
 
 
@@ -324,10 +329,11 @@ def test_role_filter_is_site_admin_operator_only_categories_always_present(monke
 
     for result in (r_registry, r_defaults, r_builtin):
         canon = _canonicals(result)
+        assert "qc" in canon, canon
         assert "baseline" in canon, canon
         assert "pre_engagement" in canon, canon
         # And appended (not prepended) at the tail.
-        assert canon[-2:] == ["baseline", "pre_engagement"], canon
+        assert canon[-3:] == OPERATOR_CANONICAL_ORDER, canon
 
 
 def test_operator_only_not_double_appended_when_already_present(monkeypatch):
@@ -349,7 +355,44 @@ def test_operator_only_not_double_appended_when_already_present(monkeypatch):
     canon = _canonicals(result)
 
     assert canon.count("baseline") == 1, canon
+    assert canon.count("qc") == 1, canon
     assert canon.count("pre_engagement") == 1, canon
-    # pre_engagement still appended (was absent), baseline kept its original spot.
+    # qc and pre_engagement still appended (were absent), baseline kept its original spot.
     assert canon[0] == "baseline"
-    assert canon[-1] == "pre_engagement"
+    assert canon[-2:] == ["qc", "pre_engagement"]
+
+
+def test_apply_role_category_filter_adds_qc_first_for_site_admin_only():
+    operator_result = apply_role_category_filter(SITE_CATS, "site_admin")
+    cleaner_result = apply_role_category_filter(SITE_CATS, "cleaner")
+
+    assert operator_result[len(SITE_CATS):] == OPERATOR_ONLY_CATEGORIES
+    assert operator_result[len(SITE_CATS)] == {"label": "QC", "canonical": "qc"}
+    assert set(operator_result[len(SITE_CATS)].keys()) == {"label", "canonical"}
+    assert _canonicals(cleaner_result) == ["loading_dock", "stairwell"]
+    assert OPERATOR_CANONICALS.isdisjoint(_canonicals(cleaner_result))
+
+
+def test_canonicalize_qc_accepts_operator_categories_and_rejects_cleaner_categories():
+    operator_categories = apply_role_category_filter(SITE_CATS, "site_admin")
+    cleaner_categories = apply_role_category_filter(SITE_CATS, "cleaner")
+
+    assert canonicalize_qc_category("qc", operator_categories) == "qc"
+    assert canonicalize_qc_category("QC", operator_categories) == "qc"
+    assert canonicalize_qc_category("qc", cleaner_categories) == ""
+
+
+def test_photo_capture_qc_category_qc_satisfies_queue_contract():
+    job = {
+        "job_type": "photo_capture",
+        "payload": {
+            "site": "Synthetic Site",
+            "qc_category": "qc",
+            "note": "Synthetic QC walk.",
+            "captured_at": "2026-06-25T09:00:00-04:00",
+            "exported_at": "2026-06-25T09:01:00-04:00",
+            "photos": [],
+        },
+    }
+
+    assert validate_job(job) is True
