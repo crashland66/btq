@@ -16,6 +16,9 @@ PROJECT="$(cd "${PKG_DIR}/.." && pwd)"                        # .../project
 REMOTE="${BTQ_VPS_SSH_TARGET:-deploy@vps.example.com}"
 REMOTE_SOURCE="${BTQ_VPS_REMOTE_SOURCE:-/home/deploy/admin-reporting-source}"  # sanitization-ok: generic deploy-host placeholder, real path via BTQ_VPS_REMOTE_SOURCE
 
+echo "Ensuring remote source dir exists..."
+ssh "${REMOTE}" "mkdir -p '${REMOTE_SOURCE}/admin_reporting' '${REMOTE_SOURCE}/voice_memo' '${REMOTE_SOURCE}/event_pipeline'"
+
 echo "Syncing admin_reporting package to ${REMOTE}:${REMOTE_SOURCE}..."
 rsync -az --delete \
 	--exclude '__pycache__/' \

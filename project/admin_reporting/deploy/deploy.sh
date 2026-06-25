@@ -13,19 +13,11 @@ PORT=8083
 
 cd "${SOURCE_DIR}"
 
-if [ -f "${ENV_FILE}" ]; then
-	set -a
-	. "${ENV_FILE}"
-	set +a
-fi
-
-COUCHDB_URL="${BTQ_COUCHDB_URL:-http://127.0.0.1:5984}"
-REFERENCES_DB="${BTQ_REFERENCES_DB:-btq_references}"
-COUCHDB_USER="${BTQ_COUCHDB_USER:-}"
-COUCHDB_PASSWORD="${BTQ_COUCHDB_PASSWORD:-}"
-
 echo "Ensuring btq-admin service user..."
 id btq-admin >/dev/null 2>&1 || sudo useradd --system --no-create-home --shell /usr/sbin/nologin btq-admin
+# The app authenticates against the shared field-capture token DB (group btq-field,
+# mode 0660 — the store writes last_used_at on auth). Grant the service user access.
+sudo usermod -aG btq-field btq-admin
 
 echo "Verifying shared token database..."
 if [ ! -f "${TOKEN_DB}" ]; then
@@ -35,20 +27,27 @@ if [ ! -f "${TOKEN_DB}" ]; then
 fi
 
 # READ-ONLY: verify btq_references is reachable + readable with the reporting creds.
-# Do NOT create it (this app never writes; btq_references is replicated Pro->VPS).
-echo "Verifying read access to ${REFERENCES_DB}..."
-curl_auth=()
-if [ -n "${COUCHDB_USER}" ] && [ -n "${COUCHDB_PASSWORD}" ]; then
-	curl_auth=(-u "${COUCHDB_USER}:${COUCHDB_PASSWORD}")
-fi
-status="$(curl -sS -o /dev/null -w '%{http_code}' "${curl_auth[@]}" "${COUCHDB_URL}/${REFERENCES_DB}")"
-if [ "${status}" != "200" ]; then
-	echo "ERROR: cannot read ${REFERENCES_DB} at ${COUCHDB_URL} (HTTP ${status})." >&2
-	echo "  Replicate btq_references Pro->VPS and set a read-only reporting" >&2
-	echo "  BTQ_COUCHDB_USER / BTQ_COUCHDB_PASSWORD in ${ENV_FILE}." >&2
+# admin.env is root-owned (secrets); source it + curl inside a single root subshell
+# so this deploy (non-root) never holds the CouchDB creds in its own environment.
+# Do NOT create btq_references (this app never writes; it is replicated Pro->VPS).
+echo "Verifying read access to btq_references via ${ENV_FILE}..."
+if ! sudo test -f "${ENV_FILE}"; then
+	echo "ERROR: ${ENV_FILE} not found. Create it with the read-only reporting CouchDB creds." >&2
 	exit 1
 fi
-echo "  ${REFERENCES_DB} readable (HTTP ${status})."
+status="$(sudo sh -c '. "'"${ENV_FILE}"'" 2>/dev/null
+	url="${BTQ_COUCHDB_URL:-http://127.0.0.1:5984}"; db="${BTQ_REFERENCES_DB:-btq_references}"
+	if [ -n "${BTQ_COUCHDB_USER:-}" ]; then
+		curl -s -o /dev/null -w "%{http_code}" -u "$BTQ_COUCHDB_USER:$BTQ_COUCHDB_PASSWORD" "$url/$db"
+	else
+		curl -s -o /dev/null -w "%{http_code}" "$url/$db"
+	fi')"
+if [ "${status}" != "200" ]; then
+	echo "ERROR: cannot read btq_references with the creds in ${ENV_FILE} (HTTP ${status})." >&2
+	echo "  Ensure btq_references replicated to the VPS and the reporting user can read it." >&2
+	exit 1
+fi
+echo "  btq_references readable (HTTP ${status})."
 
 echo "Installing curated source to ${SITE_ROOT}/source..."
 sudo mkdir -p "${SITE_ROOT}/source"
