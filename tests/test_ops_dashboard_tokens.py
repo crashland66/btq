@@ -131,6 +131,82 @@ def test_tokens_action_buttons_are_glyphs(tmp_path: Path) -> None:
     assert ">Revoke</button>" not in body
 
 
+def test_edit_form_renders_with_current_values(tmp_path: Path) -> None:
+    runtime_root = tmp_path / "runtime"
+    created = create_token(runtime_root, role="site_admin", token_type="admin_viewer", site_ids=["S2", "S1"])
+
+    body = request_text("GET", f"/tokens/edit?token_id={created.record.token_id}", runtime_root)[2]
+
+    assert f'value="{created.record.token_id}" readonly' in body
+    assert 'name="role" value="site_admin" checked' in body
+    assert 'name="token_type" value="admin_viewer" checked' in body
+    assert "S1\nS2" in body
+
+
+def test_handle_edit_post_updates_token_and_redirects(tmp_path: Path, monkeypatch) -> None:
+    runtime_root = tmp_path / "runtime"
+    created = create_token(runtime_root, role="cleaner", token_type="capture")
+    monkeypatch.delenv("BTQ_TOKEN_SYNC_DISABLED", raising=False)
+
+    def fake_sync(action: str, payload: dict[str, object]) -> tuple[bool, str]:
+        assert action == "upsert"
+        assert payload["action"] == "upsert"
+        return True, ""
+
+    monkeypatch.setattr(tokens, "sync_token_to_vps", fake_sync)
+
+    status, _content_type, _body, headers = route_response_with_headers(
+        "POST",
+        "/tokens/edit",
+        runtime_root,
+        f"token_id={created.record.token_id}&role=site_admin&token_type=capture&site_ids=*&can_submit=1&can_view_site=1".encode(),
+    )
+
+    assert status == HTTPStatus.SEE_OTHER
+    assert headers["Location"] == f"/tokens?token_id={created.record.token_id}&edited=1"
+    record = TokenStore(runtime_root / "field_capture_tokens.sqlite3").get_token(created.record.token_id)
+    assert record is not None
+    assert record.role == "site_admin"
+
+
+def test_handle_edit_post_propagates_sync_failure_to_redirect(tmp_path: Path, monkeypatch) -> None:
+    runtime_root = tmp_path / "runtime"
+    created = create_token(runtime_root)
+    monkeypatch.delenv("BTQ_TOKEN_SYNC_DISABLED", raising=False)
+    monkeypatch.setattr(tokens, "sync_token_to_vps", lambda _action, _payload: (False, "synthetic sync failure"))
+
+    status, _content_type, _body, headers = route_response_with_headers(
+        "POST",
+        "/tokens/edit",
+        runtime_root,
+        f"token_id={created.record.token_id}&role=cleaner&token_type=capture&site_ids=S1&can_view_site=1".encode(),
+    )
+
+    assert status == HTTPStatus.SEE_OTHER
+    assert "sync_status=failed" in headers["Location"]
+    assert f"token_id={created.record.token_id}" in headers["Location"]
+
+
+def test_edit_link_present_on_active_token_row(tmp_path: Path) -> None:
+    runtime_root = tmp_path / "runtime"
+    created = create_token(runtime_root)
+
+    body = request_text("GET", "/tokens", runtime_root)[2]
+
+    assert f'/tokens/edit?token_id={created.record.token_id}' in body
+
+
+def test_edit_link_absent_on_revoked_token_row(tmp_path: Path) -> None:
+    runtime_root = tmp_path / "runtime"
+    created = create_token(runtime_root)
+    store = TokenStore(runtime_root / "field_capture_tokens.sqlite3")
+    store.revoke_token(created.record.token_id)
+
+    body = request_text("GET", "/tokens", runtime_root)[2]
+
+    assert f'/tokens/edit?token_id={created.record.token_id}' not in body
+
+
 def test_tokens_person_column_shows_id_in_compact(tmp_path: Path) -> None:
     runtime_root = tmp_path / "runtime"
     created = create_token(runtime_root)

@@ -17,7 +17,6 @@ from . import staples_reads
 
 DEFAULT_TOKEN_DB = Path("/srv/btq/data/field_capture_tokens.sqlite3")
 COOKIE_NAME = "btq_admin_reporting_token"
-DEFAULT_ALLOWED_TOKEN_TYPES = frozenset({"admin_viewer"})
 
 
 class AdminReportingServer(ThreadingHTTPServer):
@@ -29,12 +28,10 @@ class AdminReportingServer(ThreadingHTTPServer):
         token_store: TokenStore,
         *,
         couchdb_find: staples_reads.CouchDBFind | None = None,
-        allowed_token_types: set[str] | None = None,
     ) -> None:
         super().__init__(address, AdminReportingHandler)
         self.token_store = token_store
         self.couchdb_find = couchdb_find
-        self.allowed_token_types = allowed_token_types or allowed_reporting_token_types()
 
 
 class AdminReportingHandler(BaseHTTPRequestHandler):
@@ -45,7 +42,6 @@ class AdminReportingHandler(BaseHTTPRequestHandler):
             "GET",
             self.path,
             self.server.token_store,
-            self.server.allowed_token_types,
             couchdb_find=self.server.couchdb_find,
             cookie_header=self.headers.get("Cookie", ""),
         )
@@ -57,7 +53,6 @@ class AdminReportingHandler(BaseHTTPRequestHandler):
             self.path,
             self.server.token_store,
             couchdb_find=self.server.couchdb_find,
-            allowed_token_types=self.server.allowed_token_types,
             cookie_header=self.headers.get("Cookie", ""),
         )
         self.write_bytes(body, status, content_type, headers=headers)
@@ -101,7 +96,6 @@ def route_response(
     method: str,
     path: str,
     token_store: TokenStore,
-    allowed_token_types: set[str] | None = None,
     *,
     couchdb_find: staples_reads.CouchDBFind | None = None,
     cookie_header: str = "",
@@ -129,7 +123,6 @@ def route_response(
         cookie_header,
         parsed.query,
         token_store,
-        allowed_token_types or allowed_reporting_token_types(),
     )
     if auth.record is None:
         return auth.status, "text/html; charset=utf-8", render_error_page(auth.message).encode("utf-8"), {}
@@ -156,17 +149,10 @@ def route_response(
     return HTTPStatus.OK, "text/html; charset=utf-8", render_page("Site Orders", body).encode("utf-8"), headers
 
 
-def allowed_reporting_token_types(raw: str | None = None) -> set[str]:
-    source = raw if raw is not None else os.environ.get("BTQ_ADMIN_REPORTING_TOKEN_TYPES", "")
-    values = {item.strip() for item in source.split(",") if item.strip()}
-    return values or set(DEFAULT_ALLOWED_TOKEN_TYPES)
-
-
 def authenticate_request(
     cookie_header: str,
     query_string: str,
     token_store: TokenStore,
-    allowed_token_types: set[str],
 ) -> AuthResult:
     query = parse_qs(query_string, keep_blank_values=True)
     query_token = first_query_value(query, "token").strip()
@@ -176,8 +162,8 @@ def authenticate_request(
     record = token_store.authenticate(token)
     if record is None:
         return AuthResult(None, HTTPStatus.UNAUTHORIZED, "The reporting token is invalid or expired.")
-    if not record.can_view_site or record.can_submit or record.token_type not in allowed_token_types:
-        return AuthResult(None, HTTPStatus.FORBIDDEN, "The token is not authorized for this reporting view.")
+    if not record.can_view_site or record.role not in {"site_admin"}:
+        return AuthResult(None, HTTPStatus.FORBIDDEN, "The token is not authorized for this reporting view. A site_admin token is required.")
     return AuthResult(record, HTTPStatus.OK, "", query_token=query_token)
 
 

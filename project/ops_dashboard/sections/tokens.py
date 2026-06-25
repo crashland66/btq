@@ -144,6 +144,8 @@ def render(ctx: object = None) -> str:
         return render_new_form(query)
     if getattr(ctx, "route_path", "") == "/tokens/set-raw":
         return render_set_raw_form(query)
+    if getattr(ctx, "route_path", "") == "/tokens/edit":
+        return render_edit_form(ctx)
     if first_query_value(query, "issued") == "1" and first_query_value(query, "token_id"):
         return render_reveal(query)
     return render_list(ctx.runtime_root, query)
@@ -253,9 +255,49 @@ def render_new_form(query: dict[str, list[str]] | None = None) -> str:
     return html_page("Issue Token", body, active_section="tokens")
 
 
+def _checked(value: bool) -> str:
+    return " checked" if value else ""
+
+
+def render_edit_form(ctx: object) -> str:
+    query = getattr(ctx, "query", {}) or {}
+    token_id = first_query_value(query, "token_id").strip()
+    error = first_query_value(query, "error")
+    error_html = f'<section class="error"><p>{html.escape(error)}</p></section>' if error else ""
+    record = token_store(ctx.runtime_root).get_token(token_id) if token_id else None
+    if record is None or record.revoked:
+        body = """
+        <header><h1>Edit Token</h1></header>
+        <section class="error"><p>Token not found or already revoked.</p></section>
+        <p><a href="/tokens">Back to tokens</a></p>
+        """
+        return html_page("Edit Token", body, active_section="tokens")
+    site_ids = "\n".join(record.site_ids)
+    role_radios = radio("role", record.role, ["cleaner", "site_admin"])
+    token_type_radios = radio("token_type", record.token_type, ["capture", "viewer", "client_viewer", "admin_viewer", "import"])
+    body = f"""
+    <header><h1>Edit Token</h1><p class="muted">Updates token scope and role without rotating the secret.</p></header>
+    {error_html}
+    <section>
+      <form method="post" action="/tokens/edit" class="admin-form">
+        <label>Token ID <input name="token_id" value="{html.escape(record.token_id)}" readonly></label>
+        <label>Person ID <input name="person_id" value="{html.escape(record.person_id)}" readonly></label>
+        <fieldset><legend>Role</legend>{role_radios}</fieldset>
+        <label>Site IDs <textarea name="site_ids">{html.escape(site_ids)}</textarea></label>
+        <label><input type="checkbox" name="can_submit" value="1"{_checked(record.can_submit)}> Can Submit</label>
+        <label><input type="checkbox" name="can_view_site" value="1"{_checked(record.can_view_site)}> Can View Site</label>
+        <fieldset><legend>Token Type</legend>{token_type_radios}</fieldset>
+        <button>Save token</button>
+        <a href="/tokens">Cancel</a>
+      </form>
+    </section>
+    """
+    return html_page("Edit Token", body, active_section="tokens")
+
+
 def render_list(root: Path, query: dict[str, list[str]]) -> str:
     records = token_store(root).list_tokens()
-    sync_warning = sync_warning_section(query, first_query_value(query, "token_id")) if first_query_value(query, "action") == "revoked" else ""
+    sync_warning = sync_warning_section(query, first_query_value(query, "token_id"))
     set_raw_banner = (
         '<section class="success"><p>Raw token saved. The Copy button on that row is now active.</p></section>'
         if first_query_value(query, "set_raw") == "1"
@@ -336,9 +378,13 @@ def render_list(root: Path, query: dict[str, list[str]]) -> str:
 
 
 def render_actions_cell(value: object, row: dict[str, object]) -> str:
-    token_id = html.escape(str(value))
+    raw_token_id = str(value)
+    token_id = html.escape(raw_token_id)
+    edit = ""
     regenerate = ""
     if not row.get("revoked"):
+        edit_url = f"/tokens/edit?token_id={quote(raw_token_id)}"
+        edit = f'<a href="{html.escape(edit_url)}" class="icon-btn" title="Edit token" aria-label="Edit token">✎</a> '
         regenerate = (
             f'<form method="post" action="/tokens/regenerate" style="display:inline">'
             f'<input type="hidden" name="token_id" value="{token_id}">'
@@ -354,7 +400,7 @@ def render_actions_cell(value: object, row: dict[str, object]) -> str:
         'title="Revoke this token" aria-label="Revoke token">✕</button>'
         f"</form>"
     )
-    return f"{regenerate}{revoke}"
+    return f"{edit}{regenerate}{revoke}"
 
 
 def radio(name: str, current: str, values: list[str]) -> str:
@@ -502,6 +548,35 @@ def handle_new_post(ctx: object, body: bytes):
     except Exception as exc:  # noqa: BLE001
         ctx.audit("/tokens/new", audit_payload(form), f"failed: {exc}")
         return ctx.redirect(f"/tokens/new?error={quote(str(exc))}")
+
+
+def handle_edit_post(ctx: object, body: bytes):
+    root = ctx.runtime_root
+    form = parse_qs(body.decode("utf-8", errors="replace"), keep_blank_values=True)
+    token_id = first_query_value(form, "token_id").strip()
+    store = token_store(root)
+    try:
+        updated = store.update_token(
+            token_id,
+            role=first_query_value(form, "role") or "cleaner",
+            site_ids=parse_site_ids(first_query_value(form, "site_ids")),
+            can_submit=first_query_value(form, "can_submit") == "1",
+            can_view_site=first_query_value(form, "can_view_site") == "1",
+            token_type=first_query_value(form, "token_type") or "capture",
+        )
+        if updated is None:
+            ctx.audit("/tokens/edit", audit_payload(form), f"failed: not_found token_id={token_id}")
+            return ctx.redirect("/tokens?error=not_found")
+        ctx.audit("/tokens/edit", audit_payload(form, updated), f"success: edited token_id={token_id}")
+        sync_payload = {"action": "upsert", "row": record_sync_row(updated)}
+        sync_ok, sync_detail = sync_token_to_vps("upsert", sync_payload)
+        ctx.audit("/tokens/sync", audit_payload(form, updated), f"{'success' if sync_ok else 'failed'}: upsert token_id={token_id} {sync_detail}".strip())
+        if not sync_ok:
+            return ctx.redirect(f"/tokens?sync_status=failed&sync_error={quote(sync_detail[:300])}&token_id={quote(token_id)}")
+        return ctx.redirect(f"/tokens?token_id={quote(token_id)}&edited=1")
+    except Exception as exc:  # noqa: BLE001
+        ctx.audit("/tokens/edit", audit_payload(form), f"failed: {exc}")
+        return ctx.redirect(f"/tokens/edit?token_id={quote(token_id)}&error={quote(str(exc))}")
 
 
 def handle_revoke_post(ctx: object, body: bytes):

@@ -138,6 +138,7 @@ def create_admin_token(store: TokenStore, *, expires_at: datetime | None = None)
         expires_at=expires_at,
         can_submit=False,
         can_view_site=True,
+        role="site_admin",
         token_type="admin_viewer",
         site_ids=["*"],
     )
@@ -172,24 +173,66 @@ def test_token_gate_rejects_missing_unknown_expired_revoked_and_wrong_scope(toke
     assert "ACME TEST SITE" in accepted.body
 
 
-def test_token_type_allowlist_rejects_otherwise_valid_read_token(token_store: TokenStore) -> None:
-    # Isolates the token_type allowlist from the can_submit/can_view_site checks:
-    # this token is read-only (can_submit=False, can_view_site=True) yet its
-    # token_type is not in the admin_viewer allowlist, so it must be 403.
+def test_token_type_no_longer_gates_access(token_store: TokenStore) -> None:
     wrong_type = token_store.create_token(
         "per_other_reader",
         can_submit=False,
         can_view_site=True,
-        token_type="site_viewer",
+        role="site_admin",
+        token_type="capture",
     )
     calls: list[tuple[str, dict[str, object]]] = []
 
     response = route_get(token_store, f"/?token={wrong_type.token_value}", build_fake_couchdb_find(calls))
 
+    assert response.status == HTTPStatus.OK
+    assert "ACME TEST SITE" in response.body
+
+
+def test_site_admin_submit_token_is_allowed(token_store: TokenStore) -> None:
+    created = token_store.create_token(
+        "per_admin_submitter",
+        can_submit=True,
+        can_view_site=True,
+        role="site_admin",
+        token_type="capture",
+        site_ids=["*"],
+    )
+
+    response = route_get(token_store, f"/?token={created.token_value}", build_fake_couchdb_find([]))
+
+    assert response.status == HTTPStatus.OK
+
+
+def test_cleaner_role_token_is_rejected(token_store: TokenStore) -> None:
+    created = token_store.create_token(
+        "per_cleaner",
+        can_submit=False,
+        can_view_site=True,
+        role="cleaner",
+        token_type="admin_viewer",
+        site_ids=["*"],
+    )
+
+    response = route_get(token_store, f"/?token={created.token_value}", build_fake_couchdb_find([]))
+
     assert response.status == HTTPStatus.FORBIDDEN
-    # No data route work happened for a rejected token.
-    assert calls == []
-    assert "ACME" not in response.body
+    assert "site_admin token is required" in response.body
+
+
+def test_site_admin_read_only_token_is_allowed(token_store: TokenStore) -> None:
+    created = token_store.create_token(
+        "per_admin_reader",
+        can_submit=False,
+        can_view_site=True,
+        role="site_admin",
+        token_type="admin_viewer",
+        site_ids=["*"],
+    )
+
+    response = route_get(token_store, f"/?token={created.token_value}", build_fake_couchdb_find([]))
+
+    assert response.status == HTTPStatus.OK
 
 
 def test_cookie_is_httponly_and_no_couch_credentials_leak(token_store: TokenStore, monkeypatch) -> None:

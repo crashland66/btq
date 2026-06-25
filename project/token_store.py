@@ -183,6 +183,45 @@ class TokenStore:
             )
             return cursor.rowcount > 0
 
+    def update_token(
+        self,
+        token_id: str,
+        *,
+        role: str | None = None,
+        site_ids: Iterable[str] | None = None,
+        can_submit: bool | None = None,
+        can_view_site: bool | None = None,
+        token_type: str | None = None,
+    ) -> TokenRecord | None:
+        if role is not None and role not in ALLOWED_ROLES:
+            raise ValueError(f"Unknown token role: {role}")
+        self.initialize()
+        updates: dict[str, object] = {}
+        if role is not None:
+            updates["role"] = role
+        if site_ids is not None:
+            updates["site_ids"] = json.dumps(list(normalize_site_ids(site_ids)))
+        if can_submit is not None:
+            updates["can_submit"] = 1 if can_submit else 0
+        if can_view_site is not None:
+            updates["can_view_site"] = 1 if can_view_site else 0
+        if token_type is not None:
+            updates["token_type"] = token_type
+        with self.connect() as connection:
+            current = connection.execute(
+                "SELECT token_id FROM field_capture_tokens WHERE token_id = ? AND revoked = 0",
+                (token_id,),
+            ).fetchone()
+            if current is None:
+                return None
+            if updates:
+                set_clause = ", ".join(f"{column} = ?" for column in updates)
+                connection.execute(
+                    f"UPDATE field_capture_tokens SET {set_clause} WHERE token_id = ?",
+                    (*updates.values(), token_id),
+                )
+        return self.get_token(token_id)
+
     def set_token_value(self, token_id: str, raw_value: str) -> bool:
         """Populate token_value only when raw_value matches the stored hash."""
         self.initialize()

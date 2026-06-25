@@ -55,6 +55,7 @@ from field_capture.auth import (
     TokenStore,
     authorize_token,
     load_person_from_canonical,
+    normalize_site_ids,
     parse_timestamp,
     site_from_registry,
     token_records_as_rows,
@@ -1676,6 +1677,48 @@ def list_tokens(args: argparse.Namespace) -> int:
     return 0
 
 
+def edit_token(args: argparse.Namespace) -> int:
+    store = TokenStore(args.db)
+    record = store.get_token(args.token_id)
+    if record is None or record.revoked:
+        print(f"Token not found or already revoked: {args.token_id}", file=sys.stderr)
+        return 1
+
+    if getattr(args, "all_sites", False):
+        site_ids = ("*",)
+    else:
+        current_sites = set(record.site_ids)
+        for site_id in getattr(args, "add_site", None) or []:
+            if site_id.strip():
+                current_sites.add(site_id.strip())
+        for site_id in getattr(args, "remove_site", None) or []:
+            current_sites.discard(site_id.strip())
+        site_ids = normalize_site_ids(current_sites)
+
+    can_submit: bool | None = None
+    if getattr(args, "can_submit", False):
+        can_submit = True
+    elif getattr(args, "read_only", False):
+        can_submit = False
+
+    try:
+        updated = store.update_token(
+            args.token_id,
+            role=getattr(args, "role", None),
+            site_ids=site_ids,
+            can_submit=can_submit,
+        )
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    if updated is None:
+        print(f"Token not found or already revoked: {args.token_id}", file=sys.stderr)
+        return 1
+    for row in token_records_as_rows([updated]):
+        print(row)
+    return 0
+
+
 def audit_tokens(args: argparse.Namespace) -> int:
     """Flag tokens whose ``person_id`` no longer resolves to a live employee.
 
@@ -1770,6 +1813,17 @@ def build_parser() -> argparse.ArgumentParser:
     revoke_parser = token_subparsers.add_parser("revoke", help="Revoke a token by token_id.")
     revoke_parser.add_argument("token_id")
     revoke_parser.set_defaults(func=revoke_token)
+
+    edit_parser = token_subparsers.add_parser("edit", help="Edit mutable token metadata without rotating the secret.")
+    edit_parser.add_argument("--token-id", required=True)
+    edit_parser.add_argument("--role", choices=["cleaner", "site_admin"])
+    edit_parser.add_argument("--add-site", action="append", help="Add a site id to the token scope. Repeat for multiple sites.")
+    edit_parser.add_argument("--remove-site", action="append", help="Remove a site id from the token scope. Repeat for multiple sites.")
+    edit_parser.add_argument("--all-sites", action="store_true", help="Replace scope with universal site access.")
+    submit_group = edit_parser.add_mutually_exclusive_group()
+    submit_group.add_argument("--can-submit", action="store_true", help="Allow capture submissions.")
+    submit_group.add_argument("--read-only", action="store_true", help="Disallow capture submissions.")
+    edit_parser.set_defaults(func=edit_token)
 
     list_parser = token_subparsers.add_parser("list", help="List token metadata without raw token values.")
     list_parser.set_defaults(func=list_tokens)

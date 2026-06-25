@@ -66,7 +66,7 @@ SECTION_ROUTES = {
     "/failed": failed, "/captures": captures, "/audio": audio, "/batch-images": batch_images,
     "/site-orders": site_orders,
     "/photos": photos, "/field-photos": field_photos, "/records": records, "/sites": sites, "/sites/new": sites,
-    "/employees": employees, "/tokens": tokens, "/tokens/new": tokens, "/tokens/set-raw": tokens,
+    "/employees": employees, "/tokens": tokens, "/tokens/new": tokens, "/tokens/edit": tokens, "/tokens/set-raw": tokens,
     "/workers": workers,
     "/system": system, "/help": help_section,
 }

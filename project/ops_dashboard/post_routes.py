@@ -94,6 +94,8 @@ def dispatch_post_route(
         return sites.handle_new_post(ctx, body)
     if route_path == "/tokens/new":
         return tokens.handle_new_post(ctx, body)
+    if route_path == "/tokens/edit":
+        return tokens.handle_edit_post(ctx, body)
     if route_path == "/tokens/revoke":
         return tokens.handle_revoke_post(ctx, body)
     if route_path == "/tokens/regenerate":
