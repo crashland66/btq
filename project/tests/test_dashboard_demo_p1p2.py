@@ -207,6 +207,63 @@ def test_employee_primary_site_falls_back_to_id_when_unresolved() -> None:
     assert "Avery, Jordan" in html
 
 
+def test_employee_directory_has_client_side_sort_controls_and_row_keys() -> None:
+    rows = [
+        {
+            "doc": {
+                "_id": "employee_zed",
+                "first": "Zed",
+                "last": "Baker",
+                "job": "7050",
+                "status": "active",
+            }
+        },
+        {
+            "doc": {
+                "_id": "employee_amy",
+                "first": "Amy",
+                "last": "Adams",
+                "job": "7100",
+                "status": "active",
+            }
+        },
+    ]
+    site_records = {
+        "7050": _SiteRecord("7050", "Maple Plaza", "KMF"),
+        "7100": _SiteRecord("7100", "Birch Commons", "KMF"),
+    }
+
+    html = home_section._render_employee_directory(rows, site_records)
+
+    assert '<button type="button" data-employee-sort="name">Name</button>' in html
+    assert (
+        '<button type="button" data-employee-sort="site">Primary site</button>' in html
+    )
+    assert '<th scope="col" aria-sort="ascending">' in html
+    assert '<th scope="col" aria-sort="none">' in html
+    assert 'data-sort-name="adams|amy"' in html
+    assert 'data-sort-site="birch commons"' in html
+    assert 'data-sort-name="baker|zed"' in html
+    assert 'data-sort-site="maple plaza"' in html
+    assert '<table class="data-table">' in html
+    assert "document.getElementById('employee-directory')" in html
+    assert "btq-home-employees-sort" in html
+    assert "querySelectorAll('tr')" in html
+    assert "fetch(" not in html
+    assert "?sort" not in html
+
+
+def test_employee_directory_default_order_stays_name_sorted() -> None:
+    rows = [
+        {"doc": {"_id": "employee_b", "first": "Beth", "last": "Young", "job": "2"}},
+        {"doc": {"_id": "employee_a", "first": "Ann", "last": "Able", "job": "1"}},
+    ]
+
+    html = home_section._render_employee_directory(rows, {})
+
+    assert html.index("Able, Ann") < html.index("Young, Beth")
+
+
 # --------------------------------------------------------------------------- #
 # prospect promotion — canonical-name-first label, no location_<id>
 # --------------------------------------------------------------------------- #

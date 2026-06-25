@@ -255,6 +255,17 @@ def _render_employee_directory(employee_rows: list[dict], site_records: dict[str
             return first, (first.lower(), "")
         return fallback, (fallback.lower(), "")
 
+    def primary_site_label(value: object) -> tuple[str, str]:
+        site_id = _string(value)
+        if not site_id:
+            return "", ""
+        site_name = (
+            site_records.get(site_id.removeprefix("location_"))
+            or site_records.get(site_id)
+        )
+        label = site_name.name if site_name and site_name.name else site_id
+        return site_id, label
+
     employees: list[tuple[tuple[str, str], dict[str, object]]] = []
     seen_ids: set[str] = set()
     for row in employee_rows:
@@ -269,13 +280,17 @@ def _render_employee_directory(employee_rows: list[dict], site_records: dict[str
         seen_ids.add(employee_id)
 
         display_name, sort_key = employee_label(doc)
+        primary_site_id, primary_site_display = primary_site_label(doc.get("job"))
         employees.append(
             (
                 sort_key,
                 {
                     "_id": employee_id,
                     "name": display_name,
-                    "primary_site": _string(doc.get("job")),
+                    "name_sort": "|".join(sort_key),
+                    "primary_site": primary_site_id,
+                    "primary_site_label": primary_site_display,
+                    "primary_site_sort": primary_site_display.lower(),
                     "phone": _format_phone(doc.get("phone")),
                     "email": _string(doc.get("email")),
                 },
@@ -288,11 +303,7 @@ def _render_employee_directory(employee_rows: list[dict], site_records: dict[str
         site_id = _string(value)
         if not site_id:
             return ""
-        site_name = (
-            site_records.get(site_id.removeprefix("location_"))
-            or site_records.get(site_id)
-        )
-        label = site_name.name if site_name and site_name.name else site_id
+        label = _string(_item.get("primary_site_label")) or site_id
         escaped_site_id = _esc(site_id)
         return f'<a href="/sites/{escaped_site_id}">{_esc(label)}</a>'
 
@@ -307,13 +318,89 @@ def _render_employee_directory(employee_rows: list[dict], site_records: dict[str
         detail_id = employee_id.removeprefix("employee_")
         return f'<a href="/employees/{_url_path(detail_id)}">{name}</a>'
 
-    columns = [
-        {"key": "name", "label": "Name", "format": employee_name_link},
-        {"key": "primary_site", "label": "Primary site", "format": primary_site_link},
-        {"key": "phone", "label": "Phone"},
-        {"key": "email", "label": "Email"},
-    ]
-    return render_table(items, columns, empty_text="No employee records.")
+    if not items:
+        table_html = '<p class="zero-state">No employee records.</p>'
+    else:
+        row_htmls = []
+        for item in items:
+            row_htmls.append(
+                "<tr"
+                f' data-sort-name="{_esc(_string(item.get("name_sort")))}"'
+                f' data-sort-site="{_esc(_string(item.get("primary_site_sort")))}"'
+                ">"
+                f'<td data-label="Name">{employee_name_link(item.get("name"), item)}</td>'
+                f'<td data-label="Primary site">{primary_site_link(item.get("primary_site"), item)}</td>'
+                f'<td data-label="Phone">{_esc(_string(item.get("phone")))}</td>'
+                f'<td data-label="Email">{_esc(_string(item.get("email")))}</td>'
+                "</tr>"
+            )
+        table_html = (
+            '<table class="data-table">'
+            "<thead><tr>"
+            '<th scope="col" aria-sort="ascending">'
+            '<button type="button" data-employee-sort="name">Name</button>'
+            "</th>"
+            '<th scope="col" aria-sort="none">'
+            '<button type="button" data-employee-sort="site">Primary site</button>'
+            "</th>"
+            '<th scope="col">Phone</th>'
+            '<th scope="col">Email</th>'
+            "</tr></thead>"
+            f"<tbody>{''.join(row_htmls)}</tbody>"
+            "</table>"
+        )
+
+    return (
+        table_html
+        +
+        "<script>"
+        "(function(){"
+        "const details=document.getElementById('employee-directory');"
+        "if(!details)return;"
+        "const table=details.querySelector('table.data-table');"
+        "if(!table)return;"
+        "const tbody=table.querySelector('tbody');"
+        "const buttons=table.querySelectorAll('[data-employee-sort]');"
+        "const storageKey='btq-home-employees-sort';"
+        "let state={column:'name',direction:'ascending'};"
+        "function validColumn(value){return value==='name'||value==='site';}"
+        "function compareRows(column,direction){return function(a,b){"
+        "const av=a.dataset[column==='site'?'sortSite':'sortName']||'';"
+        "const bv=b.dataset[column==='site'?'sortSite':'sortName']||'';"
+        "let result=av.localeCompare(bv,undefined,{sensitivity:'base'});"
+        "if(result===0&&column==='site'){"
+        "result=(a.dataset.sortName||'').localeCompare(b.dataset.sortName||'',undefined,{sensitivity:'base'});"
+        "}"
+        "if(result===0){result=Number(a.dataset.originalIndex||0)-Number(b.dataset.originalIndex||0);}"
+        "return direction==='descending'?-result:result;"
+        "};}"
+        "function updateAria(){buttons.forEach(function(button){"
+        "const th=button.closest('th');"
+        "if(!th)return;"
+        "const column=button.getAttribute('data-employee-sort');"
+        "th.setAttribute('aria-sort',column===state.column?state.direction:'none');"
+        "});}"
+        "function sortRows(column,direction,persist){"
+        "state={column:column,direction:direction};"
+        "Array.from(tbody.querySelectorAll('tr')).sort(compareRows(column,direction)).forEach(function(row){tbody.appendChild(row);});"
+        "updateAria();"
+        "if(persist){try{localStorage.setItem(storageKey,JSON.stringify(state));}catch(_error){}}"
+        "}"
+        "Array.from(tbody.querySelectorAll('tr')).forEach(function(row,index){row.dataset.originalIndex=String(index);});"
+        "buttons.forEach(function(button){button.addEventListener('click',function(){"
+        "const column=button.getAttribute('data-employee-sort');"
+        "if(!validColumn(column))return;"
+        "const direction=state.column===column&&state.direction==='ascending'?'descending':'ascending';"
+        "sortRows(column,direction,true);"
+        "});});"
+        "try{const saved=JSON.parse(localStorage.getItem(storageKey)||'null');"
+        "if(saved&&validColumn(saved.column)&&(saved.direction==='ascending'||saved.direction==='descending')){"
+        "sortRows(saved.column,saved.direction,false);return;"
+        "}}catch(_error){}"
+        "updateAria();"
+        "})();"
+        "</script>"
+    )
 
 
 def _active_employee_count(employee_rows: list[dict]) -> int:
