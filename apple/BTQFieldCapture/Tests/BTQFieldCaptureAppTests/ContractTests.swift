@@ -295,7 +295,7 @@ import UniformTypeIdentifiers
     #expect(projectFile.components(separatedBy: "ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;").count - 1 == 4)
     #expect(projectFile.contains("PRODUCT_BUNDLE_IDENTIFIER = com.btq.fieldcapture;"))
     #expect(projectFile.contains("PRODUCT_BUNDLE_IDENTIFIER = com.btq.fieldcapture.mac;"))
-    #expect(projectFile.components(separatedBy: "MARKETING_VERSION = 1.0;").count - 1 == 4)
+    #expect(projectFile.components(separatedBy: "MARKETING_VERSION = 1.1;").count - 1 == 4)
     #expect(projectFile.contains("SUPPORTED_PLATFORMS = \"iphoneos iphonesimulator\";"))
     #expect(projectFile.components(separatedBy: "baseConfigurationReference = 10A000000000000000000019 /* Signing.xcconfig */;").count - 1 == 4)
     #expect(!projectFile.contains("DEVELOPMENT_TEAM = "))
