@@ -67,27 +67,65 @@ fc.example.com {
 Validate and reload Caddy only after the app directory, `dist`, and systemd
 unit are installed.
 
-## Deploy Wrapper
+## Canonical Deploy Path
 
-From a separate BTQ checkout on the VPS, run:
+From the operator BTQ checkout, run:
 
 ```bash
-./scripts/deploy-unified-capture-app-on-vps
+cd project/unified_capture
+BTQ_VPS_SSH_TARGET=deploy@vps.example.com ./deploy/push-and-deploy.sh
 ```
 
-The wrapper stages the checkout, backs up `/srv/btq/apps/unified-capture`,
-installs into that directory, materializes `dist/` from
+`push-and-deploy.sh` syncs the repo root to the VPS source directory, excluding
+git metadata, local virtualenvs, runtime directories, and Python cache files,
+then runs `project/unified_capture/deploy/deploy.sh` from that synced source.
+The default remote source is the public-safe deploy-host placeholder
+`/home/deploy/unified-capture-source` <!-- # sanitization-ok: public-safe deploy-host placeholder -->
+(set `UNIFIED_CAPTURE_REMOTE_SOURCE` when the host uses a different path).
+
+The remote `deploy.sh` installs the full source tree into
+`/srv/btq/apps/unified-capture` while preserving the live `dist/` directory and
+machine-local `config.json`, materializes `dist/` from
 `project/unified_capture/public/`, writes shared PWA assets for the
-`unified_capture` service worker, restarts `btq-unified-capture.service`, and
-smokes `GET /api/health` on `127.0.0.1:8081`.
+`unified_capture` service worker, installs `btq-unified-capture.service`,
+restarts it, and smokes `GET /api/session` on `127.0.0.1:8081`. A healthy
+unauthenticated service returns `401` for that route, which proves the API is up
+and enforcing the token gate.
 
 The installed service runs `unified_capture.server` with `--max-images 25`, so
 regular capture tokens can submit larger photo batches without relying on a
 systemd drop-in.
 
-The wrapper touches only the unified app directory and
-`btq-unified-capture.service`. It does not deploy, restart, or reconfigure
-field capture or voice memo.
+The scripts touch only the unified app directory and
+`btq-unified-capture.service`. They do not deploy, restart, or reconfigure field
+capture or voice memo, and they do not clobber the operator-owned
+`/srv/btq/apps/unified-capture/config.json`.
+
+For a two-phase rollout, matching the field-capture deploy convention:
+
+```bash
+cd project/unified_capture
+./deploy/push-and-deploy.sh --stage-static-only
+./deploy/push-and-deploy.sh --python-and-systemd
+```
+
+If already on the VPS inside the synced source directory, the underlying command
+is:
+
+```bash
+./project/unified_capture/deploy/deploy.sh
+```
+
+## Legacy Manual Reference
+
+The older VPS-local helper remains available for historical reference:
+
+```bash
+./scripts/deploy-unified-capture-app-on-vps
+```
+
+Prefer the canonical deploy scripts above for current maintenance because they
+sync the full BTQ source tree before restart and avoid stale vendored copies.
 
 ## Gradual Cutover
 
