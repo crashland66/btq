@@ -307,6 +307,51 @@ def test_no_write_route_or_couchdb_mutation_path(token_store: TokenStore) -> Non
     assert calls == []
 
 
+def test_order_demo_is_token_gated(token_store: TokenStore) -> None:
+    # Unauthenticated and wrong-scope requests are refused, same as every view.
+    assert route_get(token_store, "/order-demo", build_fake_couchdb_find([])).status == HTTPStatus.UNAUTHORIZED
+    capture = token_store.create_token("per_capture", can_submit=True, can_view_site=True, token_type="capture")
+    assert (
+        route_get(token_store, f"/order-demo?token={capture.token_value}", build_fake_couchdb_find([])).status
+        == HTTPStatus.FORBIDDEN
+    )
+
+
+def test_order_demo_renders_for_admin_and_reads_no_couchdb(token_store: TokenStore) -> None:
+    token = create_admin_token(token_store)
+    calls: list[tuple[str, dict[str, object]]] = []
+
+    response = route_get(token_store, f"/order-demo?token={token}", build_fake_couchdb_find(calls))
+
+    assert response.status == HTTPStatus.OK
+    assert "Site Inventory" in response.body
+    assert "Standard Catalog" in response.body
+    # Static asset: serving it must not touch the reference database.
+    assert calls == []
+    # Shared query-token link still hands back the HttpOnly cookie.
+    assert "HttpOnly" in response.headers.get("Set-Cookie", "")
+
+
+def test_pages_respect_system_color_scheme(token_store: TokenStore) -> None:
+    token = create_admin_token(token_store)
+    landing = route_get(token_store, f"/?token={token}", build_fake_couchdb_find([]))
+    demo = route_get(token_store, f"/order-demo?token={token}", build_fake_couchdb_find([]))
+
+    # Neither surface forces a theme: both opt into light+dark and adapt via media query.
+    for page in (landing.body, demo.body):
+        assert "color-scheme: light dark" in page or "color-scheme:light dark" in page
+        assert "prefers-color-scheme: dark" in page or "prefers-color-scheme:dark" in page
+
+
+def test_order_demo_rejects_post(token_store: TokenStore) -> None:
+    token = create_admin_token(token_store)
+
+    response = route_post(token_store, f"/order-demo?token={token}", build_fake_couchdb_find([]))
+
+    assert response.status == HTTPStatus.METHOD_NOT_ALLOWED
+    assert "read_only" in response.body
+
+
 def test_api_health_is_unauthenticated_and_contains_no_report_data(token_store: TokenStore) -> None:
     response = route_get(token_store, "/api/health", build_fake_couchdb_find([]))
 

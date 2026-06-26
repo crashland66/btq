@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>B&amp;T Site Inventory &amp; Ordering — Concept Demo</title>
+<style>
+:root{
+  color-scheme:light dark;
+  --bg:#f6f8fb;--panel:#ffffff;--soft:#f1f4f8;--input:#ffffff;
+  --line:#d8dee6;--ink:#17202a;--mut:#5d6875;--accent:#2563eb;--on-accent:#ffffff;--warn:#b45309;
+  --header-a:#ffffff;--header-b:#eef2f8;
+  --chip-bg:#e8f0ff;--chip-ink:#2563eb;--chip-border:#c7dbff;
+  --note-bg:#eef4ff;--note-border:#c7dbff;--note-ink:#1e3a66;
+  --sec-ink:#475569;
+  --std-bg:#e7f6ec;--std-ink:#1b7a44;--std-border:#bfe6cd;
+  --split-bg:#fdf3e0;--split-ink:#9a6a14;--split-border:#f0dbb0;
+}
+@media (prefers-color-scheme:dark){
+  :root{
+    --bg:#0f1216;--panel:#171c23;--soft:#10151c;--input:#0d1219;
+    --line:#2a323d;--ink:#e8edf2;--mut:#94a3b8;--accent:#3b82f6;--on-accent:#ffffff;--warn:#f59e0b;
+    --header-a:#1b2230;--header-b:#141922;
+    --chip-bg:#3b82f622;--chip-ink:#93c5fd;--chip-border:#3b82f655;
+    --note-bg:#1a2330;--note-border:#27405e;--note-ink:#cfe0f5;
+    --sec-ink:#9fb4cc;
+    --std-bg:#14331f;--std-ink:#6ee7a0;--std-border:#1e5235;
+    --split-bg:#332414;--split-ink:#fcd07a;--split-border:#6b4d1c;
+  }
+}
+*{box-sizing:border-box}body{margin:0;font:14px/1.45 -apple-system,Segoe UI,Roboto,sans-serif;background:var(--bg);color:var(--ink)}
+header{padding:18px 22px;border-bottom:1px solid var(--line);background:linear-gradient(180deg,var(--header-a),var(--header-b))}
+h1{margin:0;font-size:19px}.sub{color:var(--mut);font-size:13px;margin-top:4px}
+.demo-tag{display:inline-block;background:var(--chip-bg);color:var(--chip-ink);border:1px solid var(--chip-border);border-radius:999px;padding:2px 9px;font-size:11px;font-weight:600;vertical-align:middle;margin-left:8px}
+nav{display:flex;gap:6px;padding:12px 22px;border-bottom:1px solid var(--line);background:var(--panel)}
+nav button{background:transparent;color:var(--mut);border:1px solid transparent;border-radius:8px;padding:8px 14px;font-size:13px;font-weight:600;cursor:pointer}
+nav button.on{background:var(--soft);color:var(--ink);border-color:var(--line)}
+main{padding:22px;max-width:1080px}
+.kpis{display:flex;gap:14px;flex-wrap:wrap;margin-bottom:18px}
+.kpi{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px 16px;min-width:150px}
+.kpi b{display:block;font-size:26px}.kpi span{color:var(--mut);font-size:12px}
+.note{background:var(--note-bg);border:1px solid var(--note-border);border-left:3px solid var(--accent);border-radius:8px;padding:11px 14px;color:var(--note-ink);font-size:13px;margin:14px 0}
+table{width:100%;border-collapse:collapse;background:var(--panel);border:1px solid var(--line);border-radius:12px;overflow:hidden}
+th,td{padding:9px 12px;text-align:left;border-bottom:1px solid var(--line);font-size:13px}
+th{color:var(--mut);font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:.04em;background:var(--soft)}
+tr:last-child td{border-bottom:none}
+.sec td{background:var(--soft);font-weight:700;color:var(--sec-ink);text-transform:uppercase;font-size:11px;letter-spacing:.05em}
+.tag{font-size:10px;font-weight:700;padding:2px 7px;border-radius:999px;white-space:nowrap}
+.t-std{background:var(--std-bg);color:var(--std-ink);border:1px solid var(--std-border)}
+.t-split{background:var(--split-bg);color:var(--split-ink);border:1px solid var(--split-border)}
+.num{text-align:right;font-variant-numeric:tabular-nums}
+input.cnt{width:64px;background:var(--input);border:1px solid var(--line);color:var(--ink);border-radius:6px;padding:5px 7px;text-align:right;font:inherit}
+.order{font-weight:700}.order.pos{color:var(--warn)}.order.zero{color:var(--mut)}
+.sel{background:var(--input);border:1px solid var(--line);color:var(--ink);border-radius:8px;padding:7px 10px;font:inherit;margin-bottom:14px}
+.foot{display:flex;justify-content:space-between;align-items:center;margin-top:14px;flex-wrap:wrap;gap:10px}
+.cart{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px 16px;min-width:280px}
+.cart h3{margin:0 0 8px;font-size:13px;color:var(--mut);text-transform:uppercase;letter-spacing:.04em}
+.cart .line{display:flex;justify-content:space-between;font-size:13px;padding:3px 0;border-bottom:1px dashed var(--line)}
+.cart .tot{display:flex;justify-content:space-between;font-weight:700;margin-top:8px;font-size:15px}
+.btn{background:var(--accent);color:var(--on-accent);border:none;border-radius:8px;padding:9px 16px;font-weight:600;cursor:pointer}
+.bar{height:8px;background:var(--input);border-radius:6px;overflow:hidden;display:inline-block;width:110px;vertical-align:middle}
+.bar>i{display:block;height:100%;background:var(--accent)}
+small.m{color:var(--mut)}
+.hd{display:flex;gap:24px;flex-wrap:wrap;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:12px 16px;margin-bottom:14px;font-size:13px}
+.hd label{color:var(--mut);margin-right:6px}
+.p2{color:var(--mut);font-size:13px}.p2 li{margin:3px 0}
+</style></head><body>
+<header><h1>B&amp;T Site Inventory &amp; Ordering <span class="demo-tag">CONCEPT DEMO · real Staples data</span></h1>
+<div class="sub">Turning the Staples Usage Report into Jordan's standardized count &amp; order process — one catalog, every site.</div></header>
+<nav>
+<button data-v="sheet" class="on">📋 Site Order Sheet</button>
+<button data-v="catalog">📦 Standard Catalog</button>
+<button data-v="rollup">📊 Fleet Roll-up</button>
+</nav>
+<main id="app"></main>
+<script>
+const DATA={"catalog": [{"section": "Consumables", "item": "Jumbo Toilet Paper", "sku": "499146", "desc": "Pacific Blue Select Jumbo Jr. Toilet Paper, 2-ply, White, 1000 ft./Roll, 8 Rolls/Carton (13728)", "price": 31.29, "sites": 2}, {"section": "Consumables", "item": "Roll Paper Towel (enMotion)", "sku": "647204", "desc": "enmotion Hardwound Paper Towels, 1-ply, 800 ft./Roll, 6 Rolls/Carton (89460)", "price": 68.54, "sites": 1}, {"section": "Consumables", "item": "Foaming Hand Soap", "sku": "2554959", "desc": "EnMotion Gen2 Foaming Hand Soap Refills, Herbal, 40.5 Oz., 2/Carton (42715)", "price": 40.3, "sites": 1}, {"section": "Consumables", "item": "Trash Bag 40-50 gal", "sku": "814867", "desc": "Coastwide Professional 40-45 Gallon Trash Bag, 40\" x 48\", High Density, 22 mic, Black, 150 Bags/Box", "price": 31.66, "sites": 1}, {"section": "Cleaning Supplies", "item": "Disinfectant Cleaner (Crew)", "sku": "2614083", "desc": "Crew Non-Acid Disinfectant All-Purpose Cleaner, Floral Fresh Scent, 32 Oz., 12/Carton (100925283)", "price": 25.85, "sites": 32}, {"section": "Cleaning Supplies", "item": "Glass / Multi-Surface (Windex)", "sku": "667189", "desc": "Windex Glass Cleaner with Ammonia-D Trigger Spray, 32 fl Oz. (322338)", "price": 4.78, "sites": 7}, {"section": "Cleaning Supplies", "item": "Toilet Bowl Cleaner (Crew HD)", "sku": "198799", "desc": "Crew Heavy Duty Toilet Bowl Cleaner, Mint Scent, 32 oz., 12/Carton (04560)", "price": 45.82, "sites": 14}, {"section": "Cleaning Supplies", "item": "Nitrile Gloves - Large", "sku": "24462858", "desc": "GloveWorks GPNB Nitrile Industrial Grade Gloves, Large, Powder/Latex Free, Black, 100/Box (GPNB46100)", "price": 5.28, "sites": 36}, {"section": "Cleaning Supplies", "item": "Vinyl Gloves - Medium", "sku": "24462853", "desc": "X3 Vinyl Gloves, Medium, Powder/Latex Free, Clear, 100/Box (GPX344100)", "price": 2.49, "sites": 1}, {"section": "Cleaning Supplies", "item": "Red Microfiber Cloth", "sku": "219296", "desc": "HYGEN r-40 Recycled Microfiber Cleaning Cloths, 12\" x 12\", Red, 24/Pack (1820577)", "price": 11.63, "sites": 31}, {"section": "Cleaning Supplies", "item": "Green Microfiber Cloth", "sku": "318451", "desc": "HYGEN r-40 Recycled Microfiber Cleaning Cloths, 16\" x 16\", Green, 24/Pack (1820582)", "price": 20.27, "sites": 2}, {"section": "Cleaning Supplies", "item": "Blue Microfiber Cloth", "sku": "24300450", "desc": "Coastwide Professional Microfiber Cloths, 16\" x 16\", Blue, 12/Pack", "price": 16.72, "sites": 1}, {"section": "Cleaning Supplies", "item": "Wet Mop Head", "sku": "24420784", "desc": "Coastwide Professional\u2122 Looped-End Wet Mop Head, Medium, Recycled PET, 5\" Headband, Blue (CW57752)", "price": 6.97, "sites": 37}], "phase2": ["Virex II 256 (Diversey)", "Stride Neutral Floor", "Suma Break-up", "Alpha HP", "Spectrum Bowl Cleaner", "ProTeam Vacuum + bags", "Tide Free & Gentle", "Sanitary bags (brown/pink)", "Yellow microfiber / dust cloth"], "sheets": {"LIBERTY WIRE": {"items": [{"section": "Consumables", "item": "Jumbo Toilet Paper", "sku": "499146", "price": 31.29, "par": 2, "in_stock": 1, "buys": false}, {"section": "Consumables", "item": "Roll Paper Towel (enMotion)", "sku": "647204", "price": 68.54, "par": 3, "in_stock": 2, "buys": false}, {"section": "Consumables", "item": "Foaming Hand Soap", "sku": "2554959", "price": 40.3, "par": 2, "in_stock": 0, "buys": false}, {"section": "Consumables", "item": "Trash Bag 40-50 gal", "sku": "814867", "price": 31.66, "par": 1, "in_stock": 0, "buys": false}, {"section": "Cleaning Supplies", "item": "Disinfectant Cleaner (Crew)", "sku": "2614083", "price": 25.85, "par": 2, "in_stock": 0, "buys": true}, {"section": "Cleaning Supplies", "item": "Glass / Multi-Surface (Windex)", "sku": "667189", "price": 4.78, "par": 4, "in_stock": 3, "buys": false}, {"section": "Cleaning Supplies", "item": "Toilet Bowl Cleaner (Crew HD)", "sku": "198799", "price": 45.82, "par": 2, "in_stock": 1, "buys": true}, {"section": "Cleaning Supplies", "item": "Nitrile Gloves - Large", "sku": "24462858", "price": 5.28, "par": 4, "in_stock": 1, "buys": true}, {"section": "Cleaning Supplies", "item": "Vinyl Gloves - Medium", "sku": "24462853", "price": 2.49, "par": 3, "in_stock": 2, "buys": false}, {"section": "Cleaning Supplies", "item": "Red Microfiber Cloth", "sku": "219296", "price": 11.63, "par": 2, "in_stock": 0, "buys": true}, {"section": "Cleaning Supplies", "item": "Green Microfiber Cloth", "sku": "318451", "price": 20.27, "par": 1, "in_stock": 0, "buys": true}, {"section": "Cleaning Supplies", "item": "Blue Microfiber Cloth", "sku": "24300450", "price": 16.72, "par": 1, "in_stock": 0, "buys": false}, {"section": "Cleaning Supplies", "item": "Wet Mop Head", "sku": "24420784", "price": 6.97, "par": 1, "in_stock": 0, "buys": true}]}, "BIO CASSELBERRY": {"items": [{"section": "Consumables", "item": "Jumbo Toilet Paper", "sku": "499146", "price": 31.29, "par": 2, "in_stock": 0, "buys": false}, {"section": "Consumables", "item": "Roll Paper Towel (enMotion)", "sku": "647204", "price": 68.54, "par": 3, "in_stock": 0, "buys": false}, {"section": "Consumables", "item": "Foaming Hand Soap", "sku": "2554959", "price": 40.3, "par": 2, "in_stock": 1, "buys": false}, {"section": "Consumables", "item": "Trash Bag 40-50 gal", "sku": "814867", "price": 31.66, "par": 1, "in_stock": 0, "buys": false}, {"section": "Cleaning Supplies", "item": "Disinfectant Cleaner (Crew)", "sku": "2614083", "price": 25.85, "par": 1, "in_stock": 0, "buys": false}, {"section": "Cleaning Supplies", "item": "Glass / Multi-Surface (Windex)", "sku": "667189", "price": 4.78, "par": 1, "in_stock": 0, "buys": true}, {"section": "Cleaning Supplies", "item": "Toilet Bowl Cleaner (Crew HD)", "sku": "198799", "price": 45.82, "par": 1, "in_stock": 0, "buys": false}, {"section": "Cleaning Supplies", "item": "Nitrile Gloves - Large", "sku": "24462858", "price": 5.28, "par": 1, "in_stock": 0, "buys": true}, {"section": "Cleaning Supplies", "item": "Vinyl Gloves - Medium", "sku": "24462853", "price": 2.49, "par": 3, "in_stock": 0, "buys": false}, {"section": "Cleaning Supplies", "item": "Red Microfiber Cloth", "sku": "219296", "price": 11.63, "par": 2, "in_stock": 0, "buys": true}, {"section": "Cleaning Supplies", "item": "Green Microfiber Cloth", "sku": "318451", "price": 20.27, "par": 1, "in_stock": 0, "buys": false}, {"section": "Cleaning Supplies", "item": "Blue Microfiber Cloth", "sku": "24300450", "price": 16.72, "par": 1, "in_stock": 0, "buys": false}, {"section": "Cleaning Supplies", "item": "Wet Mop Head", "sku": "24420784", "price": 6.97, "par": 1, "in_stock": 0, "buys": true}]}, "YMCA DP": {"items": [{"section": "Consumables", "item": "Jumbo Toilet Paper", "sku": "499146", "price": 31.29, "par": 2, "in_stock": 0, "buys": false}, {"section": "Consumables", "item": "Roll Paper Towel (enMotion)", "sku": "647204", "price": 68.54, "par": 3, "in_stock": 1, "buys": false}, {"section": "Consumables", "item": "Foaming Hand Soap", "sku": "2554959", "price": 40.3, "par": 2, "in_stock": 1, "buys": false}, {"section": "Consumables", "item": "Trash Bag 40-50 gal", "sku": "814867", "price": 31.66, "par": 1, "in_stock": 0, "buys": false}, {"section": "Cleaning Supplies", "item": "Disinfectant Cleaner (Crew)", "sku": "2614083", "price": 25.85, "par": 1, "in_stock": 0, "buys": false}, {"section": "Cleaning Supplies", "item": "Glass / Multi-Surface (Windex)", "sku": "667189", "price": 4.78, "par": 3, "in_stock": 1, "buys": true}, {"section": "Cleaning Supplies", "item": "Toilet Bowl Cleaner (Crew HD)", "sku": "198799", "price": 45.82, "par": 1, "in_stock": 0, "buys": false}, {"section": "Cleaning Supplies", "item": "Nitrile Gloves - Large", "sku": "24462858", "price": 5.28, "par": 3, "in_stock": 1, "buys": false}, {"section": "Cleaning Supplies", "item": "Vinyl Gloves - Medium", "sku": "24462853", "price": 2.49, "par": 3, "in_stock": 0, "buys": false}, {"section": "Cleaning Supplies", "item": "Red Microfiber Cloth", "sku": "219296", "price": 11.63, "par": 2, "in_stock": 1, "buys": true}, {"section": "Cleaning Supplies", "item": "Green Microfiber Cloth", "sku": "318451", "price": 20.27, "par": 1, "in_stock": 0, "buys": false}, {"section": "Cleaning Supplies", "item": "Blue Microfiber Cloth", "sku": "24300450", "price": 16.72, "par": 1, "in_stock": 0, "buys": false}, {"section": "Cleaning Supplies", "item": "Wet Mop Head", "sku": "24420784", "price": 6.97, "par": 3, "in_stock": 1, "buys": false}]}}, "rollup": [{"site": "MAIN OFFICE-NON", "spend": 25042.03, "skus": 99}, {"site": "MAIN OFFICE", "spend": 12038.97, "skus": 85}, {"site": "B&T BUILDING SERVICES INC", "spend": 11094.23, "skus": 39}, {"site": "FOUNDATION UPPER", "spend": 11059.74, "skus": 31}, {"site": "33 *PITTSBURGH CLEANING O/H", "spend": 9170.01, "skus": 112}, {"site": "NORTH AMERICAN HOGANAS FLS", "spend": 8737.79, "skus": 29}, {"site": "OFFICE NON", "spend": 5430.7, "skus": 23}, {"site": "FOUNDATION LOWER", "spend": 3944.1, "skus": 21}, {"site": "LIBERTY WIRE", "spend": 3732.08, "skus": 30}, {"site": "726-NON", "spend": 3484.85, "skus": 3}, {"site": "YMCA DP", "spend": 3445.77, "skus": 32}, {"site": "725-NON", "spend": 2995.53, "skus": 5}, {"site": "JWF INDUSTRIES", "spend": 2839.67, "skus": 20}, {"site": "*B&T PA SERVICE WORKERS", "spend": 2685.93, "skus": 29}, {"site": "NORTH AMERICAN NON", "spend": 2076.52, "skus": 7}], "totals": {"sites": 104, "skus": 395, "std_items": 13}};
+const app=document.getElementById('app');
+const money=n=>'$'+(n||0).toFixed(2);
+let view='sheet', site=Object.keys(DATA.sheets)[0];
+const stock={}; // site -> sku -> count
+for(const s in DATA.sheets){stock[s]={};DATA.sheets[s].items.forEach(it=>stock[s][it.sku]=it.in_stock);}
+document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>{view=b.dataset.v;document.querySelectorAll('nav button').forEach(x=>x.classList.toggle('on',x===b));render();});
+function tag(sites){return sites>=20?'<span class="tag t-std">★ standard ('+sites+' sites)</span>':'<span class="tag t-split">split · '+sites+' site'+(sites==1?'':'s')+'</span>';}
+function render(){
+ if(view==='sheet')return renderSheet();
+ if(view==='catalog')return renderCatalog();
+ return renderRollup();
+}
+function renderSheet(){
+ const sh=DATA.sheets[site];
+ let order=0, cost=0;
+ const opts=Object.keys(DATA.sheets).map(s=>`<option ${s===site?'selected':''}>${s}</option>`).join('');
+ let rows='', lastSec='';
+ sh.items.forEach(it=>{
+   if(it.section!==lastSec){rows+=`<tr class="sec"><td colspan="7">${it.section}</td></tr>`;lastSec=it.section;}
+   const ins=stock[site][it.sku];
+   const toOrder=Math.max(0,it.par-ins);
+   order+=toOrder; cost+=toOrder*it.price;
+   rows+=`<tr>
+     <td>${it.item}${it.buys?'':' <small class="m">· not yet on account</small>'}</td>
+     <td><small class="m">${it.sku}</small></td>
+     <td class="num">${money(it.price)}</td>
+     <td class="num">${it.par}</td>
+     <td class="num"><input class="cnt" type="number" min="0" value="${ins}" data-sku="${it.sku}"></td>
+     <td class="num order ${toOrder>0?'pos':'zero'}">${toOrder}</td>
+     <td class="num"><small class="m">${money(toOrder*it.price)}</small></td></tr>`;
+ });
+ app.innerHTML=`
+ <div class="hd"><div><label>Site</label><select class="sel" id="site">${opts}</select></div>
+   <div><label>Marketplace Date</label> 2026-06-26</div>
+   <div><label>Completed By</label> ___________</div></div>
+ <div class="note">Enter <b>In Stock</b> from a shelf count → <b>To Order</b> fills itself against the par level (par is seeded from this site's real Staples run-rate). This is Jordan's sheet, made live.</div>
+ <table><thead><tr><th>Item</th><th>SKU</th><th>Price</th><th>Par</th><th>In&nbsp;Stock</th><th>To&nbsp;Order</th><th>Ext.</th></tr></thead><tbody>${rows}</tbody></table>
+ <div class="foot"><div class="cart"><h3>Generated Order — ${site}</h3>
+   <div class="line"><span>Line items to order</span><b>${sh.items.filter(it=>Math.max(0,it.par-stock[site][it.sku])>0).length}</b></div>
+   <div class="line"><span>Total units</span><b>${order}</b></div>
+   <div class="tot"><span>Est. order cost</span><span>${money(cost)}</span></div></div>
+   <button class="btn" onclick="alert('In the real system this submits to the BTQ supply pipeline → appears on the /supplies dashboard for approval → mark ordered. (Demo)')">Submit order →</button></div>`;
+ document.getElementById('site').onchange=e=>{site=e.target.value;renderSheet();};
+ app.querySelectorAll('input.cnt').forEach(i=>i.oninput=()=>{stock[site][i.dataset.sku]=parseInt(i.value||0);renderSheet();});
+}
+function renderCatalog(){
+ let lastSec='',rows='';
+ DATA.catalog.forEach(c=>{
+   if(c.section!==lastSec){rows+=`<tr class="sec"><td colspan="5">${c.section}</td></tr>`;lastSec=c.section;}
+   rows+=`<tr><td>${c.item}</td><td><small class="m">${c.sku}</small></td><td class="num">${money(c.price)}</td>
+     <td><small class="m">${(c.desc||'').slice(0,52)}</small></td><td>${tag(c.sites)}</td></tr>`;
+ });
+ app.innerHTML=`
+ <div class="note">One <b>standard catalog</b> across the whole company. ★ items are <b>already standardized</b> in the field (20+ sites buy the same SKU) — the system locks those in. <span style="color:#fcd07a">Split</span> items are where sites buy different brands today — the standardization opportunity.</div>
+ <table><thead><tr><th>Standard Item</th><th>Canonical SKU</th><th>Price</th><th>Real Staples description</th><th>Field adoption</th></tr></thead><tbody>${rows}</tbody></table>
+ <h3 style="margin-top:22px;font-size:14px">Phase 2 — sourced off the Staples account (other vendor)</h3>
+ <ul class="p2">${DATA.phase2.map(p=>`<li>${p}</li>`).join('')}</ul>`;
+}
+function renderRollup(){
+ const max=Math.max(...DATA.rollup.map(r=>r.spend));
+ const rows=DATA.rollup.map(r=>`<tr><td>${r.site}</td>
+   <td class="num">${money(r.spend)}</td><td class="num">${r.skus}</td>
+   <td><span class="bar"><i style="width:${(r.spend/max*100).toFixed(0)}%"></i></span></td></tr>`).join('');
+ app.innerHTML=`
+ <div class="kpis">
+  <div class="kpi"><b>${DATA.totals.sites}</b><span>ship-to sites in report</span></div>
+  <div class="kpi"><b>${DATA.totals.skus}</b><span>distinct SKUs bought</span></div>
+  <div class="kpi"><b>${DATA.totals.std_items}</b><span>standard catalog items</span></div></div>
+ <div class="note">${DATA.totals.skus} different SKUs across ${DATA.totals.sites} sites = no enforced standard today. The catalog collapses that to one list everyone orders from.</div>
+ <table><thead><tr><th>Site</th><th>YTD Staples spend</th><th>#SKUs</th><th></th></tr></thead><tbody>${rows}</tbody></table>
+ <p class="p2" style="margin-top:10px">Top 15 of ${DATA.totals.sites} sites · Jan 1 – Jun 25, 2026</p>`;
+}
+render();
+</script></body></html>

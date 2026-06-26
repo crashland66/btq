@@ -694,6 +694,8 @@ These are implementation truths in the current codebase:
 
 ## Deeper Documentation
 
+- UI / front-end house style (theming, accessibility, components):
+  [STYLE_GUIDE.md](STYLE_GUIDE.md)
 - Detailed pipeline behavior:
   [project/docs/pipeline.md](project/docs/pipeline.md)
 - Nightly review artifact shape:

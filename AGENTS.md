@@ -30,6 +30,7 @@
 - Field capture upload must remain fast, non-blocking, and evidence-first.
 - Transcription, semantic cleanup, client-safe summaries, and vault mutations must remain post-upload processing layers.
 - Viewer routes should remain read-only unless a task explicitly says otherwise.
+- Any user-facing HTML (PWAs, dashboards, reporting apps, demos) must follow [STYLE_GUIDE.md](STYLE_GUIDE.md) — notably: honor the OS light/dark setting via `prefers-color-scheme`, never force a theme, route all colors through the canonical token palette (no hardcoded hex), and meet WCAG AA contrast in both modes.
 - Prefer local processing for sensitive operational data.
 - Do not hardwire cloud APIs for transcription, semantic cleanup, or classification.
 - Media serving must remain constrained to the configured upload directory.

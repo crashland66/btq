@@ -18,6 +18,29 @@ from . import staples_reads
 DEFAULT_TOKEN_DB = Path("/srv/btq/data/field_capture_tokens.sqlite3")
 COOKIE_NAME = "btq_admin_reporting_token"
 
+# Self-contained concept demo (Site Inventory & Ordering). Static, baked data —
+# served behind the same token gate as every other view but NOT wrapped in the
+# reporting chrome (it is a full standalone document).
+DEMO_HTML_PATH = Path(__file__).resolve().parent / "demo" / "order_sheet_demo.html"
+_DEMO_HTML_CACHE: bytes | None = None
+
+
+def load_demo_html() -> bytes:
+    global _DEMO_HTML_CACHE
+    if _DEMO_HTML_CACHE is None:
+        try:
+            _DEMO_HTML_CACHE = DEMO_HTML_PATH.read_bytes()
+        except OSError:
+            _DEMO_HTML_CACHE = (
+                b"<!doctype html><meta charset=\"utf-8\"><title>Demo unavailable</title>"
+                b"<p>The order-sheet demo asset is missing.</p>"
+            )
+    return _DEMO_HTML_CACHE
+
+
+def demo_href(token: str) -> str:
+    return f"/order-demo?{urlencode({'token': token})}" if token else "/order-demo"
+
 
 class AdminReportingServer(ThreadingHTTPServer):
     daemon_threads = True
@@ -111,7 +134,7 @@ def route_response(
     parsed = urlsplit(path)
     if parsed.path == "/api/health":
         return HTTPStatus.OK, "application/json; charset=utf-8", b'{"status":"ok"}\n', {}
-    if parsed.path not in {"/", "/site-orders"}:
+    if parsed.path not in {"/", "/site-orders", "/order-demo"}:
         return (
             HTTPStatus.NOT_FOUND,
             "text/html; charset=utf-8",
@@ -126,6 +149,12 @@ def route_response(
     )
     if auth.record is None:
         return auth.status, "text/html; charset=utf-8", render_error_page(auth.message).encode("utf-8"), {}
+
+    if parsed.path == "/order-demo":
+        headers = {}
+        if auth.query_token:
+            headers["Set-Cookie"] = render_auth_cookie(auth.query_token)
+        return HTTPStatus.OK, "text/html; charset=utf-8", load_demo_html(), headers
 
     try:
         if parsed.path == "/":
@@ -227,6 +256,7 @@ def render_landing(couchdb_find: staples_reads.CouchDBFind | None, token: str) -
           <label for="ship_to_name">Site</label>
           <select id="ship_to_name" name="ship_to_name">{"".join(options)}</select>
           <button type="submit">Open report</button>
+          <a class="secondary" href="{html.escape(demo_href(token), quote=True)}">Inventory &amp; ordering concept &rarr;</a>
         </form>
       </section>
       <section>
@@ -406,19 +436,46 @@ def render_page(title: str, body: str) -> str:
   <title>{html.escape(title)}</title>
   <style>
     :root {{
-      color-scheme: light;
+      color-scheme: light dark;
+      --bg: #ffffff;
+      --card: #ffffff;
+      --soft: #f5f7fa;
       --ink: #17202a;
       --muted: #5d6875;
       --line: #d8dee6;
-      --soft: #f5f7fa;
+      --input-border: #b9c2cc;
+      --th-ink: #34404d;
       --accent: #1d6f5f;
       --accent-dark: #15564a;
+      --on-accent: #ffffff;
+      --link: #15564a;
       --danger: #8a1f11;
+      --notice-bg: #fff6f3;
+      --notice-border: #f0c8bd;
+    }}
+    @media (prefers-color-scheme: dark) {{
+      :root {{
+        --bg: #0f1216;
+        --card: #171c23;
+        --soft: #10151c;
+        --ink: #e8edf2;
+        --muted: #94a3b8;
+        --line: #2a323d;
+        --input-border: #2a323d;
+        --th-ink: #9fb4cc;
+        --accent: #1f8f78;
+        --accent-dark: #169c83;
+        --on-accent: #ffffff;
+        --link: #6ee7c2;
+        --danger: #f98a7a;
+        --notice-bg: #2a1713;
+        --notice-border: #6b2b1c;
+      }}
     }}
     * {{ box-sizing: border-box; }}
     body {{
       margin: 0;
-      background: #ffffff;
+      background: var(--bg);
       color: var(--ink);
       font: 14px/1.45 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
     }}
@@ -426,7 +483,7 @@ def render_page(title: str, body: str) -> str:
     h1, h2 {{ margin: 0; font-weight: 700; letter-spacing: 0; }}
     h1 {{ font-size: 28px; }}
     h2 {{ font-size: 17px; margin: 24px 0 10px; }}
-    a {{ color: var(--accent-dark); }}
+    a {{ color: var(--link); }}
     .page-head {{
       display: flex;
       justify-content: space-between;
@@ -461,9 +518,9 @@ def render_page(title: str, body: str) -> str:
       min-width: min(520px, 100%);
       max-width: 100%;
       padding: 8px 10px;
-      border: 1px solid #b9c2cc;
+      border: 1px solid var(--input-border);
       border-radius: 4px;
-      background: #fff;
+      background: var(--card);
       color: var(--ink);
     }}
     button, .secondary {{
@@ -474,11 +531,11 @@ def render_page(title: str, body: str) -> str:
       border-radius: 4px;
       border: 1px solid var(--accent-dark);
       background: var(--accent);
-      color: #fff;
+      color: var(--on-accent);
       font-weight: 700;
       text-decoration: none;
     }}
-    .secondary {{ background: #fff; color: var(--accent-dark); }}
+    .secondary {{ background: var(--card); color: var(--link); }}
     .metrics {{
       display: grid;
       grid-template-columns: repeat(5, minmax(110px, 1fr));
@@ -492,14 +549,14 @@ def render_page(title: str, body: str) -> str:
       width: 100%;
       border-collapse: collapse;
       border: 1px solid var(--line);
-      background: #fff;
+      background: var(--card);
     }}
     th, td {{ padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }}
-    th {{ background: var(--soft); color: #34404d; font-size: 12px; text-align: left; text-transform: uppercase; }}
+    th {{ background: var(--soft); color: var(--th-ink); font-size: 12px; text-align: left; text-transform: uppercase; }}
     tr:last-child td {{ border-bottom: 0; }}
     .num {{ text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }}
     .empty, .notice {{ color: var(--muted); }}
-    .notice {{ border: 1px solid #f0c8bd; background: #fff6f3; color: var(--danger); border-radius: 6px; padding: 12px; }}
+    .notice {{ border: 1px solid var(--notice-border); background: var(--notice-bg); color: var(--danger); border-radius: 6px; padding: 12px; }}
     @media (max-width: 760px) {{
       main {{ padding: 16px; }}
       .page-head {{ display: block; }}
