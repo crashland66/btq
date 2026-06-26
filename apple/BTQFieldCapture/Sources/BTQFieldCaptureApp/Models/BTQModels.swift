@@ -52,6 +52,8 @@ public struct BTQAccountWorkspace: Identifiable, Codable, Equatable, Sendable {
 }
 
 public struct BTQSession: Codable, Equatable, Sendable {
+    private static let defaultMaxImages = 100
+
     public var person: BTQPerson
     public var token: BTQToken
     public var sites: [BTQSite]
@@ -86,6 +88,24 @@ public struct BTQSession: Codable, Equatable, Sendable {
         case canReview = "can_review"
         case maxImages = "max_images"
         case inboxCount = "inbox_count"
+    }
+
+    private enum TokenFallbackKeys: String, CodingKey {
+        case canSubmit = "can_submit"
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        person = try container.decode(BTQPerson.self, forKey: .person)
+        token = try container.decode(BTQToken.self, forKey: .token)
+        sites = try container.decodeIfPresent([BTQSite].self, forKey: .sites) ?? []
+
+        let tokenContainer = try? container.nestedContainer(keyedBy: TokenFallbackKeys.self, forKey: .token)
+        let tokenCanSubmit = try tokenContainer?.decodeIfPresent(Bool.self, forKey: .canSubmit)
+        canSubmit = try container.decodeIfPresent(Bool.self, forKey: .canSubmit) ?? tokenCanSubmit ?? true
+        canReview = try container.decodeIfPresent(Bool.self, forKey: .canReview) ?? false
+        maxImages = try container.decodeIfPresent(Int.self, forKey: .maxImages) ?? Self.defaultMaxImages
+        inboxCount = try container.decodeIfPresent(Int.self, forKey: .inboxCount) ?? 0
     }
 }
 

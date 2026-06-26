@@ -34,6 +34,41 @@ import UniformTypeIdentifiers
     #expect(session.maxImages == 6)
 }
 
+@Test func sessionDecodesLegacyFieldCaptureShape() throws {
+    let json = """
+    {
+      "person": {"person_id": "employee_1", "name": "Field Person", "first": "Field"},
+      "token": {
+        "token_id": "token_1",
+        "label": "Pilot",
+        "token_type": "capture",
+        "can_submit": true,
+        "can_view_site": true,
+        "role": "cleaner"
+      },
+      "sites": [
+        {
+          "site_id": "site_1",
+          "label": "Site One",
+          "capture_guidance": "Look around.",
+          "display_categories": [{"value": "supplies", "label": "Supplies"}]
+        }
+      ],
+      "prospects": []
+    }
+    """.data(using: .utf8)!
+
+    let session = try JSONDecoder().decode(BTQSession.self, from: json)
+
+    #expect(session.person.personID == "employee_1")
+    #expect(session.token.role == "cleaner")
+    #expect(session.canSubmit)
+    #expect(session.canReview == false)
+    #expect(session.inboxCount == 0)
+    #expect(session.maxImages == 100)
+    #expect(session.sites.first?.displayCategories.first?.value == "supplies")
+}
+
 @Test func sessionDecodesLiveDisplayCategoryVariants() throws {
     let json = """
     {
