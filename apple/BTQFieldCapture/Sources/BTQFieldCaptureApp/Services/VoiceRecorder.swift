@@ -91,6 +91,7 @@ public final class VoiceRecorder {
     private var playbackTask: Task<Void, Never>?
     private var durationTask: Task<Void, Never>?
     private var currentURL: URL?
+    private var currentAudioID: UUID?
     private var interruptionPolicy = VoiceRecordingInterruptionPolicy()
     #if os(iOS)
     nonisolated(unsafe) private var interruptionTask: Task<Void, Never>?
@@ -138,6 +139,7 @@ public final class VoiceRecorder {
 
             let url = FileManager.default.temporaryDirectory
                 .appendingPathComponent("btq-voice-\(UUID().uuidString).m4a")
+            let audioID = UUID()
             let settings: [String: Any] = [
                 AVFormatIDKey: Int(kAudioFormatMPEG4AAC),
                 AVSampleRateKey: 44_100,
@@ -149,6 +151,7 @@ public final class VoiceRecorder {
             recorder.record()
             self.recorder = recorder
             currentURL = url
+            currentAudioID = audioID
             isRecording = true
             isPaused = false
             errorMessage = nil
@@ -173,6 +176,19 @@ public final class VoiceRecorder {
         errorMessage = nil
     }
 
+    public func currentRecordingAudioSnapshot() -> CaptureAudio? {
+        guard isRecording, let currentURL else { return nil }
+        guard FileManager.default.fileExists(atPath: currentURL.path) else { return nil }
+        let duration = recorder?.currentTime ?? elapsedSeconds
+        return CaptureAudio(
+            id: currentAudioID ?? UUID(),
+            filename: currentURL.lastPathComponent,
+            mimeType: "audio/mp4",
+            fileURL: currentURL,
+            durationSeconds: duration
+        )
+    }
+
     @discardableResult
     public func stop() -> CaptureAudio? {
         guard let recorder, let currentURL else { return nil }
@@ -183,6 +199,7 @@ public final class VoiceRecorder {
         isRecording = false
         isPaused = false
         let audio = CaptureAudio(
+            id: currentAudioID ?? UUID(),
             filename: currentURL.lastPathComponent,
             mimeType: "audio/mp4",
             fileURL: currentURL,
@@ -191,6 +208,7 @@ public final class VoiceRecorder {
         lastAudio = audio
         self.recorder = nil
         self.currentURL = nil
+        self.currentAudioID = nil
         return audio
     }
 
@@ -200,6 +218,21 @@ public final class VoiceRecorder {
             return stop()
         }
         return lastAudio
+    }
+
+    public func adoptPersistedAudio(_ audio: CaptureAudio) {
+        lastAudio = audio
+        elapsedSeconds = audio.durationSeconds
+        errorMessage = nil
+    }
+
+    public func restore(audio: CaptureAudio?) {
+        guard !isRecording, !isPaused else { return }
+        stopPlayback()
+        deleteTemporaryAudio(lastAudio)
+        lastAudio = audio
+        elapsedSeconds = audio?.durationSeconds ?? 0
+        errorMessage = nil
     }
 
     public func play() {
@@ -258,6 +291,7 @@ public final class VoiceRecorder {
         deleteTemporaryAudio(lastAudio)
         lastAudio = nil
         elapsedSeconds = 0
+        currentAudioID = nil
         errorMessage = nil
     }
 

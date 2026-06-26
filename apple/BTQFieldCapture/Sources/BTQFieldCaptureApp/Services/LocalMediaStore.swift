@@ -71,8 +71,10 @@ public struct LocalMediaStore: Sendable {
                     urls.insert(url)
                 }
             }
-            if let url = capture.audio?.fileURL {
-                urls.insert(url)
+            for audio in capture.audioAttachments {
+                if let url = audio.fileURL {
+                    urls.insert(url)
+                }
             }
         }
 
@@ -110,11 +112,14 @@ public struct LocalMediaStore: Sendable {
             }
             return releasedPhoto
         }
-        if let audio = capture.audio, let fileURL = audio.fileURL, isManagedMediaURL(fileURL) {
+        released.audios = capture.audioAttachments.map { audio in
             var releasedAudio = audio
-            releasedAudio.fileURL = nil
-            released.audio = releasedAudio
+            if let fileURL = audio.fileURL, isManagedMediaURL(fileURL) {
+                releasedAudio.fileURL = nil
+            }
+            return releasedAudio
         }
+        released.audio = released.audios.first
         return released
     }
 

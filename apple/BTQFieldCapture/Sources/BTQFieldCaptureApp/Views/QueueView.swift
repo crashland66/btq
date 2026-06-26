@@ -133,7 +133,7 @@ private struct LocalCaptureQueueRow: View {
                     .buttonStyle(.bordered)
                     .controlSize(.small)
 
-                    if capture.status == .failed {
+                    if capture.status == .failed, canRetryFailedCapture {
                         Button {
                             Task { await model.retryCapture(capture.captureID) }
                         } label: {
@@ -144,6 +144,16 @@ private struct LocalCaptureQueueRow: View {
                         .disabled(model.isSyncing || !model.canSubmitCaptures)
                         .accessibilityLabel("Retry upload for \(capture.siteLabel)")
                         .accessibilityHint("Moves this failed capture back to pending.")
+                    } else if capture.status == .failed {
+                        Button(role: .destructive) {
+                            showingDeleteConfirmation = true
+                        } label: {
+                            Label("Delete", systemImage: "trash")
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                        .accessibilityLabel("Delete unretryable capture for \(capture.siteLabel)")
+                        .accessibilityHint("The saved media file is missing, so this capture must be deleted and captured again.")
                     }
                 }
             }
@@ -164,8 +174,8 @@ private struct LocalCaptureQueueRow: View {
                     if !capture.photos.isEmpty {
                         Label("\(capture.photos.count)", systemImage: "photo")
                     }
-                    if capture.audio != nil {
-                        Label("1", systemImage: "waveform")
+                    if !capture.audioAttachments.isEmpty {
+                        Label("\(capture.audioAttachments.count)", systemImage: "waveform")
                     }
                     if capture.attempts > 0 {
                         Text("\(capture.attempts) attempts")
@@ -232,15 +242,31 @@ private struct LocalCaptureQueueRow: View {
             if !capture.photos.isEmpty {
                 Label("\(capture.photos.count) photo\(capture.photos.count == 1 ? "" : "s")", systemImage: "photo")
             }
-            if let audio = capture.audio {
-                Label(VoiceRecorder.formatDuration(audio.durationSeconds), systemImage: "waveform")
+            if !capture.audioAttachments.isEmpty {
+                Label(audioSummaryText, systemImage: "waveform")
             }
-            if capture.photos.isEmpty && capture.audio == nil {
+            if capture.photos.isEmpty && capture.audioAttachments.isEmpty {
                 Label("Text only", systemImage: "note.text")
             }
         }
         .font(.caption)
         .foregroundStyle(.secondary)
+    }
+
+    private var canRetryFailedCapture: Bool {
+        guard capture.status == .failed, let lastError = capture.lastError?.localizedLowercase else {
+            return capture.status == .failed
+        }
+        return !lastError.contains("missing photo file") && !lastError.contains("missing audio file")
+    }
+
+    private var audioSummaryText: String {
+        let audios = capture.audioAttachments
+        let totalDuration = audios.reduce(0) { $0 + $1.durationSeconds }
+        if audios.count <= 1 {
+            return VoiceRecorder.formatDuration(totalDuration)
+        }
+        return "\(audios.count) memos, \(VoiceRecorder.formatDuration(totalDuration))"
     }
 
     private func detailLine(_ label: String, _ value: String) -> some View {

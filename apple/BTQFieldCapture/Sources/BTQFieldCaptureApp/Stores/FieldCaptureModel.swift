@@ -35,19 +35,22 @@ public final class FieldCaptureModel {
     private let tokenStore: any SecureTokenStore
     private let notificationScheduler: any UploadNotificationScheduling
     private let mediaStore: LocalMediaStore
+    private let audioUploadPreparer: any AudioMemoUploadPreparing
 
     public init(
         store: any FieldCaptureStore = SQLiteFieldCaptureStore(),
         apiClient: any CaptureAPIClient = HTTPCaptureAPIClient(),
         tokenStore: any SecureTokenStore = KeychainTokenStore(),
         notificationScheduler: any UploadNotificationScheduling = UploadNotificationScheduler(),
-        mediaStore: LocalMediaStore = LocalMediaStore()
+        mediaStore: LocalMediaStore = LocalMediaStore(),
+        audioUploadPreparer: (any AudioMemoUploadPreparing)? = nil
     ) {
         self.store = store
         self.apiClient = apiClient
         self.tokenStore = tokenStore
         self.notificationScheduler = notificationScheduler
         self.mediaStore = mediaStore
+        self.audioUploadPreparer = audioUploadPreparer ?? AudioMemoUploadPreparer(mediaStore: mediaStore)
         account = .defaultProduction
         session = nil
         sites = []
@@ -680,7 +683,8 @@ public final class FieldCaptureModel {
     }
 
     @discardableResult
-    public func upsertDraftCapture(photos: [CapturePhoto], audio: CaptureAudio? = nil) async -> Bool {
+    public func upsertDraftCapture(photos: [CapturePhoto], audio: CaptureAudio? = nil, audios: [CaptureAudio] = []) async -> Bool {
+        let audioAttachments = audios.isEmpty ? audio.map { [$0] } ?? [] : audios
         guard let site = selectedSite else {
             statusMessage = "Choose a site before adding media."
             return false
@@ -693,7 +697,7 @@ public final class FieldCaptureModel {
             statusMessage = "Limit is \(photoLimitDescription) per capture."
             return false
         }
-        guard !photos.isEmpty || audio != nil else {
+        guard !photos.isEmpty || !audioAttachments.isEmpty else {
             return true
         }
 
@@ -708,10 +712,11 @@ public final class FieldCaptureModel {
             captures[index].note = note
             captures[index].exportedAt = now
             captures[index].photos = photos
-            captures[index].audio = audio
+            captures[index].audios = audioAttachments
+            captures[index].audio = audioAttachments.first
         } else {
             let suffix = String(UUID().uuidString.prefix(8)).lowercased()
-            let kind: CaptureAssetKind = !photos.isEmpty && audio != nil ? .photoVoice : !photos.isEmpty ? .photo : .voice
+            let kind: CaptureAssetKind = !photos.isEmpty && !audioAttachments.isEmpty ? .photoVoice : !photos.isEmpty ? .photo : .voice
             captures.append(
                 LocalCapture(
                     captureID: BTQFormatting.makeCaptureID(capturedAt: now, suffix: suffix),
@@ -726,7 +731,7 @@ public final class FieldCaptureModel {
                     exportedAt: now,
                     status: .draft,
                     photos: photos,
-                    audio: audio
+                    audios: audioAttachments
                 )
             )
         }
@@ -748,7 +753,8 @@ public final class FieldCaptureModel {
               let index = captures.firstIndex(where: { $0.status == .draft && $0.siteID == draftSiteID }) else {
             return
         }
-        captures.remove(at: index)
+        let draft = captures.remove(at: index)
+        mediaStore.deleteMedia(for: [draft])
         try? await persist()
     }
 
@@ -776,8 +782,9 @@ public final class FieldCaptureModel {
     }
 
     @discardableResult
-    public func saveQuickObservation(photos: [CapturePhoto] = [], audio: CaptureAudio? = nil) async -> Bool {
-        guard validateQuickObservationDraft(photoCount: photos.count, hasAudio: audio != nil) else {
+    public func saveQuickObservation(photos: [CapturePhoto] = [], audio: CaptureAudio? = nil, audios: [CaptureAudio] = []) async -> Bool {
+        let audioAttachments = audios.isEmpty ? audio.map { [$0] } ?? [] : audios
+        guard validateQuickObservationDraft(photoCount: photos.count, hasAudio: !audioAttachments.isEmpty) else {
             return false
         }
         guard let site = selectedSite else {
@@ -786,7 +793,7 @@ public final class FieldCaptureModel {
         }
         let category = selectedCategoryValue ?? defaultCategoryValue(for: site) ?? "general_note"
         let note = observationText.trimmingCharacters(in: .whitespacesAndNewlines)
-        let kind: CaptureAssetKind = !photos.isEmpty && audio != nil ? .photoVoice : !photos.isEmpty ? .photo : audio != nil ? .voice : .text
+        let kind: CaptureAssetKind = !photos.isEmpty && !audioAttachments.isEmpty ? .photoVoice : !photos.isEmpty ? .photo : !audioAttachments.isEmpty ? .voice : .text
         let visitID = activeVisit(forSiteID: site.siteID)?.id
         let previousCaptures = captures
         let previousSites = sites
@@ -807,7 +814,8 @@ public final class FieldCaptureModel {
             captures[index].lastTriedAt = nil
             captures[index].retryAfter = nil
             captures[index].photos = photos
-            captures[index].audio = audio
+            captures[index].audios = audioAttachments
+            captures[index].audio = audioAttachments.first
         } else {
             let suffix = String(UUID().uuidString.prefix(8)).lowercased()
             captures.append(
@@ -823,7 +831,7 @@ public final class FieldCaptureModel {
                     capturedAt: now,
                     exportedAt: now,
                     photos: photos,
-                    audio: audio
+                    audios: audioAttachments
                 )
             )
         }
@@ -883,8 +891,16 @@ public final class FieldCaptureModel {
             captures[index].lastTriedAt = .now
             captures[index].retryAfter = nil
             let uploadingCapture = captures[index]
+            var preparedCapture: LocalCapture?
+            defer {
+                if let preparedCapture {
+                    cleanupPreparedUploadMedia(preparedCapture, source: uploadingCapture)
+                }
+            }
             do {
-                _ = try await apiClient.submit(capture: uploadingCapture, baseURL: account.baseURL, token: token)
+                let captureForUpload = try await audioUploadPreparer.capturePreparedForUpload(uploadingCapture)
+                preparedCapture = captureForUpload
+                _ = try await apiClient.submit(capture: captureForUpload, baseURL: account.baseURL, token: token)
                 guard let completedIndex = captures.firstIndex(where: { $0.captureID == uploadingCapture.captureID }) else {
                     continue
                 }
@@ -895,6 +911,19 @@ public final class FieldCaptureModel {
                 captures[completedIndex] = releasedCapture
                 successfulUploadCount += 1
                 statusMessage = "Synced \(releasedCapture.siteLabel)"
+            } catch let error as AudioMemoUploadPreparationError {
+                guard let failedIndex = captures.firstIndex(where: { $0.captureID == uploadingCapture.captureID }) else {
+                    statusMessage = "Could not prepare voice memos for upload."
+                    continue
+                }
+                let errorDescription = error.localizedDescription
+                captures[failedIndex].attempts += 1
+                captures[failedIndex].status = .failed
+                captures[failedIndex].lastError = errorDescription
+                captures[failedIndex].retryAfter = nil
+                statusMessage = "Capture failed: \(errorDescription)"
+                await notificationScheduler.notifyUploadFailed(capture: captures[failedIndex], reason: errorDescription)
+                continue
             } catch let error as CaptureAPIError {
                 guard let failedIndex = captures.firstIndex(where: { $0.captureID == uploadingCapture.captureID }) else {
                     statusMessage = "Sync paused. Will retry."
@@ -1157,7 +1186,7 @@ public final class FieldCaptureModel {
                 return "Missing photo file: \(photo.filename)"
             }
         }
-        if let audio = capture.audio {
+        for audio in capture.audioAttachments {
             guard let fileURL = audio.fileURL,
                   FileManager.default.fileExists(atPath: fileURL.path) else {
                 return "Missing audio file: \(audio.filename)"
@@ -1187,13 +1216,22 @@ public final class FieldCaptureModel {
 
     private func isPhotoLimitError(_ error: String) -> Bool {
         let normalized = error.localizedLowercase
-        return normalized.contains("too many")
-            || normalized.contains("at most")
+        return normalized.contains("too many photos")
+            || normalized.contains("too many images")
+            || (normalized.contains("at most") && (normalized.contains("photos") || normalized.contains("images")))
             || normalized.contains("max images")
             || normalized.contains("maximum image")
             || normalized.contains("maximum photo")
             || normalized.contains("photo limit")
             || normalized.contains("image limit")
+    }
+
+    private func cleanupPreparedUploadMedia(_ prepared: LocalCapture, source: LocalCapture) {
+        let sourceAudioURLs = Set(source.audioAttachments.compactMap(\.fileURL))
+        for audio in prepared.audioAttachments {
+            guard let fileURL = audio.fileURL, !sourceAudioURLs.contains(fileURL) else { continue }
+            mediaStore.deletePendingMedia(photos: [], audio: audio)
+        }
     }
 
     private func setInboxCount(_ count: Int) {

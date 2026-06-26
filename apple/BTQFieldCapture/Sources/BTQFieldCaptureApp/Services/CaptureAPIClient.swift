@@ -279,6 +279,9 @@ public enum MultipartCaptureBuilder {
         if let photoNotesJSON = photoNotesJSON(for: capture.photos) {
             fields.append(("photo_notes_json", photoNotesJSON))
         }
+        if let audioDurationsJSON = audioDurationsJSON(for: capture.audioAttachments) {
+            fields.append(("audio_durations_json", audioDurationsJSON))
+        }
         if let metadataJSON = metadataJSON(for: capture) {
             fields.append(("metadata_json", metadataJSON))
         }
@@ -299,7 +302,7 @@ public enum MultipartCaptureBuilder {
                 boundary: boundary
             )
         }
-        if let audio = capture.audio {
+        for audio in capture.audioAttachments {
             try body.appendFileField(
                 name: "audio",
                 filename: audio.filename,
@@ -307,6 +310,8 @@ public enum MultipartCaptureBuilder {
                 fileURL: audio.fileURL,
                 boundary: boundary
             )
+        }
+        if let audio = capture.audioAttachments.first {
             body.appendFormField(name: "audio_duration_seconds", value: String(audio.durationSeconds), boundary: boundary)
         }
         body.appendString("--\(boundary)--\r\n")
@@ -329,12 +334,14 @@ public enum MultipartCaptureBuilder {
             }
             try handle.write(contentsOf: Data("\r\n".utf8))
         }
-        if let audio = capture.audio {
+        for audio in capture.audioAttachments {
             try handle.write(contentsOf: fileHeaderData(name: "audio", filename: audio.filename, mimeType: audio.mimeType, boundary: boundary))
             if let fileURL = audio.fileURL {
                 try writeFileContents(from: fileURL, to: handle)
             }
             try handle.write(contentsOf: Data("\r\n".utf8))
+        }
+        if let audio = capture.audioAttachments.first {
             try handle.write(contentsOf: formFieldData(name: "audio_duration_seconds", value: String(audio.durationSeconds), boundary: boundary))
         }
         try handle.write(contentsOf: Data("--\(boundary)--\r\n".utf8))
@@ -367,7 +374,16 @@ public enum MultipartCaptureBuilder {
         return String(data: data, encoding: .utf8)
     }
 
+    private static func audioDurationsJSON(for audios: [CaptureAudio]) -> String? {
+        let durations = audios.enumerated().map { index, audio in
+            MultipartAudioDurationPayload(index: index, filename: audio.filename, durationSeconds: audio.durationSeconds)
+        }
+        guard durations.count > 1, let data = try? JSONEncoder().encode(durations) else { return nil }
+        return String(data: data, encoding: .utf8)
+    }
+
     private static func metadataJSON(for capture: LocalCapture) -> String? {
+        let audioAttachments = capture.audioAttachments
         let payload = MultipartCaptureMetadataPayload(
             visitID: capture.visitID?.uuidString,
             siteID: capture.siteID,
@@ -376,21 +392,22 @@ public enum MultipartCaptureBuilder {
             qcCategory: capture.qcCategory,
             assetKind: assetKind(for: capture).rawValue,
             photoCount: capture.photos.count,
-            hasAudio: capture.audio != nil,
-            audioDurationSeconds: capture.audio?.durationSeconds
+            hasAudio: !audioAttachments.isEmpty,
+            audioCount: audioAttachments.count,
+            audioDurationSeconds: audioAttachments.first?.durationSeconds
         )
         guard let data = try? JSONEncoder().encode(payload) else { return nil }
         return String(data: data, encoding: .utf8)
     }
 
     private static func assetKind(for capture: LocalCapture) -> CaptureAssetKind {
-        if !capture.photos.isEmpty && capture.audio != nil {
+        if !capture.photos.isEmpty && !capture.audioAttachments.isEmpty {
             return .photoVoice
         }
         if !capture.photos.isEmpty {
             return .photo
         }
-        if capture.audio != nil {
+        if !capture.audioAttachments.isEmpty {
             return .voice
         }
         return .text
@@ -401,6 +418,18 @@ private struct MultipartPhotoNotePayload: Codable {
     var index: Int
     var filename: String
     var note: String
+}
+
+private struct MultipartAudioDurationPayload: Codable {
+    var index: Int
+    var filename: String
+    var durationSeconds: Double
+
+    enum CodingKeys: String, CodingKey {
+        case index
+        case filename
+        case durationSeconds = "duration_seconds"
+    }
 }
 
 private struct MultipartCaptureMetadataPayload: Codable {
@@ -414,6 +443,7 @@ private struct MultipartCaptureMetadataPayload: Codable {
     var assetKind: String
     var photoCount: Int
     var hasAudio: Bool
+    var audioCount: Int
     var audioDurationSeconds: Double?
 
     enum CodingKeys: String, CodingKey {
@@ -427,6 +457,7 @@ private struct MultipartCaptureMetadataPayload: Codable {
         case assetKind = "asset_kind"
         case photoCount = "photo_count"
         case hasAudio = "has_audio"
+        case audioCount = "audio_count"
         case audioDurationSeconds = "audio_duration_seconds"
     }
 }
@@ -474,7 +505,7 @@ public actor MockCaptureAPIClient: CaptureAPIClient {
             captureID: capture.captureID,
             couchdbDocID: capture.captureID,
             photoCount: capture.photos.count,
-            audioCount: capture.audio == nil ? 0 : 1,
+            audioCount: capture.audioAttachments.count,
             idempotentReplay: false
         )
     }

@@ -584,7 +584,7 @@ import UniformTypeIdentifiers
     #expect(captureView.contains("showingClearDraftMediaConfirmation"))
     #expect(captureView.contains("Clear pending media?"))
     #expect(captureView.contains("Clear Media\", role: .destructive"))
-    #expect(captureView.contains("unsaved photos and voice memo from the current draft"))
+    #expect(captureView.contains("unsaved photos and voice memos from the current draft"))
     #expect(captureView.contains("Photo note for"))
     #expect(captureView.contains("Starts recording a voice memo."))
     #expect(captureView.contains("\"voice.record\""))
@@ -646,6 +646,11 @@ import UniformTypeIdentifiers
     #expect(queueView.contains("CapturePhotoThumbnail(photo: photo)"))
     #expect(queueView.contains("Retry upload for"))
     #expect(queueView.contains("Moves this failed capture back to pending."))
+    #expect(queueView.contains("private var canRetryFailedCapture"))
+    #expect(queueView.contains("Delete unretryable capture for"))
+    #expect(queueView.contains("The saved media file is missing, so this capture must be deleted and captured again."))
+    #expect(queueView.contains("audioAttachments.count"))
+    #expect(queueView.contains("private var audioSummaryText"))
     #expect(queueView.contains("failureRecoveryHint"))
     #expect(queueView.contains("Recovery guidance:"))
     #expect(queueView.contains(".disabled(model.isSyncing || !model.canSubmitCaptures)"))
@@ -868,6 +873,7 @@ import UniformTypeIdentifiers
     #expect(metadata.assetKind == "photo-voice")
     #expect(metadata.photoCount == 1)
     #expect(metadata.hasAudio)
+    #expect(metadata.audioCount == 1)
     #expect(metadata.audioDurationSeconds == 12)
 }
 
@@ -914,6 +920,54 @@ import UniformTypeIdentifiers
     )
     #expect(apiClientSource.contains("writeFileContents(from: fileURL, to: handle)"))
     #expect(apiClientSource.contains("read(upToCount: 256 * 1024)"))
+}
+
+@Test func multipartBodyCarriesMultipleVoiceMemos() throws {
+    let temp = FileManager.default.temporaryDirectory.appendingPathComponent("btq-multi-audio-test-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: temp, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: temp) }
+
+    let firstAudioURL = temp.appendingPathComponent("voice-1.m4a")
+    let secondAudioURL = temp.appendingPathComponent("voice-2.m4a")
+    try Data("first-audio".utf8).write(to: firstAudioURL)
+    try Data("second-audio".utf8).write(to: secondAudioURL)
+
+    let capture = LocalCapture(
+        captureID: "cap-unified-multi-audio-test",
+        jobID: "job-multi-audio-test",
+        visitID: nil,
+        siteID: "site_1",
+        siteLabel: "Site One",
+        targetID: "site_1",
+        qcCategory: "general_note",
+        note: "Two voice memos",
+        capturedAt: Date(timeIntervalSince1970: 1_800_000_000),
+        exportedAt: Date(timeIntervalSince1970: 1_800_000_001),
+        audios: [
+            CaptureAudio(filename: "voice-1.m4a", fileURL: firstAudioURL, durationSeconds: 4),
+            CaptureAudio(filename: "voice-2.m4a", fileURL: secondAudioURL, durationSeconds: 9),
+        ]
+    )
+
+    let bodyURL = temp.appendingPathComponent("body.multipart")
+    try MultipartCaptureBuilder.writeBody(for: capture, boundary: "TestBoundary", to: bodyURL)
+    let body = try String(contentsOf: bodyURL, encoding: .utf8)
+    let fields = Dictionary(uniqueKeysWithValues: MultipartCaptureBuilder.fields(for: capture))
+    let rawDurations = try #require(fields["audio_durations_json"])
+    let durations = try JSONDecoder().decode([AudioDurationExpectation].self, from: Data(rawDurations.utf8))
+    let rawMetadata = try #require(fields["metadata_json"])
+    let metadata = try JSONDecoder().decode(ClientMetadataExpectation.self, from: Data(rawMetadata.utf8))
+
+    let audioPartCount = body.components(separatedBy: "name=\"audio\"; filename=").count - 1
+    #expect(audioPartCount == 2)
+    #expect(body.contains("name=\"audio\"; filename=\"voice-1.m4a\""))
+    #expect(body.contains("name=\"audio\"; filename=\"voice-2.m4a\""))
+    #expect(body.contains("first-audio"))
+    #expect(body.contains("second-audio"))
+    #expect(durations.map(\.durationSeconds) == [4, 9])
+    #expect(metadata.hasAudio)
+    #expect(metadata.audioCount == 2)
+    #expect(metadata.audioDurationSeconds == 4)
 }
 
 @Test func fileBackedMultipartBodyCarriesTwentyPhotoParts() throws {
@@ -1301,13 +1355,22 @@ import UniformTypeIdentifiers
     #expect(captureViewSource.contains("recorder.elapsedSeconds"))
     #expect(captureViewSource.contains("Voice memo paused \\(VoiceRecorder.formatDuration(recorder.elapsedSeconds))"))
     #expect(captureViewSource.contains("Recording voice memo \\(VoiceRecorder.formatDuration(recorder.elapsedSeconds))"))
+    #expect(recorderSource.contains("public func currentRecordingAudioSnapshot() -> CaptureAudio?"))
+    #expect(recorderSource.contains("public func adoptPersistedAudio(_ audio: CaptureAudio)"))
+    #expect(recorderSource.contains("public func restore(audio: CaptureAudio?)"))
+    #expect(captureViewSource.contains(".onChange(of: recorder.lastAudio)"))
+    #expect(captureViewSource.contains("handleRecorderAudioChange(oldAudio: oldAudio, newAudio: newAudio)"))
+    #expect(captureViewSource.contains(".onChange(of: recorder.isPaused)"))
+    #expect(captureViewSource.contains("persistPausedAudioSnapshot()"))
+    #expect(captureViewSource.contains("recorder.restore(audio: pendingAudios.last)"))
+    #expect(captureViewSource.contains("private var activeDraftAudios"))
     let draftValidationRange = try #require(captureViewSource.range(of: "model.validateQuickObservationDraft(photoCount: pendingPhotos.count, hasAudio: hasPendingAudio)"))
-    let pendingAudioRange = try #require(captureViewSource.range(of: "let hadPendingAudio = hasPendingAudio"))
-    let persistAudioRange = try #require(captureViewSource.range(of: "let audio = persistPendingAudio()"))
+    let pendingAudioRange = try #require(captureViewSource.range(of: "let hadActiveRecording = recorder.isRecording || recorder.isPaused || recorder.lastAudio != nil"))
+    let persistAudioRange = try #require(captureViewSource.range(of: "let finalizedAudio = persistPendingAudio()"))
     #expect(draftValidationRange.lowerBound < persistAudioRange.lowerBound)
     #expect(draftValidationRange.lowerBound < pendingAudioRange.lowerBound)
     #expect(pendingAudioRange.lowerBound < persistAudioRange.lowerBound)
-    #expect(captureViewSource.contains("guard !hadPendingAudio || audio != nil else"))
+    #expect(captureViewSource.contains("guard !hadActiveRecording || finalizedAudio != nil else"))
     #expect(captureViewSource.contains("Could not save voice memo. Try recording again."))
     #expect(captureViewSource.contains("private var hasPendingAudio"))
     #expect(cameraPermissionSource.contains("AVCaptureDevice.authorizationStatus(for: .video)"))
@@ -1578,6 +1641,110 @@ import UniformTypeIdentifiers
     #expect(reloadedModel.captures.count == 1)
     #expect(reloadedModel.captures.first?.status == .pending)
     #expect(reloadedModel.captures.first?.photos.count == 2)
+}
+
+@Test @MainActor func audioDraftPersistsAsVoiceMemoIsRecordedAndPromotesOnSubmit() async throws {
+    let site = BTQSite(siteID: "site_audio", label: "Audio Site")
+    let snapshot = FieldCaptureSnapshot(
+        account: .defaultProduction,
+        session: BTQSession(
+            person: BTQPerson(personID: "person_field", name: "Field User"),
+            token: BTQToken(tokenID: "token_field", label: "Pilot"),
+            sites: [site],
+            canSubmit: true,
+            canReview: false,
+            maxImages: 20
+        ),
+        sites: [site]
+    )
+    let store = MemoryFieldCaptureStore(snapshot: snapshot)
+    let model = FieldCaptureModel(
+        store: store,
+        apiClient: MockCaptureAPIClient(),
+        tokenStore: MemoryTokenStore(),
+        notificationScheduler: NoopUploadNotificationScheduler()
+    )
+    await model.load()
+
+    let audioURL = URL(fileURLWithPath: "/tmp/btq-audio-draft.m4a")
+    let audio = CaptureAudio(filename: "voice.m4a", fileURL: audioURL, durationSeconds: 12)
+
+    #expect(await model.upsertDraftCapture(photos: [], audio: audio))
+    let persistedDraft = try await store.load().captures.first
+    #expect(persistedDraft?.status == .draft)
+    #expect(persistedDraft?.audio?.filename == "voice.m4a")
+
+    let reloadedModel = FieldCaptureModel(
+        store: store,
+        apiClient: MockCaptureAPIClient(),
+        tokenStore: MemoryTokenStore(),
+        notificationScheduler: NoopUploadNotificationScheduler()
+    )
+    await reloadedModel.load()
+
+    #expect(reloadedModel.activeDraftCapture?.audio?.durationSeconds == 12)
+
+    let didSave = await reloadedModel.saveQuickObservation(photos: [], audio: audio)
+
+    #expect(didSave)
+    #expect(reloadedModel.captures.count == 1)
+    #expect(reloadedModel.captures.first?.status == .pending)
+    #expect(reloadedModel.captures.first?.audio?.filename == "voice.m4a")
+}
+
+@Test @MainActor func removingDraftCaptureDeletesManagedAudioFile() async throws {
+    let mediaRoot = FileManager.default.temporaryDirectory
+        .appendingPathComponent("btq-draft-audio-cleanup-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: mediaRoot, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: mediaRoot) }
+
+    let site = BTQSite(siteID: "site_audio", label: "Audio Site")
+    let audioURL = mediaRoot
+        .appendingPathComponent("loose-capture", isDirectory: true)
+        .appendingPathComponent("voice.m4a")
+    try FileManager.default.createDirectory(at: audioURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+    try Data("audio".utf8).write(to: audioURL)
+
+    let draft = LocalCapture(
+        captureID: "cap-audio-draft",
+        jobID: "job-audio-draft",
+        visitID: nil,
+        siteID: site.siteID,
+        siteLabel: site.label,
+        targetID: site.siteID,
+        qcCategory: "general_note",
+        note: "",
+        capturedAt: Date(timeIntervalSince1970: 1_800_000_000),
+        exportedAt: Date(timeIntervalSince1970: 1_800_000_001),
+        status: .draft,
+        audio: CaptureAudio(filename: "voice.m4a", fileURL: audioURL, durationSeconds: 9)
+    )
+    let snapshot = FieldCaptureSnapshot(
+        account: .defaultProduction,
+        session: BTQSession(
+            person: BTQPerson(personID: "person_field", name: "Field User"),
+            token: BTQToken(tokenID: "token_field", label: "Pilot"),
+            sites: [site],
+            canSubmit: true,
+            canReview: false,
+            maxImages: 20
+        ),
+        sites: [site],
+        captures: [draft]
+    )
+    let model = FieldCaptureModel(
+        store: MemoryFieldCaptureStore(snapshot: snapshot),
+        apiClient: MockCaptureAPIClient(),
+        tokenStore: MemoryTokenStore(),
+        notificationScheduler: NoopUploadNotificationScheduler(),
+        mediaStore: LocalMediaStore(rootDirectory: mediaRoot)
+    )
+    await model.load()
+
+    await model.removeDraftCapture(siteID: site.siteID)
+
+    #expect(model.captures.isEmpty)
+    #expect(FileManager.default.fileExists(atPath: audioURL.path) == false)
 }
 
 @Test @MainActor func activeDraftRecoveryFindsLatestDraftWhenRelaunchDefaultsToAnotherSite() async throws {
@@ -2319,6 +2486,60 @@ import UniformTypeIdentifiers
     #expect(FileManager.default.fileExists(atPath: externalPhotoURL.path) == true)
 }
 
+@Test @MainActor func syncPreparesMultipleVoiceMemosAsSingleUploadAudio() async throws {
+    let mediaRoot = FileManager.default.temporaryDirectory.appendingPathComponent("btq-sync-audio-prepare-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: mediaRoot, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: mediaRoot) }
+
+    let account = BTQAccount.defaultProduction
+    let mediaStore = LocalMediaStore(rootDirectory: mediaRoot)
+    let bucketURL = mediaStore.mediaDirectory(bucketID: "capture-multi-audio")
+    try FileManager.default.createDirectory(at: bucketURL, withIntermediateDirectories: true)
+    let firstAudioURL = bucketURL.appendingPathComponent("voice-1.m4a")
+    let secondAudioURL = bucketURL.appendingPathComponent("voice-2.m4a")
+    let mergedAudioURL = bucketURL.appendingPathComponent("voice-merged.m4a")
+    try Data("voice-1".utf8).write(to: firstAudioURL)
+    try Data("voice-2".utf8).write(to: secondAudioURL)
+    try Data("merged".utf8).write(to: mergedAudioURL)
+
+    let mergedAudio = CaptureAudio(filename: "voice-merged.m4a", fileURL: mergedAudioURL, durationSeconds: 9)
+    let capture = LocalCapture(
+        captureID: "capture-multi-audio",
+        jobID: "job-multi-audio",
+        visitID: nil,
+        siteID: "site_1",
+        siteLabel: "Site One",
+        targetID: "site_1",
+        qcCategory: "general_note",
+        note: "Multiple voice memos",
+        capturedAt: Date(timeIntervalSince1970: 1_800_000_000),
+        exportedAt: Date(timeIntervalSince1970: 1_800_000_001),
+        audios: [
+            CaptureAudio(filename: "voice-1.m4a", fileURL: firstAudioURL, durationSeconds: 4),
+            CaptureAudio(filename: "voice-2.m4a", fileURL: secondAudioURL, durationSeconds: 5),
+        ]
+    )
+    let apiClient = MockCaptureAPIClient()
+    let tokenStore = MemoryTokenStore()
+    let model = FieldCaptureModel(
+        store: MemoryFieldCaptureStore(snapshot: captureSnapshot(account: account, captures: [capture])),
+        apiClient: apiClient,
+        tokenStore: tokenStore,
+        notificationScheduler: NoopUploadNotificationScheduler(),
+        mediaStore: mediaStore,
+        audioUploadPreparer: StubAudioUploadPreparer(mergedAudio: mergedAudio)
+    )
+    await model.load()
+    await tokenStore.saveToken("token-submit", accountID: account.id)
+
+    await model.syncPending()
+
+    let submitted = await apiClient.submitted.first
+    #expect(submitted?.audioAttachments.count == 1)
+    #expect(submitted?.audioAttachments.first?.filename == "voice-merged.m4a")
+    #expect(model.captures.first?.status == .done)
+}
+
 @Test @MainActor func syncFailureUsesNativePhotoLimitMessageForBackendPhotoLimitRejection() async {
     let apiClient = FailingSubmitAPIClient(
         error: CaptureAPIError.serverStatus(
@@ -2346,6 +2567,35 @@ import UniformTypeIdentifiers
     #expect(model.captures.first?.lastError == "Limit is 20 photos per capture.")
     #expect(model.statusMessage == "Capture failed: Limit is 20 photos per capture.")
     #expect(model.captures.first.map { model.displayError(for: $0) } == "Limit is 20 photos per capture.")
+}
+
+@Test @MainActor func syncFailureDoesNotMapVoiceMemoLimitToPhotoLimit() async {
+    let apiClient = FailingSubmitAPIClient(
+        error: CaptureAPIError.serverStatus(
+            status: 400,
+            code: "too_many_audio_files",
+            message: "At most one voice note may be submitted"
+        )
+    )
+    let tokenStore = MemoryTokenStore()
+    let model = FieldCaptureModel(
+        store: MemoryFieldCaptureStore(),
+        apiClient: apiClient,
+        tokenStore: tokenStore,
+        notificationScheduler: NoopUploadNotificationScheduler()
+    )
+    await model.load()
+    await tokenStore.saveToken("token-123", accountID: model.account.id)
+    await model.handleConnectivityChange(.satisfied)
+
+    model.observationText = "Backend audio rejection test"
+    let didSave = await model.saveQuickObservation()
+
+    #expect(didSave)
+    #expect(model.captures.first?.status == .failed)
+    #expect(model.captures.first?.lastError == "At most one voice note may be submitted")
+    #expect(model.statusMessage == "Capture failed: At most one voice note may be submitted")
+    #expect(model.captures.first.map { model.displayError(for: $0) } == "At most one voice note may be submitted")
 }
 
 @Test @MainActor func unauthorizedSyncRequiresReconnectAndPreservesPendingCapture() async {
@@ -3669,6 +3919,18 @@ private struct PhotoNoteExpectation: Decodable {
     var note: String
 }
 
+private struct AudioDurationExpectation: Decodable {
+    var index: Int
+    var filename: String
+    var durationSeconds: Double
+
+    enum CodingKeys: String, CodingKey {
+        case index
+        case filename
+        case durationSeconds = "duration_seconds"
+    }
+}
+
 private struct ClientMetadataExpectation: Decodable {
     var schemaVersion: Int
     var client: String
@@ -3677,6 +3939,7 @@ private struct ClientMetadataExpectation: Decodable {
     var assetKind: String
     var photoCount: Int
     var hasAudio: Bool
+    var audioCount: Int
     var audioDurationSeconds: Double?
 
     enum CodingKeys: String, CodingKey {
@@ -3687,6 +3950,7 @@ private struct ClientMetadataExpectation: Decodable {
         case assetKind = "asset_kind"
         case photoCount = "photo_count"
         case hasAudio = "has_audio"
+        case audioCount = "audio_count"
         case audioDurationSeconds = "audio_duration_seconds"
     }
 }
@@ -4022,7 +4286,7 @@ private actor SequencedSessionAPIClient: CaptureAPIClient {
             captureID: capture.captureID,
             couchdbDocID: capture.captureID,
             photoCount: capture.photos.count,
-            audioCount: capture.audio == nil ? 0 : 1,
+            audioCount: capture.audioAttachments.count,
             idempotentReplay: false
         )
     }
@@ -4052,7 +4316,7 @@ private actor RecordingSessionAPIClient: CaptureAPIClient {
             captureID: capture.captureID,
             couchdbDocID: capture.captureID,
             photoCount: capture.photos.count,
-            audioCount: capture.audio == nil ? 0 : 1,
+            audioCount: capture.audioAttachments.count,
             idempotentReplay: false
         )
     }
@@ -4084,7 +4348,7 @@ private actor OneGoodSessionThenUnauthorizedAPIClient: CaptureAPIClient {
             captureID: capture.captureID,
             couchdbDocID: capture.captureID,
             photoCount: capture.photos.count,
-            audioCount: capture.audio == nil ? 0 : 1,
+            audioCount: capture.audioAttachments.count,
             idempotentReplay: false
         )
     }
@@ -4107,6 +4371,17 @@ private actor FailingSubmitAPIClient: CaptureAPIClient {
 
     func submit(capture: LocalCapture, baseURL: URL, token: String) async throws -> SubmitCaptureResponse {
         throw error
+    }
+}
+
+private struct StubAudioUploadPreparer: AudioMemoUploadPreparing {
+    var mergedAudio: CaptureAudio
+
+    func capturePreparedForUpload(_ capture: LocalCapture) async throws -> LocalCapture {
+        var prepared = capture
+        prepared.audios = [mergedAudio]
+        prepared.audio = mergedAudio
+        return prepared
     }
 }
 
@@ -4144,7 +4419,7 @@ private actor ReentrantSubmitAPIClient: CaptureAPIClient {
             captureID: capture.captureID,
             couchdbDocID: capture.captureID,
             photoCount: capture.photos.count,
-            audioCount: capture.audio == nil ? 0 : 1,
+            audioCount: capture.audioAttachments.count,
             idempotentReplay: false
         )
     }
@@ -4185,7 +4460,7 @@ private actor FlakySubmitAPIClient: CaptureAPIClient {
             captureID: capture.captureID,
             couchdbDocID: capture.captureID,
             photoCount: capture.photos.count,
-            audioCount: capture.audio == nil ? 0 : 1,
+            audioCount: capture.audioAttachments.count,
             idempotentReplay: false
         )
     }
@@ -4215,7 +4490,7 @@ private actor SubmittedHistoryAPIClient: CaptureAPIClient {
             captureID: capture.captureID,
             couchdbDocID: capture.captureID,
             photoCount: capture.photos.count,
-            audioCount: capture.audio == nil ? 0 : 1,
+            audioCount: capture.audioAttachments.count,
             idempotentReplay: false
         )
     }
@@ -4270,7 +4545,7 @@ private actor ReviewInboxAPIClient: CaptureAPIClient {
             captureID: capture.captureID,
             couchdbDocID: capture.captureID,
             photoCount: capture.photos.count,
-            audioCount: capture.audio == nil ? 0 : 1,
+            audioCount: capture.audioAttachments.count,
             idempotentReplay: false
         )
     }
@@ -4303,7 +4578,7 @@ private actor ReentrantSubmittedHistoryAPIClient: CaptureAPIClient {
             captureID: capture.captureID,
             couchdbDocID: capture.captureID,
             photoCount: capture.photos.count,
-            audioCount: capture.audio == nil ? 0 : 1,
+            audioCount: capture.audioAttachments.count,
             idempotentReplay: false
         )
     }

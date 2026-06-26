@@ -704,6 +704,7 @@ public struct LocalCapture: Identifiable, Codable, Equatable, Sendable {
     public var lastTriedAt: Date?
     public var retryAfter: Date?
     public var photos: [CapturePhoto]
+    public var audios: [CaptureAudio]
     public var audio: CaptureAudio?
 
     public init(
@@ -724,8 +725,10 @@ public struct LocalCapture: Identifiable, Codable, Equatable, Sendable {
         lastTriedAt: Date? = nil,
         retryAfter: Date? = nil,
         photos: [CapturePhoto] = [],
-        audio: CaptureAudio? = nil
+        audio: CaptureAudio? = nil,
+        audios: [CaptureAudio] = []
     ) {
+        let audioAttachments = audios.isEmpty ? audio.map { [$0] } ?? [] : audios
         self.captureID = captureID
         self.jobID = jobID
         self.visitID = visitID
@@ -743,7 +746,82 @@ public struct LocalCapture: Identifiable, Codable, Equatable, Sendable {
         self.lastTriedAt = lastTriedAt
         self.retryAfter = retryAfter
         self.photos = photos
-        self.audio = audio
+        self.audios = audioAttachments
+        self.audio = audio ?? audioAttachments.first
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case captureID
+        case jobID
+        case visitID
+        case siteID
+        case siteLabel
+        case targetType
+        case targetID
+        case qcCategory
+        case note
+        case capturedAt
+        case exportedAt
+        case status
+        case attempts
+        case lastError
+        case lastTriedAt
+        case retryAfter
+        case photos
+        case audios
+        case audio
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        captureID = try container.decode(String.self, forKey: .captureID)
+        jobID = try container.decode(String.self, forKey: .jobID)
+        visitID = try container.decodeIfPresent(UUID.self, forKey: .visitID)
+        siteID = try container.decode(String.self, forKey: .siteID)
+        siteLabel = try container.decode(String.self, forKey: .siteLabel)
+        targetType = try container.decodeIfPresent(String.self, forKey: .targetType) ?? "location"
+        targetID = try container.decode(String.self, forKey: .targetID)
+        qcCategory = try container.decode(String.self, forKey: .qcCategory)
+        note = try container.decode(String.self, forKey: .note)
+        capturedAt = try container.decode(Date.self, forKey: .capturedAt)
+        exportedAt = try container.decode(Date.self, forKey: .exportedAt)
+        status = try container.decodeIfPresent(CaptureQueueStatus.self, forKey: .status) ?? .pending
+        attempts = try container.decodeIfPresent(Int.self, forKey: .attempts) ?? 0
+        lastError = try container.decodeIfPresent(String.self, forKey: .lastError)
+        lastTriedAt = try container.decodeIfPresent(Date.self, forKey: .lastTriedAt)
+        retryAfter = try container.decodeIfPresent(Date.self, forKey: .retryAfter)
+        photos = try container.decodeIfPresent([CapturePhoto].self, forKey: .photos) ?? []
+        let decodedAudio = try container.decodeIfPresent(CaptureAudio.self, forKey: .audio)
+        let decodedAudios = try container.decodeIfPresent([CaptureAudio].self, forKey: .audios) ?? []
+        audios = decodedAudios.isEmpty ? decodedAudio.map { [$0] } ?? [] : decodedAudios
+        audio = decodedAudio ?? audios.first
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(captureID, forKey: .captureID)
+        try container.encode(jobID, forKey: .jobID)
+        try container.encodeIfPresent(visitID, forKey: .visitID)
+        try container.encode(siteID, forKey: .siteID)
+        try container.encode(siteLabel, forKey: .siteLabel)
+        try container.encode(targetType, forKey: .targetType)
+        try container.encode(targetID, forKey: .targetID)
+        try container.encode(qcCategory, forKey: .qcCategory)
+        try container.encode(note, forKey: .note)
+        try container.encode(capturedAt, forKey: .capturedAt)
+        try container.encode(exportedAt, forKey: .exportedAt)
+        try container.encode(status, forKey: .status)
+        try container.encode(attempts, forKey: .attempts)
+        try container.encodeIfPresent(lastError, forKey: .lastError)
+        try container.encodeIfPresent(lastTriedAt, forKey: .lastTriedAt)
+        try container.encodeIfPresent(retryAfter, forKey: .retryAfter)
+        try container.encode(photos, forKey: .photos)
+        try container.encode(audios, forKey: .audios)
+        try container.encodeIfPresent(audio ?? audios.first, forKey: .audio)
+    }
+
+    public var audioAttachments: [CaptureAudio] {
+        audios.isEmpty ? audio.map { [$0] } ?? [] : audios
     }
 
     public var failureRecoveryHint: String? {

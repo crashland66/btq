@@ -29,6 +29,7 @@ struct CaptureNotebookView: View {
     @Bindable var model: FieldCaptureModel
     @State private var selectedPhotoItems: [PhotosPickerItem] = []
     @State private var pendingPhotos: [CapturePhoto] = []
+    @State private var pendingAudios: [CaptureAudio] = []
     @State private var recorder = VoiceRecorder()
     @State private var showCamera = false
     @State private var cameraDraftContext: DraftContext?
@@ -49,6 +50,90 @@ struct CaptureNotebookView: View {
     }
 
     var body: some View {
+        captureScrollContent
+            #if os(iOS)
+            .safeAreaInset(edge: .bottom) {
+                Color.clear
+                    .frame(height: 112)
+                    .allowsHitTesting(false)
+            }
+            #endif
+            .navigationTitle(captureNavigationTitle)
+            #if os(iOS)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar(.hidden, for: .navigationBar)
+            #endif
+            .toolbar {
+                captureToolbar
+            }
+            .onChange(of: selectedPhotoItems) { _, items in
+                let context = currentDraftContext
+                Task { await loadPhotos(items, context: context) }
+            }
+            .onChange(of: pendingPhotos) { _, photos in
+                guard !photos.isEmpty, !isSavingDraft else { return }
+                Task { await persistActiveMediaDraft(photos: photos) }
+            }
+            .onChange(of: model.captures) { _, _ in
+                restoreActiveDraftIfAvailable()
+            }
+            .onChange(of: model.observationText) { _, _ in
+                Task { await persistActiveDraftIfPresent() }
+            }
+            .onChange(of: model.selectedCategoryValue) { _, _ in
+                Task { await persistActiveDraftIfPresent() }
+            }
+            .onChange(of: recorder.lastAudio) { oldAudio, newAudio in
+                Task { await handleRecorderAudioChange(oldAudio: oldAudio, newAudio: newAudio) }
+            }
+            .onChange(of: recorder.isPaused) { _, isPaused in
+                guard isPaused else { return }
+                Task { await persistPausedAudioSnapshot() }
+            }
+            .onChange(of: model.selectedSiteID) { oldValue, newValue in
+                guard oldValue != nil, oldValue != newValue else { return }
+                discardDraftAfterSiteChange(previousSiteID: oldValue)
+            }
+            .onChange(of: model.account.id) { oldValue, newValue in
+                guard oldValue != newValue else { return }
+                discardDraftAfterAccountChange()
+            }
+            .onChange(of: model.canSubmitCaptures) { _, canSubmit in
+                guard !canSubmit else { return }
+                discardDraftAfterSubmitPermissionRevoked()
+            }
+            .task {
+                restoreActiveDraftIfAvailable()
+            }
+            #if os(iOS)
+            .sheet(isPresented: $showCamera) {
+                CameraCaptureView { data in
+                    guard let context = cameraDraftContext, canAttachMedia(to: context) else { return }
+                    if let photo = savePhoto(data: data, prefix: "camera") {
+                        await appendPhotoToDraft(photo, context: context)
+                    }
+                }
+                .ignoresSafeArea()
+                .onDisappear {
+                    cameraDraftContext = nil
+                }
+            }
+            #endif
+            .confirmationDialog(
+                "Clear pending media?",
+                isPresented: $showingClearDraftMediaConfirmation,
+                titleVisibility: .visible
+            ) {
+                Button("Clear Media", role: .destructive) {
+                    discardPendingMedia()
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("This removes unsaved photos and voice memos from the current draft.")
+            }
+    }
+
+    private var captureScrollContent: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
                 captureHeader
@@ -63,79 +148,6 @@ struct CaptureNotebookView: View {
             .padding(.bottom, 24)
             .frame(maxWidth: 760, alignment: .center)
             .frame(maxWidth: .infinity)
-        }
-        #if os(iOS)
-        .safeAreaInset(edge: .bottom) {
-            Color.clear
-                .frame(height: 112)
-                .allowsHitTesting(false)
-        }
-        #endif
-        .navigationTitle(captureNavigationTitle)
-        #if os(iOS)
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbar(.hidden, for: .navigationBar)
-        #endif
-        .toolbar {
-            captureToolbar
-        }
-        .onChange(of: selectedPhotoItems) { _, items in
-            let context = currentDraftContext
-            Task { await loadPhotos(items, context: context) }
-        }
-        .onChange(of: pendingPhotos) { _, photos in
-            guard !photos.isEmpty, !isSavingDraft else { return }
-            Task { await persistActiveMediaDraft(photos: photos) }
-        }
-        .onChange(of: model.captures) { _, _ in
-            restoreActiveDraftIfAvailable()
-        }
-        .onChange(of: model.observationText) { _, _ in
-            Task { await persistActiveDraftIfPresent() }
-        }
-        .onChange(of: model.selectedCategoryValue) { _, _ in
-            Task { await persistActiveDraftIfPresent() }
-        }
-        .onChange(of: model.selectedSiteID) { oldValue, newValue in
-            guard oldValue != nil, oldValue != newValue else { return }
-            discardDraftAfterSiteChange(previousSiteID: oldValue)
-        }
-        .onChange(of: model.account.id) { oldValue, newValue in
-            guard oldValue != newValue else { return }
-            discardDraftAfterAccountChange()
-        }
-        .onChange(of: model.canSubmitCaptures) { _, canSubmit in
-            guard !canSubmit else { return }
-            discardDraftAfterSubmitPermissionRevoked()
-        }
-        .task {
-            restoreActiveDraftIfAvailable()
-        }
-        #if os(iOS)
-        .sheet(isPresented: $showCamera) {
-            CameraCaptureView { data in
-                guard let context = cameraDraftContext, canAttachMedia(to: context) else { return }
-                if let photo = savePhoto(data: data, prefix: "camera") {
-                    await appendPhotoToDraft(photo, context: context)
-                }
-            }
-            .ignoresSafeArea()
-            .onDisappear {
-                cameraDraftContext = nil
-            }
-        }
-        #endif
-        .confirmationDialog(
-            "Clear pending media?",
-            isPresented: $showingClearDraftMediaConfirmation,
-            titleVisibility: .visible
-        ) {
-            Button("Clear Media", role: .destructive) {
-                discardPendingMedia()
-            }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("This removes unsaved photos and voice memo from the current draft.")
         }
     }
 
@@ -253,7 +265,7 @@ struct CaptureNotebookView: View {
                     .accessibilityIdentifier("capture.photos.import.message")
             }
 
-            if !pendingPhotos.isEmpty || recorder.lastAudio != nil {
+            if !pendingPhotos.isEmpty || !pendingAudios.isEmpty || recorder.lastAudio != nil {
                 mediaStrip
             }
         }
@@ -385,7 +397,9 @@ struct CaptureNotebookView: View {
                     .accessibilityIdentifier("voice.duration")
             }
 
-            VoiceRecorderView(recorder: recorder)
+            VoiceRecorderView(recorder: recorder) {
+                removeCurrentVoiceMemo()
+            }
                 .disabled(!canEditDraft)
         }
     }
@@ -396,8 +410,11 @@ struct CaptureNotebookView: View {
                 if !pendingPhotos.isEmpty {
                     Label("\(pendingPhotos.count) photo\(pendingPhotos.count == 1 ? "" : "s")", systemImage: "photo")
                 }
-                if recorder.lastAudio != nil {
+                if pendingAudios.isEmpty, recorder.lastAudio != nil {
                     Label("Voice memo", systemImage: "waveform")
+                }
+                if !pendingAudios.isEmpty {
+                    Label("\(pendingAudios.count) memo\(pendingAudios.count == 1 ? "" : "s")", systemImage: "waveform")
                 }
                 Spacer()
                 Button("Clear") {
@@ -405,7 +422,21 @@ struct CaptureNotebookView: View {
                 }
                 .disabled(!canEditDraft)
                 .accessibilityLabel("Clear pending media")
-                .accessibilityHint("Removes unsaved photos and voice memo from this draft.")
+                .accessibilityHint("Removes unsaved photos and voice memos from this draft.")
+            }
+
+            ForEach(pendingAudios) { audio in
+                HStack(spacing: 10) {
+                    Image(systemName: "waveform")
+                        .foregroundStyle(Color.btqAccent)
+                    Text("Voice memo")
+                        .font(.caption.weight(.semibold))
+                    Spacer()
+                    Text(VoiceRecorder.formatDuration(audio.durationSeconds))
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                }
+                .accessibilityElement(children: .combine)
             }
 
             ForEach($pendingPhotos) { $photo in
@@ -487,17 +518,22 @@ struct CaptureNotebookView: View {
 
     private var hasDraftContent: Bool {
         !pendingPhotos.isEmpty
+            || !pendingAudios.isEmpty
             || recorder.lastAudio != nil
             || !model.observationText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     private var hasPendingAudio: Bool {
-        recorder.lastAudio != nil || recorder.isRecording || recorder.isPaused
+        !pendingAudios.isEmpty || recorder.lastAudio != nil || recorder.isRecording || recorder.isPaused
     }
 
     private var voiceDurationLabel: String {
         if recorder.isRecording || recorder.isPaused {
             return VoiceRecorder.formatDuration(recorder.elapsedSeconds)
+        }
+        if !pendingAudios.isEmpty {
+            let totalDuration = pendingAudios.reduce(0) { $0 + $1.durationSeconds }
+            return VoiceRecorder.formatDuration(totalDuration)
         }
         if let audio = recorder.lastAudio {
             return VoiceRecorder.formatDuration(audio.durationSeconds)
@@ -564,23 +600,30 @@ struct CaptureNotebookView: View {
         defer { isSavingDraft = false }
 
         let context = currentDraftContext
-        let hadPendingAudio = hasPendingAudio
-        let audio = persistPendingAudio()
-        guard !hadPendingAudio || audio != nil else {
+        let hadActiveRecording = recorder.isRecording || recorder.isPaused || recorder.lastAudio != nil
+        let finalizedAudio = persistPendingAudio()
+        guard !hadActiveRecording || finalizedAudio != nil else {
             model.statusMessage = "Could not save voice memo. Try recording again."
             return
         }
+        if let finalizedAudio {
+            upsertPendingAudio(finalizedAudio)
+        }
         guard isActiveDraftContext(context) else {
-            mediaStore.deletePendingMedia(photos: [], audio: audio)
+            mediaStore.deletePendingMedia(photos: [], audio: finalizedAudio)
             model.statusMessage = "Draft changed before save completed. Review and save again."
             return
         }
 
         let savedPhotos = pendingPhotos
-        let didSave = await model.saveQuickObservation(photos: savedPhotos, audio: audio)
+        let savedAudios = pendingAudios
+        let didSave = await model.saveQuickObservation(photos: savedPhotos, audios: savedAudios)
         if didSave {
             pendingPhotos.removeAll { savedPhoto in
                 savedPhotos.contains { $0.id == savedPhoto.id }
+            }
+            pendingAudios.removeAll { savedAudio in
+                savedAudios.contains { $0.id == savedAudio.id }
             }
             recorder.clear()
         }
@@ -648,7 +691,7 @@ struct CaptureNotebookView: View {
             return false
         }
         pendingPhotos.append(photo)
-        let didPersist = await model.upsertDraftCapture(photos: pendingPhotos, audio: nil)
+        let didPersist = await model.upsertDraftCapture(photos: pendingPhotos, audios: activeDraftAudios)
         if !didPersist {
             pendingPhotos.removeAll { $0.id == photo.id }
             mediaStore.deletePendingMedia(photos: [photo])
@@ -658,12 +701,12 @@ struct CaptureNotebookView: View {
 
     private func persistActiveMediaDraft(photos: [CapturePhoto]) async {
         guard !photos.isEmpty, canEditDraft else { return }
-        await model.upsertDraftCapture(photos: photos, audio: nil)
+        await model.upsertDraftCapture(photos: photos, audios: activeDraftAudios)
     }
 
     private func persistActiveDraftIfPresent() async {
-        guard !pendingPhotos.isEmpty, canEditDraft else { return }
-        await model.upsertDraftCapture(photos: pendingPhotos, audio: nil)
+        guard canEditDraft, !pendingPhotos.isEmpty || !activeDraftAudios.isEmpty else { return }
+        await model.upsertDraftCapture(photos: pendingPhotos, audios: activeDraftAudios)
     }
 
     private func restoreActiveDraftIfAvailable() {
@@ -676,6 +719,8 @@ struct CaptureNotebookView: View {
             model.selectSite(id: draft.siteID)
         }
         pendingPhotos = draft.photos
+        pendingAudios = draft.audioAttachments
+        recorder.restore(audio: pendingAudios.last)
         if !draft.note.isEmpty {
             model.observationText = draft.note
         }
@@ -688,7 +733,12 @@ struct CaptureNotebookView: View {
     private func discardPendingMedia(draftSiteID: String? = nil) {
         mediaStore.deletePendingMedia(photos: pendingPhotos, audio: recorder.lastAudio)
         pendingPhotos = []
+        let audiosToDelete = pendingAudios
+        pendingAudios = []
         recorder.clear()
+        for audio in audiosToDelete {
+            mediaStore.deletePendingMedia(photos: [], audio: audio)
+        }
         Task { await model.removeDraftCapture(siteID: draftSiteID) }
     }
 
@@ -722,6 +772,7 @@ struct CaptureNotebookView: View {
         dismissKeyboard()
         #endif
         pendingPhotos = []
+        pendingAudios = []
         recorder.clear()
         selectedPhotoItems = []
         model.observationText = ""
@@ -731,11 +782,79 @@ struct CaptureNotebookView: View {
 
     private func persistPendingAudio() -> CaptureAudio? {
         guard let audio = recorder.finalizeForSave() else { return nil }
-        return try? mediaStore.persistAudio(audio, bucketID: mediaBucketID, removeSourceAfterCopy: true)
+        return persistDraftAudio(audio, removeSourceAfterCopy: true)
+    }
+
+    private func persistDraftAudio(_ audio: CaptureAudio, removeSourceAfterCopy: Bool) -> CaptureAudio? {
+        try? mediaStore.persistAudio(audio, bucketID: mediaBucketID, removeSourceAfterCopy: removeSourceAfterCopy)
+    }
+
+    private func handleRecorderAudioChange(oldAudio: CaptureAudio?, newAudio: CaptureAudio?) async {
+        guard canEditDraft else { return }
+        guard oldAudio != newAudio else { return }
+
+        if let newAudio {
+            guard let persistedAudio = persistDraftAudio(newAudio, removeSourceAfterCopy: true) else {
+                model.statusMessage = "Could not save voice memo locally."
+                return
+            }
+            upsertPendingAudio(persistedAudio)
+            if recorder.lastAudio != persistedAudio {
+                recorder.adoptPersistedAudio(persistedAudio)
+            }
+            await model.upsertDraftCapture(photos: pendingPhotos, audios: pendingAudios)
+            return
+        }
+
+        if let oldAudio, pendingAudios.contains(where: { $0.id == oldAudio.id }) == false {
+            mediaStore.deletePendingMedia(photos: [], audio: oldAudio)
+        }
+    }
+
+    private func persistPausedAudioSnapshot() async {
+        guard canEditDraft,
+              let audio = recorder.currentRecordingAudioSnapshot(),
+              let persistedAudio = persistDraftAudio(audio, removeSourceAfterCopy: false) else {
+            return
+        }
+        upsertPendingAudio(persistedAudio)
+        await model.upsertDraftCapture(photos: pendingPhotos, audios: pendingAudios)
     }
 
     private var mediaBucketID: String {
         model.activeVisit(forSiteID: model.selectedSite?.siteID)?.id.uuidString ?? "loose-capture"
+    }
+
+    private var activeDraftAudios: [CaptureAudio] {
+        if !pendingAudios.isEmpty {
+            return pendingAudios
+        }
+        return model.activeDraftCapture?.audioAttachments ?? []
+    }
+
+    private func upsertPendingAudio(_ audio: CaptureAudio) {
+        upsertAudio(audio, into: &pendingAudios)
+    }
+
+    private func upsertAudio(_ audio: CaptureAudio, into audios: inout [CaptureAudio]) {
+        if let index = audios.firstIndex(where: { $0.id == audio.id }) {
+            audios[index] = audio
+        } else {
+            audios.append(audio)
+        }
+    }
+
+    private func removeCurrentVoiceMemo() {
+        guard let audio = recorder.lastAudio ?? recorder.currentRecordingAudioSnapshot() else { return }
+        pendingAudios.removeAll { $0.id == audio.id }
+        mediaStore.deletePendingMedia(photos: [], audio: audio)
+        Task {
+            if pendingPhotos.isEmpty && pendingAudios.isEmpty {
+                await model.removeDraftCapture()
+            } else {
+                await model.upsertDraftCapture(photos: pendingPhotos, audios: pendingAudios)
+            }
+        }
     }
 
     #if os(iOS)
@@ -748,6 +867,7 @@ struct CaptureNotebookView: View {
 
 struct VoiceRecorderView: View {
     @Bindable var recorder: VoiceRecorder
+    var onClearSavedAudio: () -> Void = {}
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -761,9 +881,9 @@ struct VoiceRecorderView: View {
                     }
                     .buttonStyle(TapeRecordButtonStyle())
                     .disabled(recorder.isRecording)
-                    .accessibilityLabel(recorder.lastAudio == nil ? "Record Voice Memo" : "Re-record Voice Memo")
-                    .accessibilityIdentifier(recorder.lastAudio == nil ? "voice.record" : "voice.rerecord")
-                    .accessibilityHint(recorder.lastAudio == nil ? "Starts recording a voice memo." : "Replaces the current voice memo.")
+                    .accessibilityLabel("Record Voice Memo")
+                    .accessibilityIdentifier("voice.record")
+                    .accessibilityHint(recorder.lastAudio == nil ? "Starts recording a voice memo." : "Starts another voice memo.")
 
                     Button {
                         _ = recorder.stop()
@@ -803,6 +923,7 @@ struct VoiceRecorderView: View {
                 Spacer(minLength: 0)
 
                 Button {
+                    onClearSavedAudio()
                     recorder.clear()
                 } label: {
                     Text("×")
