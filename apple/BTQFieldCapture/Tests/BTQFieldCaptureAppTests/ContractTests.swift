@@ -567,7 +567,8 @@ import UniformTypeIdentifiers
     #expect(captureView.contains(".safeAreaInset(edge: .bottom)"))
     #expect(captureView.contains("TextField(\"Observation note\", text: $model.observationText, axis: .vertical)"))
     #expect(captureView.contains(".lineLimit(3...5)"))
-    #expect(captureView.contains("\"capture.save.local\""))
+    #expect(captureView.contains("Label(\"Upload Capture\", systemImage: \"arrow.up.circle\")"))
+    #expect(captureView.contains("\"capture.upload\""))
     #expect(captureView.contains("isImportingPhotos"))
     #expect(captureView.contains("photoImportMessage"))
     #expect(captureView.contains("PickedPhotoFile"))
@@ -1561,12 +1562,22 @@ import UniformTypeIdentifiers
     #expect(persistedDraft?.photos.map(\.filename) == ["first.jpg", "second.jpg"])
     #expect(model.captures.count == 1)
 
-    let didSave = await model.saveQuickObservation(photos: [firstPhoto, secondPhoto])
+    let reloadedModel = FieldCaptureModel(
+        store: store,
+        apiClient: MockCaptureAPIClient(),
+        tokenStore: MemoryTokenStore(),
+        notificationScheduler: NoopUploadNotificationScheduler()
+    )
+    await reloadedModel.load()
+
+    #expect(reloadedModel.activeDraftCapture?.photos.map(\.filename) == ["first.jpg", "second.jpg"])
+
+    let didSave = await reloadedModel.saveQuickObservation(photos: [firstPhoto, secondPhoto])
 
     #expect(didSave)
-    #expect(model.captures.count == 1)
-    #expect(model.captures.first?.status == .pending)
-    #expect(model.captures.first?.photos.count == 2)
+    #expect(reloadedModel.captures.count == 1)
+    #expect(reloadedModel.captures.first?.status == .pending)
+    #expect(reloadedModel.captures.first?.photos.count == 2)
 }
 
 @Test @MainActor func legacySessionPhotoLimitUsesNativeTwentyPhotoCap() async {

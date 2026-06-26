@@ -3,14 +3,14 @@ import SwiftUI
 import UIKit
 
 public struct CameraCaptureView: UIViewControllerRepresentable {
-    public var onPhoto: (Data) -> Void
+    public var onPhoto: (Data) async -> Void
     @Environment(\.dismiss) private var dismiss
 
     public static var isCameraAvailable: Bool {
         UIImagePickerController.isSourceTypeAvailable(.camera)
     }
 
-    public init(onPhoto: @escaping (Data) -> Void) {
+    public init(onPhoto: @escaping (Data) async -> Void) {
         self.onPhoto = onPhoto
     }
 
@@ -29,10 +29,10 @@ public struct CameraCaptureView: UIViewControllerRepresentable {
     public func updateUIViewController(_ uiViewController: UIImagePickerController, context: Context) {}
 
     public final class Coordinator: NSObject, UINavigationControllerDelegate, UIImagePickerControllerDelegate {
-        private let onPhoto: (Data) -> Void
+        private let onPhoto: (Data) async -> Void
         private let dismiss: DismissAction
 
-        init(onPhoto: @escaping (Data) -> Void, dismiss: DismissAction) {
+        init(onPhoto: @escaping (Data) async -> Void, dismiss: DismissAction) {
             self.onPhoto = onPhoto
             self.dismiss = dismiss
         }
@@ -40,9 +40,13 @@ public struct CameraCaptureView: UIViewControllerRepresentable {
         public func imagePickerController(_ picker: UIImagePickerController, didFinishPickingMediaWithInfo info: [UIImagePickerController.InfoKey: Any]) {
             if let image = info[.originalImage] as? UIImage,
                let data = image.jpegData(compressionQuality: 0.86) {
-                onPhoto(data)
+                Task { @MainActor in
+                    await onPhoto(data)
+                    dismiss()
+                }
+            } else {
+                dismiss()
             }
-            dismiss()
         }
 
         public func imagePickerControllerDidCancel(_ picker: UIImagePickerController) {

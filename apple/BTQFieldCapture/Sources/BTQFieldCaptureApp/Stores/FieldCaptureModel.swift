@@ -175,8 +175,8 @@ public final class FieldCaptureModel {
     }
 
     public var activeDraftCapture: LocalCapture? {
-        guard let selectedSiteID else { return nil }
-        return captures.first { $0.status == .draft && $0.siteID == selectedSiteID }
+        guard let siteID = selectedSite?.siteID else { return nil }
+        return captures.first { $0.status == .draft && $0.siteID == siteID }
     }
 
     public var accounts: [BTQAccount] {

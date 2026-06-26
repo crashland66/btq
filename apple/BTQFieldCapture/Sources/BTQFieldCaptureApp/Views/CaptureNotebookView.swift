@@ -87,6 +87,15 @@ struct CaptureNotebookView: View {
             guard !photos.isEmpty, !isSavingDraft else { return }
             Task { await persistActiveMediaDraft(photos: photos) }
         }
+        .onChange(of: model.captures) { _, _ in
+            restoreActiveDraftIfAvailable()
+        }
+        .onChange(of: model.observationText) { _, _ in
+            Task { await persistActiveDraftIfPresent() }
+        }
+        .onChange(of: model.selectedCategoryValue) { _, _ in
+            Task { await persistActiveDraftIfPresent() }
+        }
         .onChange(of: model.selectedSiteID) { oldValue, newValue in
             guard oldValue != nil, oldValue != newValue else { return }
             discardDraftAfterSiteChange(previousSiteID: oldValue)
@@ -107,7 +116,7 @@ struct CaptureNotebookView: View {
             CameraCaptureView { data in
                 guard let context = cameraDraftContext, canAttachMedia(to: context) else { return }
                 if let photo = savePhoto(data: data, prefix: "camera") {
-                    Task { await appendPhotoToDraft(photo, context: context) }
+                    await appendPhotoToDraft(photo, context: context)
                 }
             }
             .ignoresSafeArea()
@@ -431,12 +440,12 @@ struct CaptureNotebookView: View {
             Button {
                 Task { await saveCurrentDraft() }
             } label: {
-                Label("Save Locally", systemImage: "tray.and.arrow.down")
+                Label("Upload Capture", systemImage: "arrow.up.circle")
                     .frame(maxWidth: .infinity)
             }
             .buttonStyle(.borderedProminent)
             .disabled(!canEditDraft)
-            .accessibilityIdentifier("capture.save.local")
+            .accessibilityIdentifier("capture.upload")
         }
     }
 
@@ -650,6 +659,11 @@ struct CaptureNotebookView: View {
     private func persistActiveMediaDraft(photos: [CapturePhoto]) async {
         guard !photos.isEmpty, canEditDraft else { return }
         await model.upsertDraftCapture(photos: photos, audio: nil)
+    }
+
+    private func persistActiveDraftIfPresent() async {
+        guard !pendingPhotos.isEmpty, canEditDraft else { return }
+        await model.upsertDraftCapture(photos: pendingPhotos, audio: nil)
     }
 
     private func restoreActiveDraftIfAvailable() {
