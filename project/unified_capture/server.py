@@ -6,6 +6,7 @@ import logging
 import mimetypes
 import os
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from http.cookies import SimpleCookie
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -24,6 +25,7 @@ from capture_ingest import (
     parse_multipart,
     validate_content_length,
     validate_uploaded_photos,
+    mirror_capture_media_from_disk,
     write_capture_media,
 )
 from config import get_config
@@ -141,6 +143,29 @@ class UnifiedCaptureServer(ThreadingHTTPServer):
         self.request_max_bytes = request_max_bytes or (max_images * max_upload_bytes + MAX_AUDIO_BYTES + 1024 * 1024)
         self.couchdb_config = couchdb_config
         self.couchdb_database = couchdb_database
+        self._r2_mirror_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="btq-r2-mirror")
+
+    def enqueue_capture_media_mirror(self, media_candidates: list[tuple[str, Path]]) -> None:
+        if not media_candidates:
+            return
+        try:
+            self._r2_mirror_executor.submit(
+                mirror_capture_media_from_disk,
+                list(media_candidates),
+                self.upload_dir,
+            )
+        except RuntimeError as exc:
+            logging.warning("btq R2 mirror enqueue failed: %s", exc)
+
+    def shutdown(self) -> None:
+        super().shutdown()
+        self._r2_mirror_executor.shutdown(wait=True)
+
+    def server_close(self) -> None:
+        try:
+            self._r2_mirror_executor.shutdown(wait=True)
+        finally:
+            super().server_close()
 
 
 class UnifiedCaptureHandler(BaseHTTPRequestHandler):
@@ -300,7 +325,7 @@ class UnifiedCaptureHandler(BaseHTTPRequestHandler):
                     return
 
             doc, media_records = self.build_submit_document(fields, photos, audio_files, session, capture_id)
-            write_capture_media(media_records, photos + audio_files, self.server.upload_dir)
+            mirror_candidates = write_capture_media(media_records, photos + audio_files, self.server.upload_dir)
         except SubmissionError as error:
             if submit_photo_count is None:
                 submit_photo_count = getattr(self, "_submit_photo_count", None)
@@ -329,6 +354,7 @@ class UnifiedCaptureHandler(BaseHTTPRequestHandler):
             },
             HTTPStatus.CREATED,
         )
+        self.server.enqueue_capture_media_mirror(mirror_candidates)
 
     def handle_media(self, media_path: str) -> None:
         # Captured media can include resident-area photos, so never serve it
@@ -1094,7 +1120,10 @@ def run(
     logging.info("unified capture ingress: couchdb (db=%s)", couchdb_database)
     logging.info("token database: %s", db_path.expanduser())
     logging.info("upload dir: %s", upload_dir.expanduser())
-    server.serve_forever()
+    try:
+        server.serve_forever()
+    finally:
+        server.server_close()
     return 0
 
 

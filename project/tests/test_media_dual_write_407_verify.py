@@ -1,15 +1,16 @@
 """Independent verifier tests for 407 — capture media dual-write.
 
 Contract: write_capture_media must ALWAYS write to local disk (source of truth),
-and when media_store=="s3" ALSO best-effort mirror the same key+bytes to R2.
+and mirror_capture_media_from_disk best-effort mirrors the same key+bytes to R2
+from the persisted local file.
 A mirror that raises must never propagate, never skip the local write, never
 fail the capture. Local mode must be byte-identical to prior behavior (no
 mirror attempted). get_mirror_store returns an S3 store in s3 mode, None in
 local mode.
 
-Patch point note: write_capture_media re-imports get_mirror_store via
-`from media_store import LocalFilesystemStore, get_mirror_store` on EACH call,
-so the live binding is media_store.get_mirror_store — that is what we patch.
+Patch point note: mirror_capture_media_from_disk re-imports get_mirror_store
+on each call, so the live binding is media_store.get_mirror_store — that is
+what we patch.
 """
 
 from __future__ import annotations
@@ -26,7 +27,7 @@ os.environ.setdefault("BTQ_MEDIA_STORE", "local")
 
 import capture_ingest
 import media_store
-from capture_ingest import UploadedFile, write_capture_media
+from capture_ingest import UploadedFile, mirror_capture_media_from_disk, write_capture_media
 from media_store import LocalFilesystemStore, get_mirror_store
 
 
@@ -104,7 +105,7 @@ class GetMirrorStoreTests(unittest.TestCase):
 # write_capture_media — LOCAL mode
 # ---------------------------------------------------------------------------
 class LocalModeTests(unittest.TestCase):
-    def test_local_writes_each_file_and_no_mirror_attempted(self) -> None:
+    def test_local_writes_each_file_and_returns_mirror_candidates(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             upload_root = (Path(tmp) / "uploads").resolve()
             upload_root.mkdir()
@@ -120,38 +121,32 @@ class LocalModeTests(unittest.TestCase):
                 records.append({"stored_path": str(sp)})
                 uploads.append(_uploaded(content, name))
 
-            # Real get_mirror_store stays in place (BTQ_MEDIA_STORE=local ->
-            # returns None). Wrap it to observe its return values: in local
-            # mode every resolution must be None, so no mirror write occurs.
-            returns: list[object] = []
-
-            def _wrapped(*a, **k):
-                out = get_mirror_store(*a, **k)
-                returns.append(out)
-                return out
-
-            with mock.patch.object(media_store, "get_mirror_store", _wrapped):
-                write_capture_media(records, uploads, upload_root)
+            with mock.patch.object(
+                media_store,
+                "get_mirror_store",
+                side_effect=AssertionError("mirror store must not load during local write"),
+            ):
+                candidates = write_capture_media(records, uploads, upload_root)
 
             for name, content in files.items():
                 landed = upload_root / date / cap / name
                 self.assertTrue(landed.is_file(), name)
                 self.assertEqual(landed.read_bytes(), content)
-            # get_mirror_store was consulted and returned None every time
-            # (local mode) -> no mirror was ever obtained or written to.
-            self.assertTrue(returns)
-            self.assertTrue(all(r is None for r in returns))
+            self.assertEqual(
+                candidates,
+                [(f"{date}/{cap}/{name}", upload_root / date / cap / name) for name in files],
+            )
 
-    def test_local_mode_never_builds_s3_store(self) -> None:
-        # Stronger: in local mode build_s3_store must never be invoked.
+    def test_local_write_never_loads_mirror_store(self) -> None:
+        # Local write no longer resolves any mirror store on the request path.
         with tempfile.TemporaryDirectory() as tmp:
             upload_root = (Path(tmp) / "uploads").resolve()
             upload_root.mkdir()
             sp = upload_root / "2026-06-21" / "cap" / "p.jpg"
             with mock.patch.object(
                 media_store,
-                "build_s3_store",
-                side_effect=AssertionError("build_s3_store must not run in local mode"),
+                "get_mirror_store",
+                side_effect=AssertionError("mirror store must not load during local write"),
             ):
                 write_capture_media(
                     [{"stored_path": str(sp)}], [_uploaded(b"x")], upload_root
@@ -164,7 +159,7 @@ class LocalModeTests(unittest.TestCase):
 # write_capture_media — S3 mode (mirror happy path)
 # ---------------------------------------------------------------------------
 class S3MirrorModeTests(unittest.TestCase):
-    def test_s3_writes_local_and_mirrors_same_key_and_bytes(self) -> None:
+    def test_s3_mirror_reads_local_disk_and_mirrors_same_key_and_bytes(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             upload_root = (Path(tmp) / "uploads").resolve()
             upload_root.mkdir()
@@ -183,15 +178,18 @@ class S3MirrorModeTests(unittest.TestCase):
 
             spy = _SpyStore()
             with mock.patch.object(media_store, "get_mirror_store", return_value=spy):
-                write_capture_media(records, uploads, upload_root)
+                candidates = write_capture_media(records, uploads, upload_root)
+                for _key, stored_path in candidates:
+                    Path(stored_path).write_bytes(Path(stored_path).read_bytes() + b"-disk")
+                mirror_capture_media_from_disk(candidates, upload_root)
 
             # Local present + byte-identical.
             for name, content in files.items():
                 landed = upload_root / date / cap / name
                 self.assertTrue(landed.is_file(), name)
-                self.assertEqual(landed.read_bytes(), content)
-            # Mirror received the SAME keys + bytes.
-            self.assertEqual(spy.calls, expected)
+                self.assertEqual(landed.read_bytes(), content + b"-disk")
+            # Mirror received the SAME keys, with bytes re-read from disk.
+            self.assertEqual(spy.calls, [(key, data + b"-disk") for key, data in expected])
 
     def test_mirror_loaded_once_not_per_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -208,7 +206,8 @@ class S3MirrorModeTests(unittest.TestCase):
             with mock.patch.object(
                 media_store, "get_mirror_store", return_value=spy
             ) as gms:
-                write_capture_media(records, uploads, upload_root)
+                candidates = write_capture_media(records, uploads, upload_root)
+                mirror_capture_media_from_disk(candidates, upload_root)
             # get_mirror_store resolved lazily exactly once for 3 files.
             self.assertEqual(gms.call_count, 1)
             self.assertEqual(len(spy.calls), 3)
@@ -233,7 +232,8 @@ class MirrorFailureTests(unittest.TestCase):
             spy = _SpyStore(raise_on_write=True)
             with mock.patch.object(media_store, "get_mirror_store", return_value=spy):
                 # Must NOT raise.
-                write_capture_media(records, uploads, upload_root)
+                candidates = write_capture_media(records, uploads, upload_root)
+                mirror_capture_media_from_disk(candidates, upload_root)
 
             # Local source-of-truth files present despite every mirror raising.
             for name, content in files.items():
@@ -254,9 +254,10 @@ class MirrorFailureTests(unittest.TestCase):
                 "get_mirror_store",
                 side_effect=RuntimeError("config blew up"),
             ):
-                write_capture_media(
+                candidates = write_capture_media(
                     [{"stored_path": str(sp)}], [_uploaded(b"survives")], upload_root
                 )
+                mirror_capture_media_from_disk(candidates, upload_root)
             self.assertTrue(sp.is_file())
             self.assertEqual(sp.read_bytes(), b"survives")
 

@@ -15,8 +15,11 @@ import io
 import json
 import os
 import re
+import threading
+import time
 import tempfile
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from http import HTTPStatus
 from pathlib import Path
 from typing import Any, Optional
@@ -26,6 +29,7 @@ from btq_vault.couch_store import CouchDBEntityStore
 from token_store import TokenStore
 
 import field_capture.auth as fc_auth
+import media_store
 from unified_capture import server as uc_server
 from unified_capture.server import UnifiedCaptureHandler, UnifiedCaptureServer
 
@@ -1681,6 +1685,26 @@ class _SubmitFakeServer:
         # patched writer is invoked.
         self.couchdb_config = object()
         self.couchdb_database = couchdb_database
+        self.mirror_futures = []
+        self._r2_mirror_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="test-r2-mirror")
+
+    def enqueue_capture_media_mirror(self, media_candidates: list[tuple[str, Path]]) -> None:
+        if not media_candidates:
+            return
+        self.mirror_futures.append(
+            self._r2_mirror_executor.submit(
+                uc_server.mirror_capture_media_from_disk,
+                list(media_candidates),
+                self.upload_dir,
+            )
+        )
+
+    def drain_mirrors(self) -> None:
+        for future in list(self.mirror_futures):
+            future.result(timeout=5)
+
+    def server_close(self) -> None:
+        self._r2_mirror_executor.shutdown(wait=True)
 
 
 def _multipart_body(
@@ -1793,6 +1817,47 @@ class _WriterCapture:
         return dict(existing) if existing is not None else None
 
 
+class _BlockingMirrorStore:
+    def __init__(self, release: threading.Event) -> None:
+        self.release = release
+        self.started = threading.Event()
+        self.completed = threading.Event()
+        self.calls: list[tuple[str, bytes]] = []
+
+    def write(self, key: str, data: bytes) -> None:
+        self.calls.append((key, data))
+        self.started.set()
+        self.release.wait(timeout=5)
+        self.completed.set()
+
+    def read(self, key):  # pragma: no cover
+        raise AssertionError("mirror.read should not be called")
+
+    def exists(self, key):  # pragma: no cover
+        return False
+
+    def url_for(self, key):  # pragma: no cover
+        return ""
+
+
+class _RaisingMirrorStore:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, bytes]] = []
+
+    def write(self, key: str, data: bytes) -> None:
+        self.calls.append((key, data))
+        raise RuntimeError("simulated R2 outage")
+
+    def read(self, key):  # pragma: no cover
+        raise AssertionError("mirror.read should not be called")
+
+    def exists(self, key):  # pragma: no cover
+        return False
+
+    def url_for(self, key):  # pragma: no cover
+        return ""
+
+
 def _valid_submit_fields(
     *,
     site_id: str = "7060",
@@ -1831,6 +1896,7 @@ class SubmitBehaviorTests(unittest.TestCase):
         )
         self.token_id = self.store.list_tokens()[0].token_id
         self.server = _SubmitFakeServer(self.store, self.vault, self.upload_dir)
+        self.addCleanup(self.server.server_close)
         self.writer = _WriterCapture()
         self._patches = install_couch_fakes(EMP_SINGLE, SITES_TWO)
         self.addCleanup(stop_all, self._patches)
@@ -1913,6 +1979,89 @@ class SubmitBehaviorTests(unittest.TestCase):
         self.assertEqual(doc["client_metadata"]["photo_count"], 1)
         # media actually persisted (one photo file on disk)
         self.assertEqual(len(self._uploaded_files()), 1)
+
+    def test_submit_201_does_not_wait_for_slow_r2_mirror(self) -> None:
+        release = threading.Event()
+        mirror = _BlockingMirrorStore(release)
+        with mock.patch.object(media_store, "get_mirror_store", return_value=mirror):
+            start = time.monotonic()
+            resp = self.submit(
+                _valid_submit_fields(),
+                photos=[("a.png", "image/png", _TINY_PNG)],
+            )
+            elapsed = time.monotonic() - start
+            self.assertEqual(resp.status, 201, resp.text)
+            self.assertLess(elapsed, 0.5)
+            self.assertEqual(len(self.writer.put_calls), 1)
+            self.assertEqual(len(self._uploaded_files()), 1)
+            self.assertTrue(mirror.started.wait(timeout=1), "mirror task did not start")
+            doc = self.writer.put_calls[0]
+            expected_key = doc["photos"][0]["upload_id"]
+            self.assertEqual(mirror.calls, [(expected_key, _TINY_PNG)])
+            release.set()
+            self.server.drain_mirrors()
+        self.assertTrue(mirror.completed.is_set())
+
+    def test_r2_mirror_exception_does_not_affect_201_and_logs(self) -> None:
+        mirror = _RaisingMirrorStore()
+        with mock.patch.object(media_store, "get_mirror_store", return_value=mirror):
+            with self.assertLogs(level="WARNING") as logs:
+                resp = self.submit(
+                    _valid_submit_fields(),
+                    photos=[("a.png", "image/png", _TINY_PNG)],
+                )
+                self.server.drain_mirrors()
+        self.assertEqual(resp.status, 201, resp.text)
+        self.assertEqual(len(self.writer.put_calls), 1)
+        self.assertEqual(len(mirror.calls), 1)
+        self.assertIn("btq R2 mirror write failed", "\n".join(logs.output))
+
+    def test_local_media_write_submission_error_rejects_before_couchdb(self) -> None:
+        error = uc_server.SubmissionError(
+            HTTPStatus.BAD_REQUEST,
+            "invalid_upload_path",
+            "Invalid upload path",
+        )
+        with mock.patch.object(uc_server, "write_capture_media", side_effect=error):
+            resp = self.submit(
+                _valid_submit_fields(),
+                photos=[("a.png", "image/png", _TINY_PNG)],
+            )
+        self.assertEqual(resp.status, 400, resp.text)
+        self.assertEqual(resp.json()["error"], "invalid_upload_path")
+        self.assertEqual(len(self.writer.put_calls), 0)
+        self.assertEqual(self._uploaded_files(), [])
+        self.assertEqual(self.server.mirror_futures, [])
+
+    def test_couchdb_put_failure_returns_503_after_local_write_without_mirror(self) -> None:
+        with mock.patch.object(
+            uc_server,
+            "put_field_capture_document",
+            side_effect=uc_server.CouchDBCaptureWriterError("couch down"),
+        ):
+            resp = self.submit(
+                _valid_submit_fields(),
+                photos=[("a.png", "image/png", _TINY_PNG)],
+            )
+        self.assertEqual(resp.status, 503, resp.text)
+        self.assertEqual(resp.json()["error"], "couchdb_unavailable")
+        self.assertEqual(len(self._uploaded_files()), 1)
+        self.assertEqual(self.server.mirror_futures, [])
+
+    def test_server_close_drains_in_flight_r2_mirror(self) -> None:
+        release = threading.Event()
+        mirror = _BlockingMirrorStore(release)
+        with mock.patch.object(media_store, "get_mirror_store", return_value=mirror):
+            resp = self.submit(
+                _valid_submit_fields(),
+                photos=[("a.png", "image/png", _TINY_PNG)],
+            )
+            self.assertEqual(resp.status, 201, resp.text)
+            self.assertTrue(mirror.started.wait(timeout=1), "mirror task did not start")
+            threading.Timer(0.05, release.set).start()
+            self.server.server_close()
+        self.assertTrue(mirror.completed.is_set())
+        self.assertEqual(len(mirror.calls), 1)
 
     def test_audio_only_writes_one_doc_with_single_audio(self) -> None:
         resp = self.submit(

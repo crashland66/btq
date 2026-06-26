@@ -15,7 +15,7 @@ from email import policy
 from email.parser import BytesParser
 from http import HTTPStatus
 from pathlib import Path
-from typing import Callable, Mapping, TypeVar
+from typing import Callable, Mapping, TypeAlias, TypeVar
 
 
 SAFE_NAME_RE = re.compile(r"[^A-Za-z0-9._-]+")
@@ -39,6 +39,7 @@ class UploadedFile:
 
 
 UploadedPhoto = UploadedFile
+MirrorCandidate: TypeAlias = tuple[str, Path]
 
 
 # Per-submission photo ceiling for the dedicated batch-image import token only.
@@ -266,15 +267,14 @@ def build_capture_document_envelope(
     return doc
 
 
-def write_capture_media(media_records: list[object], uploads: list[UploadedFile], upload_dir: Path) -> None:
-    from media_store import LocalFilesystemStore, get_mirror_store
+def write_capture_media(media_records: list[object], uploads: list[UploadedFile], upload_dir: Path) -> list[MirrorCandidate]:
+    from media_store import LocalFilesystemStore
 
     if len(media_records) != len(uploads):
         raise SubmissionError(HTTPStatus.BAD_REQUEST, "invalid_media", "Invalid media")
     upload_root = upload_dir.expanduser().resolve(strict=False)
     local_store = LocalFilesystemStore(upload_root)
-    mirror = None
-    mirror_loaded = False
+    mirror_candidates: list[MirrorCandidate] = []
     for upload, record in zip(uploads, media_records):
         if not isinstance(record, dict):
             raise SubmissionError(HTTPStatus.BAD_REQUEST, "invalid_photo", "Invalid photo")
@@ -284,16 +284,28 @@ def write_capture_media(media_records: list[object], uploads: list[UploadedFile]
         except ValueError as exc:
             raise SubmissionError(HTTPStatus.BAD_REQUEST, "invalid_upload_path", "Invalid upload path") from exc
         local_store.write(key, upload.content)
-        if not mirror_loaded:
-            try:
-                mirror = get_mirror_store(upload_root)
-            except Exception as exc:
-                logging.warning("btq R2 mirror unavailable: %s", exc)
-            mirror_loaded = True
-        if mirror is None:
-            continue
+        mirror_candidates.append((key, stored_path))
+    return mirror_candidates
+
+
+def mirror_capture_media_from_disk(media_candidates: list[MirrorCandidate], upload_dir: Path) -> None:
+    from media_store import get_mirror_store
+
+    if not media_candidates:
+        return
+    upload_root = upload_dir.expanduser().resolve(strict=False)
+    try:
+        mirror = get_mirror_store(upload_root)
+    except Exception as exc:
+        logging.warning("btq R2 mirror unavailable: %s", exc)
+        return
+    if mirror is None:
+        return
+    for key, stored_path in media_candidates:
         try:
-            mirror.write(key, upload.content)
+            local_path = Path(stored_path).expanduser().resolve(strict=False)
+            local_path.relative_to(upload_root)
+            mirror.write(key, local_path.read_bytes())
             logging.info("btq R2 mirror wrote %s", key)
         except Exception as exc:
             logging.warning("btq R2 mirror write failed for %s: %s", key, exc)
