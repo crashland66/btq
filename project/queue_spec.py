@@ -5,6 +5,12 @@ import os
 import re
 from zoneinfo import ZoneInfo
 
+from btq_vault.location_urls import (
+    LOCATION_URL_ACTIONS,
+    LOCATION_URL_KINDS,
+    LOCATION_URL_STATUSES,
+    is_http_url,
+)
 from config import get_config
 
 
@@ -59,6 +65,7 @@ JOB_LOG_PERSONNEL_EVENT = "log_personnel_event"
 JOB_LOG_AVAILABILITY_CONSTRAINT = "log_availability_constraint"
 JOB_SET_ENTITY_STATUS = "set_entity_status"
 JOB_UPDATE_SITE_EQUIPMENT = "update_site_equipment"
+JOB_SET_SITE_URL = "set_site_url"
 JOB_MARK_SUPPLY_ORDERED = "mark_supply_ordered"
 JOB_MARK_SUPPLY_DELIVERED = "mark_supply_delivered"
 JOB_MARK_SUPPLY_STOCKED = "mark_supply_stocked"
@@ -158,6 +165,7 @@ ALLOWED_JOB_TYPES = {
     JOB_LOG_AVAILABILITY_CONSTRAINT,
     JOB_SET_ENTITY_STATUS,
     JOB_UPDATE_SITE_EQUIPMENT,
+    JOB_SET_SITE_URL,
     JOB_MARK_SUPPLY_ORDERED,
     JOB_MARK_SUPPLY_DELIVERED,
     JOB_MARK_SUPPLY_STOCKED,
@@ -188,6 +196,7 @@ SITE_ROUTABILITY_JOB_TYPES = {
     JOB_LOG_SUPPLY_NEED,
     JOB_LOG_EQUIPMENT_REQUEST,
     JOB_UPDATE_SITE_EQUIPMENT,
+    JOB_SET_SITE_URL,
 }
 
 
@@ -220,6 +229,7 @@ JOB_SCHEMAS = {
     JOB_LOG_AVAILABILITY_CONSTRAINT: ["employee", "constraint_type", "date", "reported_by", "source_text"],
     JOB_SET_ENTITY_STATUS: ["entity_type", "entity_id", "status", "reason", "source"],
     JOB_UPDATE_SITE_EQUIPMENT: ["equipment", "inspection_date", "inspected_by"],
+    JOB_SET_SITE_URL: ["site_id", "action", "url", "actor"],
     JOB_MARK_SUPPLY_ORDERED: ["supply_id", "actor"],
     JOB_MARK_SUPPLY_DELIVERED: ["supply_id", "actor"],
     JOB_MARK_SUPPLY_STOCKED: ["supply_id", "actor"],
@@ -419,6 +429,20 @@ UPDATE_SITE_EQUIPMENT_ALLOWED_PAYLOAD_FIELDS = {
     "inspection_date",
     "inspected_by",
     "section_notes",
+}
+SET_SITE_URL_ALLOWED_PAYLOAD_FIELDS = {
+    "site_id",
+    "action",
+    "url",
+    "new_url",
+    "label",
+    "kind",
+    "status",
+    "last_verified_at",
+    "last_verified_by",
+    "verification_note",
+    "actor",
+    "source",
 }
 MARK_SUPPLY_ALLOWED_PAYLOAD_FIELDS = {
     "supply_id",
@@ -994,6 +1018,43 @@ def _validate_update_site_equipment_payload(payload: dict) -> bool:
     return True
 
 
+def _validate_set_site_url_payload(payload: dict) -> bool:
+    if set(payload) - SET_SITE_URL_ALLOWED_PAYLOAD_FIELDS:
+        return False
+    for field in ("site_id", "action", "url", "actor"):
+        if not _is_non_empty_string(payload.get(field)):
+            return False
+    action = payload.get("action")
+    if action not in LOCATION_URL_ACTIONS:
+        return False
+    if not is_http_url(payload.get("url")):
+        return False
+    new_url = payload.get("new_url")
+    if new_url is not None and not is_http_url(new_url):
+        return False
+    kind = payload.get("kind")
+    if action == "add" and kind not in LOCATION_URL_KINDS:
+        return False
+    if kind is not None and kind not in LOCATION_URL_KINDS:
+        return False
+    status = payload.get("status", "reference")
+    if status is not None and status not in LOCATION_URL_STATUSES:
+        return False
+    for field in ("label", "last_verified_at", "last_verified_by", "verification_note", "source"):
+        value = payload.get(field)
+        if value is not None and not isinstance(value, str):
+            return False
+    if action == "edit":
+        editable = {"new_url", "label", "kind", "status", "last_verified_at", "last_verified_by", "verification_note"}
+        if not any(field in payload for field in editable):
+            return False
+    if action == "remove":
+        extra_edit_fields = {"new_url", "label", "kind", "status", "last_verified_at", "last_verified_by", "verification_note"}
+        if any(field in payload for field in extra_edit_fields):
+            return False
+    return True
+
+
 def _validate_set_entity_status_payload(payload: dict) -> bool:
     if set(payload) - SET_ENTITY_STATUS_ALLOWED_PAYLOAD_FIELDS:
         return False
@@ -1267,6 +1328,9 @@ def validate_job(job: dict) -> bool:
             return False
     if job_type == JOB_UPDATE_SITE_EQUIPMENT:
         if not _validate_update_site_equipment_payload(payload):
+            return False
+    if job_type == JOB_SET_SITE_URL:
+        if not _validate_set_site_url_payload(payload):
             return False
     if job_type in {
         JOB_MARK_SUPPLY_ORDERED,

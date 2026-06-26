@@ -1525,6 +1525,70 @@ Each `equipment` item may include:
 }
 ```
 
+## 13a. `set_site_url`
+
+Use when:
+
+- an operator has a reference link for a canonical site, such as the client's
+  location page, homepage, map link, portal, or related document
+- the link should be available to agents and the dashboard as site context
+- the action is to add, edit, or remove a URL on the canonical `location` doc
+
+Do not use when:
+
+- the link has not been reviewed by an operator
+- the intent is to scrape or import facts from the linked page
+- the action should change operational fields such as address, hours, access,
+  supplies, equipment, or staffing
+
+### Required payload fields
+
+- `site_id`: site canonical name, alias, or site ID string
+- `action`: one of `add`, `edit`, `remove`
+- `url`: HTTP(S) URL; for edit this identifies the existing entry
+- `actor`: operator/person string
+
+### Optional payload fields
+
+- `new_url`: HTTP(S) replacement URL for `edit`
+- `label`: human-readable label
+- `kind`: one of `official_location_page`, `client_homepage`, `maps`,
+  `portal`, `document`, `other`; required for `add`
+- `status`: one of `reference`, `verified`, `stale`, `deprecated`; defaults
+  to `reference`
+- `last_verified_at`, `last_verified_by`, `verification_note`: explicit
+  operator-provided verification metadata
+- `source`: string such as `ops_dashboard_site_detail` or `manual_review`
+
+### Runtime behavior notes
+
+- resolves `site_id` through the site registry and mutates
+  `location_<site_id>` through canonical CouchDB read-modify-write
+- `add` appends a new entry or replaces the existing entry with the same URL
+- `edit` updates the matching URL in place; `remove` drops the matching URL
+- verification status is operator-set; storing a URL never changes operational
+  site facts
+- reprocessing the same job is idempotent via the `btq_job_ids` marker
+
+### Valid example
+
+```json
+{
+  "job_id": "2026-06-26T14-00-00Z__continental-site-url",
+  "job_type": "set_site_url",
+  "payload": {
+    "site_id": "7060",
+    "action": "add",
+    "url": "https://example.com/locations/continental-metalworks",
+    "label": "Official location page",
+    "kind": "official_location_page",
+    "status": "reference",
+    "actor": "Greg",
+    "source": "ops_dashboard_site_detail"
+  }
+}
+```
+
 ## 14. `log_personnel_event`
 
 Use when:

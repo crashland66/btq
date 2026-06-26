@@ -209,6 +209,53 @@ def test_resolve_site_context_uses_canonical_doc(monkeypatch: pytest.MonkeyPatch
     assert context.site_id == str(site["site_id"])
     assert context.name == "Custom Canonical Name"
     assert context.account == "ACCT"
+    assert context.urls == ()
+
+
+def test_resolve_site_context_includes_non_deprecated_urls_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("BTQ_COUCHDB_URL", raising=False)
+    site = _site()
+    store = FakeStore(
+        {
+            f"location_{site['site_id']}": {
+                "_id": f"location_{site['site_id']}",
+                "type": "location",
+                "location": "Custom Canonical Name",
+                "account": "ACCT",
+                "urls": [
+                    {"url": "https://example.com/location", "kind": "official_location_page", "status": "reference"},
+                    {"url": "https://old.example.com/location", "kind": "official_location_page", "status": "deprecated"},
+                ],
+            }
+        }
+    )
+
+    context = resolve_site_context(store, str(site["site_id"]))
+
+    assert [entry["url"] for entry in context.urls] == ["https://example.com/location"]
+    assert context.urls[0]["status"] == "reference"
+
+
+def test_resolve_site_context_can_include_deprecated_urls(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("BTQ_COUCHDB_URL", raising=False)
+    site = _site()
+    store = FakeStore(
+        {
+            f"location_{site['site_id']}": {
+                "_id": f"location_{site['site_id']}",
+                "type": "location",
+                "location": "Custom Canonical Name",
+                "urls": [
+                    {"url": "https://example.com/location", "kind": "official_location_page", "status": "reference"},
+                    {"url": "https://old.example.com/location", "kind": "official_location_page", "status": "deprecated"},
+                ],
+            }
+        }
+    )
+
+    context = resolve_site_context(store, str(site["site_id"]), include_deprecated_urls=True)
+
+    assert [entry["status"] for entry in context.urls] == ["reference", "deprecated"]
 
 
 def test_resolve_site_context_falls_back_to_registry_name(monkeypatch: pytest.MonkeyPatch) -> None:

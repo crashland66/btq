@@ -4,14 +4,22 @@ import html
 import json
 import logging
 import re
+import uuid
 from datetime import date
+from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 from urllib import parse as urlparse
 from urllib import request as urlrequest
 
+from btq_vault.location_urls import (
+    LocationUrlError,
+    location_urls_from_doc,
+    normalize_location_url_entry,
+)
 from event_pipeline import couchdb_config
 from ops_dashboard.common import (
+    default_actor,
     first_query_value,
     load_photo_vision_sidecars,
     record_section,
@@ -120,6 +128,15 @@ _CAPTURE_GALLERY_LIMIT = 6
 _CAPTURE_COUNT_LIMIT = 5000
 _FIELD_CAPTURE_PAGE_SIZE = 5000
 _COMPLETE_CAPTURE_STATES = frozenset({"complete", "completed"})
+_URL_KIND_OPTIONS = (
+    "official_location_page",
+    "client_homepage",
+    "maps",
+    "portal",
+    "document",
+    "other",
+)
+_URL_STATUS_OPTIONS = ("reference", "verified", "stale", "deprecated")
 _EMPTY_ABOUT_SECTION = (
     '<section><h2>About &amp; operational notes</h2>'
     '<p class="zero-state">No operational notes yet.</p></section>'
@@ -288,6 +305,143 @@ def _capture_provenance(doc: dict[str, Any]) -> str:
     if not parts:
         return ""
     return f"<details><summary>Capture provenance</summary>{''.join(parts)}</details>"
+
+
+def _humanize_url_value(value: object) -> str:
+    return str(value or "").strip().replace("_", " ").title()
+
+
+def _select_options(values: tuple[str, ...], selected: str) -> str:
+    options = []
+    for value in values:
+        selected_attr = " selected" if value == selected else ""
+        options.append(f'<option value="{html.escape(value, quote=True)}"{selected_attr}>{html.escape(_humanize_url_value(value))}</option>')
+    return "".join(options)
+
+
+def _url_form_fields(entry: dict[str, Any] | None = None, *, action: str) -> str:
+    current = entry or {}
+    kind = str(current.get("kind") or "official_location_page")
+    status = str(current.get("status") or "reference")
+    url_value = html.escape(str(current.get("url") or ""), quote=True)
+    label = html.escape(str(current.get("label") or ""), quote=True)
+    verified_at = html.escape(str(current.get("last_verified_at") or ""), quote=True)
+    verified_by = html.escape(str(current.get("last_verified_by") or ""), quote=True)
+    note = html.escape(str(current.get("verification_note") or ""), quote=True)
+    url_name = "new_url" if action == "edit" else "url"
+    return (
+        f'<label>URL <input type="url" name="{url_name}" value="{url_value}" required></label>'
+        f'<label>Label <input name="label" value="{label}"></label>'
+        f'<label>Kind <select name="kind">{_select_options(_URL_KIND_OPTIONS, kind)}</select></label>'
+        f'<label>Status <select name="status">{_select_options(_URL_STATUS_OPTIONS, status)}</select></label>'
+        f'<label>Verified at <input name="last_verified_at" value="{verified_at}" placeholder="YYYY-MM-DD or ISO timestamp"></label>'
+        f'<label>Verified by <input name="last_verified_by" value="{verified_by}"></label>'
+        f'<label>Note <input name="verification_note" value="{note}"></label>'
+    )
+
+
+def _reference_link_item(site_id: str, entry: dict[str, Any], index: int) -> str:
+    escaped_site = html.escape(site_id, quote=True)
+    url = str(entry.get("url") or "")
+    escaped_url = html.escape(url, quote=True)
+    label = str(entry.get("label") or "").strip() or url
+    status = str(entry.get("status") or "reference")
+    kind = str(entry.get("kind") or "other")
+    note = str(entry.get("verification_note") or "").strip()
+    note_attr = f' title="{html.escape(note, quote=True)}"' if note else ""
+    status_class = re.sub(r"[^a-z0-9_-]+", "_", status.lower()).strip("_") or "reference"
+    return (
+        f'<li class="reference-link-item"{note_attr}>'
+        '<div class="reference-link-main">'
+        f'<a href="{escaped_url}" target="_blank" rel="noreferrer">{html.escape(label)}</a>'
+        f'<span class="subline">{html.escape(url)}</span>'
+        '</div>'
+        '<div class="reference-link-meta">'
+        f'<span class="pill">{html.escape(_humanize_url_value(kind))}</span>'
+        f'<span class="pill status-{html.escape(status_class, quote=True)}">{html.escape(_humanize_url_value(status))}</span>'
+        '</div>'
+        '<details class="reference-link-edit">'
+        '<summary>Edit</summary>'
+        f'<form method="post" action="/sites/{escaped_site}/urls">'
+        '<input type="hidden" name="action" value="edit">'
+        f'<input type="hidden" name="url" value="{escaped_url}">'
+        f'<input type="hidden" name="actor" value="{html.escape(default_actor(), quote=True)}">'
+        f'{_url_form_fields(entry, action="edit")}'
+        '<button type="submit">Save link</button>'
+        '</form>'
+        '</details>'
+        f'<form class="reference-link-remove" method="post" action="/sites/{escaped_site}/urls">'
+        '<input type="hidden" name="action" value="remove">'
+        f'<input type="hidden" name="url" value="{escaped_url}">'
+        f'<input type="hidden" name="actor" value="{html.escape(default_actor(), quote=True)}">'
+        '<input type="hidden" name="confirm" value="1">'
+        f'<button class="reject" type="submit" aria-label="Remove reference link {index + 1}">Remove</button>'
+        '</form>'
+        '</li>'
+    )
+
+
+def _reference_links_section(doc: dict[str, Any], site_id: str) -> str:
+    urls = location_urls_from_doc(doc)
+    escaped_site = html.escape(site_id, quote=True)
+    if urls:
+        list_html = '<ul class="reference-link-list">' + "".join(_reference_link_item(site_id, entry, index) for index, entry in enumerate(urls)) + "</ul>"
+    else:
+        list_html = '<p class="zero-state">No reference links yet.</p>'
+    add_form = (
+        '<details class="reference-link-add">'
+        '<summary>Add reference link</summary>'
+        f'<form method="post" action="/sites/{escaped_site}/urls">'
+        '<input type="hidden" name="action" value="add">'
+        f'<input type="hidden" name="actor" value="{html.escape(default_actor(), quote=True)}">'
+        f'{_url_form_fields(None, action="add")}'
+        '<button type="submit">Add link</button>'
+        '</form>'
+        '</details>'
+    )
+    return f'<section class="reference-links"><h2>Reference Links</h2>{list_html}{add_form}</section>'
+
+
+def _site_url_job_payload(form: dict[str, list[str]], site_id: str) -> dict[str, object]:
+    action = first_query_value(form, "action").strip()
+    payload: dict[str, object] = {
+        "site_id": site_id,
+        "action": action,
+        "url": first_query_value(form, "url").strip(),
+        "actor": first_query_value(form, "actor").strip() or default_actor(),
+        "source": "ops_dashboard_site_detail",
+    }
+    if action == "edit":
+        new_url = first_query_value(form, "new_url").strip()
+        if new_url:
+            payload["new_url"] = new_url
+    for field in ("label", "kind", "status", "last_verified_at", "last_verified_by", "verification_note"):
+        value = first_query_value(form, field).strip()
+        if value or (field in {"label", "verification_note"} and action == "edit"):
+            payload[field] = value
+    if action == "add" and "status" not in payload:
+        payload["status"] = "reference"
+    return payload
+
+
+def _write_site_url_job(runtime_root: Path, payload: dict[str, object]) -> Path:
+    from queue_spec import JOB_SET_SITE_URL, validate_job
+
+    suffix = str(uuid.uuid4())
+    job = {
+        "job_id": f"set-site-url-{suffix}",
+        "job_type": JOB_SET_SITE_URL,
+        "payload": payload,
+    }
+    if not validate_job(job):
+        raise ValueError("invalid set_site_url payload")
+    queue_dir = runtime_root.expanduser().resolve(strict=False) / "queue"
+    queue_dir.mkdir(parents=True, exist_ok=True)
+    queue_path = queue_dir / f"set-site-url-{suffix}.json"
+    temp_path = queue_path.with_name(f".{queue_path.name}.tmp")
+    temp_path.write_text(json.dumps(job, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    temp_path.replace(queue_path)
+    return queue_path
 
 
 def _site_notes(site_id: str) -> list[dict[str, Any]]:
@@ -856,6 +1010,40 @@ def handle_save_section(ctx: object, site_id: str, body: bytes):
         return ctx.redirect(f"/sites/{quote(site_id)}?error={quote(str(exc))}")
 
 
+def handle_site_url_post(ctx: object, site_id: str, body: bytes):
+    from urllib.parse import parse_qs, quote
+
+    form = parse_qs(body.decode("utf-8", errors="replace"), keep_blank_values=True)
+    root = Path(getattr(ctx, "runtime_root", Path("."))).expanduser().resolve(strict=False)
+    form_payload = {key: values[0] if values else "" for key, values in form.items()}
+
+    def _redirect(location: str) -> tuple:
+        return 303, "text/html; charset=utf-8", f'<a href="{html.escape(location)}">Return</a>'.encode(), {"Location": location}
+
+    action = first_query_value(form, "action").strip()
+    if action == "remove" and first_query_value(form, "confirm") != "1":
+        if hasattr(ctx, "audit"):
+            ctx.audit(f"/sites/{site_id}/urls", form_payload, "failed: confirm_required")
+        return _redirect(f"/sites/{quote(site_id)}?error=confirm_required")
+
+    try:
+        payload = _site_url_job_payload(form, site_id)
+        if action in {"add", "edit"}:
+            url_entry = dict(payload)
+            if "new_url" in payload:
+                url_entry["url"] = payload["new_url"]
+            normalize_location_url_entry(url_entry)
+        queue_path = _write_site_url_job(root, payload)
+    except (LocationUrlError, ValueError, OSError) as exc:
+        if hasattr(ctx, "audit"):
+            ctx.audit(f"/sites/{site_id}/urls", form_payload, f"failed: {exc}")
+        return _redirect(f"/sites/{quote(site_id)}?error={quote(str(exc))}")
+
+    if hasattr(ctx, "audit"):
+        ctx.audit(f"/sites/{site_id}/urls", form_payload, f"success: staged queue_path={queue_path}")
+    return _redirect(f"/sites/{quote(site_id)}?message=url_queued")
+
+
 def render(ctx: object, site_id: str) -> str:
     """Render the per-site detail page wrapped by html_page(active_section='site_detail')."""
     try:
@@ -898,6 +1086,7 @@ def render(ctx: object, site_id: str) -> str:
         )
         sections.append(_capture_processing_breakdown(capture_processing_counts))
         sections.append(_quick_facts_section(doc, site_id, edit_section))
+        sections.append(_reference_links_section(doc, site_id))
         if edit_section == "about":
             escaped_id = html.escape(site_id, quote=True)
             rev = html.escape(str(doc.get("_rev", "")), quote=True)

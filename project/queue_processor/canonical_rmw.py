@@ -14,6 +14,7 @@ from typing import Any, Callable
 
 from btq_vault.couch_store import CouchDBEntityStore, CouchDBEntityStoreError
 from btq_vault.entity_types import CANONICAL_ENTITY_TYPES
+from btq_vault.location_urls import location_urls_from_doc
 from event_pipeline.sites import SITES, resolve_site_id
 from queue_processor.handlers._shared import QueueProcessorError
 
@@ -50,6 +51,7 @@ class SiteContext:
     site_id: str
     name: str
     account: str | None
+    urls: tuple[dict[str, Any], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -146,7 +148,7 @@ def resolve_site_target(value: str, *, allow_create: bool = False) -> CanonicalT
     )
 
 
-def resolve_site_context(store: CouchDBEntityStore, value: str) -> SiteContext:
+def resolve_site_context(store: CouchDBEntityStore, value: str, *, include_deprecated_urls: bool = False) -> SiteContext:
     try:
         site_id = resolve_site_id(value)
         if site_id is None and " - " in value:
@@ -173,7 +175,8 @@ def resolve_site_context(store: CouchDBEntityStore, value: str) -> SiteContext:
         raise QueueProcessorError(f"Could not resolve site name for {value} (site_id={site_id})")
 
     account = (doc or {}).get("account")
-    return SiteContext(site_id=str(site_id), name=str(name), account=account)
+    urls = tuple(location_urls_from_doc(doc, include_deprecated=include_deprecated_urls))
+    return SiteContext(site_id=str(site_id), name=str(name), account=account, urls=urls)
 
 
 def resolve_employee_target_by_person_id(person_id: str, *, allow_create: bool = False) -> CanonicalTarget:

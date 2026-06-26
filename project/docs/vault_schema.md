@@ -172,6 +172,23 @@ processor only treats a record as a valid location when it carries:
 `location` records also hold operational notes and the current site equipment
 inventory (replaced as a whole by `update_site_equipment`).
 
+Location records may carry first-class reference links in `urls`. Missing
+`urls` is equivalent to an empty list. Each entry is deterministic operator
+context, not scraped or trusted operational data:
+
+- `url` — required HTTP(S) URL
+- `label` — optional human label
+- `kind` — one of `official_location_page`, `client_homepage`, `maps`,
+  `portal`, `document`, or `other`
+- `status` — one of `reference`, `verified`, `stale`, or `deprecated`;
+  omitted status defaults to `reference`
+- `last_verified_at`, `last_verified_by`, `verification_note` — optional
+  operator-provided verification metadata
+
+URL changes are canonical queue mutations via `set_site_url`; dashboard controls
+stage that job and never write the `location` document directly. Stored URLs do
+not update hours, addresses, access notes, or any other operational field.
+
 ## Site Routing And The Registry
 
 Runtime site routing is registry-driven, separate from the entity store.

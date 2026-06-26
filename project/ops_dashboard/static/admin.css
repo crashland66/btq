@@ -517,6 +517,53 @@ button.reject { background: var(--reject-bg); border-color: var(--reject-border)
   overflow: visible;
 }
 .quick-facts > section:last-child { margin-bottom: 0; }
+.reference-links {
+  overflow: visible;
+}
+.reference-link-list {
+  list-style: none;
+  margin: 0 0 12px;
+  padding: 0;
+  display: grid;
+  gap: 8px;
+}
+.reference-link-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto auto;
+  gap: 8px;
+  align-items: center;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  padding: 10px;
+}
+.reference-link-main {
+  min-width: 0;
+}
+.reference-link-main a,
+.reference-link-main span {
+  display: block;
+  overflow-wrap: anywhere;
+}
+.reference-link-meta {
+  white-space: nowrap;
+}
+.reference-link-edit summary,
+.reference-link-add summary {
+  cursor: pointer;
+  font-weight: 700;
+  color: var(--link);
+}
+.reference-link-edit form,
+.reference-link-add form {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 8px;
+  margin-top: 8px;
+}
+.reference-link-remove {
+  margin: 0;
+}
 .detail-block {
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -1208,6 +1255,13 @@ details.raw-json pre { margin-top: 4px; }
   .section-heading-row {
     align-items: flex-start;
     flex-direction: column;
+  }
+  .reference-link-item {
+    grid-template-columns: 1fr;
+    align-items: stretch;
+  }
+  .reference-link-meta {
+    white-space: normal;
   }
   header, section, article, .card {
     padding: 12px;

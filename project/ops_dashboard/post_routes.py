@@ -85,6 +85,10 @@ def dispatch_post_route(
         return failed.handle_retry_sidecar_post(ctx, body)
     if route_path == "/sites/save":
         return sites.handle_save_post(ctx, body)
+    if route_path.startswith("/sites/") and route_path.endswith("/urls"):
+        site_id = route_path.removeprefix("/sites/").removesuffix("/urls").strip("/")
+        if site_id and "/" not in site_id:
+            return site_detail.handle_site_url_post(ctx, site_id, body)
     if route_path.endswith("/save-section"):
         for prefix, handler in (("/sites/", site_detail.handle_save_section), ("/employees/", employee_detail.handle_save_section)):
             entity_id = route_path.removeprefix(prefix).removesuffix("/save-section") if route_path.startswith(prefix) else ""

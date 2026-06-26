@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from config import require_directories
-from queue_processor.handlers import misc, people, site_flags_notes, supplies_equipment, supplies_equipment_transitions, unknowns, visits
+from queue_processor.handlers import misc, people, site_flags_notes, site_urls, supplies_equipment, supplies_equipment_transitions, unknowns, visits
 from queue_processor.handlers import _shared
 from queue_processor.processed_index import ProcessedJobIdLookup, append_record, build_record, load_processed_job_id_lookup, processed_job_id_exists as indexed_processed_job_id_exists
 from queue_processor.manifest import record_processed_mutation
@@ -27,7 +27,7 @@ from queue_spec import (
     JOB_PARSE_SUPPLY_EMAIL, JOB_PERSONAL_JOURNAL_ENTRY, JOB_PHOTO_CAPTURE, JOB_PROMOTE_PROSPECT,
     JOB_RECORD_DAY_RECORD, JOB_RECORD_SHIFT_REPORT, JOB_RECORD_UNKNOWN_CAPTURE, JOB_RECLASSIFY_UNKNOWN,
     JOB_REMOVE_FROM_SCHEDULE, JOB_RETARGET_CAPTURE, JOB_SET_EMPLOYEE_ID, JOB_SHIFT_REPORT_NOTE, JOB_TRIGGER_RECRUITING,
-    JOB_SET_ENTITY_STATUS, JOB_UPDATE_SITE_EQUIPMENT, JOB_VISIT_CREATE, JOB_VOICE_MEMO_NOTE,
+    JOB_SET_ENTITY_STATUS, JOB_SET_SITE_URL, JOB_UPDATE_SITE_EQUIPMENT, JOB_VISIT_CREATE, JOB_VOICE_MEMO_NOTE,
 )
 
 _NON_QUEUE_JOB_TYPES = frozenset[str]()
@@ -75,6 +75,7 @@ process_close_recruiting_job = people.process_close_recruiting_job
 process_remove_from_schedule_job = people.process_remove_from_schedule_job
 process_log_personnel_event_job = people.process_log_personnel_event_job
 process_set_entity_status_job = people.process_set_entity_status_job
+process_set_site_url_job = site_urls.process_set_site_url_job
 process_log_supply_need_job = supplies_equipment.process_log_supply_need_job
 process_log_equipment_request_job = supplies_equipment.process_log_equipment_request_job
 process_update_site_equipment_job = supplies_equipment.process_update_site_equipment_job
@@ -339,6 +340,8 @@ def target_path_hint(job: QueueJob, context: RunContext) -> str:
                 return _canonical_employee_hint(payload["entity_id"])
         if job.job_type == JOB_UPDATE_SITE_EQUIPMENT:
             return _canonical_location_hint(payload.get("site_id") or payload["site"])
+        if job.job_type == JOB_SET_SITE_URL:
+            return _canonical_location_hint(payload["site_id"])
         if job.job_type in {JOB_MARK_SUPPLY_ORDERED, JOB_MARK_SUPPLY_DELIVERED, JOB_MARK_SUPPLY_STOCKED, JOB_MARK_SUPPLY_NO_ACTION_NEEDED}:
             return supplies_equipment_transitions._resolve_supply_doc_id(str(payload["supply_id"]))
         if job.job_type in {JOB_MARK_EQUIPMENT_APPROVED, JOB_MARK_EQUIPMENT_DENIED, JOB_MARK_EQUIPMENT_ORDERED, JOB_MARK_EQUIPMENT_PROVIDED, JOB_MARK_EQUIPMENT_NO_ACTION_NEEDED}:

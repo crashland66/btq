@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from types import SimpleNamespace
+from urllib.parse import urlencode
 
 import pytest
 
@@ -91,6 +93,122 @@ def test_get_site_detail_about_edit_renders_raw_content(monkeypatch: pytest.Monk
 
     assert '<textarea name="content">' in html
     assert "dataview" in html
+
+
+def test_site_detail_reference_links_render_controls(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(
+        site_detail,
+        "_load_location",
+        lambda site_id: _minimal_location(
+            urls=[
+                {
+                    "url": "https://example.com/sites/acme",
+                    "label": "Official page",
+                    "kind": "official_location_page",
+                    "status": "verified",
+                    "verification_note": "Operator checked.",
+                },
+                {
+                    "url": "https://old.example.com/sites/acme",
+                    "label": "Old page",
+                    "kind": "official_location_page",
+                    "status": "deprecated",
+                },
+            ]
+        ),
+    )
+    _stub_expensive_sections(monkeypatch)
+    monkeypatch.setattr(site_detail, "_site_capture_processing_counts", lambda site_id: None)
+    ctx = DummyContext(tmp_path, {})
+
+    html = site_detail.render(ctx, "7050")
+
+    assert "Reference Links" in html
+    assert "https://example.com/sites/acme" in html
+    assert "https://old.example.com/sites/acme" not in html
+    assert 'action="/sites/7050/urls"' in html
+    assert 'name="action" value="add"' in html
+    assert 'name="action" value="edit"' in html
+    assert 'name="action" value="remove"' in html
+
+
+@pytest.mark.parametrize(
+    ("body", "expected"),
+    [
+        (
+            {
+                "action": "add",
+                "url": "https://example.com/sites/acme",
+                "label": "Official page",
+                "kind": "official_location_page",
+                "status": "reference",
+                "actor": "Greg",
+            },
+            {
+                "action": "add",
+                "url": "https://example.com/sites/acme",
+                "kind": "official_location_page",
+            },
+        ),
+        (
+            {
+                "action": "edit",
+                "url": "https://example.com/sites/acme",
+                "new_url": "https://example.com/sites/acme-updated",
+                "label": "Updated page",
+                "kind": "official_location_page",
+                "status": "verified",
+                "last_verified_at": "2026-06-26",
+                "last_verified_by": "Greg",
+                "actor": "Greg",
+            },
+            {
+                "action": "edit",
+                "url": "https://example.com/sites/acme",
+                "new_url": "https://example.com/sites/acme-updated",
+                "status": "verified",
+            },
+        ),
+        (
+            {
+                "action": "remove",
+                "url": "https://example.com/sites/acme",
+                "confirm": "1",
+                "actor": "Greg",
+            },
+            {
+                "action": "remove",
+                "url": "https://example.com/sites/acme",
+            },
+        ),
+    ],
+)
+def test_site_url_post_enqueues_job(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    body: dict[str, str],
+    expected: dict[str, str],
+) -> None:
+    monkeypatch.setattr(site_detail.sites, "request_json", lambda *args, **kwargs: pytest.fail("must not direct-write CouchDB"))
+    ctx = DummyContext(tmp_path)
+
+    status, _content_type, _response_body, headers = site_detail.handle_site_url_post(
+        ctx,
+        "7050",
+        urlencode(body).encode(),
+    )
+
+    assert status == 303
+    assert headers["Location"] == "/sites/7050?message=url_queued"
+    queue_files = list((ctx.runtime_root / "queue").glob("set-site-url-*.json"))
+    assert len(queue_files) == 1
+    job = json.loads(queue_files[0].read_text(encoding="utf-8"))
+    assert job["job_type"] == "set_site_url"
+    payload = job["payload"]
+    assert payload["site_id"] == "7050"
+    for key, value in expected.items():
+        assert payload[key] == value
+    assert payload["source"] == "ops_dashboard_site_detail"
 
 
 def test_post_save_section_updates_only_contact_fields(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
