@@ -2182,12 +2182,12 @@ import UniformTypeIdentifiers
     #expect(FileManager.default.fileExists(atPath: externalPhotoURL.path) == true)
 }
 
-@Test @MainActor func syncFailureStoresReadableBackendReason() async {
+@Test @MainActor func syncFailureUsesNativePhotoLimitMessageForBackendPhotoLimitRejection() async {
     let apiClient = FailingSubmitAPIClient(
         error: CaptureAPIError.serverStatus(
             status: 400,
             code: "too_many_images",
-            message: "At most one photo may be submitted"
+            message: "At most 6 images may be submitted"
         )
     )
     let tokenStore = MemoryTokenStore()
@@ -2206,8 +2206,9 @@ import UniformTypeIdentifiers
 
     #expect(didSave)
     #expect(model.captures.first?.status == .failed)
-    #expect(model.captures.first?.lastError == "At most one photo may be submitted")
-    #expect(model.statusMessage == "Capture failed: At most one photo may be submitted")
+    #expect(model.captures.first?.lastError == "Limit is 100 photos per capture.")
+    #expect(model.statusMessage == "Capture failed: Limit is 100 photos per capture.")
+    #expect(model.captures.first.map { model.displayError(for: $0) } == "Limit is 100 photos per capture.")
 }
 
 @Test @MainActor func unauthorizedSyncRequiresReconnectAndPreservesPendingCapture() async {
@@ -2611,6 +2612,34 @@ import UniformTypeIdentifiers
     var pending = backendIssue
     pending.status = .pending
     #expect(pending.failureRecoveryHint == nil)
+}
+
+@Test @MainActor func storedQueuePhotoLimitErrorsDisplayNativeLimitMessage() async {
+    let capture = LocalCapture(
+        captureID: "capture-stored-photo-limit",
+        jobID: "job-stored-photo-limit",
+        visitID: nil,
+        siteID: "site_1",
+        siteLabel: "Site One",
+        targetID: "site_1",
+        qcCategory: "general_note",
+        note: "Stored failure",
+        capturedAt: Date(timeIntervalSince1970: 1_800_000_000),
+        exportedAt: Date(timeIntervalSince1970: 1_800_000_001),
+        status: .failed,
+        lastError: "At most 6 images may be submitted"
+    )
+    let model = FieldCaptureModel(
+        store: MemoryFieldCaptureStore(snapshot: captureSnapshot(captures: [capture])),
+        apiClient: MockCaptureAPIClient(),
+        tokenStore: MemoryTokenStore(),
+        notificationScheduler: NoopUploadNotificationScheduler()
+    )
+
+    await model.load()
+
+    #expect(model.captures.first?.lastError == "At most 6 images may be submitted")
+    #expect(model.captures.first.map { model.displayError(for: $0) } == "Limit is 100 photos per capture.")
 }
 
 @Test @MainActor func modelCanConnectAndSwitchBetweenCachedAccounts() async {

@@ -177,7 +177,7 @@ private struct LocalCaptureQueueRow: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
-                if let lastError = capture.lastError, !lastError.isEmpty {
+                if let lastError = model.displayError(for: capture) {
                     Text(lastError)
                         .font(.caption)
                         .foregroundStyle(capture.status == .failed ? .red : .secondary)

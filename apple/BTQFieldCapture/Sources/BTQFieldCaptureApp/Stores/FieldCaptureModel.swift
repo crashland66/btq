@@ -130,6 +130,10 @@ public final class FieldCaptureModel {
         max(Self.defaultMaxImagesPerCapture, session?.maxImages ?? Self.defaultMaxImagesPerCapture)
     }
 
+    public var photoLimitDescription: String {
+        maxImagesPerCapture == 1 ? "1 photo" : "\(maxImagesPerCapture) photos"
+    }
+
     public var canSubmitCaptures: Bool {
         guard !requiresReconnect else { return false }
         if session == nil && (account.personName != nil || !sites.isEmpty) {
@@ -776,8 +780,9 @@ public final class FieldCaptureModel {
                     statusMessage = "Sync paused. Will retry."
                     continue
                 }
+                let errorDescription = userFacingCaptureError(error.description)
                 captures[failedIndex].attempts += 1
-                captures[failedIndex].lastError = error.description
+                captures[failedIndex].lastError = errorDescription
                 if case .unauthorized = error {
                     captures[failedIndex].status = .pending
                     captures[failedIndex].retryAfter = nil
@@ -787,8 +792,8 @@ public final class FieldCaptureModel {
                 if error.isPermanent {
                     captures[failedIndex].status = .failed
                     captures[failedIndex].retryAfter = nil
-                    statusMessage = "Capture failed: \(error.description)"
-                    await notificationScheduler.notifyUploadFailed(capture: captures[failedIndex], reason: error.description)
+                    statusMessage = "Capture failed: \(errorDescription)"
+                    await notificationScheduler.notifyUploadFailed(capture: captures[failedIndex], reason: errorDescription)
                     continue
                 }
                 captures[failedIndex].status = .pending
@@ -847,6 +852,11 @@ public final class FieldCaptureModel {
         mediaStore.deleteMedia(for: [capture])
         statusMessage = "Capture removed"
         try? await persist()
+    }
+
+    public func displayError(for capture: LocalCapture) -> String? {
+        guard let lastError = capture.lastError, !lastError.isEmpty else { return nil }
+        return userFacingCaptureError(lastError)
     }
 
     public func handleConnectivityChange(_ status: ConnectivityStatus) async {
@@ -1046,6 +1056,24 @@ public final class FieldCaptureModel {
         let schedule: [TimeInterval] = [5, 15, 30, 60, 120]
         let delay = schedule[max(0, min(attempts - 1, schedule.count - 1))]
         return now.addingTimeInterval(delay)
+    }
+
+    private func userFacingCaptureError(_ error: String) -> String {
+        if isPhotoLimitError(error) {
+            return "Limit is \(photoLimitDescription) per capture."
+        }
+        return error
+    }
+
+    private func isPhotoLimitError(_ error: String) -> Bool {
+        let normalized = error.localizedLowercase
+        return normalized.contains("too many")
+            || normalized.contains("at most")
+            || normalized.contains("max images")
+            || normalized.contains("maximum image")
+            || normalized.contains("maximum photo")
+            || normalized.contains("photo limit")
+            || normalized.contains("image limit")
     }
 
     private func setInboxCount(_ count: Int) {
