@@ -17,6 +17,12 @@ from btq_vault.location_urls import (
     location_urls_from_doc,
     normalize_location_url_entry,
 )
+from btq_vault.facility_hours import (
+    FacilityHoursError,
+    facility_hours_from_doc,
+    normalize_facility_hours,
+    unknown_facility_hours,
+)
 from event_pipeline import couchdb_config
 from ops_dashboard.common import (
     default_actor,
@@ -137,6 +143,15 @@ _URL_KIND_OPTIONS = (
     "other",
 )
 _URL_STATUS_OPTIONS = ("reference", "verified", "stale", "deprecated")
+_FACILITY_HOURS_DAYS = (
+    ("mon", "Mon"),
+    ("tue", "Tue"),
+    ("wed", "Wed"),
+    ("thu", "Thu"),
+    ("fri", "Fri"),
+    ("sat", "Sat"),
+    ("sun", "Sun"),
+)
 _EMPTY_ABOUT_SECTION = (
     '<section><h2>About &amp; operational notes</h2>'
     '<p class="zero-state">No operational notes yet.</p></section>'
@@ -155,6 +170,31 @@ _BUILTIN_LOCATION_DOCS: dict[str, dict[str, Any]] = {
             "Demo / test sandbox site for exercising capture, semantic extraction, and "
             "job review end-to-end. Treat as a generic commercial cleaning site."
         ),
+        "facility_hours": {
+            "status": "verified",
+            "last_verified_at": "2026-06-26",
+            "last_verified_by": "Greg",
+            "source": "public_safe_fixture",
+            "note": "Public-safe synthetic facility hours for dashboard QA.",
+            "weekly": {
+                "mon": [{"open": "08:30", "close": "17:00"}],
+                "tue": [{"open": "08:30", "close": "17:00"}],
+                "wed": [{"open": "08:30", "close": "17:00"}],
+                "thu": [{"open": "08:30", "close": "17:00"}],
+                "fri": [{"open": "08:30", "close": "15:00"}],
+                "sat": [],
+                "sun": [],
+            },
+            "exceptions": [
+                {
+                    "rule": "nth_weekday",
+                    "weekday": "tue",
+                    "ordinals": [2, 4],
+                    "hours": [{"open": "10:00", "close": "19:00"}],
+                    "note": "Second and fourth Tuesday",
+                }
+            ],
+        },
         "_builtin": True,
     },
 }
@@ -438,6 +478,132 @@ def _write_site_url_job(runtime_root: Path, payload: dict[str, object]) -> Path:
     queue_dir = runtime_root.expanduser().resolve(strict=False) / "queue"
     queue_dir.mkdir(parents=True, exist_ok=True)
     queue_path = queue_dir / f"set-site-url-{suffix}.json"
+    temp_path = queue_path.with_name(f".{queue_path.name}.tmp")
+    temp_path.write_text(json.dumps(job, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    temp_path.replace(queue_path)
+    return queue_path
+
+
+def _format_facility_interval(interval: dict[str, str]) -> str:
+    return f"{html.escape(interval['open'])}-{html.escape(interval['close'])}"
+
+
+def _facility_hours_json_for_form(hours: dict[str, Any]) -> str:
+    form_hours = hours if hours.get("status") != "unknown" else unknown_facility_hours() | {"status": "reference"}
+    return json.dumps(form_hours, indent=2, sort_keys=True).replace("[]", "[ ]")
+
+
+def _facility_hours_weekly_table(hours: dict[str, Any]) -> str:
+    weekly = hours.get("weekly") if isinstance(hours.get("weekly"), dict) else {}
+    rows: list[str] = []
+    for key, label in _FACILITY_HOURS_DAYS:
+        intervals = weekly.get(key, [])
+        if intervals:
+            value = ", ".join(_format_facility_interval(interval) for interval in intervals)
+        else:
+            value = "Closed"
+        rows.append(f"<tr><th>{html.escape(label)}</th><td>{value}</td></tr>")
+    return '<table class="facility-hours-table"><tbody>' + "".join(rows) + "</tbody></table>"
+
+
+def _facility_hours_exceptions(hours: dict[str, Any]) -> str:
+    exceptions = hours.get("exceptions") if isinstance(hours.get("exceptions"), list) else []
+    if not exceptions:
+        return '<p class="zero-state">No facility-hour exceptions recorded.</p>'
+    items: list[str] = []
+    for exception in exceptions:
+        rule = str(exception.get("rule") or "")
+        if rule == "date":
+            label = str(exception.get("date") or "")
+        elif rule == "nth_weekday":
+            ordinals = ", ".join(str(value) for value in exception.get("ordinals", []))
+            label = f"{ordinals} {str(exception.get('weekday') or '').title()}"
+        else:
+            label = rule
+        intervals = exception.get("hours") if isinstance(exception.get("hours"), list) else []
+        hours_label = ", ".join(_format_facility_interval(interval) for interval in intervals) if intervals else "Closed"
+        note = str(exception.get("note") or "").strip()
+        note_html = f' <span class="subline">{html.escape(note)}</span>' if note else ""
+        items.append(f"<li><strong>{html.escape(label)}</strong>: {hours_label}{note_html}</li>")
+    return '<ul class="facility-hours-exceptions">' + "".join(items) + "</ul>"
+
+
+def _facility_hours_section(doc: dict[str, Any], site_id: str) -> str:
+    hours = facility_hours_from_doc(doc)
+    escaped_site = html.escape(site_id, quote=True)
+    status = str(hours.get("status") or "unknown")
+    status_class = re.sub(r"[^a-z0-9_-]+", "_", status.lower()).strip("_") or "unknown"
+    verified_bits = []
+    if hours.get("last_verified_at"):
+        verified_bits.append(f"verified {html.escape(str(hours['last_verified_at']))}")
+    if hours.get("last_verified_by"):
+        verified_bits.append(f"by {html.escape(str(hours['last_verified_by']))}")
+    verified_line = " ".join(verified_bits) or "No operator verification recorded."
+    note = str(hours.get("note") or "").strip()
+    note_html = f'<p class="subline">{html.escape(note)}</p>' if note else ""
+    form_json = html.escape(_facility_hours_json_for_form(hours))
+    return (
+        '<section class="facility-hours">'
+        '<div class="section-heading-row">'
+        '<h2>Facility Hours</h2>'
+        f'<span class="pill status-{html.escape(status_class, quote=True)}">{html.escape(status.title())}</span>'
+        '</div>'
+        f'<p class="subline">{verified_line}</p>'
+        f"{note_html}"
+        f"{_facility_hours_weekly_table(hours)}"
+        f"{_facility_hours_exceptions(hours)}"
+        '<details class="facility-hours-edit">'
+        '<summary>Edit facility hours</summary>'
+        f'<form method="post" action="/sites/{escaped_site}/facility-hours">'
+        '<input type="hidden" name="action" value="set">'
+        f'<input type="hidden" name="actor" value="{html.escape(default_actor(), quote=True)}">'
+        '<label>Structured facility_hours JSON'
+        f'<textarea name="facility_hours_json" spellcheck="false" required>{form_json}</textarea>'
+        '</label>'
+        '<button type="submit">Queue facility hours update</button>'
+        '</form>'
+        '</details>'
+        f'<form class="facility-hours-clear" method="post" action="/sites/{escaped_site}/facility-hours">'
+        '<input type="hidden" name="action" value="clear">'
+        f'<input type="hidden" name="actor" value="{html.escape(default_actor(), quote=True)}">'
+        '<input type="hidden" name="confirm" value="1">'
+        '<button class="reject" type="submit">Clear facility hours</button>'
+        '</form>'
+        '</section>'
+    )
+
+
+def _site_hours_job_payload(form: dict[str, list[str]], site_id: str) -> dict[str, object]:
+    action = first_query_value(form, "action").strip() or "set"
+    payload: dict[str, object] = {
+        "site_id": site_id,
+        "action": action,
+        "actor": first_query_value(form, "actor").strip() or default_actor(),
+        "source": "ops_dashboard_site_detail",
+    }
+    if action != "clear":
+        raw_json = first_query_value(form, "facility_hours_json").strip()
+        parsed = json.loads(raw_json)
+        if not isinstance(parsed, dict):
+            raise FacilityHoursError("facility_hours JSON must be an object")
+        payload["facility_hours"] = normalize_facility_hours(parsed)
+    return payload
+
+
+def _write_site_hours_job(runtime_root: Path, payload: dict[str, object]) -> Path:
+    from queue_spec import JOB_SET_SITE_HOURS, validate_job
+
+    suffix = str(uuid.uuid4())
+    job = {
+        "job_id": f"set-site-hours-{suffix}",
+        "job_type": JOB_SET_SITE_HOURS,
+        "payload": payload,
+    }
+    if not validate_job(job):
+        raise ValueError("invalid set_site_hours payload")
+    queue_dir = runtime_root.expanduser().resolve(strict=False) / "queue"
+    queue_dir.mkdir(parents=True, exist_ok=True)
+    queue_path = queue_dir / f"set-site-hours-{suffix}.json"
     temp_path = queue_path.with_name(f".{queue_path.name}.tmp")
     temp_path.write_text(json.dumps(job, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     temp_path.replace(queue_path)
@@ -1044,6 +1210,35 @@ def handle_site_url_post(ctx: object, site_id: str, body: bytes):
     return _redirect(f"/sites/{quote(site_id)}?message=url_queued")
 
 
+def handle_site_hours_post(ctx: object, site_id: str, body: bytes):
+    from urllib.parse import parse_qs, quote
+
+    form = parse_qs(body.decode("utf-8", errors="replace"), keep_blank_values=True)
+    root = Path(getattr(ctx, "runtime_root", Path("."))).expanduser().resolve(strict=False)
+    form_payload = {key: values[0] if values else "" for key, values in form.items()}
+
+    def _redirect(location: str) -> tuple:
+        return 303, "text/html; charset=utf-8", f'<a href="{html.escape(location)}">Return</a>'.encode(), {"Location": location}
+
+    action = first_query_value(form, "action").strip() or "set"
+    if action == "clear" and first_query_value(form, "confirm") != "1":
+        if hasattr(ctx, "audit"):
+            ctx.audit(f"/sites/{site_id}/facility-hours", form_payload, "failed: confirm_required")
+        return _redirect(f"/sites/{quote(site_id)}?error=confirm_required")
+
+    try:
+        payload = _site_hours_job_payload(form, site_id)
+        queue_path = _write_site_hours_job(root, payload)
+    except (json.JSONDecodeError, FacilityHoursError, ValueError, OSError) as exc:
+        if hasattr(ctx, "audit"):
+            ctx.audit(f"/sites/{site_id}/facility-hours", form_payload, f"failed: {exc}")
+        return _redirect(f"/sites/{quote(site_id)}?error={quote(str(exc))}")
+
+    if hasattr(ctx, "audit"):
+        ctx.audit(f"/sites/{site_id}/facility-hours", form_payload, f"success: staged queue_path={queue_path}")
+    return _redirect(f"/sites/{quote(site_id)}?message=facility_hours_queued")
+
+
 def render(ctx: object, site_id: str) -> str:
     """Render the per-site detail page wrapped by html_page(active_section='site_detail')."""
     try:
@@ -1087,6 +1282,7 @@ def render(ctx: object, site_id: str) -> str:
         sections.append(_capture_processing_breakdown(capture_processing_counts))
         sections.append(_quick_facts_section(doc, site_id, edit_section))
         sections.append(_reference_links_section(doc, site_id))
+        sections.append(_facility_hours_section(doc, site_id))
         if edit_section == "about":
             escaped_id = html.escape(site_id, quote=True)
             rev = html.escape(str(doc.get("_rev", "")), quote=True)

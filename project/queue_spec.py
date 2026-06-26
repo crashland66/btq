@@ -11,6 +11,12 @@ from btq_vault.location_urls import (
     LOCATION_URL_STATUSES,
     is_http_url,
 )
+from btq_vault.facility_hours import (
+    FACILITY_HOURS_RULES,
+    FACILITY_HOURS_STATUSES,
+    FacilityHoursError,
+    normalize_facility_hours,
+)
 from config import get_config
 
 
@@ -66,6 +72,7 @@ JOB_LOG_AVAILABILITY_CONSTRAINT = "log_availability_constraint"
 JOB_SET_ENTITY_STATUS = "set_entity_status"
 JOB_UPDATE_SITE_EQUIPMENT = "update_site_equipment"
 JOB_SET_SITE_URL = "set_site_url"
+JOB_SET_SITE_HOURS = "set_site_hours"
 JOB_MARK_SUPPLY_ORDERED = "mark_supply_ordered"
 JOB_MARK_SUPPLY_DELIVERED = "mark_supply_delivered"
 JOB_MARK_SUPPLY_STOCKED = "mark_supply_stocked"
@@ -166,6 +173,7 @@ ALLOWED_JOB_TYPES = {
     JOB_SET_ENTITY_STATUS,
     JOB_UPDATE_SITE_EQUIPMENT,
     JOB_SET_SITE_URL,
+    JOB_SET_SITE_HOURS,
     JOB_MARK_SUPPLY_ORDERED,
     JOB_MARK_SUPPLY_DELIVERED,
     JOB_MARK_SUPPLY_STOCKED,
@@ -197,6 +205,7 @@ SITE_ROUTABILITY_JOB_TYPES = {
     JOB_LOG_EQUIPMENT_REQUEST,
     JOB_UPDATE_SITE_EQUIPMENT,
     JOB_SET_SITE_URL,
+    JOB_SET_SITE_HOURS,
 }
 
 
@@ -230,6 +239,7 @@ JOB_SCHEMAS = {
     JOB_SET_ENTITY_STATUS: ["entity_type", "entity_id", "status", "reason", "source"],
     JOB_UPDATE_SITE_EQUIPMENT: ["equipment", "inspection_date", "inspected_by"],
     JOB_SET_SITE_URL: ["site_id", "action", "url", "actor"],
+    JOB_SET_SITE_HOURS: ["site_id", "actor"],
     JOB_MARK_SUPPLY_ORDERED: ["supply_id", "actor"],
     JOB_MARK_SUPPLY_DELIVERED: ["supply_id", "actor"],
     JOB_MARK_SUPPLY_STOCKED: ["supply_id", "actor"],
@@ -441,6 +451,13 @@ SET_SITE_URL_ALLOWED_PAYLOAD_FIELDS = {
     "last_verified_at",
     "last_verified_by",
     "verification_note",
+    "actor",
+    "source",
+}
+SET_SITE_HOURS_ALLOWED_PAYLOAD_FIELDS = {
+    "site_id",
+    "action",
+    "facility_hours",
     "actor",
     "source",
 }
@@ -1055,6 +1072,34 @@ def _validate_set_site_url_payload(payload: dict) -> bool:
     return True
 
 
+def _validate_set_site_hours_payload(payload: dict) -> bool:
+    if set(payload) - SET_SITE_HOURS_ALLOWED_PAYLOAD_FIELDS:
+        return False
+    for field in ("site_id", "actor"):
+        if not _is_non_empty_string(payload.get(field)):
+            return False
+    action = payload.get("action", "set")
+    if action not in {"set", "clear"}:
+        return False
+    source = payload.get("source")
+    if source is not None and not isinstance(source, str):
+        return False
+    if action == "clear":
+        return "facility_hours" not in payload or payload.get("facility_hours") is None
+    if "facility_hours" not in payload or not isinstance(payload.get("facility_hours"), dict):
+        return False
+    try:
+        normalized = normalize_facility_hours(payload["facility_hours"])
+    except FacilityHoursError:
+        return False
+    if normalized["status"] not in FACILITY_HOURS_STATUSES:
+        return False
+    for exception in normalized["exceptions"]:
+        if exception["rule"] not in FACILITY_HOURS_RULES:
+            return False
+    return True
+
+
 def _validate_set_entity_status_payload(payload: dict) -> bool:
     if set(payload) - SET_ENTITY_STATUS_ALLOWED_PAYLOAD_FIELDS:
         return False
@@ -1331,6 +1376,9 @@ def validate_job(job: dict) -> bool:
             return False
     if job_type == JOB_SET_SITE_URL:
         if not _validate_set_site_url_payload(payload):
+            return False
+    if job_type == JOB_SET_SITE_HOURS:
+        if not _validate_set_site_hours_payload(payload):
             return False
     if job_type in {
         JOB_MARK_SUPPLY_ORDERED,

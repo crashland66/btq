@@ -805,6 +805,7 @@ def _drift_guard_sample_payloads() -> dict[str, dict]:
         qp.JOB_LOG_EQUIPMENT_REQUEST: {"site_id": "7050"},
         qp.JOB_LOG_PERSONNEL_EVENT: {"employee": "Pearson, David"},
         qp.JOB_SET_ENTITY_STATUS: {"entity_type": "site", "entity_id": "7050"},
+        qp.JOB_SET_SITE_HOURS: {"site_id": "7050"},
         qp.JOB_SET_SITE_URL: {"site_id": "7050"},
         qp.JOB_UPDATE_SITE_EQUIPMENT: {"site_id": "7050"},
         qp.JOB_MARK_SUPPLY_ORDERED: {"supply_id": "s1"},

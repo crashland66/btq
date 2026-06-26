@@ -57,6 +57,7 @@ CANONICAL_WRITERS: frozenset[str] = frozenset(
         "remove_from_schedule",
         "set_employee_id",
         "set_entity_status",
+        "set_site_hours",
         "set_site_url",
         "shift_report_note",
         "trigger_recruiting",
@@ -188,6 +189,9 @@ COUCHDB_PATH_TESTS: dict[str, list[str]] = {
     ],
     "set_site_url": [
         "project/tests/test_set_site_url_job.py::test_missing_urls_reads_as_empty_and_add_appends",
+    ],
+    "set_site_hours": [
+        "project/tests/test_set_site_hours_job.py::test_set_via_job_populates_valid_structure",
     ],
     "shift_report_note": [
         "project/tests/test_shift_report_note_job_412a.py::test_handler_routes_through_apply_canonical_rmw",

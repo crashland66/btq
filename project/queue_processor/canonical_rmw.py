@@ -8,12 +8,13 @@ suffices for current employee canonical target resolution.
 """
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
 from btq_vault.couch_store import CouchDBEntityStore, CouchDBEntityStoreError
 from btq_vault.entity_types import CANONICAL_ENTITY_TYPES
+from btq_vault.facility_hours import facility_hours_from_doc, unknown_facility_hours
 from btq_vault.location_urls import location_urls_from_doc
 from event_pipeline.sites import SITES, resolve_site_id
 from queue_processor.handlers._shared import QueueProcessorError
@@ -52,6 +53,7 @@ class SiteContext:
     name: str
     account: str | None
     urls: tuple[dict[str, Any], ...] = ()
+    facility_hours: dict[str, Any] = field(default_factory=unknown_facility_hours)
 
 
 @dataclass(frozen=True)
@@ -176,7 +178,8 @@ def resolve_site_context(store: CouchDBEntityStore, value: str, *, include_depre
 
     account = (doc or {}).get("account")
     urls = tuple(location_urls_from_doc(doc, include_deprecated=include_deprecated_urls))
-    return SiteContext(site_id=str(site_id), name=str(name), account=account, urls=urls)
+    facility_hours = facility_hours_from_doc(doc)
+    return SiteContext(site_id=str(site_id), name=str(name), account=account, urls=urls, facility_hours=facility_hours)
 
 
 def resolve_employee_target_by_person_id(person_id: str, *, allow_create: bool = False) -> CanonicalTarget:

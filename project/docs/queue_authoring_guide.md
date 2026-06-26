@@ -1589,6 +1589,89 @@ Do not use when:
 }
 ```
 
+## 13b. `set_site_hours`
+
+Use when:
+
+- an operator has verified or reviewed the client facility's operating hours for
+  a canonical site
+- the hours should be available to agents and the dashboard as structured site
+  context
+- the action is to set or clear `facility_hours` on the canonical `location` doc
+
+Do not use when:
+
+- the hours are inferred from scraping, search results, documents, or AI summary
+  without operator review
+- the intent is to change B&T service schedule fields such as `service_days`,
+  `hours_per_week`, or `hours_per_day`
+- the hours are only a planned future visit or a B&T cleaning shift
+
+### Required payload fields
+
+- `site_id`: site canonical name, alias, or site ID string
+- `actor`: operator/person string
+
+### Optional payload fields
+
+- `action`: `set` or `clear`; defaults to `set`
+- `facility_hours`: required for `set`; structured object with:
+  - `status`: one of `verified`, `reference`, `stale`
+  - `last_verified_at`, `last_verified_by`, `source`, `note`
+  - `weekly`: weekday keys `mon` through `sun`; each day is a list of
+    intervals with 24-hour `open` and `close` strings
+  - `exceptions`: `date` or `nth_weekday` rules with their own interval lists
+- `source`: string such as `ops_dashboard_site_detail` or `manual_review`
+
+### Runtime behavior notes
+
+- resolves `site_id` through the site registry and mutates
+  `location_<site_id>` through canonical CouchDB read-modify-write
+- `set` replaces `facility_hours`; `clear` removes the field
+- verification metadata is operator-provided; storing hours never scrapes or
+  imports facts from a URL
+- reprocessing the same job is idempotent via the `btq_job_ids` marker
+
+### Valid example
+
+```json
+{
+  "job_id": "2026-06-26T14-30-00Z__phn-facility-hours",
+  "job_type": "set_site_hours",
+  "payload": {
+    "site_id": "600",
+    "actor": "Greg",
+    "action": "set",
+    "source": "ops_dashboard_site_detail",
+    "facility_hours": {
+      "status": "verified",
+      "last_verified_at": "2026-06-26",
+      "last_verified_by": "Greg",
+      "source": "operator_verified",
+      "note": "Public-safe synthetic example.",
+      "weekly": {
+        "mon": [{"open": "08:30", "close": "17:00"}],
+        "tue": [{"open": "08:30", "close": "17:00"}],
+        "wed": [{"open": "08:30", "close": "17:00"}],
+        "thu": [{"open": "08:30", "close": "17:00"}],
+        "fri": [{"open": "08:30", "close": "15:00"}],
+        "sat": [],
+        "sun": []
+      },
+      "exceptions": [
+        {
+          "rule": "nth_weekday",
+          "weekday": "tue",
+          "ordinals": [2, 4],
+          "hours": [{"open": "10:00", "close": "19:00"}],
+          "note": "Second and fourth Tuesday"
+        }
+      ]
+    }
+  }
+}
+```
+
 ## 14. `log_personnel_event`
 
 Use when:

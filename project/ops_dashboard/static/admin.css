@@ -564,6 +564,45 @@ button.reject { background: var(--reject-bg); border-color: var(--reject-border)
 .reference-link-remove {
   margin: 0;
 }
+.facility-hours {
+  overflow: visible;
+}
+.facility-hours-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 10px 0 12px;
+}
+.facility-hours-table th,
+.facility-hours-table td {
+  border: 1px solid var(--line);
+  padding: 7px 9px;
+  text-align: left;
+}
+.facility-hours-table th {
+  width: 92px;
+  background: var(--panel-soft);
+}
+.facility-hours-exceptions {
+  margin: 0 0 12px 18px;
+  padding: 0;
+}
+.facility-hours-edit summary {
+  cursor: pointer;
+  font-weight: 700;
+  color: var(--link);
+}
+.facility-hours-edit form {
+  display: grid;
+  gap: 8px;
+  margin-top: 8px;
+}
+.facility-hours-edit textarea {
+  min-height: 260px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+.facility-hours-clear {
+  margin-top: 8px;
+}
 .detail-block {
   border: 1px solid var(--line);
   border-radius: 8px;

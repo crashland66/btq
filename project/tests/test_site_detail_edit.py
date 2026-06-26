@@ -132,6 +132,52 @@ def test_site_detail_reference_links_render_controls(monkeypatch: pytest.MonkeyP
     assert 'name="action" value="remove"' in html
 
 
+def test_site_detail_facility_hours_render_controls(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(
+        site_detail,
+        "_load_location",
+        lambda site_id: _minimal_location(
+            facility_hours={
+                "status": "verified",
+                "last_verified_at": "2026-06-26",
+                "last_verified_by": "Greg",
+                "source": "operator_verified",
+                "note": "Operator checked.",
+                "weekly": {
+                    "mon": [{"open": "08:30", "close": "17:00"}],
+                    "tue": [{"open": "08:30", "close": "17:00"}],
+                    "wed": [{"open": "08:30", "close": "17:00"}],
+                    "thu": [{"open": "08:30", "close": "17:00"}],
+                    "fri": [{"open": "08:30", "close": "15:00"}],
+                    "sat": [],
+                    "sun": [],
+                },
+                "exceptions": [
+                    {
+                        "rule": "nth_weekday",
+                        "weekday": "tue",
+                        "ordinals": [2, 4],
+                        "hours": [{"open": "10:00", "close": "19:00"}],
+                        "note": "Second and fourth Tuesday",
+                    }
+                ],
+            }
+        ),
+    )
+    _stub_expensive_sections(monkeypatch)
+    monkeypatch.setattr(site_detail, "_site_capture_processing_counts", lambda site_id: None)
+    ctx = DummyContext(tmp_path, {})
+
+    html = site_detail.render(ctx, "7050")
+
+    assert "Facility Hours" in html
+    assert "08:30-17:00" in html
+    assert "10:00-19:00" in html
+    assert 'action="/sites/7050/facility-hours"' in html
+    assert 'name="facility_hours_json"' in html
+    assert 'name="action" value="clear"' in html
+
+
 @pytest.mark.parametrize(
     ("body", "expected"),
     [
@@ -208,6 +254,53 @@ def test_site_url_post_enqueues_job(
     assert payload["site_id"] == "7050"
     for key, value in expected.items():
         assert payload[key] == value
+    assert payload["source"] == "ops_dashboard_site_detail"
+
+
+def test_site_hours_post_enqueues_job(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(site_detail.sites, "request_json", lambda *args, **kwargs: pytest.fail("must not direct-write CouchDB"))
+    ctx = DummyContext(tmp_path)
+    body = {
+        "action": "set",
+        "actor": "Greg",
+        "facility_hours_json": json.dumps(
+            {
+                "status": "verified",
+                "last_verified_at": "2026-06-26",
+                "last_verified_by": "Greg",
+                "source": "operator_verified",
+                "note": "Operator checked.",
+                "weekly": {
+                    "mon": [{"open": "08:30", "close": "17:00"}],
+                    "tue": [{"open": "08:30", "close": "17:00"}],
+                    "wed": [{"open": "08:30", "close": "17:00"}],
+                    "thu": [{"open": "08:30", "close": "17:00"}],
+                    "fri": [{"open": "08:30", "close": "15:00"}],
+                    "sat": [],
+                    "sun": [],
+                },
+                "exceptions": [],
+            }
+        ),
+    }
+
+    status, _content_type, _response_body, headers = site_detail.handle_site_hours_post(
+        ctx,
+        "7050",
+        urlencode(body).encode(),
+    )
+
+    assert status == 303
+    assert headers["Location"] == "/sites/7050?message=facility_hours_queued"
+    queue_files = list((ctx.runtime_root / "queue").glob("set-site-hours-*.json"))
+    assert len(queue_files) == 1
+    job = json.loads(queue_files[0].read_text(encoding="utf-8"))
+    assert job["job_type"] == "set_site_hours"
+    payload = job["payload"]
+    assert payload["site_id"] == "7050"
+    assert payload["action"] == "set"
+    assert payload["facility_hours"]["status"] == "verified"
+    assert payload["facility_hours"]["weekly"]["fri"] == [{"open": "08:30", "close": "15:00"}]
     assert payload["source"] == "ops_dashboard_site_detail"
 
 

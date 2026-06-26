@@ -591,6 +591,14 @@ def test_render_job_summary_voice_memo_note() -> None:
     assert "This is a short note" in rendered
 
 
+def test_render_job_summary_set_site_hours() -> None:
+    rendered = render_job_summary("set_site_hours", {"site_id": "7060", "action": "set", "facility_hours": {"status": "verified"}})
+
+    assert "Set facility hours" in rendered
+    assert "7060" in rendered
+    assert "verified" in rendered
+
+
 def test_render_job_summary_unknown_job_type_fallback() -> None:
     rendered = render_job_summary("future_job", {"alpha": "one", "beta": "two"})
 
