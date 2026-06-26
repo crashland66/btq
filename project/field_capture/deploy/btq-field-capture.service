@@ -10,6 +10,7 @@ Group=btq-field
 WorkingDirectory=/srv/btq/apps/field-capture/project
 Environment=PYTHONPATH=/srv/btq/apps/field-capture/project
 Environment=BT_PIPELINE_CONFIG_PATH=/srv/btq/apps/field-capture/config.json
+Environment=BTQ_COUCHDB_URL=http://127.0.0.1:5984
 EnvironmentFile=-/etc/btq/field-capture.env
 # CouchDB credentials (BTQ_COUCHDB_USER/PASSWORD). Auth now resolves the worker's
 # person from CouchDB, so without these every login 401s "invalid_token". The
