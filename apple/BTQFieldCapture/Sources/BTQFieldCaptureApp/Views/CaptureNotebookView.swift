@@ -83,9 +83,13 @@ struct CaptureNotebookView: View {
             let context = currentDraftContext
             Task { await loadPhotos(items, context: context) }
         }
+        .onChange(of: pendingPhotos) { _, photos in
+            guard !photos.isEmpty, !isSavingDraft else { return }
+            Task { await persistActiveMediaDraft(photos: photos) }
+        }
         .onChange(of: model.selectedSiteID) { oldValue, newValue in
             guard oldValue != nil, oldValue != newValue else { return }
-            discardDraftAfterSiteChange()
+            discardDraftAfterSiteChange(previousSiteID: oldValue)
         }
         .onChange(of: model.account.id) { oldValue, newValue in
             guard oldValue != newValue else { return }
@@ -95,12 +99,15 @@ struct CaptureNotebookView: View {
             guard !canSubmit else { return }
             discardDraftAfterSubmitPermissionRevoked()
         }
+        .task {
+            restoreActiveDraftIfAvailable()
+        }
         #if os(iOS)
         .sheet(isPresented: $showCamera) {
             CameraCaptureView { data in
                 guard let context = cameraDraftContext, canAttachMedia(to: context) else { return }
                 if let photo = savePhoto(data: data, prefix: "camera") {
-                    pendingPhotos.append(photo)
+                    Task { await appendPhotoToDraft(photo, context: context) }
                 }
             }
             .ignoresSafeArea()
@@ -600,8 +607,11 @@ struct CaptureNotebookView: View {
                 continue
             }
             try? FileManager.default.removeItem(at: pickedPhoto.fileURL)
-            pendingPhotos.append(photo)
-            importedCount += 1
+            if await appendPhotoToDraft(photo, context: context) {
+                importedCount += 1
+            } else {
+                failedCount += 1
+            }
             await Task.yield()
         }
 
@@ -622,18 +632,55 @@ struct CaptureNotebookView: View {
         return try? mediaStore.savePhotoFile(fileURL, preferredStem: prefix, bucketID: mediaBucketID)
     }
 
-    private func discardPendingMedia() {
+    @discardableResult
+    private func appendPhotoToDraft(_ photo: CapturePhoto, context: DraftContext) async -> Bool {
+        guard canAttachMedia(to: context) else {
+            mediaStore.deletePendingMedia(photos: [photo])
+            return false
+        }
+        pendingPhotos.append(photo)
+        let didPersist = await model.upsertDraftCapture(photos: pendingPhotos, audio: nil)
+        if !didPersist {
+            pendingPhotos.removeAll { $0.id == photo.id }
+            mediaStore.deletePendingMedia(photos: [photo])
+        }
+        return didPersist
+    }
+
+    private func persistActiveMediaDraft(photos: [CapturePhoto]) async {
+        guard !photos.isEmpty, canEditDraft else { return }
+        await model.upsertDraftCapture(photos: photos, audio: nil)
+    }
+
+    private func restoreActiveDraftIfAvailable() {
+        guard pendingPhotos.isEmpty,
+              recorder.lastAudio == nil,
+              let draft = model.activeDraftCapture else {
+            return
+        }
+        pendingPhotos = draft.photos
+        if !draft.note.isEmpty {
+            model.observationText = draft.note
+        }
+        if model.selectedSite?.displayCategories.contains(where: { $0.value == draft.qcCategory }) == true {
+            model.selectedCategoryValue = draft.qcCategory
+        }
+        model.statusMessage = "Recovered local draft."
+    }
+
+    private func discardPendingMedia(draftSiteID: String? = nil) {
         mediaStore.deletePendingMedia(photos: pendingPhotos, audio: recorder.lastAudio)
         pendingPhotos = []
         recorder.clear()
+        Task { await model.removeDraftCapture(siteID: draftSiteID) }
     }
 
-    private func discardDraftAfterSiteChange() {
+    private func discardDraftAfterSiteChange(previousSiteID: String?) {
         guard hasDraftContent else { return }
         #if os(iOS)
         dismissKeyboard()
         #endif
-        discardPendingMedia()
+        discardPendingMedia(draftSiteID: previousSiteID)
         selectedPhotoItems = []
         model.observationText = ""
         cameraMessage = nil
@@ -657,11 +704,12 @@ struct CaptureNotebookView: View {
         #if os(iOS)
         dismissKeyboard()
         #endif
-        discardPendingMedia()
+        pendingPhotos = []
+        recorder.clear()
         selectedPhotoItems = []
         model.observationText = ""
         cameraMessage = nil
-        model.statusMessage = "Draft cleared after account change."
+        model.statusMessage = "Draft kept with previous account."
     }
 
     private func persistPendingAudio() -> CaptureAudio? {

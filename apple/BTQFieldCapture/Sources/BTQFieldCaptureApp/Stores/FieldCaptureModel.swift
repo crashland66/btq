@@ -4,7 +4,7 @@ import Observation
 @MainActor
 @Observable
 public final class FieldCaptureModel {
-    public nonisolated static let defaultMaxImagesPerCapture = 100
+    public nonisolated static let defaultMaxImagesPerCapture = 20
 
     public private(set) var account: BTQAccount
     public private(set) var session: BTQSession?
@@ -131,7 +131,7 @@ public final class FieldCaptureModel {
     }
 
     public var maxImagesPerCapture: Int {
-        max(Self.defaultMaxImagesPerCapture, session?.maxImages ?? Self.defaultMaxImagesPerCapture)
+        Self.defaultMaxImagesPerCapture
     }
 
     public var photoLimitDescription: String {
@@ -172,6 +172,11 @@ public final class FieldCaptureModel {
 
     public var needsInitialSetup: Bool {
         account.tokenID == nil || requiresReconnect
+    }
+
+    public var activeDraftCapture: LocalCapture? {
+        guard let selectedSiteID else { return nil }
+        return captures.first { $0.status == .draft && $0.siteID == selectedSiteID }
     }
 
     public var accounts: [BTQAccount] {
@@ -669,6 +674,79 @@ public final class FieldCaptureModel {
     }
 
     @discardableResult
+    public func upsertDraftCapture(photos: [CapturePhoto], audio: CaptureAudio? = nil) async -> Bool {
+        guard let site = selectedSite else {
+            statusMessage = "Choose a site before adding media."
+            return false
+        }
+        guard canSubmitCaptures else {
+            statusMessage = "This account cannot submit captures."
+            return false
+        }
+        guard photos.count <= maxImagesPerCapture else {
+            statusMessage = "Limit is \(photoLimitDescription) per capture."
+            return false
+        }
+        guard !photos.isEmpty || audio != nil else {
+            return true
+        }
+
+        let previousCaptures = captures
+        let note = observationText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let category = selectedCategoryValue ?? defaultCategoryValue(for: site) ?? "general_note"
+        let now = Date()
+        if let index = captures.firstIndex(where: { $0.status == .draft && $0.siteID == site.siteID }) {
+            captures[index].siteLabel = site.label
+            captures[index].targetID = site.siteID
+            captures[index].qcCategory = category
+            captures[index].note = note
+            captures[index].exportedAt = now
+            captures[index].photos = photos
+            captures[index].audio = audio
+        } else {
+            let suffix = String(UUID().uuidString.prefix(8)).lowercased()
+            let kind: CaptureAssetKind = !photos.isEmpty && audio != nil ? .photoVoice : !photos.isEmpty ? .photo : .voice
+            captures.append(
+                LocalCapture(
+                    captureID: BTQFormatting.makeCaptureID(capturedAt: now, suffix: suffix),
+                    jobID: BTQFormatting.makeJobID(exportedAt: now, assetKind: kind, siteLabel: site.label, suffix: suffix),
+                    visitID: activeVisit(forSiteID: site.siteID)?.id,
+                    siteID: site.siteID,
+                    siteLabel: site.label,
+                    targetID: site.siteID,
+                    qcCategory: category,
+                    note: note,
+                    capturedAt: now,
+                    exportedAt: now,
+                    status: .draft,
+                    photos: photos,
+                    audio: audio
+                )
+            )
+        }
+
+        do {
+            try await persist()
+            statusMessage = "Draft saved locally."
+            return true
+        } catch {
+            captures = previousCaptures
+            statusMessage = "Could not save draft locally."
+            return false
+        }
+    }
+
+    public func removeDraftCapture(siteID: String? = nil) async {
+        let draftSiteID = siteID ?? selectedSiteID
+        guard let draftSiteID,
+              let index = captures.firstIndex(where: { $0.status == .draft && $0.siteID == draftSiteID }) else {
+            return
+        }
+        captures.remove(at: index)
+        try? await persist()
+    }
+
+    @discardableResult
     public func validateQuickObservationDraft(photoCount: Int = 0, hasAudio: Bool = false) -> Bool {
         guard selectedSite != nil else {
             statusMessage = "Choose a site before saving."
@@ -702,28 +780,47 @@ public final class FieldCaptureModel {
         }
         let category = selectedCategoryValue ?? defaultCategoryValue(for: site) ?? "general_note"
         let note = observationText.trimmingCharacters(in: .whitespacesAndNewlines)
-        let now = Date()
-        let suffix = String(UUID().uuidString.prefix(8)).lowercased()
         let kind: CaptureAssetKind = !photos.isEmpty && audio != nil ? .photoVoice : !photos.isEmpty ? .photo : audio != nil ? .voice : .text
         let visitID = activeVisit(forSiteID: site.siteID)?.id
-        let capture = LocalCapture(
-            captureID: BTQFormatting.makeCaptureID(capturedAt: now, suffix: suffix),
-            jobID: BTQFormatting.makeJobID(exportedAt: now, assetKind: kind, siteLabel: site.label, suffix: suffix),
-            visitID: visitID,
-            siteID: site.siteID,
-            siteLabel: site.label,
-            targetID: site.siteID,
-            qcCategory: category,
-            note: note,
-            capturedAt: now,
-            exportedAt: now,
-            photos: photos,
-            audio: audio
-        )
         let previousCaptures = captures
         let previousSites = sites
         let previousAccountWorkspaces = accountWorkspaces
-        captures.append(capture)
+        let now = Date()
+        if let index = captures.firstIndex(where: { $0.status == .draft && $0.siteID == site.siteID }) {
+            let suffix = String(captures[index].captureID.suffix(8)).lowercased()
+            captures[index].jobID = BTQFormatting.makeJobID(exportedAt: now, assetKind: kind, siteLabel: site.label, suffix: suffix)
+            captures[index].visitID = visitID
+            captures[index].siteLabel = site.label
+            captures[index].targetID = site.siteID
+            captures[index].qcCategory = category
+            captures[index].note = note
+            captures[index].exportedAt = now
+            captures[index].status = .pending
+            captures[index].attempts = 0
+            captures[index].lastError = nil
+            captures[index].lastTriedAt = nil
+            captures[index].retryAfter = nil
+            captures[index].photos = photos
+            captures[index].audio = audio
+        } else {
+            let suffix = String(UUID().uuidString.prefix(8)).lowercased()
+            captures.append(
+                LocalCapture(
+                    captureID: BTQFormatting.makeCaptureID(capturedAt: now, suffix: suffix),
+                    jobID: BTQFormatting.makeJobID(exportedAt: now, assetKind: kind, siteLabel: site.label, suffix: suffix),
+                    visitID: visitID,
+                    siteID: site.siteID,
+                    siteLabel: site.label,
+                    targetID: site.siteID,
+                    qcCategory: category,
+                    note: note,
+                    capturedAt: now,
+                    exportedAt: now,
+                    photos: photos,
+                    audio: audio
+                )
+            )
+        }
         var updatedSite = site
         updatedSite.lastUsedAt = now
         replaceSite(updatedSite)

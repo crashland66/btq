@@ -65,7 +65,7 @@ import UniformTypeIdentifiers
     #expect(session.canSubmit)
     #expect(session.canReview == false)
     #expect(session.inboxCount == 0)
-    #expect(session.maxImages == 100)
+    #expect(session.maxImages == 20)
     #expect(session.sites.first?.label == "Site One")
     #expect(session.sites.first?.displayCategories.first?.value == "supplies")
 }
@@ -915,12 +915,12 @@ import UniformTypeIdentifiers
     #expect(apiClientSource.contains("read(upToCount: 256 * 1024)"))
 }
 
-@Test func fileBackedMultipartBodyCarriesOneHundredPhotoParts() throws {
-    let temp = FileManager.default.temporaryDirectory.appendingPathComponent("btq-hundred-photo-test-\(UUID().uuidString)", isDirectory: true)
+@Test func fileBackedMultipartBodyCarriesTwentyPhotoParts() throws {
+    let temp = FileManager.default.temporaryDirectory.appendingPathComponent("btq-twenty-photo-test-\(UUID().uuidString)", isDirectory: true)
     try FileManager.default.createDirectory(at: temp, withIntermediateDirectories: true)
     defer { try? FileManager.default.removeItem(at: temp) }
 
-    let photos = try (1...100).map { index in
+    let photos = try (1...20).map { index in
         let filename = "qc-\(index).jpg"
         let photoURL = temp.appendingPathComponent(filename)
         try Data("fake-photo-\(index)".utf8).write(to: photoURL)
@@ -928,8 +928,8 @@ import UniformTypeIdentifiers
     }
 
     let capture = LocalCapture(
-        captureID: "cap-qc-hundred-photo-test",
-        jobID: "job-qc-hundred-photo-test",
+        captureID: "cap-qc-twenty-photo-test",
+        jobID: "job-qc-twenty-photo-test",
         visitID: nil,
         siteID: "site_qc",
         siteLabel: "QC Site",
@@ -946,11 +946,11 @@ import UniformTypeIdentifiers
     let body = try String(contentsOf: bodyURL, encoding: .utf8)
 
     let photoPartCount = body.components(separatedBy: "name=\"photos\"; filename=").count - 1
-    #expect(photoPartCount == 100)
+    #expect(photoPartCount == 20)
     #expect(body.contains("name=\"qc_category\""))
     #expect(body.contains("qc"))
     #expect(body.contains("qc-1.jpg"))
-    #expect(body.contains("qc-100.jpg"))
+    #expect(body.contains("qc-20.jpg"))
 }
 
 @Test func sqliteStoreRoundTripsOfflineSnapshot() async throws {
@@ -1355,12 +1355,12 @@ import UniformTypeIdentifiers
     #expect(captureViewSource.contains("discardPendingMedia()"))
     #expect(captureViewSource.contains("mediaStore.deletePendingMedia(photos: pendingPhotos, audio: recorder.lastAudio)"))
     #expect(captureViewSource.contains(".onChange(of: model.selectedSiteID)"))
-    #expect(captureViewSource.contains("discardDraftAfterSiteChange()"))
+    #expect(captureViewSource.contains("discardDraftAfterSiteChange(previousSiteID: oldValue)"))
     #expect(captureViewSource.contains("model.observationText = \"\""))
     #expect(captureViewSource.contains("Draft cleared after site change."))
     #expect(captureViewSource.contains(".onChange(of: model.account.id)"))
     #expect(captureViewSource.contains("discardDraftAfterAccountChange()"))
-    #expect(captureViewSource.contains("Draft cleared after account change."))
+    #expect(captureViewSource.contains("Draft kept with previous account."))
     #expect(captureViewSource.contains("private struct DraftContext: Equatable"))
     #expect(captureViewSource.contains("DraftContext(accountID: model.account.id, siteID: model.selectedSiteID)"))
     #expect(captureViewSource.contains("Task { await loadPhotos(items, context: context) }"))
@@ -1481,7 +1481,7 @@ import UniformTypeIdentifiers
     #expect(model.sites.map(\.siteID) == ["site_saved"])
     #expect(model.selectedSiteID == "site_saved")
     #expect(model.selectedCategoryValue == nil)
-    #expect(model.maxImagesPerCapture == 100)
+    #expect(model.maxImagesPerCapture == 20)
     #expect(model.isOfflineMode == false)
     #expect(model.statusMessage == "Session refreshed")
 }
@@ -1524,7 +1524,52 @@ import UniformTypeIdentifiers
     #expect(model.captures.first?.qcCategory == "general_note")
 }
 
-@Test @MainActor func legacySessionPhotoLimitIsFlooredToNativeHundredPhotoCap() async {
+@Test @MainActor func mediaDraftPersistsAsPhotosAreAddedAndPromotesOnSubmit() async throws {
+    let site = BTQSite(siteID: "site_1", label: "Site One")
+    let snapshot = FieldCaptureSnapshot(
+        account: .defaultProduction,
+        session: BTQSession(
+            person: BTQPerson(personID: "person_field", name: "Field User"),
+            token: BTQToken(tokenID: "token_field", label: "Pilot"),
+            sites: [site],
+            canSubmit: true,
+            canReview: false,
+            maxImages: 100
+        ),
+        sites: [site]
+    )
+    let store = MemoryFieldCaptureStore(snapshot: snapshot)
+    let model = FieldCaptureModel(
+        store: store,
+        apiClient: MockCaptureAPIClient(),
+        tokenStore: MemoryTokenStore(),
+        notificationScheduler: NoopUploadNotificationScheduler()
+    )
+    await model.load()
+
+    let firstPhoto = CapturePhoto(filename: "first.jpg")
+    let secondPhoto = CapturePhoto(filename: "second.jpg", note: "after")
+
+    #expect(await model.upsertDraftCapture(photos: [firstPhoto]))
+    #expect(model.captures.count == 1)
+    #expect(model.captures.first?.status == .draft)
+    #expect(model.captures.first?.photos.map(\.filename) == ["first.jpg"])
+
+    #expect(await model.upsertDraftCapture(photos: [firstPhoto, secondPhoto]))
+    let persistedDraft = try await store.load().captures.first
+    #expect(persistedDraft?.status == .draft)
+    #expect(persistedDraft?.photos.map(\.filename) == ["first.jpg", "second.jpg"])
+    #expect(model.captures.count == 1)
+
+    let didSave = await model.saveQuickObservation(photos: [firstPhoto, secondPhoto])
+
+    #expect(didSave)
+    #expect(model.captures.count == 1)
+    #expect(model.captures.first?.status == .pending)
+    #expect(model.captures.first?.photos.count == 2)
+}
+
+@Test @MainActor func legacySessionPhotoLimitUsesNativeTwentyPhotoCap() async {
     let site = BTQSite(siteID: "site_legacy", label: "Legacy Limit Site")
     let snapshot = FieldCaptureSnapshot(
         account: .defaultProduction,
@@ -1548,7 +1593,7 @@ import UniformTypeIdentifiers
     await model.load()
 
     #expect(model.session?.maxImages == 6)
-    #expect(model.maxImagesPerCapture == 100)
+    #expect(model.maxImagesPerCapture == 20)
 }
 
 @Test @MainActor func operatorQCCategoryAutoSelectsWhenServerOffersQC() async {
@@ -1583,14 +1628,14 @@ import UniformTypeIdentifiers
     model.observationText = "QC walk photos"
 
     let didSave = await model.saveQuickObservation(
-        photos: (1...100).map { CapturePhoto(filename: "qc-\($0).jpg") }
+        photos: (1...20).map { CapturePhoto(filename: "qc-\($0).jpg") }
     )
 
-    #expect(model.maxImagesPerCapture == 100)
+    #expect(model.maxImagesPerCapture == 20)
     #expect(model.selectedCategoryValue == "qc")
     #expect(didSave)
     #expect(model.captures.first?.qcCategory == "qc")
-    #expect(model.captures.first?.photos.count == 100)
+    #expect(model.captures.first?.photos.count == 20)
 }
 
 @Test @MainActor func siteSelectionAppliesQCDefaultOnlyWhenNewSiteOffersQC() async {
@@ -1802,7 +1847,7 @@ import UniformTypeIdentifiers
     #expect(model.statusMessage == "Could not save locally. Try again.")
 }
 
-@Test @MainActor func saveQuickObservationRejectsMoreThanNativeHundredPhotoCap() async {
+@Test @MainActor func saveQuickObservationRejectsMoreThanNativeTwentyPhotoCap() async {
     let snapshot = FieldCaptureSnapshot(
         account: .defaultProduction,
         session: BTQSession(
@@ -1824,12 +1869,12 @@ import UniformTypeIdentifiers
     await model.load()
 
     let didSave = await model.saveQuickObservation(
-        photos: (1...101).map { CapturePhoto(filename: "photo-\($0).jpg") }
+        photos: (1...21).map { CapturePhoto(filename: "photo-\($0).jpg") }
     )
 
     #expect(didSave == false)
     #expect(model.captures.isEmpty)
-    #expect(model.statusMessage == "Limit is 100 photos per capture.")
+    #expect(model.statusMessage == "Limit is 20 photos per capture.")
 }
 
 @Test @MainActor func quickObservationDraftPreflightMatchesSaveValidation() async {
@@ -1856,9 +1901,9 @@ import UniformTypeIdentifiers
     #expect(model.validateQuickObservationDraft(photoCount: 0, hasAudio: false) == false)
     #expect(model.statusMessage == "Add a note, photo, or voice memo.")
     #expect(model.validateQuickObservationDraft(photoCount: 0, hasAudio: true))
-    #expect(model.validateQuickObservationDraft(photoCount: 100, hasAudio: true))
-    #expect(model.validateQuickObservationDraft(photoCount: 101, hasAudio: true) == false)
-    #expect(model.statusMessage == "Limit is 100 photos per capture.")
+    #expect(model.validateQuickObservationDraft(photoCount: 20, hasAudio: true))
+    #expect(model.validateQuickObservationDraft(photoCount: 21, hasAudio: true) == false)
+    #expect(model.statusMessage == "Limit is 20 photos per capture.")
 }
 
 @Test @MainActor func saveQuickObservationRejectsViewOnlyToken() async {
@@ -2247,9 +2292,9 @@ import UniformTypeIdentifiers
 
     #expect(didSave)
     #expect(model.captures.first?.status == .failed)
-    #expect(model.captures.first?.lastError == "Limit is 100 photos per capture.")
-    #expect(model.statusMessage == "Capture failed: Limit is 100 photos per capture.")
-    #expect(model.captures.first.map { model.displayError(for: $0) } == "Limit is 100 photos per capture.")
+    #expect(model.captures.first?.lastError == "Limit is 20 photos per capture.")
+    #expect(model.statusMessage == "Capture failed: Limit is 20 photos per capture.")
+    #expect(model.captures.first.map { model.displayError(for: $0) } == "Limit is 20 photos per capture.")
 }
 
 @Test @MainActor func unauthorizedSyncRequiresReconnectAndPreservesPendingCapture() async {
@@ -2680,7 +2725,7 @@ import UniformTypeIdentifiers
     await model.load()
 
     #expect(model.captures.first?.lastError == "At most 6 images may be submitted")
-    #expect(model.captures.first.map { model.displayError(for: $0) } == "Limit is 100 photos per capture.")
+    #expect(model.captures.first.map { model.displayError(for: $0) } == "Limit is 20 photos per capture.")
 }
 
 @Test @MainActor func modelCanConnectAndSwitchBetweenCachedAccounts() async {

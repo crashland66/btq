@@ -52,7 +52,7 @@ public struct BTQAccountWorkspace: Identifiable, Codable, Equatable, Sendable {
 }
 
 public struct BTQSession: Codable, Equatable, Sendable {
-    private static let defaultMaxImages = 100
+    private static let defaultMaxImages = 20
 
     public var person: BTQPerson
     public var token: BTQToken
