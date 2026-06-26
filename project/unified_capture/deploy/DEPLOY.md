@@ -13,11 +13,18 @@ apps. It does not retire or modify `photos.example.com` or
 - Token DB: `/srv/btq/data/field_capture_tokens.sqlite3`
 - Person/site resolution: CouchDB (`btq_vault` / `btq_sites`) via `BTQ_COUCHDB_*`
 - Upload root: `/srv/btq/runtime/uploads`
+- Photo cap: `--max-images 100` in the systemd `ExecStart`
 - Optional service environment: `/etc/btq/unified-capture.env`
 
 The unified app uses the same token database, CouchDB connection, and upload root
 as field capture. Worker tokens and the existing post-upload pipeline continue to
 operate on the same data.
+
+The checked-in systemd unit sets `BTQ_COUCHDB_URL=http://127.0.0.1:5984` as a
+local fallback before loading optional environment files. Keep that fallback in
+the unit so a clean install can restart without depending on a machine-local env
+file for the CouchDB URL; host-specific env files may still override it and must
+continue to provide any CouchDB credentials outside version control.
 
 ## Edge Prerequisites
 
@@ -73,6 +80,10 @@ installs into that directory, materializes `dist/` from
 `project/unified_capture/public/`, writes shared PWA assets for the
 `unified_capture` service worker, restarts `btq-unified-capture.service`, and
 smokes `GET /api/health` on `127.0.0.1:8081`.
+
+The installed service runs `unified_capture.server` with `--max-images 100`, so
+regular capture tokens can submit larger photo batches without relying on a
+systemd drop-in.
 
 The wrapper touches only the unified app directory and
 `btq-unified-capture.service`. It does not deploy, restart, or reconfigure
