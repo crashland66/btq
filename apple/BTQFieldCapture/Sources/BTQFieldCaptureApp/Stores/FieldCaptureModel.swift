@@ -175,8 +175,14 @@ public final class FieldCaptureModel {
     }
 
     public var activeDraftCapture: LocalCapture? {
-        guard let siteID = selectedSite?.siteID else { return nil }
-        return captures.first { $0.status == .draft && $0.siteID == siteID }
+        let drafts = captures
+            .filter { $0.status == .draft }
+            .sorted { $0.exportedAt > $1.exportedAt }
+        if let siteID = selectedSite?.siteID,
+           let siteDraft = drafts.first(where: { $0.siteID == siteID }) {
+            return siteDraft
+        }
+        return drafts.first
     }
 
     public var accounts: [BTQAccount] {
@@ -737,7 +743,7 @@ public final class FieldCaptureModel {
     }
 
     public func removeDraftCapture(siteID: String? = nil) async {
-        let draftSiteID = siteID ?? selectedSiteID
+        let draftSiteID = siteID ?? selectedSite?.siteID
         guard let draftSiteID,
               let index = captures.firstIndex(where: { $0.status == .draft && $0.siteID == draftSiteID }) else {
             return

@@ -1580,6 +1580,46 @@ import UniformTypeIdentifiers
     #expect(reloadedModel.captures.first?.photos.count == 2)
 }
 
+@Test @MainActor func activeDraftRecoveryFindsLatestDraftWhenRelaunchDefaultsToAnotherSite() async throws {
+    let firstSite = BTQSite(siteID: "site_a", label: "Alpha")
+    let draftSite = BTQSite(siteID: "site_b", label: "Beta")
+    let snapshot = FieldCaptureSnapshot(
+        account: .defaultProduction,
+        session: BTQSession(
+            person: BTQPerson(personID: "person_field", name: "Field User"),
+            token: BTQToken(tokenID: "token_field", label: "Pilot"),
+            sites: [firstSite, draftSite],
+            canSubmit: true,
+            canReview: false,
+            maxImages: 20
+        ),
+        sites: [firstSite, draftSite]
+    )
+    let store = MemoryFieldCaptureStore(snapshot: snapshot)
+    let model = FieldCaptureModel(
+        store: store,
+        apiClient: MockCaptureAPIClient(),
+        tokenStore: MemoryTokenStore(),
+        notificationScheduler: NoopUploadNotificationScheduler()
+    )
+    await model.load()
+    model.selectSite(id: draftSite.siteID)
+
+    #expect(await model.upsertDraftCapture(photos: [CapturePhoto(filename: "beta.jpg")]))
+
+    let reloadedModel = FieldCaptureModel(
+        store: store,
+        apiClient: MockCaptureAPIClient(),
+        tokenStore: MemoryTokenStore(),
+        notificationScheduler: NoopUploadNotificationScheduler()
+    )
+    await reloadedModel.load()
+
+    #expect(reloadedModel.selectedSiteID == firstSite.siteID)
+    #expect(reloadedModel.activeDraftCapture?.siteID == draftSite.siteID)
+    #expect(reloadedModel.activeDraftCapture?.photos.map(\.filename) == ["beta.jpg"])
+}
+
 @Test @MainActor func legacySessionPhotoLimitUsesNativeTwentyPhotoCap() async {
     let site = BTQSite(siteID: "site_legacy", label: "Legacy Limit Site")
     let snapshot = FieldCaptureSnapshot(

@@ -672,6 +672,9 @@ struct CaptureNotebookView: View {
               let draft = model.activeDraftCapture else {
             return
         }
+        if model.selectedSiteID != draft.siteID {
+            model.selectSite(id: draft.siteID)
+        }
         pendingPhotos = draft.photos
         if !draft.note.isEmpty {
             model.observationText = draft.note
