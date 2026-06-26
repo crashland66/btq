@@ -681,7 +681,9 @@ import UniformTypeIdentifiers
     #expect(settingsView.contains(".confirmationDialog("))
     #expect(settingsView.contains("Remove this account?"))
     #expect(settingsView.contains("Remove Account\", role: .destructive"))
-    #expect(settingsView.contains("cached workspace and stored token"))
+    #expect(settingsView.contains("activeAccountQueuedCaptureCount"))
+    #expect(settingsView.contains("Sync or delete \\(count) queued \\(label) before removing this account."))
+    #expect(settingsView.contains("after its local queue is clear"))
     #expect(settingsView.contains(".textInputAutocapitalization(.never)"))
     #expect(settingsView.contains(".autocorrectionDisabled()"))
     #expect(settingsView.contains(".privacySensitive()"))
@@ -2926,6 +2928,47 @@ import UniformTypeIdentifiers
     #expect(model.statusMessage == "Wait for connect to finish before removing accounts.")
 }
 
+@Test @MainActor func removingAccountIsBlockedWhileQueuedCapturesRemain() async {
+    let account = BTQAccount(
+        label: "Field User",
+        baseURL: URL(string: "https://example.test")!,
+        tokenID: "token_queued",
+        personID: "person_queued",
+        personName: "Field User"
+    )
+    let capture = LocalCapture(
+        captureID: "capture-queued",
+        jobID: "job-queued",
+        visitID: nil,
+        siteID: "site_1",
+        siteLabel: "Site One",
+        targetID: "site_1",
+        qcCategory: "general_note",
+        note: "Do not lose this",
+        capturedAt: Date(timeIntervalSince1970: 1_800_000_000),
+        exportedAt: Date(timeIntervalSince1970: 1_800_000_001),
+        status: .pending
+    )
+    let tokenStore = MemoryTokenStore()
+    let model = FieldCaptureModel(
+        store: MemoryFieldCaptureStore(snapshot: captureSnapshot(account: account, captures: [capture])),
+        apiClient: MockCaptureAPIClient(),
+        tokenStore: tokenStore,
+        notificationScheduler: NoopUploadNotificationScheduler()
+    )
+    await tokenStore.saveToken("token-queued", accountID: account.id)
+    await model.load()
+
+    await model.removeAccount(account.id)
+
+    #expect(model.account.id == account.id)
+    #expect(model.accounts.count == 1)
+    #expect(model.activeAccountQueuedCaptureCount == 1)
+    #expect(model.captures.first?.captureID == "capture-queued")
+    #expect(await tokenStore.loadToken(accountID: account.id) == "token-queued")
+    #expect(model.statusMessage == "Sync or delete 1 queued capture before removing this account.")
+}
+
 @Test @MainActor func removingAccountDeletesOnlyManagedMediaFiles() async throws {
     let mediaRoot = FileManager.default.temporaryDirectory.appendingPathComponent("btq-managed-media-\(UUID().uuidString)", isDirectory: true)
     let externalRoot = FileManager.default.temporaryDirectory.appendingPathComponent("btq-external-media-\(UUID().uuidString)", isDirectory: true)
@@ -2964,6 +3007,7 @@ import UniformTypeIdentifiers
         note: "Remove me",
         capturedAt: Date(timeIntervalSince1970: 1_800_000_000),
         exportedAt: Date(timeIntervalSince1970: 1_800_000_001),
+        status: .done,
         photos: [
             CapturePhoto(filename: "photo.jpg", fileURL: managedPhotoURL),
             CapturePhoto(filename: "external-photo.jpg", fileURL: externalPhotoURL),

@@ -126,6 +126,10 @@ public final class FieldCaptureModel {
         QueueSummary(captures: captures)
     }
 
+    public var activeAccountQueuedCaptureCount: Int {
+        queuedCaptureCount(for: account.id)
+    }
+
     public var maxImagesPerCapture: Int {
         max(Self.defaultMaxImagesPerCapture, session?.maxImages ?? Self.defaultMaxImagesPerCapture)
     }
@@ -172,6 +176,13 @@ public final class FieldCaptureModel {
 
     public var accounts: [BTQAccount] {
         accountWorkspaces.map(\.account)
+    }
+
+    public func queuedCaptureCount(for accountID: UUID) -> Int {
+        let workspace = accountID == account.id
+            ? currentWorkspace()
+            : accountWorkspaces.first { $0.account.id == accountID }
+        return workspace?.captures.filter { $0.status != .done }.count ?? 0
     }
 
     public var prioritizedSites: [BTQSite] {
@@ -591,6 +602,12 @@ public final class FieldCaptureModel {
             : accountWorkspaces.first { $0.account.id == accountID }
         if !wasActive {
             upsertCurrentWorkspace()
+        }
+        let queuedCaptureCount = queuedCaptureCount(for: accountID)
+        guard queuedCaptureCount == 0 else {
+            let captureLabel = queuedCaptureCount == 1 ? "capture" : "captures"
+            statusMessage = "Sync or delete \(queuedCaptureCount) queued \(captureLabel) before removing this account."
+            return
         }
         if let removedWorkspace {
             mediaStore.deleteMedia(for: removedWorkspace.captures)

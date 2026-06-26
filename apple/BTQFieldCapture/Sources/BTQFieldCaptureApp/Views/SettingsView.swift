@@ -97,13 +97,18 @@ struct SettingsView: View {
             }
 
             Section("Account Cleanup") {
+                if model.activeAccountQueuedCaptureCount > 0 {
+                    Text(removeAccountBlockedMessage)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
                 Button(role: .destructive) {
                     showingRemoveAccountConfirmation = true
                 } label: {
                     Label("Remove This Account", systemImage: "trash")
                 }
-                .disabled(model.isSyncing || model.isConnecting)
-                Text("Removes this cached account, its local workspace, and its stored token from this device.")
+                .disabled(model.isSyncing || model.isConnecting || model.activeAccountQueuedCaptureCount > 0)
+                Text("Removes this cached account and stored token from this device after its local queue is clear.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -133,7 +138,7 @@ struct SettingsView: View {
             }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("This deletes the cached workspace and stored token for this account on this device.")
+            Text("This deletes the cached account and stored token on this device. Synced local history for this account may also be cleared.")
         }
     }
 
@@ -185,6 +190,12 @@ struct SettingsView: View {
 
     private var connectButtonLabel: String {
         model.isConnecting ? "Connecting" : "Connect"
+    }
+
+    private var removeAccountBlockedMessage: String {
+        let count = model.activeAccountQueuedCaptureCount
+        let label = count == 1 ? "capture" : "captures"
+        return "Sync or delete \(count) queued \(label) before removing this account."
     }
 
     private func connect() async {
