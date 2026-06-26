@@ -1829,6 +1829,7 @@ class SubmitBehaviorTests(unittest.TestCase):
         self.store, self.token = make_store(
             self.tmp.name, site_ids=["7060"], can_submit=True, role="cleaner"
         )
+        self.token_id = self.store.list_tokens()[0].token_id
         self.server = _SubmitFakeServer(self.store, self.vault, self.upload_dir)
         self.writer = _WriterCapture()
         self._patches = install_couch_fakes(EMP_SINGLE, SITES_TWO)
@@ -2025,6 +2026,23 @@ class SubmitBehaviorTests(unittest.TestCase):
         self.assertEqual(resp.status, 403, resp.text)
         self.assertEqual(len(self.writer.put_calls), 0)
         self.assertEqual(self._uploaded_files(), [])
+
+    def test_submit_rejection_logs_code_status_token_site_and_photo_count(self) -> None:
+        too_many_photos = [(f"{index}.png", "image/png", _TINY_PNG) for index in range(7)]
+
+        with self.assertLogs(level="WARNING") as logs:
+            resp = self.submit(_valid_submit_fields(), photos=too_many_photos)
+
+        self.assertEqual(resp.status, 400, resp.text)
+        self.assertEqual(len(self.writer.put_calls), 0)
+        joined = "\n".join(logs.output)
+        self.assertIn("unified-capture submit rejected", joined)
+        self.assertIn("code=too_many_photos", joined)
+        self.assertIn("status=400", joined)
+        self.assertIn(f"token_id={self.token_id}", joined)
+        self.assertIn("site=Continental Metalworks", joined)
+        self.assertIn("photos=7", joined)
+        self.assertNotIn(self.token, joined)
 
     # ----- idempotency ----------------------------------------------------- #
 

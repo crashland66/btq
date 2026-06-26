@@ -257,8 +257,12 @@ class UnifiedCaptureHandler(BaseHTTPRequestHandler):
             if can_override_submission_attribution(session)
             else None
         )
+        submit_fields: dict[str, str] = {}
+        submit_photo_count: int | None = None
         try:
             fields, photos, audio_files = self.read_multipart_submission(max_images=effective_max_images)
+            submit_fields = fields
+            submit_photo_count = len(photos)
             self.validate_submit_authorization(session, fields)
             capture_id = normalize_capture_id(fields.get("capture_id", ""), fallback_prefix="cap-unified-")
             if fields.get("capture_id"):
@@ -298,6 +302,9 @@ class UnifiedCaptureHandler(BaseHTTPRequestHandler):
             doc, media_records = self.build_submit_document(fields, photos, audio_files, session, capture_id)
             write_capture_media(media_records, photos + audio_files, self.server.upload_dir)
         except SubmissionError as error:
+            if submit_photo_count is None:
+                submit_photo_count = getattr(self, "_submit_photo_count", None)
+            self.log_submit_rejection(error, session, submit_fields or getattr(self, "_submit_fields", {}), submit_photo_count)
             self.write_json({"error": error.code, "message": error.message}, error.status)
             return
 
@@ -698,6 +705,8 @@ class UnifiedCaptureHandler(BaseHTTPRequestHandler):
             raise SubmissionError(HTTPStatus.BAD_REQUEST, "expected_multipart", "Expected multipart form data")
         fields, uploads = parse_multipart(self.rfile.read(content_length), content_type)
         photos = [upload for upload in uploads if upload.field_name == "photos"]
+        self._submit_fields = fields
+        self._submit_photo_count = len(photos)
         audio_files = [upload for upload in uploads if upload.field_name == "audio"]
         note = fields.get("note", "").strip()
         if len(photos) + len(audio_files) < 1 and not note:
@@ -732,6 +741,26 @@ class UnifiedCaptureHandler(BaseHTTPRequestHandler):
             except VoiceMemoError as exc:
                 status = HTTPStatus.REQUEST_ENTITY_TOO_LARGE if exc.code == "request_too_large" else HTTPStatus.BAD_REQUEST
                 raise SubmissionError(status, exc.code, exc.message) from exc
+
+    def log_submit_rejection(
+        self,
+        error: SubmissionError,
+        session: object,
+        fields: dict[str, str],
+        photo_count: int | None,
+    ) -> None:
+        record = getattr(session, "record", None)
+        token_id = str(getattr(record, "token_id", "") or "")
+        site = str(fields.get("site", "") or "").strip()
+        photos = str(photo_count) if photo_count is not None else "unknown"
+        logging.warning(
+            "unified-capture submit rejected: code=%s status=%s token_id=%s site=%s photos=%s",
+            error.code,
+            int(error.status),
+            token_id,
+            site,
+            photos,
+        )
 
     def validate_submit_authorization(self, session: object, fields: dict[str, str]) -> None:
         if not session.record.can_submit:
