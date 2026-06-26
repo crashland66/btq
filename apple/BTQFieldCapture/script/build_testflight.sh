@@ -25,6 +25,8 @@ Usage: script/build_testflight.sh [--check|--upload]
 Local values may be supplied by environment variables or by untracked files:
   script/ios_device.env       BTQ_DEVELOPMENT_TEAM
   script/testflight.env       BTQ_DEVELOPMENT_TEAM, API key values, build number
+                              Set BTQ_TESTFLIGHT_INTERNAL_ONLY=YES only for
+                              builds that should never go to external testers.
 USAGE
 }
 
@@ -94,7 +96,7 @@ TEAM_ID="${BTQ_DEVELOPMENT_TEAM:-${DEVELOPMENT_TEAM:-}}"
 BUILD_NUMBER="${BTQ_BUILD_NUMBER:-$(date -u +%Y%m%d%H%M)}"
 MARKETING_VERSION="${BTQ_MARKETING_VERSION:-1.1}"
 UPLOAD_SYMBOLS="${BTQ_UPLOAD_SYMBOLS:-NO}"
-INTERNAL_ONLY="${BTQ_TESTFLIGHT_INTERNAL_ONLY:-YES}"
+INTERNAL_ONLY="${BTQ_TESTFLIGHT_INTERNAL_ONLY:-NO}"
 
 if [[ -z "$TEAM_ID" ]]; then
   echo "build-testflight: set BTQ_DEVELOPMENT_TEAM or copy script/testflight.env.example to script/testflight.env." >&2
