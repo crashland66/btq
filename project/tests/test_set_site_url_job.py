@@ -182,6 +182,62 @@ def test_edit_updates_in_place(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
     assert doc["urls"][0]["last_verified_by"] == "Greg"
 
 
+def test_edit_to_existing_url_collapses_persisted_duplicate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    context = context_for(tmp_path)
+    store = RecordingRmwVaultStore(
+        [
+            _location_doc(
+                urls=[
+                    {
+                        "url": "https://example.com/sites/continental",
+                        "label": "Location page",
+                        "kind": "official_location_page",
+                        "status": "reference",
+                    },
+                    {
+                        "url": "https://maps.example.com/?q=continental",
+                        "label": "Old map",
+                        "kind": "maps",
+                        "status": "reference",
+                    },
+                ]
+            )
+        ]
+    )
+
+    _run(
+        store,
+        context,
+        _payload(
+            action="edit",
+            new_url="https://maps.example.com/?q=continental",
+            label="Updated map",
+            kind="maps",
+            status="verified",
+            last_verified_at="2026-06-26",
+            last_verified_by="Greg",
+            verification_note="Edited entry wins.",
+        ),
+        "url-edit-collapse",
+        monkeypatch,
+    )
+
+    doc = store.get_optional("location_7060")
+    assert doc is not None
+    assert [entry["url"] for entry in doc["urls"]] == ["https://maps.example.com/?q=continental"]
+    assert doc["urls"][0] == {
+        "url": "https://maps.example.com/?q=continental",
+        "label": "Updated map",
+        "kind": "maps",
+        "status": "verified",
+        "last_verified_at": "2026-06-26",
+        "last_verified_by": "Greg",
+        "verification_note": "Edited entry wins.",
+    }
+
+
 def test_remove_drops_entry(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     context = context_for(tmp_path)
     store = RecordingRmwVaultStore(

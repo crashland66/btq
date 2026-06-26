@@ -95,6 +95,7 @@ def process_set_site_url_job(job_path: Path, job: QueueJob, context: RunContext,
             raise _shared.QueueProcessorError(f"Cannot edit missing site URL: {old_url}")
         entry = _entry_from_payload(payload, urls[match_index])
         urls[match_index] = entry
+        urls = [existing for index, existing in enumerate(urls) if index == match_index or existing["url"] != entry["url"]]
         outgoing["urls"] = urls
         return CanonicalMutation(doc=outgoing, evidence_text=evidence_text)
 
