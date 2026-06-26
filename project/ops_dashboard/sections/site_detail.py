@@ -490,7 +490,42 @@ def _format_facility_interval(interval: dict[str, str]) -> str:
 
 def _facility_hours_json_for_form(hours: dict[str, Any]) -> str:
     form_hours = hours if hours.get("status") != "unknown" else unknown_facility_hours() | {"status": "reference"}
-    return json.dumps(form_hours, indent=2, sort_keys=True).replace("[]", "[ ]")
+    return _space_structural_empty_json_arrays(json.dumps(form_hours, indent=2, sort_keys=True))
+
+
+def _space_structural_empty_json_arrays(json_text: str) -> str:
+    output: list[str] = []
+    index = 0
+    in_string = False
+    escaped = False
+    while index < len(json_text):
+        char = json_text[index]
+        if in_string:
+            output.append(char)
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            index += 1
+            continue
+        if char == '"':
+            in_string = True
+            output.append(char)
+            index += 1
+            continue
+        if char == "[":
+            cursor = index + 1
+            while cursor < len(json_text) and json_text[cursor] in " \t\r\n":
+                cursor += 1
+            if cursor < len(json_text) and json_text[cursor] == "]":
+                output.append("[ ]")
+                index = cursor + 1
+                continue
+        output.append(char)
+        index += 1
+    return "".join(output)
 
 
 def _facility_hours_weekly_table(hours: dict[str, Any]) -> str:

@@ -171,7 +171,7 @@ def _normalize_exceptions(raw_exceptions: object) -> list[dict[str, Any]]:
                 raise FacilityHoursError("nth_weekday exceptions require ordinals")
             normalized_ordinals: list[int] = []
             for ordinal in ordinals:
-                if not isinstance(ordinal, int) or ordinal < 1 or ordinal > 5:
+                if type(ordinal) is not int or ordinal < 1 or ordinal > 5:
                     raise FacilityHoursError("nth_weekday ordinals must be integers 1-5")
                 if ordinal not in normalized_ordinals:
                     normalized_ordinals.append(ordinal)

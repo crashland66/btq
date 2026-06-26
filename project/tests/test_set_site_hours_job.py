@@ -146,6 +146,36 @@ def test_validate_accepts_set_and_clear() -> None:
                 facility_hours=_phn_hours(
                     exceptions=[
                         {
+                            "rule": "nth_weekday",
+                            "weekday": "tue",
+                            "ordinals": [True],
+                            "hours": [{"open": "10:00", "close": "19:00"}],
+                        }
+                    ]
+                )
+            ),
+            id="bad-ordinal-bool-true",
+        ),
+        pytest.param(
+            _payload(
+                facility_hours=_phn_hours(
+                    exceptions=[
+                        {
+                            "rule": "nth_weekday",
+                            "weekday": "tue",
+                            "ordinals": [False],
+                            "hours": [{"open": "10:00", "close": "19:00"}],
+                        }
+                    ]
+                )
+            ),
+            id="bad-ordinal-bool-false",
+        ),
+        pytest.param(
+            _payload(
+                facility_hours=_phn_hours(
+                    exceptions=[
+                        {
                             "rule": "holiday",
                             "date": "2026-12-25",
                             "hours": [],

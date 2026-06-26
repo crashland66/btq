@@ -178,6 +178,40 @@ def test_site_detail_facility_hours_render_controls(monkeypatch: pytest.MonkeyPa
     assert 'name="action" value="clear"' in html
 
 
+def test_facility_hours_form_json_preserves_literal_empty_array_note_text() -> None:
+    note = "Operator note with literal [] bytes."
+    rendered = site_detail._facility_hours_json_for_form(
+        {
+            "status": "verified",
+            "last_verified_at": "2026-06-26",
+            "last_verified_by": "Greg",
+            "source": "operator_verified",
+            "note": note,
+            "weekly": {
+                "mon": [{"open": "08:30", "close": "17:00"}],
+                "tue": [{"open": "08:30", "close": "17:00"}],
+                "wed": [{"open": "08:30", "close": "17:00"}],
+                "thu": [{"open": "08:30", "close": "17:00"}],
+                "fri": [{"open": "08:30", "close": "15:00"}],
+                "sat": [],
+                "sun": [],
+            },
+            "exceptions": [
+                {
+                    "rule": "date",
+                    "date": "2026-12-25",
+                    "hours": [],
+                    "note": note,
+                }
+            ],
+        }
+    )
+
+    round_tripped = json.loads(rendered)
+    assert round_tripped["note"] == note
+    assert round_tripped["exceptions"][0]["note"] == note
+
+
 @pytest.mark.parametrize(
     ("body", "expected"),
     [
