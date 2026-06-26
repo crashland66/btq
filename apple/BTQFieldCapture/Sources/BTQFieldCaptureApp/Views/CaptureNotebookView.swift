@@ -375,7 +375,7 @@ struct CaptureNotebookView: View {
     }
 
     private var mediaStrip: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        LazyVStack(alignment: .leading, spacing: 10) {
             HStack {
                 if !pendingPhotos.isEmpty {
                     Label("\(pendingPhotos.count) photo\(pendingPhotos.count == 1 ? "" : "s")", systemImage: "photo")

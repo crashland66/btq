@@ -1,4 +1,5 @@
 import SwiftUI
+import ImageIO
 #if os(iOS)
 import UIKit
 #elseif os(macOS)
@@ -34,16 +35,32 @@ struct CapturePhotoThumbnail: View {
 
     private var thumbnailImage: Image? {
         guard let fileURL = photo.fileURL,
-              let data = try? Data(contentsOf: fileURL) else {
+              let source = CGImageSourceCreateWithURL(
+                fileURL as CFURL,
+                [
+                    kCGImageSourceShouldCache: false,
+                ] as CFDictionary
+              ) else {
+            return nil
+        }
+        let maxPixelSize = max(128, Int(size * 3))
+        guard let thumbnail = CGImageSourceCreateThumbnailAtIndex(
+            source,
+            0,
+            [
+                kCGImageSourceCreateThumbnailFromImageAlways: true,
+                kCGImageSourceCreateThumbnailWithTransform: true,
+                kCGImageSourceThumbnailMaxPixelSize: maxPixelSize,
+                kCGImageSourceShouldCacheImmediately: true,
+            ] as CFDictionary
+        ) else {
             return nil
         }
 
         #if os(iOS)
-        guard let image = UIImage(data: data) else { return nil }
-        return Image(uiImage: image)
+        return Image(uiImage: UIImage(cgImage: thumbnail))
         #elseif os(macOS)
-        guard let image = NSImage(data: data) else { return nil }
-        return Image(nsImage: image)
+        return Image(nsImage: NSImage(cgImage: thumbnail, size: NSSize(width: size, height: size)))
         #else
         return nil
         #endif
