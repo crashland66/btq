@@ -13,7 +13,7 @@ import UniformTypeIdentifiers
       "sites": [
         {
           "site_id": "site_1",
-          "label": "Site One",
+          "name": "Site One",
           "capture_guidance": "Look around.",
           "display_categories": [{"value": "supplies", "label": "Supplies"}]
         }
@@ -66,6 +66,7 @@ import UniformTypeIdentifiers
     #expect(session.canReview == false)
     #expect(session.inboxCount == 0)
     #expect(session.maxImages == 100)
+    #expect(session.sites.first?.label == "Site One")
     #expect(session.sites.first?.displayCategories.first?.value == "supplies")
 }
 

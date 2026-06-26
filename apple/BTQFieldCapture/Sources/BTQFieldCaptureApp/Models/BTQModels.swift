@@ -551,6 +551,7 @@ public struct BTQSite: Identifiable, Codable, Equatable, Sendable {
     enum CodingKeys: String, CodingKey {
         case siteID = "site_id"
         case label
+        case name
         case captureGuidance = "capture_guidance"
         case displayCategories = "display_categories"
         case isFavorite
@@ -560,11 +561,22 @@ public struct BTQSite: Identifiable, Codable, Equatable, Sendable {
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         siteID = try container.decode(String.self, forKey: .siteID)
-        label = try container.decode(String.self, forKey: .label)
+        label = try container.decodeIfPresent(String.self, forKey: .label)
+            ?? container.decode(String.self, forKey: .name)
         captureGuidance = try container.decodeIfPresent(String.self, forKey: .captureGuidance) ?? ""
         displayCategories = try container.decodeIfPresent([BTQDisplayCategory].self, forKey: .displayCategories) ?? []
         isFavorite = try container.decodeIfPresent(Bool.self, forKey: .isFavorite) ?? false
         lastUsedAt = try container.decodeIfPresent(Date.self, forKey: .lastUsedAt)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(siteID, forKey: .siteID)
+        try container.encode(label, forKey: .label)
+        try container.encode(captureGuidance, forKey: .captureGuidance)
+        try container.encode(displayCategories, forKey: .displayCategories)
+        try container.encode(isFavorite, forKey: .isFavorite)
+        try container.encodeIfPresent(lastUsedAt, forKey: .lastUsedAt)
     }
 }
 
