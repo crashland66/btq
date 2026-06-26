@@ -13,7 +13,7 @@ apps. It does not retire or modify `photos.example.com` or
 - Token DB: `/srv/btq/data/field_capture_tokens.sqlite3`
 - Person/site resolution: CouchDB (`btq_vault` / `btq_sites`) via `BTQ_COUCHDB_*`
 - Upload root: `/srv/btq/runtime/uploads`
-- Photo cap: `--max-images 100` in the systemd `ExecStart`
+- Photo cap: `--max-images 25` in the systemd `ExecStart`
 - Optional service environment: `/etc/btq/unified-capture.env`
 
 The unified app uses the same token database, CouchDB connection, and upload root
@@ -81,7 +81,7 @@ installs into that directory, materializes `dist/` from
 `unified_capture` service worker, restarts `btq-unified-capture.service`, and
 smokes `GET /api/health` on `127.0.0.1:8081`.
 
-The installed service runs `unified_capture.server` with `--max-images 100`, so
+The installed service runs `unified_capture.server` with `--max-images 25`, so
 regular capture tokens can submit larger photo batches without relying on a
 systemd drop-in.
 
