@@ -353,6 +353,7 @@ def test_image_from_intake_produces_vision_sidecar_with_provenance(tmp_path: Pat
     assert payload["source_image_path"] == str(image_path.resolve(strict=False))
     assert payload["source_image_hash"] == "75f1f0ae740173b33a405289d2ad0fa4f0261401a6510a64c071b75c3e45d656"
     assert payload["site_id"] == "7050"
+    assert payload["qc_category"] == "Offices / Classrooms / Exam Rooms"
     assert payload["submitted_area"] == "Offices / Classrooms / Exam Rooms"
     assert payload["submitted_phase"] == "completed"
     assert payload["site_context_used"] is True

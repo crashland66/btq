@@ -36,7 +36,9 @@ def build_photo_vision_document(sidecar_payload: dict[str, object]) -> dict[str,
             return []
         return [str(item).strip() for item in value if str(item).strip()]
 
-    search_parts = [description, area_guess]
+    qc_category = str(sidecar_payload.get("qc_category") or "")
+
+    search_parts = [description, area_guess, qc_category]
     search_parts.extend(_str_list(visible_objects))
     search_parts.extend(_str_list(possible_conditions))
     search_parts.extend(_str_list(possible_issues))
@@ -55,6 +57,7 @@ def build_photo_vision_document(sidecar_payload: dict[str, object]) -> dict[str,
         "photo_asset_id": photo_asset_id,
         "photo_id": str(sidecar_payload.get("photo_id") or provenance.get("photo_id") or ""),
         "submitter_id": str(sidecar_payload.get("submitter_id") or ""),
+        "qc_category": qc_category,
         "description": description,
         "area_guess": area_guess,
         "submitted_area": str(sidecar_payload.get("submitted_area") or ""),

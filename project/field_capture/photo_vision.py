@@ -83,6 +83,7 @@ class FieldPhotoAsset:
     size_bytes: int
     intake_json_path: Path
     captured_at: str
+    qc_category: str = ""
     note: str = ""
 
 
@@ -179,7 +180,8 @@ def discover_photo_assets(
         photos = payload.get("photos")
         if not isinstance(photos, list):
             continue
-        area = str(payload.get("area") or payload.get("qc_category") or "").strip()
+        qc_category = str(payload.get("qc_category") or "").strip()
+        area = str(payload.get("area") or qc_category or "").strip()
         phase = str(payload.get("phase") or metadata.get("phase") or payload.get("status") or payload.get("note") or "").strip()
         for photo in photos:
             if not isinstance(photo, dict):
@@ -203,6 +205,7 @@ def discover_photo_assets(
                     capture_id=job_capture_id,
                     site_id=job_site_id,
                     area=area,
+                    qc_category=qc_category,
                     phase=phase,
                     photo_asset_id=asset_id,
                     photo_id=photo_id,
@@ -753,6 +756,7 @@ def base_payload(
         "source_image_path": str(asset.image_path),
         "source_image_hash": source_image_hash,
         "site_id": asset.site_id,
+        "qc_category": asset.qc_category,
         "submitted_area": asset.area,
         "submitted_phase": asset.phase,
         "site_context_used": site_context is not None,

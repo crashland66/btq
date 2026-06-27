@@ -46,6 +46,7 @@ def _build_mango_selector(
     date_to: str,
     *,
     capture_id: str = "",
+    qc_category: str = "",
     has_deep_analysis: bool = False,
     target_type: str = "",
     target_id: str = "",
@@ -57,6 +58,8 @@ def _build_mango_selector(
         must.append({"site_id": site_id})
     if capture_id:
         must.append({"capture_id": capture_id})
+    if qc_category:
+        must.append({"qc_category": qc_category})
     if target_type:
         must.append({"target_type": target_type})
         if target_id:
@@ -165,6 +168,7 @@ def _query_terminal_capture_ids(config: object) -> set[str] | None:
 def _search_text(sidecar: dict[str, object]) -> str:
     parts = [
         str(sidecar.get("description") or ""),
+        str(sidecar.get("qc_category") or ""),
         str(sidecar.get("area_guess") or ""),
     ]
     parts.extend(string_list(sidecar.get("visible_objects")))
@@ -182,6 +186,7 @@ def _in_memory_filter(
     date_to: str,
     *,
     capture_id: str = "",
+    qc_category: str = "",
     has_deep_analysis: bool = False,
 ) -> list[dict[str, object]]:
     results = sidecars
@@ -192,6 +197,8 @@ def _in_memory_filter(
         results = [s for s in results if str(s.get("site_id") or "") == site_id]
     if capture_id:
         results = [s for s in results if str(s.get("capture_id") or "") == capture_id]
+    if qc_category:
+        results = [s for s in results if str(s.get("qc_category") or "") == qc_category]
     if area_guess:
         results = [s for s in results if str(s.get("area_guess") or "") == area_guess]
     if date_from:
@@ -220,20 +227,41 @@ def _load_site_options() -> list[tuple[str, str]]:
         return []
 
 
-def _load_area_options(cdb_config: object) -> list[str]:
+def _load_sidecar_field_options(cdb_config: object, field_name: str) -> list[str]:
     if cdb_config is None:
         return []
     try:
         from field_capture.photo_vision_couchdb import query_photo_vision
-        response = query_photo_vision(
-            cdb_config,
-            {"selector": {"doc_type": "photo_vision_sidecar"}, "fields": ["area_guess"], "limit": 5000},
-        )
-        docs = response.get("docs") or []
-        return sorted({str(d.get("area_guess") or "").strip() for d in docs if d.get("area_guess")})
+        values: set[str] = set()
+        bookmark: object = None
+        for _ in range(400):
+            mango: dict[str, object] = {
+                "selector": {"doc_type": "photo_vision_sidecar", field_name: {"$exists": True}},
+                "fields": [field_name],
+                "limit": 5000,
+            }
+            if bookmark:
+                mango["bookmark"] = bookmark
+            response = query_photo_vision(cdb_config, mango)
+            docs = response.get("docs") or []
+            if not isinstance(docs, list):
+                return []
+            values.update(str(d.get(field_name) or "").strip() for d in docs if str(d.get(field_name) or "").strip())
+            bookmark = response.get("bookmark")
+            if len(docs) < 5000 or not bookmark:
+                break
+        return sorted(values)
     except Exception as exc:
-        logger.warning("could not load area options: %s", exc)
+        logger.warning("could not load %s options: %s", field_name, exc)
         return []
+
+
+def _load_area_options(cdb_config: object) -> list[str]:
+    return _load_sidecar_field_options(cdb_config, "area_guess")
+
+
+def _load_qc_category_options(cdb_config: object) -> list[str]:
+    return _load_sidecar_field_options(cdb_config, "qc_category")
 
 
 def _first_name(full_name: str) -> str:
@@ -360,6 +388,7 @@ def _render_card(
     media_key = _media_key_from_url(url)
 
     area = str(sidecar.get("area_guess") or "")
+    qc_category = str(sidecar.get("qc_category") or "").strip()
     site_id_val = str(sidecar.get("site_id") or "")
     description = str(sidecar.get("description") or "")
     generated_at = str(sidecar.get("generated_at") or "")
@@ -387,9 +416,11 @@ def _render_card(
             '<span style="color:#627d98;font-size:.85rem">No image</span></div>'
         )
 
-    meta_parts = []
+    category_text = html.escape(qc_category) if qc_category else "&mdash;"
+
+    meta_parts = [f"QC Category: <strong>{category_text}</strong>"]
     if area:
-        meta_parts.append(f"<strong>{html.escape(area)}</strong>")
+        meta_parts.append(f"Vision area: {html.escape(area)}")
     if site_id_val:
         import re as _re
         label = _re.sub(r"<[^>]+>", "", resolve_site_label(site_id_val, vault_root))
@@ -532,9 +563,10 @@ def _asset_matches_filters(
     site_id: str,
     capture_id: str = "",
     area_guess: str,
-    date_from: str,
-    date_to: str,
-    submitter_name: str,
+    qc_category: str = "",
+    date_from: str = "",
+    date_to: str = "",
+    submitter_name: str = "",
 ) -> bool:
     asset_site_id = str(getattr(asset, "site_id", "") or "")
     asset_capture_id = str(getattr(asset, "capture_id", "") or "")
@@ -543,6 +575,9 @@ def _asset_matches_filters(
     if site_id and asset_site_id != site_id:
         return False
     if capture_id and asset_capture_id != capture_id:
+        return False
+    asset_qc_category = str(getattr(asset, "qc_category", "") or "")
+    if qc_category and asset_qc_category != qc_category:
         return False
     if area_guess and submitted_area.lower() != area_guess.lower():
         return False
@@ -573,8 +608,9 @@ def _pending_photo_records(
     site_id: str,
     capture_id: str = "",
     area_guess: str,
-    date_from: str,
-    date_to: str,
+    qc_category: str = "",
+    date_from: str = "",
+    date_to: str = "",
 ) -> list[dict[str, object]]:
     from field_capture import photo_vision as field_photo_vision
 
@@ -598,6 +634,7 @@ def _pending_photo_records(
             site_id=site_id,
             capture_id=capture_id,
             area_guess=area_guess,
+            qc_category=qc_category,
             date_from=date_from,
             date_to=date_to,
             submitter_name=submitter_name,
@@ -700,18 +737,25 @@ def _filter_form(
     has_deep_analysis: bool,
     *,
     capture_id: str = "",
-    site_options: list[tuple[str, str]],
-    area_options: list[str],
+    site_options: list[tuple[str, str]] | None = None,
+    qc_category: str = "",
+    qc_category_options: list[str] | None = None,
+    area_options: list[str] | None = None,
 ) -> str:
+    site_options = site_options or []
+    qc_category_options = qc_category_options or []
+    area_options = area_options or []
     site_opts = _select_options(site_options, site_id, any_label="All sites")
-    area_opts = _select_options([(a, a) for a in area_options], area_guess, any_label="All areas")
+    qc_category_opts = _select_options([(c, c) for c in qc_category_options], qc_category, any_label="All QC categories")
+    area_opts = _select_options([(a, a) for a in area_options], area_guess, any_label="All vision areas")
     deep_checked = " checked" if has_deep_analysis else ""
     return (
         '<form method="get" action="/field-photos" data-submit-on-change'
         ' style="display:flex;flex-wrap:wrap;gap:.5rem;align-items:flex-end">'
         f'<label style="flex:1 1 18em">Search<input name="q" value="{html.escape(q)}" placeholder="keyword…" style="width:100%"></label>'
         f'<label style="flex:1 1 14em">Site<select name="site_id" style="width:100%">{site_opts}</select></label>'
-        f'<label style="flex:1 1 10em">Area<select name="area_guess" style="width:100%">{area_opts}</select></label>'
+        f'<label style="flex:1 1 14em">QC Category<select name="qc_category" style="width:100%">{qc_category_opts}</select></label>'
+        f'<label style="flex:1 1 12em">Vision area<select name="area_guess" style="width:100%">{area_opts}</select></label>'
         f'<label style="flex:1 1 18em">Capture ID<input name="capture_id" value="{html.escape(capture_id, quote=True)}" placeholder="cap-…" style="width:100%"></label>'
         f'<label>From<input type="date" name="date_from" value="{html.escape(date_from)}"></label>'
         f'<label>To<input type="date" name="date_to" value="{html.escape(date_to)}"></label>'
@@ -725,6 +769,7 @@ def render_filter_form(
     *,
     q: str = "",
     site_id: str = "",
+    qc_category: str = "",
     area_guess: str = "",
     capture_id: str = "",
     date_from: str = "",
@@ -733,6 +778,7 @@ def render_filter_form(
 ) -> str:
     cdb_config = _photo_vision_couchdb_config()
     site_options = _load_site_options()
+    qc_category_options = _load_qc_category_options(cdb_config)
     area_options = _load_area_options(cdb_config)
     return _filter_form(
         q,
@@ -743,6 +789,8 @@ def render_filter_form(
         has_deep_analysis,
         capture_id=capture_id,
         site_options=site_options,
+        qc_category=qc_category,
+        qc_category_options=qc_category_options,
         area_options=area_options,
     )
 
@@ -1090,6 +1138,7 @@ def render(ctx: object) -> str:
 
     q = first_filter_value(query, "q")
     site_id = first_filter_value(query, "site_id")
+    qc_category = first_filter_value(query, "qc_category")
     area_guess = first_filter_value(query, "area_guess")
     capture_id = first_filter_value(query, "capture_id")
     date_from = first_filter_value(query, "date_from")
@@ -1109,6 +1158,7 @@ def render(ctx: object) -> str:
             date_from,
             date_to,
             capture_id=capture_id,
+            qc_category=qc_category,
             has_deep_analysis=has_deep_analysis,
         )
         docs = _query_couchdb(cdb_config, mango)
@@ -1139,6 +1189,7 @@ def render(ctx: object) -> str:
             date_from,
             date_to,
             capture_id=capture_id,
+            qc_category=qc_category,
             has_deep_analysis=has_deep_analysis,
         )
         processed_asset_ids = {str(s.get("photo_asset_id") or "") for s in all_sidecars}
@@ -1155,6 +1206,7 @@ def render(ctx: object) -> str:
             site_id=site_id,
             capture_id=capture_id,
             area_guess=area_guess,
+            qc_category=qc_category,
             date_from=date_from,
             date_to=date_to,
         )
@@ -1163,6 +1215,7 @@ def render(ctx: object) -> str:
     filter_form = render_filter_form(
         q=q,
         site_id=site_id,
+        qc_category=qc_category,
         area_guess=area_guess,
         capture_id=capture_id,
         date_from=date_from,

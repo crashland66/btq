@@ -46,6 +46,7 @@ def test_field_photos_render_has_selection_checkbox_description_and_export(tmp_p
         "site_id": "7050",
         "generated_at": "2026-06-25T12:00:00Z",
         "description": "Floor machine and restroom threshold are visible.",
+        "qc_category": "Restrooms",
         "area_guess": "restroom",
         "visible_objects": [],
         "possible_conditions": [],
@@ -57,6 +58,7 @@ def test_field_photos_render_has_selection_checkbox_description_and_export(tmp_p
     monkeypatch.setattr(field_photos, "_query_processed_asset_ids", lambda _cfg: {"fcp-1"})
     monkeypatch.setattr(field_photos, "_query_terminal_capture_ids", lambda _cfg: set())
     monkeypatch.setattr(field_photos, "_load_site_options", lambda: [])
+    monkeypatch.setattr(field_photos, "_load_qc_category_options", lambda _cfg: ["Restrooms"])
     monkeypatch.setattr(field_photos, "_load_area_options", lambda _cfg: ["restroom"])
     ctx = _ctx(tmp_path / "runtime")
     ctx.query = {"capture_id": ["cap-qc-walk"]}
@@ -68,7 +70,54 @@ def test_field_photos_render_has_selection_checkbox_description_and_export(tmp_p
     assert 'value="2026-06-25/cap-qc-walk/photo-1.jpg"' in html
     assert 'aria-label="Select photo:' in html
     assert "Floor machine and restroom threshold are visible." in html
+    assert "QC Category: <strong>Restrooms</strong>" in html
+    assert "Vision area: restroom" in html
     assert "Download selected as JPEGs" in html
+
+
+def test_field_photos_qc_category_filter_is_primary_and_area_still_filters() -> None:
+    mango = field_photos._build_mango_selector(
+        "",
+        "7050",
+        "restroom",
+        "",
+        "",
+        qc_category="Restrooms",
+    )
+
+    clauses = mango["selector"]["$and"]
+    assert {"qc_category": "Restrooms"} in clauses
+    assert {"area_guess": "restroom"} in clauses
+
+    sidecars = [
+        {"photo_asset_id": "a", "qc_category": "Restrooms", "area_guess": "restroom", "generated_at": "2026-06-02"},
+        {"photo_asset_id": "b", "qc_category": "Offices", "area_guess": "restroom", "generated_at": "2026-06-03"},
+        {"photo_asset_id": "c", "qc_category": "Restrooms", "area_guess": "office", "generated_at": "2026-06-04"},
+        {"photo_asset_id": "d", "area_guess": "restroom", "generated_at": "2026-06-05"},
+    ]
+
+    qc_results = field_photos._in_memory_filter(sidecars, "", "", "", "", "", qc_category="Restrooms")
+    assert [str(row["photo_asset_id"]) for row in qc_results] == ["c", "a"]
+
+    area_results = field_photos._in_memory_filter(sidecars, "", "", "restroom", "", "")
+    assert [str(row["photo_asset_id"]) for row in area_results] == ["d", "b", "a"]
+
+
+def test_field_photo_card_renders_without_qc_category(tmp_path: Path) -> None:
+    html = field_photos._render_card(
+        {
+            "capture_id": "cap-missing-qc",
+            "photo_asset_id": "fcp-missing-qc",
+            "site_id": "",
+            "area_guess": "office",
+            "description": "Office photo.",
+        },
+        {},
+        tmp_path,
+    )
+
+    assert "QC Category: <strong>&mdash;</strong>" in html
+    assert "Vision area: office" in html
 
 
 class _RecordingStore:
