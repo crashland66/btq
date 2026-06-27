@@ -23,6 +23,8 @@ PHOTO_VISION_MANGO_INDEXES = [
     {"index": {"fields": ["status", "generated_at"]}, "name": "idx-status-generated", "type": "json"},
     {"index": {"fields": ["capture_id"]}, "name": "idx-capture-id", "type": "json"},
     {"index": {"fields": ["qc_category", "generated_at"]}, "name": "idx-qc-category-generated", "type": "json"},
+    {"index": {"fields": ["vision_category", "generated_at"]}, "name": "idx-vision-category-generated", "type": "json"},
+    {"index": {"fields": ["category_agreement", "generated_at"]}, "name": "idx-category-agreement-generated", "type": "json"},
 ]
 
 VAULT_MANGO_INDEXES = [

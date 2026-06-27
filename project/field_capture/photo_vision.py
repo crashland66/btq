@@ -14,6 +14,7 @@ from urllib.parse import quote
 import vision_backends
 from config import get_config
 from event_pipeline.couchdb_registry import CouchDBRegistryError
+from field_capture.photo_vision_categories import derive_vision_category_fields
 from field_capture.site_viewer import UnsafeMediaPath, resolve_media_path, upload_id_for_path
 from processing_core.artifacts import read_json_object, resolve_within_root, write_json_object
 from processing_core.hashing import file_sha256
@@ -655,6 +656,7 @@ def completed_payload(
         "warnings": safe_description.warnings,
         "quality_flags": safe_description.quality_flags,
     }
+    payload.update(derive_vision_category_fields(payload.get("area_guess"), payload.get("qc_category")))
     payload["quality"] = derive_quality(payload)
     if replacement_metadata:
         payload.update(replacement_metadata)
@@ -699,6 +701,7 @@ def failed_payload(
             "can_retry": can_retry,
         },
     }
+    payload.update(derive_vision_category_fields(payload.get("area_guess"), payload.get("qc_category")))
     payload["quality"] = derive_quality(payload)
     if replacement_metadata:
         payload.update(replacement_metadata)

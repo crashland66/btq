@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT"
+
+PYTHON_BIN="${PYTHON_BIN:-project/.venv/bin/python}"
+if [[ ! -x "$PYTHON_BIN" ]]; then
+  PYTHON_BIN="python"
+fi
+
+export PYTHONPATH="${ROOT}/project${PYTHONPATH:+:${PYTHONPATH}}"
+exec "${PYTHON_BIN}" -m field_capture.photo_vision_category_backfill "$@"

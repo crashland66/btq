@@ -39,6 +39,8 @@ def _sample_sidecar(**overrides: object) -> dict[str, object]:
         "description": "A tiled restroom with three urinals.",
         "area_guess": "restroom",
         "qc_category": "Restrooms",
+        "vision_category": "Restrooms",
+        "category_agreement": "match",
         "submitted_area": "restroom",
         "submitted_phase": "completed",
         "visible_objects": ["urinal", "tile floor"],
@@ -107,12 +109,15 @@ class BuildPhotoVisionDocumentTests(unittest.TestCase):
         self.assertEqual(doc["photo_asset_id"], "fcp-abc123")
         self.assertEqual(doc["status"], STATUS_COMPLETED)
         self.assertEqual(doc["qc_category"], "Restrooms")
+        self.assertEqual(doc["vision_category"], "Restrooms")
+        self.assertEqual(doc["category_agreement"], "match")
 
     def test_search_text_built(self) -> None:
         doc = build_photo_vision_document(_sample_sidecar())
         search_text = str(doc["search_text"])
         self.assertIn("restroom", search_text)
         self.assertIn("restrooms", search_text)
+        self.assertIn("match", search_text)
         self.assertIn("urinal", search_text)
         self.assertIn("paper towel on floor", search_text)
         self.assertEqual(search_text, search_text.lower())

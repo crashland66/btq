@@ -29,6 +29,7 @@ from ops_dashboard.common import (
     submitters_by_capture,
 )
 from ops_dashboard.layout import html_page
+from field_capture.photo_vision_categories import CATEGORY_AGREEMENT_MISMATCH
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +48,8 @@ def _build_mango_selector(
     *,
     capture_id: str = "",
     qc_category: str = "",
+    vision_category: str = "",
+    vision_disagrees: bool = False,
     has_deep_analysis: bool = False,
     target_type: str = "",
     target_id: str = "",
@@ -60,6 +63,10 @@ def _build_mango_selector(
         must.append({"capture_id": capture_id})
     if qc_category:
         must.append({"qc_category": qc_category})
+    if vision_category:
+        must.append({"vision_category": vision_category})
+    if vision_disagrees:
+        must.append({"category_agreement": CATEGORY_AGREEMENT_MISMATCH})
     if target_type:
         must.append({"target_type": target_type})
         if target_id:
@@ -169,6 +176,8 @@ def _search_text(sidecar: dict[str, object]) -> str:
     parts = [
         str(sidecar.get("description") or ""),
         str(sidecar.get("qc_category") or ""),
+        str(sidecar.get("vision_category") or ""),
+        str(sidecar.get("category_agreement") or ""),
         str(sidecar.get("area_guess") or ""),
     ]
     parts.extend(string_list(sidecar.get("visible_objects")))
@@ -187,6 +196,8 @@ def _in_memory_filter(
     *,
     capture_id: str = "",
     qc_category: str = "",
+    vision_category: str = "",
+    vision_disagrees: bool = False,
     has_deep_analysis: bool = False,
 ) -> list[dict[str, object]]:
     results = sidecars
@@ -199,6 +210,10 @@ def _in_memory_filter(
         results = [s for s in results if str(s.get("capture_id") or "") == capture_id]
     if qc_category:
         results = [s for s in results if str(s.get("qc_category") or "") == qc_category]
+    if vision_category:
+        results = [s for s in results if str(s.get("vision_category") or "") == vision_category]
+    if vision_disagrees:
+        results = [s for s in results if str(s.get("category_agreement") or "") == CATEGORY_AGREEMENT_MISMATCH]
     if area_guess:
         results = [s for s in results if str(s.get("area_guess") or "") == area_guess]
     if date_from:
@@ -262,6 +277,10 @@ def _load_area_options(cdb_config: object) -> list[str]:
 
 def _load_qc_category_options(cdb_config: object) -> list[str]:
     return _load_sidecar_field_options(cdb_config, "qc_category")
+
+
+def _load_vision_category_options(cdb_config: object) -> list[str]:
+    return _load_sidecar_field_options(cdb_config, "vision_category")
 
 
 def _first_name(full_name: str) -> str:
@@ -389,6 +408,8 @@ def _render_card(
 
     area = str(sidecar.get("area_guess") or "")
     qc_category = str(sidecar.get("qc_category") or "").strip()
+    vision_category = str(sidecar.get("vision_category") or "").strip()
+    category_agreement = str(sidecar.get("category_agreement") or "").strip()
     site_id_val = str(sidecar.get("site_id") or "")
     description = str(sidecar.get("description") or "")
     generated_at = str(sidecar.get("generated_at") or "")
@@ -417,8 +438,21 @@ def _render_card(
         )
 
     category_text = html.escape(qc_category) if qc_category else "&mdash;"
+    vision_category_text = html.escape(vision_category) if vision_category else "&mdash;"
 
-    meta_parts = [f"QC Category: <strong>{category_text}</strong>"]
+    meta_parts = [
+        f"QC Category: <strong>{category_text}</strong>",
+        f"Vision: <strong>{vision_category_text}</strong>",
+    ]
+    if qc_category and vision_category and category_agreement:
+        agreement_label = {
+            "match": "matches",
+            "mismatch": "disagrees",
+            "unverifiable": "unverifiable",
+        }.get(category_agreement, category_agreement)
+        pill_class = "success" if category_agreement == "match" else "warning" if category_agreement == "mismatch" else ""
+        class_attr = f"pill {pill_class}".strip()
+        meta_parts.append(f'<span class="{class_attr}">Vision {html.escape(agreement_label)}</span>')
     if area:
         meta_parts.append(f"Vision area: {html.escape(area)}")
     if site_id_val:
@@ -564,6 +598,8 @@ def _asset_matches_filters(
     capture_id: str = "",
     area_guess: str,
     qc_category: str = "",
+    vision_category: str = "",
+    vision_disagrees: bool = False,
     date_from: str = "",
     date_to: str = "",
     submitter_name: str = "",
@@ -578,6 +614,8 @@ def _asset_matches_filters(
         return False
     asset_qc_category = str(getattr(asset, "qc_category", "") or "")
     if qc_category and asset_qc_category != qc_category:
+        return False
+    if vision_category or vision_disagrees:
         return False
     if area_guess and submitted_area.lower() != area_guess.lower():
         return False
@@ -609,6 +647,8 @@ def _pending_photo_records(
     capture_id: str = "",
     area_guess: str,
     qc_category: str = "",
+    vision_category: str = "",
+    vision_disagrees: bool = False,
     date_from: str = "",
     date_to: str = "",
 ) -> list[dict[str, object]]:
@@ -635,6 +675,8 @@ def _pending_photo_records(
             capture_id=capture_id,
             area_guess=area_guess,
             qc_category=qc_category,
+            vision_category=vision_category,
+            vision_disagrees=vision_disagrees,
             date_from=date_from,
             date_to=date_to,
             submitter_name=submitter_name,
@@ -740,25 +782,33 @@ def _filter_form(
     site_options: list[tuple[str, str]] | None = None,
     qc_category: str = "",
     qc_category_options: list[str] | None = None,
+    vision_category: str = "",
+    vision_category_options: list[str] | None = None,
+    vision_disagrees: bool = False,
     area_options: list[str] | None = None,
 ) -> str:
     site_options = site_options or []
     qc_category_options = qc_category_options or []
+    vision_category_options = vision_category_options or []
     area_options = area_options or []
     site_opts = _select_options(site_options, site_id, any_label="All sites")
     qc_category_opts = _select_options([(c, c) for c in qc_category_options], qc_category, any_label="All QC categories")
+    vision_category_opts = _select_options([(c, c) for c in vision_category_options], vision_category, any_label="All vision categories")
     area_opts = _select_options([(a, a) for a in area_options], area_guess, any_label="All vision areas")
     deep_checked = " checked" if has_deep_analysis else ""
+    disagrees_checked = " checked" if vision_disagrees else ""
     return (
         '<form method="get" action="/field-photos" data-submit-on-change'
         ' style="display:flex;flex-wrap:wrap;gap:.5rem;align-items:flex-end">'
         f'<label style="flex:1 1 18em">Search<input name="q" value="{html.escape(q)}" placeholder="keyword…" style="width:100%"></label>'
         f'<label style="flex:1 1 14em">Site<select name="site_id" style="width:100%">{site_opts}</select></label>'
         f'<label style="flex:1 1 14em">QC Category<select name="qc_category" style="width:100%">{qc_category_opts}</select></label>'
+        f'<label style="flex:1 1 14em">Vision category<select name="vision_category" style="width:100%">{vision_category_opts}</select></label>'
         f'<label style="flex:1 1 12em">Vision area<select name="area_guess" style="width:100%">{area_opts}</select></label>'
         f'<label style="flex:1 1 18em">Capture ID<input name="capture_id" value="{html.escape(capture_id, quote=True)}" placeholder="cap-…" style="width:100%"></label>'
         f'<label>From<input type="date" name="date_from" value="{html.escape(date_from)}"></label>'
         f'<label>To<input type="date" name="date_to" value="{html.escape(date_to)}"></label>'
+        f'<label><input type="checkbox" name="vision_disagrees" value="1"{disagrees_checked}> Vision disagrees</label>'
         f'<label><input type="checkbox" name="deep_analysis" value="1"{deep_checked}> Flagged for deeper analysis</label>'
         '<button type="submit">Search</button>'
         "</form>"
@@ -770,6 +820,8 @@ def render_filter_form(
     q: str = "",
     site_id: str = "",
     qc_category: str = "",
+    vision_category: str = "",
+    vision_disagrees: bool = False,
     area_guess: str = "",
     capture_id: str = "",
     date_from: str = "",
@@ -779,6 +831,7 @@ def render_filter_form(
     cdb_config = _photo_vision_couchdb_config()
     site_options = _load_site_options()
     qc_category_options = _load_qc_category_options(cdb_config)
+    vision_category_options = _load_vision_category_options(cdb_config)
     area_options = _load_area_options(cdb_config)
     return _filter_form(
         q,
@@ -791,6 +844,9 @@ def render_filter_form(
         site_options=site_options,
         qc_category=qc_category,
         qc_category_options=qc_category_options,
+        vision_category=vision_category,
+        vision_category_options=vision_category_options,
+        vision_disagrees=vision_disagrees,
         area_options=area_options,
     )
 
@@ -1139,11 +1195,13 @@ def render(ctx: object) -> str:
     q = first_filter_value(query, "q")
     site_id = first_filter_value(query, "site_id")
     qc_category = first_filter_value(query, "qc_category")
+    vision_category = first_filter_value(query, "vision_category")
     area_guess = first_filter_value(query, "area_guess")
     capture_id = first_filter_value(query, "capture_id")
     date_from = first_filter_value(query, "date_from")
     date_to = first_filter_value(query, "date_to")
     has_deep_analysis = first_filter_value(query, "deep_analysis").lower() in {"1", "true", "yes", "on"}
+    vision_disagrees = first_filter_value(query, "vision_disagrees").lower() in {"1", "true", "yes", "on"}
 
     cdb_config = _photo_vision_couchdb_config()
     sidecars: list[dict[str, object]] = []
@@ -1159,6 +1217,8 @@ def render(ctx: object) -> str:
             date_to,
             capture_id=capture_id,
             qc_category=qc_category,
+            vision_category=vision_category,
+            vision_disagrees=vision_disagrees,
             has_deep_analysis=has_deep_analysis,
         )
         docs = _query_couchdb(cdb_config, mango)
@@ -1190,6 +1250,8 @@ def render(ctx: object) -> str:
             date_to,
             capture_id=capture_id,
             qc_category=qc_category,
+            vision_category=vision_category,
+            vision_disagrees=vision_disagrees,
             has_deep_analysis=has_deep_analysis,
         )
         processed_asset_ids = {str(s.get("photo_asset_id") or "") for s in all_sidecars}
@@ -1197,7 +1259,7 @@ def render(ctx: object) -> str:
     vault_root = Path(getattr(ctx.config, "vault_root", runtime_root / "vault")).expanduser()
     submitters = submitters_by_capture(runtime_root)
     pending_records = []
-    if not has_deep_analysis:
+    if not has_deep_analysis and not vision_category and not vision_disagrees:
         pending_records = _pending_photo_records(
             runtime_root,
             processed_asset_ids=processed_asset_ids or set(),
@@ -1216,6 +1278,8 @@ def render(ctx: object) -> str:
         q=q,
         site_id=site_id,
         qc_category=qc_category,
+        vision_category=vision_category,
+        vision_disagrees=vision_disagrees,
         area_guess=area_guess,
         capture_id=capture_id,
         date_from=date_from,

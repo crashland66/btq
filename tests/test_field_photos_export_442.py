@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import zipfile
+import json
 from http import HTTPStatus
 from io import BytesIO
 from pathlib import Path
@@ -8,6 +9,7 @@ from types import SimpleNamespace
 from urllib.parse import urlencode
 
 import ops_dashboard.app as ops_app
+from ops_dashboard.common import photo_vision_sidecar_summary
 from ops_dashboard.common import SectionContext
 from ops_dashboard.sections import field_photos
 
@@ -48,6 +50,8 @@ def test_field_photos_render_has_selection_checkbox_description_and_export(tmp_p
         "description": "Floor machine and restroom threshold are visible.",
         "qc_category": "Restrooms",
         "area_guess": "restroom",
+        "vision_category": "Restrooms",
+        "category_agreement": "match",
         "visible_objects": [],
         "possible_conditions": [],
         "possible_issues": [],
@@ -59,6 +63,7 @@ def test_field_photos_render_has_selection_checkbox_description_and_export(tmp_p
     monkeypatch.setattr(field_photos, "_query_terminal_capture_ids", lambda _cfg: set())
     monkeypatch.setattr(field_photos, "_load_site_options", lambda: [])
     monkeypatch.setattr(field_photos, "_load_qc_category_options", lambda _cfg: ["Restrooms"])
+    monkeypatch.setattr(field_photos, "_load_vision_category_options", lambda _cfg: ["Restrooms"])
     monkeypatch.setattr(field_photos, "_load_area_options", lambda _cfg: ["restroom"])
     ctx = _ctx(tmp_path / "runtime")
     ctx.query = {"capture_id": ["cap-qc-walk"]}
@@ -71,6 +76,8 @@ def test_field_photos_render_has_selection_checkbox_description_and_export(tmp_p
     assert 'aria-label="Select photo:' in html
     assert "Floor machine and restroom threshold are visible." in html
     assert "QC Category: <strong>Restrooms</strong>" in html
+    assert "Vision: <strong>Restrooms</strong>" in html
+    assert "Vision matches" in html
     assert "Vision area: restroom" in html
     assert "Download selected as JPEGs" in html
 
@@ -103,6 +110,52 @@ def test_field_photos_qc_category_filter_is_primary_and_area_still_filters() -> 
     assert [str(row["photo_asset_id"]) for row in area_results] == ["d", "b", "a"]
 
 
+def test_field_photos_vision_disagrees_and_vision_category_filters() -> None:
+    mango = field_photos._build_mango_selector(
+        "",
+        "7050",
+        "",
+        "",
+        "",
+        vision_category="Restrooms",
+        vision_disagrees=True,
+    )
+
+    clauses = mango["selector"]["$and"]
+    assert {"vision_category": "Restrooms"} in clauses
+    assert {"category_agreement": "mismatch"} in clauses
+
+    sidecars = [
+        {
+            "photo_asset_id": "a",
+            "qc_category": "Restrooms",
+            "vision_category": "Restrooms",
+            "category_agreement": "match",
+            "generated_at": "2026-06-02",
+        },
+        {
+            "photo_asset_id": "b",
+            "qc_category": "Offices / Classrooms / Exam Rooms",
+            "vision_category": "Restrooms",
+            "category_agreement": "mismatch",
+            "generated_at": "2026-06-03",
+        },
+        {
+            "photo_asset_id": "c",
+            "qc_category": "qc",
+            "vision_category": "Restrooms",
+            "category_agreement": "unverifiable",
+            "generated_at": "2026-06-04",
+        },
+    ]
+
+    disagree_results = field_photos._in_memory_filter(sidecars, "", "", "", "", "", vision_disagrees=True)
+    assert [str(row["photo_asset_id"]) for row in disagree_results] == ["b"]
+
+    vision_category_results = field_photos._in_memory_filter(sidecars, "", "", "", "", "", vision_category="Restrooms")
+    assert [str(row["photo_asset_id"]) for row in vision_category_results] == ["c", "b", "a"]
+
+
 def test_field_photo_card_renders_without_qc_category(tmp_path: Path) -> None:
     html = field_photos._render_card(
         {
@@ -117,7 +170,25 @@ def test_field_photo_card_renders_without_qc_category(tmp_path: Path) -> None:
     )
 
     assert "QC Category: <strong>&mdash;</strong>" in html
+    assert "Vision: <strong>&mdash;</strong>" in html
     assert "Vision area: office" in html
+
+
+def test_disk_sidecar_summary_preserves_vision_category_fields(tmp_path: Path) -> None:
+    path = tmp_path / "fcp-1.json"
+    payload = {
+        "photo_asset_id": "fcp-1",
+        "qc_category": "Offices / Classrooms / Exam Rooms",
+        "area_guess": "restroom",
+        "vision_category": "Restrooms",
+        "category_agreement": "mismatch",
+    }
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    summary = photo_vision_sidecar_summary(path, payload)
+
+    assert summary["vision_category"] == "Restrooms"
+    assert summary["category_agreement"] == "mismatch"
 
 
 class _RecordingStore:

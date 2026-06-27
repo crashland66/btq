@@ -364,6 +364,8 @@ def test_image_from_intake_produces_vision_sidecar_with_provenance(tmp_path: Pat
     assert payload["model_provider"] == "local-test"
     assert payload["description"].startswith("A wide office area appears")
     assert payload["area_guess"] == "office"
+    assert payload["vision_category"] == "Offices / Classrooms / Exam Rooms"
+    assert payload["category_agreement"] == "match"
     assert payload["visible_objects"] == ["desk", "trash bin"]
     assert payload["possible_conditions"] == ["appears reset"]
     assert payload["possible_issues"] == ["possible paper towels low"]
@@ -392,6 +394,8 @@ def test_judgment_language_is_preserved_not_neutralized(tmp_path: Path) -> None:
     assert payload["status"] == "completed"
     assert payload["description"] == "The restroom cleanliness is poor and needs cleaning."
     assert payload["area_guess"] == "Restrooms"
+    assert payload["vision_category"] == "Restrooms"
+    assert payload["category_agreement"] == "mismatch"
     assert payload["visible_objects"] == ["toilet", "cleaning supplies"]
     assert payload["possible_conditions"] == ["Cleanliness", "dirty floor"]
     assert payload["possible_issues"] == ["General tidiness", "needs attention"]
@@ -677,6 +681,8 @@ def test_missing_image_fails_closed_with_failed_artifact(tmp_path: Path) -> None
     payload = json.loads(next(vision_dir.glob("*.json")).read_text(encoding="utf-8"))
     assert payload["status"] == "failed"
     assert payload["source_image_hash"] == ""
+    assert payload["vision_category"] is None
+    assert payload["category_agreement"] == "unverifiable"
     assert payload["needs_human_review"] is True
     assert any("failed closed" in warning for warning in payload["warnings"])
 
