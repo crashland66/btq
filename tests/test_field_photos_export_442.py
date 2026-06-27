@@ -225,8 +225,8 @@ def test_field_photos_export_returns_zip_of_selected_jpegs(tmp_path: Path, monke
             "capture_id": "cap-qc-walk",
             "media_key": list(payloads),
             "filename_hint": [
-                "2026-06-25/cap-qc-walk/photo-1.jpg\tcap-qc-walk-restroom-001-photo-1.jpg",
-                "2026-06-25/cap-qc-walk/photo-2.jpg\tcap-qc-walk-restroom-002-photo-2.jpg",
+                "2026-06-25/cap-qc-walk/photo-1.jpg\trestroom-001-photo-1.jpg",
+                "2026-06-25/cap-qc-walk/photo-2.jpg\trestroom-002-photo-2.jpg",
             ],
         },
         doseq=True,
@@ -244,11 +244,12 @@ def test_field_photos_export_returns_zip_of_selected_jpegs(tmp_path: Path, monke
     assert headers["Content-Disposition"] == 'attachment; filename="qc-photos-cap-qc-walk.zip"'
     with zipfile.ZipFile(BytesIO(body_bytes), "r") as archive:
         assert archive.namelist() == [
-            "cap-qc-walk-restroom-001-photo-1.jpg",
-            "cap-qc-walk-restroom-002-photo-2.jpg",
+            "restroom-001-photo-1.jpg",
+            "restroom-002-photo-2.jpg",
         ]
-        assert archive.read("cap-qc-walk-restroom-001-photo-1.jpg") == b"jpeg-one"
-        assert archive.read("cap-qc-walk-restroom-002-photo-2.jpg") == b"jpeg-two"
+        assert len(set(archive.namelist())) == len(archive.namelist())
+        assert archive.read("restroom-001-photo-1.jpg") == b"jpeg-one"
+        assert archive.read("restroom-002-photo-2.jpg") == b"jpeg-two"
     assert store.reads == list(payloads)
     assert store.writes == []
 

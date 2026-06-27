@@ -385,10 +385,9 @@ def _safe_filename_part(value: object, *, fallback: str) -> str:
 
 
 def _photo_filename_hint(sidecar: dict[str, object], index: int, media_key: str) -> str:
-    capture = _safe_filename_part(sidecar.get("capture_id"), fallback="capture")
     area = _safe_filename_part(sidecar.get("area_guess"), fallback="area")
     stem = _safe_filename_part(Path(media_key).stem, fallback=f"photo-{index + 1:03d}")
-    return f"{capture}-{area}-{index + 1:03d}-{stem}.jpg"
+    return f"{area}-{index + 1:03d}-{stem}.jpg"
 
 
 def _render_card(
