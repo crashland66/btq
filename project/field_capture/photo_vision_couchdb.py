@@ -37,6 +37,9 @@ def build_photo_vision_document(sidecar_payload: dict[str, object]) -> dict[str,
         return [str(item).strip() for item in value if str(item).strip()]
 
     qc_category = str(sidecar_payload.get("qc_category") or "")
+    vision_lane = str(sidecar_payload.get("vision_lane") or "pow").strip()
+    if vision_lane not in {"qc", "pow"}:
+        vision_lane = "pow"
     raw_vision_category = sidecar_payload.get("vision_category")
     vision_category = str(raw_vision_category).strip() if raw_vision_category is not None else None
     category_agreement = str(sidecar_payload.get("category_agreement") or "").strip()
@@ -61,6 +64,7 @@ def build_photo_vision_document(sidecar_payload: dict[str, object]) -> dict[str,
         "photo_id": str(sidecar_payload.get("photo_id") or provenance.get("photo_id") or ""),
         "submitter_id": str(sidecar_payload.get("submitter_id") or ""),
         "qc_category": qc_category,
+        "vision_lane": vision_lane,
         "vision_category": vision_category,
         "category_agreement": category_agreement,
         "description": description,

@@ -16,10 +16,12 @@ BUILTIN_FALLBACK_CATEGORIES = [
     {"label": "Chemicals / Safety / PPE / SDS", "canonical": "Chemicals / Safety / PPE / SDS"},
     {"label": "Other", "canonical": "Other"},
 ]
+QC_CAPTURE_CATEGORY_DEFINITION = {"label": "QC", "canonical": "qc"}
+QC_CAPTURE_CATEGORY = QC_CAPTURE_CATEGORY_DEFINITION["canonical"]
 OPERATOR_ONLY_CATEGORIES = [
     # Native operator clients default QC walks to canonical "qc"; keep the
     # public category contract to exactly {label, canonical}.
-    {"label": "QC", "canonical": "qc"},
+    QC_CAPTURE_CATEGORY_DEFINITION,
     {"label": "Baseline", "canonical": "baseline"},
     {"label": "Pre-Engagement", "canonical": "pre_engagement"},
 ]

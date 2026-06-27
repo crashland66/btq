@@ -14,6 +14,8 @@ from urllib.parse import quote
 import vision_backends
 from config import get_config
 from event_pipeline.couchdb_registry import CouchDBRegistryError
+from field_capture.defect_taxonomies import defect_taxonomy_prompt_block
+from field_capture.display_categories import QC_CAPTURE_CATEGORY
 from field_capture.photo_vision_categories import derive_vision_category_fields
 from field_capture.site_viewer import UnsafeMediaPath, resolve_media_path, upload_id_for_path
 from processing_core.artifacts import read_json_object, resolve_within_root, write_json_object
@@ -26,6 +28,8 @@ ARTIFACT_TYPE = "field_capture_photo_vision"
 STATUS_COMPLETED = "completed"
 STATUS_FAILED = "failed"
 STATUS_SKIPPED = "skipped"
+VISION_LANE_QC = "qc"
+VISION_LANE_POW = "pow"
 QUALITY_FLAGS_ENUM: frozenset[str] = frozenset({
     "blurry",
     "motion_blur",
@@ -67,6 +71,10 @@ SCREENSHOT_OR_APP_UI_WARNING = "screenshot_or_app_ui"
 FORBIDDEN_JUDGMENT_TERMS: tuple[str, ...] = ()
 JUDGMENT_REPLACEMENTS: tuple[tuple[re.Pattern[str], str], ...] = ()
 logger = logging.getLogger(__name__)
+
+
+def vision_lane_for(qc_category: object) -> str:
+    return VISION_LANE_QC if str(qc_category or "").strip() == QC_CAPTURE_CATEGORY else VISION_LANE_POW
 
 
 @dataclass(frozen=True)
@@ -499,8 +507,11 @@ def derive_quality(payload: dict[str, object]) -> dict[str, object]:
     }
 
 
-def prompt_for(asset: FieldPhotoAsset) -> str:
+def prompt_for(asset: FieldPhotoAsset, qc_category: object | None = None) -> str:
     site_context = site_vision_context_for(asset.site_id)
+    taxonomy_block = ""
+    if vision_lane_for(qc_category) == VISION_LANE_QC:
+        taxonomy_block = defect_taxonomy_prompt_block(qc_category)
     if site_context:
         site_context_text = (
             "Facility context (background only — describe what is in THIS image. "
@@ -544,6 +555,7 @@ def prompt_for(asset: FieldPhotoAsset) -> str:
         "contains_people, unanalyzable. Include only flags that apply to this image. Omit this key or use an "
         "empty array if no flags apply.\n"
         "\n"
+        f"{taxonomy_block}"
         "Hard rules:\n"
         "  - Describe only what is visible. Do not invent objects, scenes, or hidden facts.\n"
         "  - This is an INTERNAL operations review. Assess the condition directly and honestly: if a surface "
@@ -602,6 +614,10 @@ class OllamaVisionClient:
         parsed = self._client.describe(asset.image_path, prompt_for(asset))
         return normalize_vision_description(parsed)
 
+    def describe_for_qc_category(self, asset: FieldPhotoAsset, qc_category: object) -> VisionDescription:
+        parsed = self._client.describe(asset.image_path, prompt_for(asset, qc_category))
+        return normalize_vision_description(parsed)
+
 
 class MlxVisionClient:
     # Local inference only: mlx-vlm loads a HuggingFace model onto Apple
@@ -623,6 +639,10 @@ class MlxVisionClient:
         parsed = self._client.describe(asset.image_path, prompt_for(asset))
         return normalize_vision_description(parsed)
 
+    def describe_for_qc_category(self, asset: FieldPhotoAsset, qc_category: object) -> VisionDescription:
+        parsed = self._client.describe(asset.image_path, prompt_for(asset, qc_category))
+        return normalize_vision_description(parsed)
+
 
 def vision_engine_name(describe: Callable[[FieldPhotoAsset], VisionDescription], model: str) -> str:
     explicit = getattr(describe, "engine_name", None)
@@ -632,6 +652,18 @@ def vision_engine_name(describe: Callable[[FieldPhotoAsset], VisionDescription],
     if provider:
         return f"{provider}:{model}"
     return type(describe).__name__ if hasattr(describe, "__class__") else "vision-model"
+
+
+def describe_asset_for_lane(
+    describe: Callable[[FieldPhotoAsset], VisionDescription],
+    asset: FieldPhotoAsset,
+    vision_lane: str,
+) -> VisionDescription:
+    if vision_lane == VISION_LANE_QC:
+        describe_for_qc_category = getattr(describe, "describe_for_qc_category", None)
+        if callable(describe_for_qc_category):
+            return describe_for_qc_category(asset, asset.qc_category)
+    return describe(asset)
 
 
 def completed_payload(
@@ -760,6 +792,7 @@ def base_payload(
         "source_image_hash": source_image_hash,
         "site_id": asset.site_id,
         "qc_category": asset.qc_category,
+        "vision_lane": vision_lane_for(asset.qc_category),
         "submitted_area": asset.area,
         "submitted_phase": asset.phase,
         "site_context_used": site_context is not None,
@@ -842,6 +875,7 @@ def process_photo_assets(
     cdb_config = _photo_vision_couchdb_config()
     processed = 0
     for asset in assets:
+        vision_lane = vision_lane_for(asset.qc_category)
         sidecar_path = photo_vision_path_for(vision_root, asset.photo_asset_id)
         existing = read_json(sidecar_path)
         replacement_reason = replacement_reason_for(
@@ -873,7 +907,7 @@ def process_photo_assets(
             if not asset.image_path.exists() or not asset.image_path.is_file():
                 raise FileNotFoundError(asset.image_path)
             source_hash = file_sha256(asset.image_path)
-            description = describe(asset)
+            description = describe_asset_for_lane(describe, asset, vision_lane)
             sidecar = completed_payload(
                 asset,
                 source_image_hash=source_hash,

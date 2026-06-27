@@ -22,6 +22,7 @@ def write_capture_with_photo(
     *,
     capture_id: str = "cap-photo-1",
     site_id: str = "7050",
+    qc_category: str = "Offices / Classrooms / Exam Rooms",
     filename: str = "wide-reset.jpg",
     image_bytes: bytes = b"image bytes",
     write_image: bool = True,
@@ -39,7 +40,7 @@ def write_capture_with_photo(
         },
         "payload": {
             "site": "Summit Wire",
-            "qc_category": "Offices / Classrooms / Exam Rooms",
+            "qc_category": qc_category,
             "phase": "completed",
             "captured_at": "2026-05-06T08:15:00-04:00",
             "exported_at": "2026-05-06T08:15:05-04:00",
@@ -77,6 +78,29 @@ class FakeVisionClient:
             possible_issues=["possible paper towels low"],
             confidence=0.72,
             needs_human_review=True,
+            warnings=[],
+        )
+
+
+class LaneAwareVisionClient(FakeVisionClient):
+    def __init__(self) -> None:
+        super().__init__()
+        self.qc_category_calls: list[tuple[photo_vision.FieldPhotoAsset, object]] = []
+
+    def describe_for_qc_category(
+        self,
+        asset: photo_vision.FieldPhotoAsset,
+        qc_category: object,
+    ) -> photo_vision.VisionDescription:
+        self.qc_category_calls.append((asset, qc_category))
+        return photo_vision.VisionDescription(
+            description="A QC capture photo is visible.",
+            area_guess="office",
+            visible_objects=["desk"],
+            possible_conditions=[],
+            possible_issues=[],
+            confidence=0.8,
+            needs_human_review=False,
             warnings=[],
         )
 
@@ -254,6 +278,41 @@ def test_prompt_uses_fallback_context_for_unknown_site(tmp_path: Path) -> None:
     assert "Describe only what is visible" in prompt
 
 
+def test_vision_lane_for_uses_canonical_qc_category() -> None:
+    assert photo_vision.vision_lane_for("qc") == "qc"
+    assert photo_vision.vision_lane_for("Restrooms") == "pow"
+    assert photo_vision.vision_lane_for("Offices / Classrooms / Exam Rooms") == "pow"
+    assert photo_vision.vision_lane_for("") == "pow"
+    assert photo_vision.vision_lane_for(None) == "pow"
+
+
+def test_pow_prompt_is_byte_identical_when_category_is_threaded(tmp_path: Path) -> None:
+    intake_dir = tmp_path / "runtime" / "field_capture" / "intake"
+    upload_dir = tmp_path / "runtime" / "uploads"
+    write_capture_with_photo(intake_dir, upload_dir, qc_category="Restrooms")
+    asset = photo_vision.discover_photo_assets(intake_dir, upload_dir)[0]
+
+    legacy_prompt = photo_vision.prompt_for(asset)
+    threaded_pow_prompt = photo_vision.prompt_for(asset, asset.qc_category)
+
+    assert threaded_pow_prompt == legacy_prompt
+
+
+def test_taxonomy_prompt_block_is_injected_only_for_qc_lane(tmp_path: Path, monkeypatch) -> None:
+    intake_dir = tmp_path / "runtime" / "field_capture" / "intake"
+    upload_dir = tmp_path / "runtime" / "uploads"
+    write_capture_with_photo(intake_dir, upload_dir, qc_category="qc")
+    asset = photo_vision.discover_photo_assets(intake_dir, upload_dir)[0]
+    monkeypatch.setattr(photo_vision, "defect_taxonomy_prompt_block", lambda _qc_category: "QC TAXONOMY BLOCK\n")
+
+    qc_prompt = photo_vision.prompt_for(asset, "qc")
+    pow_prompt = photo_vision.prompt_for(asset, "Restrooms")
+
+    assert "QC TAXONOMY BLOCK\nHard rules:" in qc_prompt
+    assert "QC TAXONOMY BLOCK" not in pow_prompt
+    assert pow_prompt == photo_vision.prompt_for(asset)
+
+
 def test_ollama_client_rejects_non_local_endpoints() -> None:
     for url in (
         "https://api.openai.com/v1/images",
@@ -279,6 +338,35 @@ def test_timeout_config_is_honored(monkeypatch) -> None:
     assert photo_vision.default_timeout_seconds() == 222.0
     client = photo_vision.OllamaVisionClient(model="qwen2.5vl:7b", ollama_url="http://127.0.0.1:11434", timeout_seconds=33.0)
     assert client.timeout_seconds == 33.0
+
+
+def test_ollama_qc_lane_threads_category_into_prompt(tmp_path: Path, monkeypatch) -> None:
+    captured_categories: list[object] = []
+    client = photo_vision.OllamaVisionClient(model="gemma4:26b", ollama_url="http://127.0.0.1:11434")
+
+    def capture_prompt(_asset: photo_vision.FieldPhotoAsset, qc_category: object | None = None) -> str:
+        captured_categories.append(qc_category)
+        return "PROMPT"
+
+    monkeypatch.setattr(photo_vision, "prompt_for", capture_prompt)
+    monkeypatch.setattr(
+        client._client,
+        "describe",
+        lambda _image_path, _prompt: {
+            "description": "A QC photo.",
+            "area_guess": "office",
+            "visible_objects": [],
+            "possible_conditions": [],
+            "possible_issues": [],
+            "confidence": 0.8,
+            "needs_human_review": False,
+            "warnings": [],
+        },
+    )
+
+    client.describe_for_qc_category(_vision_asset(tmp_path), "qc")
+
+    assert captured_categories == ["qc"]
 
 
 def _vision_asset(tmp_path: Path) -> photo_vision.FieldPhotoAsset:
@@ -354,6 +442,7 @@ def test_image_from_intake_produces_vision_sidecar_with_provenance(tmp_path: Pat
     assert payload["source_image_hash"] == "75f1f0ae740173b33a405289d2ad0fa4f0261401a6510a64c071b75c3e45d656"
     assert payload["site_id"] == "7050"
     assert payload["qc_category"] == "Offices / Classrooms / Exam Rooms"
+    assert payload["vision_lane"] == "pow"
     assert payload["submitted_area"] == "Offices / Classrooms / Exam Rooms"
     assert payload["submitted_phase"] == "completed"
     assert payload["site_context_used"] is True
@@ -376,6 +465,43 @@ def test_image_from_intake_produces_vision_sidecar_with_provenance(tmp_path: Pat
     assert payload["provenance"]["photo_id"] == "2026-05-06/cap-photo-1/wide-reset.jpg"
     assert payload["provenance"]["source_image_hash"] == payload["source_image_hash"]
     assert photo_vision.ADVISORY_WARNING in payload["warnings"]
+
+
+def test_qc_capture_routes_through_qc_lane_and_marks_sidecar(tmp_path: Path) -> None:
+    runtime_root = tmp_path / "runtime"
+    intake_dir = runtime_root / "field_capture" / "intake"
+    upload_dir = runtime_root / "uploads"
+    vision_dir = runtime_root / "field_capture" / "photo_vision"
+    write_capture_with_photo(intake_dir, upload_dir, qc_category="qc")
+    client = LaneAwareVisionClient()
+
+    counts = photo_vision.process_photo_assets(intake_dir, upload_dir, vision_dir, client, runtime_root=runtime_root)
+
+    assert counts == {"discovered": 1, "would_create": 0, "would_replace": 0, "completed": 1, "failed": 0, "skipped": 0}
+    assert client.calls == []
+    assert [(asset.qc_category, qc_category) for asset, qc_category in client.qc_category_calls] == [("qc", "qc")]
+    payload = json.loads(next(vision_dir.glob("*.json")).read_text(encoding="utf-8"))
+    assert payload["qc_category"] == "qc"
+    assert payload["vision_lane"] == "qc"
+    assert payload["status"] == "completed"
+
+
+def test_photo_vision_couchdb_document_carries_lane_and_defaults_absent_to_pow() -> None:
+    from field_capture.photo_vision_couchdb import build_photo_vision_document
+
+    sidecar = {
+        "photo_asset_id": "fcp_lane",
+        "status": "completed",
+        "qc_category": "qc",
+        "vision_lane": "qc",
+    }
+
+    doc = build_photo_vision_document(sidecar)
+    legacy_sidecar = {key: value for key, value in sidecar.items() if key != "vision_lane"}
+    fallback_doc = build_photo_vision_document({**legacy_sidecar, "photo_asset_id": "fcp_legacy"})
+
+    assert doc["vision_lane"] == "qc"
+    assert fallback_doc["vision_lane"] == "pow"
 
 
 def test_judgment_language_is_preserved_not_neutralized(tmp_path: Path) -> None:
