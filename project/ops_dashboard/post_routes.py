@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from http import HTTPStatus
 
-from ops_dashboard.sections import batch_images, candidates, captures, drafts, employee_detail, equipment, failed, home, issues, prospect_detail, site_detail, sites, supplies, system, tokens
+from ops_dashboard.sections import batch_images, candidates, captures, drafts, employee_detail, equipment, failed, home, issues, prospect_detail, records, site_detail, sites, supplies, system, tokens
 
 Response = tuple[HTTPStatus, str, bytes, dict[str, str]]
 
@@ -116,6 +116,10 @@ def dispatch_post_route(
         return home.handle_voice_memo_post(ctx, body, content_type=content_type)
     if route_path == "/batch-images/upload":
         return batch_images.handle_batch_upload_post(ctx, body, content_type=content_type)
+    if route_path.startswith("/records/") and route_path.endswith("/publish-sc"):
+        record_id = route_path.removeprefix("/records/").removesuffix("/publish-sc").strip("/")
+        if record_id and "/" not in record_id:
+            return records.handle_publish_sc_post(ctx, record_id, body)
     if route_path.startswith("/prospects/") and route_path not in section_routes:
         rest = route_path.removeprefix("/prospects/").rstrip("/")
         prospect_id, _sep, tail = rest.partition("/")

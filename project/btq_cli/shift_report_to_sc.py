@@ -6,7 +6,7 @@ import os
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Protocol
-from urllib import error, request
+from urllib import error, parse, request
 
 from config import get_config, repo_root
 from io_atomic import atomic_write_text
@@ -26,12 +26,21 @@ class JsonHttpClient(Protocol):
     def post_json(self, url: str, payload: dict[str, Any], headers: dict[str, str]) -> tuple[int, dict[str, Any]]:
         ...
 
+    def put_json(self, url: str, payload: dict[str, Any], headers: dict[str, str]) -> tuple[int, dict[str, Any]]:
+        ...
+
 
 class UrllibJsonHttpClient:
     def post_json(self, url: str, payload: dict[str, Any], headers: dict[str, str]) -> tuple[int, dict[str, Any]]:
+        return self._json_request("POST", url, payload, headers)
+
+    def put_json(self, url: str, payload: dict[str, Any], headers: dict[str, str]) -> tuple[int, dict[str, Any]]:
+        return self._json_request("PUT", url, payload, headers)
+
+    def _json_request(self, method: str, url: str, payload: dict[str, Any], headers: dict[str, str]) -> tuple[int, dict[str, Any]]:
         body = json.dumps(payload).encode("utf-8")
         outgoing_headers = {"Content-Type": "application/json", **headers}
-        req = request.Request(url, data=body, headers=outgoing_headers, method="POST")
+        req = request.Request(url, data=body, headers=outgoing_headers, method=method)
         try:
             with request.urlopen(req, timeout=30) as response:
                 response_body = response.read().decode("utf-8")
@@ -42,6 +51,10 @@ class UrllibJsonHttpClient:
 
 
 class SafetyCultureSubmitError(RuntimeError):
+    pass
+
+
+class SafetyCultureArchiveError(RuntimeError):
     pass
 
 
@@ -192,6 +205,26 @@ def submit_prefill_payload(
     if not audit_id:
         raise SafetyCultureSubmitError(f"POST /audits returned 201 without audit_id: {json.dumps(response_body, sort_keys=True)}")
     return audit_id
+
+
+def archive_inspection(
+    audit_id: str,
+    token: str,
+    *,
+    http_client: JsonHttpClient | None = None,
+    base_url: str = SC_BASE,
+) -> None:
+    normalized_id = str(audit_id or "").strip()
+    if not normalized_id:
+        raise SafetyCultureArchiveError("archive_inspection requires audit_id")
+    client = http_client or UrllibJsonHttpClient()
+    status, response_body = client.put_json(
+        f"{base_url.rstrip('/')}/audits/{parse.quote(normalized_id, safe='')}",
+        {"archived": True},
+        {"Authorization": f"Bearer {token}"},
+    )
+    if status < 200 or status >= 300:
+        raise SafetyCultureArchiveError(f"PUT /audits/{normalized_id} failed with status {status}: {json.dumps(response_body, sort_keys=True)}")
 
 
 def inspection_link(audit_id: str) -> str:
