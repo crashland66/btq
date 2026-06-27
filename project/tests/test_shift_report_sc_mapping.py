@@ -1,0 +1,210 @@
+from __future__ import annotations
+
+import argparse
+import json
+from pathlib import Path
+
+import pytest
+
+from btq_cli import shift_report_to_sc as cli
+from btq_cli.shift_report_sc_mapping import (
+    ANSWER_CLEANING_COUNT,
+    ANSWER_QC_COUNT,
+    ANSWER_YES_NO_QUITS,
+    ANSWER_YES_NO_SHARED,
+    ITEM_NIGHTLY_SUMMARY,
+    ITEM_QUITS_TERMINATIONS,
+    ITEM_REPORT_DATE,
+    TEMPLATE_ID,
+    build_prefill_payload,
+    count_bucket,
+    is_no_body,
+    parse_shift_report,
+)
+
+
+SAMPLE = """# Area Manager Shift Report — 2026-06-24
+
+## Nightly Summary
+Altoona loop: QC at two sites, supply delivery, coaching.
+
+## eHub / WinTeam Alerts
+None noted.
+
+## Over-Hours Accounts Discussed + Solution
+None noted.
+
+## QC Visits Count
+2 accounts.
+
+## Accounts Completed QC In
+- Interfuse (222)
+- PHN Altoona (592)
+
+## Team Members Visited / Trained Count
+2 team members.
+
+## Employees Visited, Trained, Etc.
+- Megan Greenwood (592): coached on flat-mop method.
+
+## Team Member Connection
+- Megan Greenwood
+
+## Cleaning Fill-In Count
+0.
+
+## Customer Interactions In Person
+- Jackie (592): floor concern.
+
+## Open Positions — Full Area
+- Mobile cleaner — area-wide
+
+## Open Positions Detail
+- Mobile cleaner, area-wide — ~$17/hr.
+
+## Interviews / Hires Today
+No interviews or hires noted.
+
+## Quits / Terminations Today
+No quits or terminations noted.
+
+## Excused / Missed Shifts Today
+None noted.
+
+## Notes for Operations Manager
+- Interfuse (222): order bulk rags, trace missing delivery.
+"""
+
+
+def _sections():
+    return parse_shift_report(SAMPLE)
+
+
+def test_parse_splits_sections_on_h2():
+    sections = _sections()
+    assert sections["QC Visits Count"] == "2 accounts."
+    assert sections["Cleaning Fill-In Count"] == "0."
+    assert "order bulk rags" in sections["Notes for Operations Manager"]
+
+
+def test_title_page_fields_go_in_header_items_not_items():
+    payload = build_prefill_payload(_sections(), "2026-06-24")
+    assert payload["template_id"] == TEMPLATE_ID
+    header_ids = {i["item_id"] for i in payload["header_items"]}
+    item_ids = {i["item_id"] for i in payload["items"]}
+    # Prepared By / Date / Nightly Summary are header items
+    assert ITEM_NIGHTLY_SUMMARY in header_ids
+    assert ITEM_NIGHTLY_SUMMARY not in item_ids
+    assert len(payload["header_items"]) == 3
+
+
+def test_date_is_datetime_typed():
+    payload = build_prefill_payload(_sections(), "2026-06-24")
+    date_item = next(i for i in payload["header_items"] if i["item_id"] == ITEM_REPORT_DATE)
+    assert date_item["type"] == "datetime"
+    assert date_item["responses"]["datetime"] == "2026-06-24T12:00:00Z"
+
+
+def test_nightly_summary_uses_entry_field_not_the_static_label():
+    payload = build_prefill_payload(_sections(), "2026-06-24")
+    all_ids = {i["item_id"] for i in payload["header_items"] + payload["items"]}
+    # 0639daca is a static LABEL in the template — text sent to it is silently dropped
+    assert "0639daca-7836-4b88-b1e4-b4b90d04391d" not in all_ids
+    summary = next(i for i in payload["header_items"] if i["item_id"] == ITEM_NIGHTLY_SUMMARY)
+    assert "Altoona loop" in summary["responses"]["text"]
+
+
+@pytest.mark.parametrize(
+    "body,bucket",
+    [("0.", "0"), ("1 account", "1-2"), ("2 accounts.", "1-2"), ("3 sites", "3 or more"), ("7", "3 or more"), ("", "0")],
+)
+def test_count_buckets(body, bucket):
+    assert count_bucket(body) == bucket
+
+
+def test_qc_and_cleaning_use_distinct_answer_sets():
+    # Same bucket label, different answer ids per question family.
+    assert ANSWER_QC_COUNT["0"] != ANSWER_CLEANING_COUNT["0"]
+    assert ANSWER_QC_COUNT["1-2"] != ANSWER_CLEANING_COUNT["1-2"]
+
+
+def test_choice_answers_resolve_to_expected_ids():
+    payload = build_prefill_payload(_sections(), "2026-06-24")
+    by_id = {i["item_id"]: i for i in payload["items"]}
+    qc = by_id["d493e3ee-e331-43b7-9b9c-f4e7f6f449ce"]
+    assert qc["type"] == "question"
+    assert qc["responses"]["selected"][0]["id"] == ANSWER_QC_COUNT["1-2"]
+    cleaning = by_id["77fcb7f3-8bdc-4b7b-854c-1e7ded415831"]
+    assert cleaning["responses"]["selected"][0]["id"] == ANSWER_CLEANING_COUNT["0"]
+
+
+@pytest.mark.parametrize("body,expected", [("None noted.", True), ("No interviews.", True), ("N/A", True), ("", True), ("- a hire", False)])
+def test_is_no_body(body, expected):
+    assert is_no_body(body) is expected
+
+
+def test_quits_uses_its_own_yes_no_answer_set():
+    payload = build_prefill_payload(_sections(), "2026-06-24")
+    quits = next(i for i in payload["items"] if i["item_id"] == ITEM_QUITS_TERMINATIONS)
+    assert quits["responses"]["selected"][0]["id"] == ANSWER_YES_NO_QUITS["No"]
+    assert ANSWER_YES_NO_QUITS["No"] != ANSWER_YES_NO_SHARED["No"]
+
+
+def test_notes_for_operations_manager_is_dropped():
+    payload = build_prefill_payload(_sections(), "2026-06-24")
+    all_text = json.dumps(payload)
+    assert "order bulk rags" not in all_text  # ops-manager detail must not leak into any field
+
+
+def _args(**kw):
+    base = dict(report_path=None, date=None, dry_run=False, force=False, state_path=None)
+    base.update(kw)
+    return argparse.Namespace(**base)
+
+
+def test_dry_run_makes_no_network_call_and_needs_no_token(tmp_path, monkeypatch, capsys):
+    report = tmp_path / "2026-06-24-shift-report.md"
+    report.write_text(SAMPLE, encoding="utf-8")
+    # Any attempt to load a token or submit during --dry-run is a failure.
+    monkeypatch.setattr(cli, "load_safetyculture_token", lambda *a, **k: pytest.fail("token loaded in dry-run"))
+    monkeypatch.setattr(cli, "submit_prefill_payload", lambda *a, **k: pytest.fail("submit called in dry-run"))
+    rc = cli.handle_shift_report_to_sc(_args(report_path=report, dry_run=True))
+    assert rc == 0
+    printed = json.loads(capsys.readouterr().out)
+    assert printed["template_id"] == TEMPLATE_ID
+
+
+def test_idempotent_skip_when_draft_already_recorded(tmp_path, monkeypatch, capsys):
+    report = tmp_path / "2026-06-24-shift-report.md"
+    report.write_text(SAMPLE, encoding="utf-8")
+    state = tmp_path / "state.json"
+    state.write_text(json.dumps({"drafts": {"2026-06-24": {"audit_id": "audit_EXISTING"}}}), encoding="utf-8")
+    monkeypatch.setattr(cli, "load_safetyculture_token", lambda *a, **k: pytest.fail("token loaded on idempotent skip"))
+    monkeypatch.setattr(cli, "submit_prefill_payload", lambda *a, **k: pytest.fail("submit called on idempotent skip"))
+    rc = cli.handle_shift_report_to_sc(_args(report_path=report, state_path=state))
+    assert rc == 0
+    assert "audit_EXISTING" in capsys.readouterr().out
+
+
+def test_submit_extracts_audit_id_via_injected_client():
+    calls = {}
+
+    class FakeClient:
+        def post_json(self, url, payload, headers):
+            calls["url"] = url
+            calls["auth"] = headers.get("Authorization")
+            return 201, {"audit_id": "audit_NEW123"}
+
+    audit_id = cli.submit_prefill_payload({"template_id": TEMPLATE_ID}, "tok", http_client=FakeClient())
+    assert audit_id == "audit_NEW123"
+    assert calls["url"].endswith("/audits")
+    assert calls["auth"] == "Bearer tok"
+
+
+def test_submit_raises_on_non_201():
+    class FakeClient:
+        def post_json(self, url, payload, headers):
+            return 400, {"error": "bad"}
+
+    with pytest.raises(cli.SafetyCultureSubmitError):
+        cli.submit_prefill_payload({}, "tok", http_client=FakeClient())
