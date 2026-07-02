@@ -28,6 +28,7 @@ from capture_ingest import (
     mirror_capture_media_from_disk,
     write_capture_media,
 )
+from client_telemetry import build_client_block
 from config import get_config
 from event_pipeline import couchdb_config as couchdb_config_module
 from event_pipeline.couchdb.system_defaults import load_system_defaults
@@ -872,6 +873,9 @@ class UnifiedCaptureHandler(BaseHTTPRequestHandler):
         }
         if client_metadata:
             domain_fields["client_metadata"] = client_metadata
+        client = build_client_block(self.headers)
+        if client:
+            domain_fields["client"] = client
         doc = build_capture_document_envelope(
             capture_id=capture_id,
             doc_type="field_capture",

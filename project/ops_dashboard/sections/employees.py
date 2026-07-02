@@ -129,5 +129,5 @@ def render(ctx: object = None) -> str:
         <button>Apply</button>
       </form>
     """
-    body = f'<header><h1>Employees</h1><p class="muted">Browse employee records from the operational vault.</p></header>{error_html}<div class="content-with-rail"><aside class="filter-rail"><section><h2>Filters</h2>{filter_html}</section></aside><section><h2>All employees</h2>{table}</section></div>'
+    body = f'<header><h1>Employees</h1><p class="muted">Browse employee records from the operational vault.</p><p><a class="button" href="/clients">Clients / Devices</a></p></header>{error_html}<div class="content-with-rail"><aside class="filter-rail"><section><h2>Filters</h2>{filter_html}</section></aside><section><h2>All employees</h2>{table}</section></div>'
     return html_page("Employees", body, active_section="employees")

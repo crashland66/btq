@@ -21,7 +21,7 @@ from media_store import LocalFilesystemStore, get_media_store
 from ops_dashboard.common import SectionContext
 from ops_dashboard.layout import html_page
 from ops_dashboard.post_routes import dispatch_post_route
-from ops_dashboard.sections import admin, audio, batch_images, candidates, captures, drafts, employee_detail, employees, equipment, failed, field_photos, health, health_pipeline, help as help_section, home, inbox, issues, photos, prospect_detail, records, site_detail, site_orders, sites, supplies, swipe, system, tokens, workers
+from ops_dashboard.sections import admin, audio, batch_images, candidates, captures, clients, drafts, employee_detail, employees, equipment, failed, field_photos, health, health_pipeline, help as help_section, home, inbox, issues, photos, prospect_detail, records, site_detail, site_orders, sites, supplies, swipe, system, tokens, workers
 from shared_pwa.assets import serve_static_asset
 
 # Cap concurrent request workers. stdlib ThreadingHTTPServer spawns an
@@ -64,7 +64,7 @@ SECTION_ROUTES = {
     "/equipment/mark-ordered-confirm": equipment, "/equipment/mark-provided-confirm": equipment,
     "/equipment/mark-no-action-needed-confirm": equipment, "/drafts": drafts, "/drafts/stage-preview": drafts,
     "/failed": failed, "/captures": captures, "/audio": audio, "/batch-images": batch_images,
-    "/site-orders": site_orders,
+    "/site-orders": site_orders, "/clients": clients,
     "/photos": photos, "/field-photos": field_photos, "/records": records, "/sites": sites, "/sites/new": sites,
     "/employees": employees, "/tokens": tokens, "/tokens/new": tokens, "/tokens/edit": tokens, "/tokens/set-raw": tokens,
     "/workers": workers,
