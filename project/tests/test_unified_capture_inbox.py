@@ -92,6 +92,7 @@ class FakeJobDraftCouch:
     def __init__(self) -> None:
         self.docs: dict[str, dict[str, Any]] = {}
         self.status_writes: list[dict[str, Any]] = []
+        self.route_writes: list[dict[str, Any]] = []
         self._rev_counter = 0
 
     # ---- seeding ---------------------------------------------------------- #
@@ -162,6 +163,58 @@ class FakeJobDraftCouch:
         )
         return copy.deepcopy(doc)
 
+    def set_job_draft_approval_route_and_review_status(
+        self,
+        config: Any,
+        db: str,
+        draft_id: str,
+        *,
+        route: str,
+        job_type: str,
+        payload: dict[str, Any],
+        reviewed_by: str,
+        rationale: str,
+        route_rationale: str,
+        expected_rev: str | None = None,
+        expected_prior_statuses: Any = ("pending_approval",),
+    ) -> dict[str, Any]:
+        doc = self.docs.get(str(draft_id))
+        if doc is None:
+            raise RuntimeError(f"job_draft not found: {draft_id}")
+        current_rev = str(doc.get("_rev") or "")
+        if expected_rev is not None and str(expected_rev) != current_rev:
+            raise AlreadyDecided(f"job_draft _rev changed: {draft_id}")
+        allowed = {str(item) for item in expected_prior_statuses}
+        if allowed and str(doc.get("review_status") or "") not in allowed:
+            raise AlreadyDecided(f"job_draft already decided: {draft_id}")
+        self._rev_counter += 1
+        original_job_type = str(doc.get("job_type") or "")
+        original_payload = doc.get("payload") if isinstance(doc.get("payload"), dict) else {}
+        routed_job_type = str(job_type or "")
+        routed_payload = copy.deepcopy(payload)
+        if routed_job_type:
+            doc["job_type"] = routed_job_type
+            doc["payload"] = routed_payload
+        doc.update(
+            {
+                "original_job_type": original_job_type,
+                "original_payload": copy.deepcopy(original_payload),
+                "routed_job_type": routed_job_type,
+                "routed_payload": routed_payload,
+                "route": route,
+                "route_chosen_by": reviewed_by,
+                "route_chosen_at": "2026-07-02T00:00:00+00:00",
+                "route_rationale": route_rationale,
+                "review_status": "approved",
+                "reviewed_by": reviewed_by,
+                "reviewer": reviewed_by,
+                "review_rationale": rationale,
+                "_rev": f"2-{self._rev_counter:08d}",
+            }
+        )
+        self.route_writes.append({"draft_id": str(draft_id), "route": route, "expected_rev": expected_rev})
+        return copy.deepcopy(doc)
+
 
 def install_job_draft_double(double: FakeJobDraftCouch) -> list[Any]:
     """Patch the writer functions where they are looked up at call time.
@@ -174,6 +227,11 @@ def install_job_draft_double(double: FakeJobDraftCouch) -> list[Any]:
     patchers = [
         mock.patch.object(job_draft_review_module, "get_job_draft", double.get_job_draft),
         mock.patch.object(job_draft_review_module, "set_job_draft_review_status", double.set_job_draft_review_status),
+        mock.patch.object(
+            job_draft_review_module,
+            "set_job_draft_approval_route_and_review_status",
+            double.set_job_draft_approval_route_and_review_status,
+        ),
         mock.patch.object(uc_server, "list_job_drafts", double.list_job_drafts),
     ]
     started = []
@@ -610,6 +668,151 @@ class InboxBlastShieldTests(_AdminInboxMixin, unittest.TestCase):
         self.assertEqual(self.double.docs["draft_001"]["review_status"], "approved")
         self.assertEqual([w["review_status"] for w in self.double.status_writes], ["approved"])
 
+    def test_no_route_approve_preserves_legacy_job_payload_shape(self) -> None:
+        original_payload = {"site_id": "7060", "item_name": "trash bags", "requested_by": "Casey Worker"}
+        self.double.seed(pending_draft("draft_001", payload=original_payload))
+        live_rev = self.double.docs["draft_001"]["_rev"]
+        started = install_couch_fakes(EMP_SINGLE, SITES_TWO)
+        srv = self._server()
+        try:
+            r = self._approve(srv, "draft_001", live_rev)
+        finally:
+            stop_all(started)
+
+        self.assertEqual(r.status, 200, r.text)
+        doc = self.double.docs["draft_001"]
+        self.assertEqual(doc["review_status"], "approved")
+        self.assertEqual(doc["job_type"], "log_supply_need")
+        self.assertEqual(doc["payload"], original_payload)
+        for field in ("route", "original_job_type", "original_payload", "routed_job_type", "routed_payload"):
+            self.assertNotIn(field, doc)
+        self.assertEqual(self.double.route_writes, [])
+
+    def test_route_open_issue_on_access_origin_overrides_to_site_issue(self) -> None:
+        doc = pending_draft(
+            "draft_access_issue",
+            job_type="flag_access_constraint",
+            payload={"site": "7060", "details": "No access, crew locked out by the gate."},
+            submitter_name="Casey Worker",
+        )
+        doc["message"] = "No access, crew locked out by the gate."
+        self.double.seed(doc)
+        live_rev = self.double.docs["draft_access_issue"]["_rev"]
+        body = json.dumps(
+            {
+                "draft_id": "draft_access_issue",
+                "_rev": live_rev,
+                "route": "open_issue",
+                "reason": "operator selected Open issue",
+            }
+        ).encode("utf-8")
+        started = install_couch_fakes(EMP_SINGLE, SITES_TWO)
+        srv = self._server()
+        try:
+            r = drive_inbox_request(
+                srv,
+                "POST",
+                "/api/inbox/approve",
+                headers={"Authorization": f"Bearer {self.token}"},
+                body=body,
+            )
+        finally:
+            stop_all(started)
+
+        self.assertEqual(r.status, 200, r.text)
+        self.assertEqual(r.json()["route"], "open_issue")
+        routed = self.double.docs["draft_access_issue"]
+        self.assertEqual(routed["job_type"], "log_site_issue")
+        self.assertEqual(routed["original_job_type"], "flag_access_constraint")
+        self.assertEqual(routed["original_payload"], {"site": "7060", "details": "No access, crew locked out by the gate."})
+        self.assertEqual(routed["route_chosen_by"], "per_unified01")
+        self.assertEqual(routed["route_rationale"], "operator selected Open issue")
+        payload = routed["payload"]
+        self.assertEqual(payload["category"], "access")
+        self.assertEqual(payload["reported_by"], "Casey Worker")
+        self.assertEqual(payload["client_notified"], False)
+        self.assertEqual(payload["priority"], "high")
+        self.assertEqual(payload["related_capture_ids"], ["cap_draft_access_issue"])
+        self.assertEqual(payload["related_candidate_ids"], ["draft_access_issue"])
+
+    def test_route_access_constraint_preserves_access_bucket(self) -> None:
+        doc = pending_draft(
+            "draft_access_constraint",
+            job_type="log_site_issue",
+            payload={"site_id": "7060", "title": "Access", "reported_by": "Casey Worker", "client_notified": False, "resolution_trigger": "done", "summary": "Door code is 1234."},
+        )
+        doc["message"] = "Door code is 1234 and lockbox is behind the office."
+        self.double.seed(doc)
+        live_rev = self.double.docs["draft_access_constraint"]["_rev"]
+        body = json.dumps({"draft_id": "draft_access_constraint", "_rev": live_rev, "route": "access_constraint"}).encode("utf-8")
+        started = install_couch_fakes(EMP_SINGLE, SITES_TWO)
+        srv = self._server()
+        try:
+            r = drive_inbox_request(
+                srv,
+                "POST",
+                "/api/inbox/approve",
+                headers={"Authorization": f"Bearer {self.token}"},
+                body=body,
+            )
+        finally:
+            stop_all(started)
+
+        self.assertEqual(r.status, 200, r.text)
+        routed = self.double.docs["draft_access_constraint"]
+        self.assertEqual(routed["job_type"], "flag_access_constraint")
+        self.assertEqual(routed["payload"], {"site": "7060", "details": "Door code is 1234 and lockbox is behind the office."})
+
+    def test_route_no_action_approves_without_overwriting_job_payload(self) -> None:
+        original_payload = {"site_id": "7060", "item_name": "trash bags", "requested_by": "Casey Worker"}
+        self.double.seed(pending_draft("draft_no_action", payload=original_payload))
+        live_rev = self.double.docs["draft_no_action"]["_rev"]
+        body = json.dumps({"draft_id": "draft_no_action", "_rev": live_rev, "route": "no_action"}).encode("utf-8")
+        started = install_couch_fakes(EMP_SINGLE, SITES_TWO)
+        srv = self._server()
+        try:
+            r = drive_inbox_request(
+                srv,
+                "POST",
+                "/api/inbox/approve",
+                headers={"Authorization": f"Bearer {self.token}"},
+                body=body,
+            )
+        finally:
+            stop_all(started)
+
+        self.assertEqual(r.status, 200, r.text)
+        doc = self.double.docs["draft_no_action"]
+        self.assertEqual(doc["review_status"], "approved")
+        self.assertEqual(doc["route"], "no_action")
+        self.assertEqual(doc["job_type"], "log_supply_need")
+        self.assertEqual(doc["payload"], original_payload)
+        self.assertEqual(doc["routed_job_type"], "")
+        self.assertEqual(doc["routed_payload"], {})
+
+    def test_invalid_route_returns_400_and_leaves_pending(self) -> None:
+        self.double.seed(pending_draft("draft_invalid_route"))
+        live_rev = self.double.docs["draft_invalid_route"]["_rev"]
+        body = json.dumps({"draft_id": "draft_invalid_route", "_rev": live_rev, "route": "mystery"}).encode("utf-8")
+        started = install_couch_fakes(EMP_SINGLE, SITES_TWO)
+        srv = self._server()
+        try:
+            r = drive_inbox_request(
+                srv,
+                "POST",
+                "/api/inbox/approve",
+                headers={"Authorization": f"Bearer {self.token}"},
+                body=body,
+            )
+        finally:
+            stop_all(started)
+
+        self.assertEqual(r.status, 400, r.text)
+        self.assertEqual(r.json(), {"error": "invalid_route"})
+        self.assertEqual(self.double.docs["draft_invalid_route"]["review_status"], "pending_approval")
+        self.assertEqual(self.double.status_writes, [])
+        self.assertEqual(self.double.route_writes, [])
+
     def test_reject_sets_rejected(self) -> None:
         self.double.seed(pending_draft("draft_001"))
         live_rev = self.double.docs["draft_001"]["_rev"]
@@ -800,6 +1003,56 @@ class InboxSiteLabelDegradeTests(_AdminInboxMixin, unittest.TestCase):
 
 
 class InboxApproveSetTests(_AdminInboxMixin, unittest.TestCase):
+    def test_approve_set_applies_per_item_routes(self) -> None:
+        self.double.seed(pending_draft("draft_supply", group_id="grp1", payload={"site_id": "7060", "item_name": "liners", "requested_by": "Casey Worker"}))
+        self.double.seed(pending_draft("draft_equipment", group_id="grp1", payload={"site_id": "7060", "equipment_name": "vacuum", "requested_by": "Casey Worker"}))
+        rev_supply = self.double.docs["draft_supply"]["_rev"]
+        rev_equipment = self.double.docs["draft_equipment"]["_rev"]
+        started = install_couch_fakes(EMP_SINGLE, SITES_TWO)
+        srv = self._server()
+        try:
+            r = self._approve_set(srv, [
+                {"draft_id": "draft_supply", "_rev": rev_supply, "checked": True, "route": "supply_need"},
+                {"draft_id": "draft_equipment", "_rev": rev_equipment, "checked": True, "route": "equipment_request"},
+            ])
+        finally:
+            stop_all(started)
+
+        self.assertEqual(r.status, 200, r.text)
+        body = r.json()
+        self.assertEqual(body.get("approved"), 2)
+        self.assertEqual(self.double.docs["draft_supply"]["job_type"], "log_supply_need")
+        self.assertEqual(self.double.docs["draft_supply"]["payload"]["item_name"], "liners")
+        self.assertEqual(self.double.docs["draft_supply"]["route"], "supply_need")
+        self.assertEqual(self.double.docs["draft_equipment"]["job_type"], "log_equipment_request")
+        self.assertEqual(self.double.docs["draft_equipment"]["payload"]["equipment_name"], "vacuum")
+        self.assertEqual(self.double.docs["draft_equipment"]["route"], "equipment_request")
+        by_id = {res["draft_id"]: res for res in body["results"]}
+        self.assertEqual(by_id["draft_supply"]["route"], "supply_need")
+        self.assertEqual(by_id["draft_equipment"]["route"], "equipment_request")
+
+    def test_approve_set_invalid_route_returns_400_without_partial_mutation(self) -> None:
+        self.double.seed(pending_draft("draft_a", group_id="grp1"))
+        self.double.seed(pending_draft("draft_b", group_id="grp1"))
+        rev_a = self.double.docs["draft_a"]["_rev"]
+        rev_b = self.double.docs["draft_b"]["_rev"]
+        started = install_couch_fakes(EMP_SINGLE, SITES_TWO)
+        srv = self._server()
+        try:
+            r = self._approve_set(srv, [
+                {"draft_id": "draft_a", "_rev": rev_a, "checked": True, "route": "supply_need"},
+                {"draft_id": "draft_b", "_rev": rev_b, "checked": True, "route": "bad_route"},
+            ])
+        finally:
+            stop_all(started)
+
+        self.assertEqual(r.status, 400, r.text)
+        self.assertEqual(r.json(), {"error": "invalid_route"})
+        self.assertEqual(self.double.docs["draft_a"]["review_status"], "pending_approval")
+        self.assertEqual(self.double.docs["draft_b"]["review_status"], "pending_approval")
+        self.assertEqual(self.double.status_writes, [])
+        self.assertEqual(self.double.route_writes, [])
+
     def test_approve_set_splits_checked_and_unchecked(self) -> None:
         # 3 drafts in one group: 2 checked -> approved, 1 unchecked -> rejected.
         self.double.seed(pending_draft("draft_a", group_id="grp1"))

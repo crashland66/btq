@@ -11,8 +11,14 @@ from event_pipeline.couchdb_job_draft_writer import (
     CouchDBJobDraftWriterError,
     get_job_draft,
     list_job_drafts,
+    set_job_draft_approval_route_and_review_status,
     set_job_draft_payload,
     set_job_draft_review_status,
+)
+from field_capture.approval_routes import (
+    build_approval_route_job,
+    is_valid_approval_route,
+    normalize_approval_route,
 )
 from queue_spec import validate_job
 
@@ -89,6 +95,7 @@ def apply_job_draft_review(
     *,
     expected_rev: str | None = None,
     rationale: str | None = None,
+    route: str | None = None,
 ) -> JobDraftReviewResult:
     draft_id_text = str(draft_id or "").strip()
     reviewer_text = str(reviewer or "").strip()
@@ -116,10 +123,43 @@ def apply_job_draft_review(
     if str(doc.get("type") or "") != "job_draft":
         return JobDraftReviewResult(draft_id_text, prior_status, False, "document type is not job_draft", current_rev or None)
 
+    route_text = normalize_approval_route(route)
+    if route_text and action_text == "reject":
+        return JobDraftReviewResult(draft_id_text, prior_status, False, "reject action cannot use approval route", current_rev or None)
+    if route_text and not is_valid_approval_route(route_text):
+        return JobDraftReviewResult(draft_id_text, prior_status, False, f"invalid approval route: {route_text}", current_rev or None)
+
     if action_text == "approve":
-        error = _validate_current_job_draft(doc)
-        if error:
-            return JobDraftReviewResult(draft_id_text, prior_status, False, error, current_rev or None)
+        if route_text:
+            job_type, payload, error = build_approval_route_job(doc, route_text, reviewer=reviewer_text)
+            if error:
+                return JobDraftReviewResult(draft_id_text, prior_status, False, error, current_rev or None)
+            route_rationale = str(rationale if rationale is not None else f"Approved via inbox route: {route_text}")
+            try:
+                updated = set_job_draft_approval_route_and_review_status(
+                    config,
+                    db,
+                    draft_id_text,
+                    route=route_text,
+                    job_type=job_type,
+                    payload=payload,
+                    reviewed_by=reviewer_text,
+                    rationale=str(rationale if rationale is not None else "No rationale provided."),
+                    route_rationale=route_rationale,
+                    expected_rev=expected_rev,
+                )
+            except AlreadyDecided:
+                latest = get_job_draft(config, db, draft_id_text)
+                latest_status = str(latest.get("review_status") or prior_status) if latest else prior_status
+                latest_rev = str(latest.get("_rev") or "") if latest else current_rev
+                return JobDraftReviewResult(draft_id_text, latest_status, True, None, latest_rev or None)
+            except CouchDBJobDraftWriterError as exc:
+                return JobDraftReviewResult(draft_id_text, prior_status, False, str(exc), current_rev or None)
+            return JobDraftReviewResult(draft_id_text, "approved", False, None, str(updated.get("_rev") or "") or None)
+        else:
+            error = _validate_current_job_draft(doc)
+            if error:
+                return JobDraftReviewResult(draft_id_text, prior_status, False, error, current_rev or None)
 
     target_status = "approved" if action_text == "approve" else "rejected"
     try:

@@ -17,8 +17,10 @@ from event_pipeline.couchdb_candidate_writer import AlreadyDecided, CouchDBCandi
 from event_pipeline.couchdb_job_draft_writer import (
     CouchDBJobDraftWriterError,
     get_job_draft,
+    set_job_draft_queue_no_action_at,
     set_job_draft_queue_materialized_at,
 )
+from field_capture.approval_routes import APPROVAL_ROUTE_NO_ACTION
 from event_pipeline.couchdb_worker import configure_worker_logger
 from queue_processor.couchdb_queue_watcher import _safe_doc_id
 from queue_spec import validate_job
@@ -152,6 +154,47 @@ def process_one(
         return {"draft_id": draft_id, "ok": True, "materialized": False, "error": "", "skipped": "already materialized"}
     if doc.get("queue_materialize_error"):
         return {"draft_id": draft_id, "ok": True, "materialized": False, "error": "", "skipped": "materialization previously failed"}
+    if doc.get("route") == APPROVAL_ROUTE_NO_ACTION:
+        if dry_run:
+            return {
+                "draft_id": draft_id,
+                "ok": True,
+                "materialized": False,
+                "error": "",
+                "skipped": "no_action",
+                "dry_run": True,
+            }
+        materialized_at = utc_now_iso()
+        try:
+            updated = set_job_draft_queue_no_action_at(
+                config,
+                db,
+                draft_id,
+                materialized_at=materialized_at,
+                expected_rev=doc_rev or None,
+            )
+        except AlreadyDecided:
+            latest = get_job_draft(config, db, draft_id)
+            if latest and latest.get("queue_materialized_at"):
+                return {
+                    "draft_id": draft_id,
+                    "ok": True,
+                    "materialized": False,
+                    "error": "",
+                    "skipped": "already materialized after conflict",
+                    "queue_materialized_as": str(latest.get("queue_materialized_as") or ""),
+                }
+            raise
+        return {
+            "draft_id": draft_id,
+            "ok": True,
+            "materialized": False,
+            "error": "",
+            "skipped": "no_action",
+            "new_rev": str(updated.get("_rev") or ""),
+            "queue_materialized_at": materialized_at,
+            "queue_materialized_as": "no_action",
+        }
     try:
         try:
             queue_path = materialize_draft_job(doc, runtime_root, dry_run=dry_run)

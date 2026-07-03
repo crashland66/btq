@@ -196,6 +196,72 @@ def _queue_files(runtime_root: Path) -> list[Path]:
     return sorted(p for p in qd.iterdir() if p.is_file() and p.suffix == ".json")
 
 
+def test_process_one_no_action_marks_without_queue_file(tmp_path, logger, monkeypatch) -> None:
+    calls: list[dict[str, object]] = []
+
+    def fake_mark(config, db, draft_id, *, materialized_at, expected_rev=None):
+        calls.append(
+            {
+                "config": config,
+                "db": db,
+                "draft_id": draft_id,
+                "materialized_at": materialized_at,
+                "expected_rev": expected_rev,
+            }
+        )
+        return {"_rev": "2-noaction", "queue_materialized_at": materialized_at, "queue_materialized_as": "no_action"}
+
+    monkeypatch.setattr(jdw, "set_job_draft_queue_no_action_at", fake_mark)
+    doc = {
+        "_rev": "1-noaction",
+        "type": "job_draft",
+        "draft_id": "draft-no-action",
+        "review_status": "approved",
+        "route": "no_action",
+        "job_type": "log_supply_need",
+        "payload": {"site_id": "7060", "item_name": "liners", "requested_by": "Casey"},
+    }
+
+    result = jdw.process_one(config=object(), db="db", doc=doc, runtime_root=tmp_path, logger=logger)
+
+    assert result["ok"] is True
+    assert result["materialized"] is False
+    assert result["skipped"] == "no_action"
+    assert result["queue_materialized_as"] == "no_action"
+    assert result["error"] == ""
+    assert calls and calls[0]["draft_id"] == "draft-no-action"
+    assert calls[0]["expected_rev"] == "1-noaction"
+    assert _queue_files(tmp_path) == []
+
+
+def test_process_one_no_action_dry_run_does_not_mark_or_write(tmp_path, logger, monkeypatch) -> None:
+    def fail_mark(*_args, **_kwargs):
+        raise AssertionError("dry-run no_action should not mark CouchDB")
+
+    monkeypatch.setattr(jdw, "set_job_draft_queue_no_action_at", fail_mark)
+    doc = {
+        "_rev": "1-noaction",
+        "type": "job_draft",
+        "draft_id": "draft-no-action",
+        "review_status": "approved",
+        "route": "no_action",
+        "job_type": "log_supply_need",
+        "payload": {"site_id": "7060", "item_name": "liners", "requested_by": "Casey"},
+    }
+
+    result = jdw.process_one(config=object(), db="db", doc=doc, runtime_root=tmp_path, logger=logger, dry_run=True)
+
+    assert result == {
+        "draft_id": "draft-no-action",
+        "ok": True,
+        "materialized": False,
+        "error": "",
+        "skipped": "no_action",
+        "dry_run": True,
+    }
+    assert _queue_files(tmp_path) == []
+
+
 # --------------------------------------------------------------------------- #
 # THE GATE — approved materializes, pending/rejected NEVER do (both ways).
 # --------------------------------------------------------------------------- #

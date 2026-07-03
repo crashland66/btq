@@ -158,6 +158,86 @@ def set_job_draft_review_status(
         raise CouchDBJobDraftWriterError(str(exc)) from exc
 
 
+def set_job_draft_approval_route_and_review_status(
+    config: couchdb_config.CouchDBConfig,
+    db: str,
+    draft_id: str,
+    *,
+    route: str,
+    job_type: str,
+    payload: dict[str, Any],
+    reviewed_by: str,
+    rationale: str,
+    route_rationale: str,
+    expected_rev: str | None = None,
+    expected_prior_statuses: set[str] | frozenset[str] | tuple[str, ...] = ("pending_approval",),
+) -> dict[str, Any]:
+    doc = get_job_draft(config, db, draft_id)
+    if doc is None:
+        raise CouchDBJobDraftWriterError(f"job_draft not found: {draft_id}")
+    current_rev = str(doc.get("_rev") or "")
+    if not current_rev:
+        raise CouchDBJobDraftWriterError(f"job_draft has no _rev: {draft_id}")
+    if expected_rev is not None and str(expected_rev) != current_rev:
+        raise AlreadyDecided(f"job_draft _rev changed: {draft_id}")
+    allowed_prior_statuses = {str(item) for item in expected_prior_statuses}
+    prior_status = str(doc.get("review_status") or "")
+    if allowed_prior_statuses and prior_status not in allowed_prior_statuses:
+        raise AlreadyDecided(f"job_draft already decided: {draft_id}")
+    if not isinstance(payload, dict):
+        raise CouchDBJobDraftWriterError("routed job_draft payload must be an object")
+
+    timestamp = datetime.now(timezone.utc).isoformat()
+    original_payload = doc.get("payload")
+    if not isinstance(original_payload, dict):
+        original_payload = {}
+    history = doc.get("review_history")
+    review_history = list(history) if isinstance(history, list) else []
+    review_history.append(
+        {
+            "reviewer": str(reviewed_by or ""),
+            "reviewed_at": timestamp,
+            "review_rationale": str(rationale or ""),
+            "prior_status": prior_status,
+            "review_status": "approved",
+            "route": str(route or ""),
+            "route_rationale": str(route_rationale or ""),
+        }
+    )
+
+    updated = dict(doc)
+    routed_job_type = str(job_type or "")
+    routed_payload = dict(payload)
+    if routed_job_type:
+        updated["job_type"] = routed_job_type
+        updated["payload"] = routed_payload
+    updated.update(
+        {
+            "original_job_type": str(doc.get("job_type") or ""),
+            "original_payload": dict(original_payload),
+            "routed_job_type": routed_job_type,
+            "routed_payload": routed_payload,
+            "route": str(route or ""),
+            "route_chosen_by": str(reviewed_by or ""),
+            "route_chosen_at": timestamp,
+            "route_rationale": str(route_rationale or ""),
+            "review_status": "approved",
+            "reviewed_at": timestamp,
+            "reviewed_by": str(reviewed_by or ""),
+            "reviewer": str(reviewed_by or ""),
+            "review_rationale": str(rationale or ""),
+            "prior_status": prior_status,
+            "review_history": review_history,
+        }
+    )
+    try:
+        return _put_document(config, db, str(updated["_id"]), updated, conflict_as_already_decided=True)
+    except AlreadyDecided:
+        raise
+    except CouchDBCandidateWriterError as exc:
+        raise CouchDBJobDraftWriterError(str(exc)) from exc
+
+
 def set_job_draft_payload(
     config: couchdb_config.CouchDBConfig,
     db: str,
@@ -233,6 +313,36 @@ def set_job_draft_queue_materialized_at(
         raise AlreadyDecided(f"job_draft _rev changed before queue materialization mark: {draft_id}")
     updated = dict(doc)
     updated["queue_materialized_at"] = materialized_at
+    try:
+        return _put_document(config, db, str(updated["_id"]), updated, conflict_as_already_decided=True)
+    except AlreadyDecided:
+        raise
+    except CouchDBCandidateWriterError as exc:
+        raise CouchDBJobDraftWriterError(str(exc)) from exc
+
+
+def set_job_draft_queue_no_action_at(
+    config: couchdb_config.CouchDBConfig,
+    db: str,
+    draft_id: str,
+    *,
+    materialized_at: str,
+    expected_rev: str | None = None,
+) -> dict[str, Any]:
+    doc = get_job_draft(config, db, draft_id)
+    if doc is None:
+        raise CouchDBJobDraftWriterError(f"job_draft not found: {draft_id}")
+    if doc.get("queue_materialized_at"):
+        raise AlreadyDecided(f"job_draft already queue-materialized: {draft_id}")
+    current_rev = str(doc.get("_rev") or "")
+    if not current_rev:
+        raise CouchDBJobDraftWriterError(f"job_draft has no _rev: {draft_id}")
+    if expected_rev is not None and str(expected_rev) != current_rev:
+        raise AlreadyDecided(f"job_draft _rev changed before queue no-action mark: {draft_id}")
+    updated = dict(doc)
+    updated["queue_materialized_at"] = materialized_at
+    updated["queue_materialized_as"] = "no_action"
+    updated["queue_no_action_at"] = materialized_at
     try:
         return _put_document(config, db, str(updated["_id"]), updated, conflict_as_already_decided=True)
     except AlreadyDecided:

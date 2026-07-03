@@ -41,6 +41,7 @@ from event_pipeline.couchdb_job_draft_writer import CouchDBJobDraftWriterError, 
 from event_pipeline.couchdb_registry import CouchDBSiteRegistry
 from field_capture import my_submissions as my_submissions_module
 from field_capture import photo_vision as photo_vision_module
+from field_capture.approval_routes import is_valid_approval_route, normalize_approval_route
 from field_capture.auth import AuthorizedSession, TokenStore, authorize_token
 from field_capture.job_draft_review import apply_job_draft_review
 from field_capture.photo_vision_couchdb import query_photo_vision_by_capture_ids
@@ -515,6 +516,10 @@ class UnifiedCaptureHandler(BaseHTTPRequestHandler):
         if not draft_id or not expected_rev:
             self.write_json({"error": "invalid_payload"}, HTTPStatus.BAD_REQUEST)
             return
+        route = normalize_approval_route(payload.get("route"))
+        if route and not is_valid_approval_route(route):
+            self.write_json({"error": "invalid_route"}, HTTPStatus.BAD_REQUEST)
+            return
         reason = payload.get("reason")
         result = apply_job_draft_review(
             couchdb_config,
@@ -524,6 +529,7 @@ class UnifiedCaptureHandler(BaseHTTPRequestHandler):
             reviewer=str(session.person.person_id),
             expected_rev=expected_rev,
             rationale=str(reason).strip() if reason is not None else None,
+            route=route,
         )
         if result.already_decided:
             self.write_json({"error": "already_decided"}, HTTPStatus.OK)
@@ -532,7 +538,10 @@ class UnifiedCaptureHandler(BaseHTTPRequestHandler):
             self.write_json({"error": "review_failed", "message": result.error}, HTTPStatus.BAD_REQUEST)
             return
         status = "approved" if action == "approve" else "rejected"
-        self.write_json({"ok": True, "draft_id": result.draft_id, "status": status}, HTTPStatus.OK)
+        response: dict[str, object] = {"ok": True, "draft_id": result.draft_id, "status": status}
+        if route:
+            response["route"] = route
+        self.write_json(response, HTTPStatus.OK)
 
     def handle_inbox_review_set(self) -> None:
         session = self.authorize_inbox_operator()
@@ -553,10 +562,7 @@ class UnifiedCaptureHandler(BaseHTTPRequestHandler):
             self.write_json({"error": "invalid_payload"}, HTTPStatus.BAD_REQUEST)
             return
 
-        results: list[dict[str, object]] = []
-        approved = 0
-        rejected = 0
-        already_decided = 0
+        normalized_entries: list[tuple[str, str, bool, str | None]] = []
         for entry in drafts:
             if not isinstance(entry, dict):
                 self.write_json({"error": "invalid_payload"}, HTTPStatus.BAD_REQUEST)
@@ -566,7 +572,17 @@ class UnifiedCaptureHandler(BaseHTTPRequestHandler):
             if not draft_id or not expected_rev:
                 self.write_json({"error": "invalid_payload"}, HTTPStatus.BAD_REQUEST)
                 return
-            checked = bool(entry.get("checked"))
+            route = normalize_approval_route(entry.get("route"))
+            if route and not is_valid_approval_route(route):
+                self.write_json({"error": "invalid_route"}, HTTPStatus.BAD_REQUEST)
+                return
+            normalized_entries.append((draft_id, expected_rev, bool(entry.get("checked")), route))
+
+        results: list[dict[str, object]] = []
+        approved = 0
+        rejected = 0
+        already_decided = 0
+        for draft_id, expected_rev, checked, route in normalized_entries:
             action = "approve" if checked else "reject"
             result = apply_job_draft_review(
                 couchdb_config,
@@ -576,12 +592,15 @@ class UnifiedCaptureHandler(BaseHTTPRequestHandler):
                 reviewer=str(session.person.person_id),
                 expected_rev=expected_rev,
                 rationale="Approved in PWA checklist." if checked else "Unchecked in PWA checklist.",
+                route=route,
             )
             result_payload: dict[str, object] = {
                 "draft_id": result.draft_id,
                 "action": action,
                 "status": "already_decided" if result.already_decided else result.review_status,
             }
+            if route:
+                result_payload["route"] = route
             if result.new_rev:
                 result_payload["_rev"] = result.new_rev
             if result.already_decided:
