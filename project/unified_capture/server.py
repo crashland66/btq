@@ -41,7 +41,16 @@ from event_pipeline.couchdb_job_draft_writer import CouchDBJobDraftWriterError, 
 from event_pipeline.couchdb_registry import CouchDBSiteRegistry
 from field_capture import my_submissions as my_submissions_module
 from field_capture import photo_vision as photo_vision_module
-from field_capture.approval_routes import is_valid_approval_route, normalize_approval_route
+from field_capture.approval_routes import (
+    APPROVAL_ROUTE_ACCESS_CONSTRAINT,
+    APPROVAL_ROUTE_EQUIPMENT_REQUEST,
+    APPROVAL_ROUTE_NO_ACTION,
+    APPROVAL_ROUTE_OPEN_ISSUE,
+    APPROVAL_ROUTE_SUPPLY_NEED,
+    DEFAULT_APPROVAL_ROUTE_BY_JOB_TYPE,
+    is_valid_approval_route,
+    normalize_approval_route,
+)
 from field_capture.auth import AuthorizedSession, TokenStore, authorize_token
 from field_capture.job_draft_review import apply_job_draft_review
 from field_capture.photo_vision_couchdb import query_photo_vision_by_capture_ids
@@ -80,6 +89,13 @@ PUBLIC_CONTENT_TYPES = {
 }
 IOS_BUNDLE_ID = "com.btq.fieldcapture"
 AASA_CONTENT_TYPE = "application/json"
+APPROVAL_ROUTE_OPTIONS = [
+    {"value": APPROVAL_ROUTE_OPEN_ISSUE, "label": "Open issue"},
+    {"value": APPROVAL_ROUTE_ACCESS_CONSTRAINT, "label": "Access constraint"},
+    {"value": APPROVAL_ROUTE_SUPPLY_NEED, "label": "Supply need"},
+    {"value": APPROVAL_ROUTE_EQUIPMENT_REQUEST, "label": "Equipment request"},
+    {"value": APPROVAL_ROUTE_NO_ACTION, "label": "No action"},
+]
 
 
 def apple_app_site_association_payload(environ: dict[str, str] | None = None) -> dict[str, object] | None:
@@ -495,7 +511,7 @@ class UnifiedCaptureHandler(BaseHTTPRequestHandler):
                 HTTPStatus.SERVICE_UNAVAILABLE,
             )
             return
-        self.write_json({"count": len(items), "items": items}, HTTPStatus.OK)
+        self.write_json({"count": len(items), "route_options": APPROVAL_ROUTE_OPTIONS, "items": items}, HTTPStatus.OK)
 
     def handle_inbox_review(self, action: str) -> None:
         session = self.authorize_inbox_operator()
@@ -696,6 +712,7 @@ class UnifiedCaptureHandler(BaseHTTPRequestHandler):
             "submitter_name": str(doc.get("submitter_name") or ""),
             "created_at": str(doc.get("created_at") or ""),
             "job_type": job_type,
+            "default_route": DEFAULT_APPROVAL_ROUTE_BY_JOB_TYPE.get(job_type, APPROVAL_ROUTE_OPEN_ISSUE),
             "payload": dict(payload),
         }
 

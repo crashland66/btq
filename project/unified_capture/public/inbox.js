@@ -9,13 +9,13 @@
  * Contract:
  *   GET  /api/session         -> { ..., can_review, inbox_count: N }
  *                                  (drives visibility and the badge)
- *   GET  /api/inbox           -> { count, items: [ { draft_id, _rev,
+ *   GET  /api/inbox           -> { count, route_options, items: [ { draft_id, _rev,
  *                                  source_capture_id, source, message,
  *                                  evidence, site, group_id, job_type,
- *                                  payload, created_at } ] }
- *   POST /api/inbox/approve   <- { draft_id, _rev }
+ *                                  default_route, payload, created_at } ] }
+ *   POST /api/inbox/approve   <- { draft_id, _rev, route? }
  *   POST /api/inbox/reject    <- { draft_id, _rev, reason? }
- *   POST /api/inbox/approve-set <- { drafts: [{ draft_id, _rev, checked }] }
+ *   POST /api/inbox/approve-set <- { drafts: [{ draft_id, _rev, checked, route? }] }
  *
  * Two contract obligations on the UI:
  *   1. Carry _rev from the item into the approve/reject POST (optimistic
@@ -58,7 +58,8 @@
   };
   if (!els.btn || !els.section || !els.mount) return; // markup not present
 
-  var state = { groups: [], index: 0, loading: false, canReview: false };
+  var state = { groups: [], index: 0, loading: false, canReview: false, routeOptions: [] };
+  var FALLBACK_ROUTE = "open_issue";
   els.btn.hidden = true;
 
   // ---- Token (read exactly as app.js does) --------------------------------
@@ -101,10 +102,11 @@
       .then(handleJson);
   }
 
-  function postDecision(kind, item, reason) {
+  function postDecision(kind, item, reason, route) {
     var body = { draft_id: item.draft_id, _rev: item._rev };
+    if (kind === "approve" && route) body.route = route;
     if (kind === "reject" && reason) body.reason = reason;
-    if (INBOX_USE_MOCK) return Promise.resolve(MOCK.decide(kind, item));
+    if (INBOX_USE_MOCK) return Promise.resolve(MOCK.decide(kind, item, body));
     return fetch(apiUrl("/api/inbox/" + kind), {
       method: "POST",
       headers: authHeaders({ "Content-Type": "application/json" }),
@@ -115,11 +117,15 @@
   function postDecisionSet(group, cardEl) {
     var entries = Array.prototype.slice.call(cardEl.querySelectorAll("input[data-draft-id]"));
     var drafts = entries.map(function (input) {
-      return {
+      var row = input.closest ? input.closest(".inbox-checkitem") : null;
+      var select = row ? row.querySelector("select[data-route-select]") : null;
+      var draft = {
         draft_id: input.getAttribute("data-draft-id"),
         _rev: input.getAttribute("data-rev"),
         checked: input.checked,
       };
+      if (input.checked && select && select.value) draft.route = select.value;
+      return draft;
     });
     if (INBOX_USE_MOCK) return Promise.resolve(MOCK.decideSet(group, drafts));
     return fetch(apiUrl("/api/inbox/approve-set"), {
@@ -181,6 +187,45 @@
   }
 
   var SOURCE_GLYPH = { voice: "🎙", photo: "📷", note: "✎" };
+
+  function normalizeRouteOptions(options) {
+    if (!Array.isArray(options)) return [];
+    return options.map(function (opt) {
+      return {
+        value: String(opt && opt.value ? opt.value : "").trim(),
+        label: String(opt && opt.label ? opt.label : opt && opt.value ? opt.value : "").trim(),
+      };
+    }).filter(function (opt) { return opt.value && opt.label; });
+  }
+
+  function defaultRoute(item) {
+    var value = String(item && item.default_route ? item.default_route : "").trim() || FALLBACK_ROUTE;
+    var options = state.routeOptions || [];
+    if (!options.length) return value;
+    return options.some(function (opt) { return opt.value === value; }) ? value : options[0].value;
+  }
+
+  function routeLabel(value) {
+    var found = (state.routeOptions || []).find(function (opt) { return opt.value === value; });
+    return found ? found.label : value;
+  }
+
+  function routeSelectHtml(item, disabled) {
+    var options = state.routeOptions || [];
+    if (!options.length) return "";
+    var selected = defaultRoute(item);
+    var draftId = String(item && item.draft_id ? item.draft_id : "");
+    return (
+      '<label class="inbox-route' + (disabled ? " is-disabled" : "") + '">' +
+        '<span>Destination</span>' +
+        '<select data-route-select data-draft-id="' + esc(draftId) + '"' + (disabled ? " disabled" : "") + ">" +
+          options.map(function (opt) {
+            return '<option value="' + esc(opt.value) + '"' + (opt.value === selected ? " selected" : "") + ">" + esc(opt.label) + "</option>";
+          }).join("") +
+        "</select>" +
+      "</label>"
+    );
+  }
 
   function payloadRows(payload) {
     var keys = Object.keys(payload || {});
@@ -259,12 +304,15 @@
           '<div class="inbox-checklist">' +
             items.map(function (draft) {
               return (
-                '<label class="inbox-checkitem">' +
-                  '<input type="checkbox" checked data-draft-id="' + esc(draft.draft_id) + '" data-rev="' + esc(draft._rev) + '">' +
-                  '<span><strong>' + esc(itemTitle(draft)) + "</strong>" +
-                  (itemSummary(draft) ? '<small>' + esc(itemSummary(draft)) + "</small>" : "") +
-                  "</span>" +
-                "</label>"
+                '<div class="inbox-checkitem">' +
+                  '<label class="inbox-checklabel">' +
+                    '<input type="checkbox" checked data-draft-id="' + esc(draft.draft_id) + '" data-rev="' + esc(draft._rev) + '">' +
+                    '<span><strong>' + esc(itemTitle(draft)) + "</strong>" +
+                    (itemSummary(draft) ? '<small>' + esc(itemSummary(draft)) + "</small>" : "") +
+                    "</span>" +
+                  "</label>" +
+                  routeSelectHtml(draft, false) +
+                "</div>"
               );
             }).join("") +
           "</div>" +
@@ -283,6 +331,15 @@
       groupCard.querySelectorAll("button[data-act]").forEach(function (b) {
         b.addEventListener("click", function () { decideGroup(group, b.getAttribute("data-act"), groupCard); });
       });
+      groupCard.querySelectorAll("input[data-draft-id]").forEach(function (input) {
+        input.addEventListener("change", function () {
+          var row = input.closest ? input.closest(".inbox-checkitem") : null;
+          var select = row ? row.querySelector("select[data-route-select]") : null;
+          var routeWrap = row ? row.querySelector(".inbox-route") : null;
+          if (select) select.disabled = !input.checked;
+          if (routeWrap) routeWrap.classList.toggle("is-disabled", !input.checked);
+        });
+      });
       return;
     }
 
@@ -295,6 +352,7 @@
         '<h3 class="inbox-title">' + esc(itemTitle(item)) + "</h3>" +
         (item.submitter_name ? '<p class="inbox-jobtype">' + esc(item.submitter_name) + "</p>" : "") +
         renderDraftDetail(item) +
+        routeSelectHtml(item, false) +
         '<p class="inbox-meta">' + esc(item.created_at || "") + "</p>" +
         '<div class="inbox-actions">' +
           '<button type="button" class="inbox-btn reject" data-act="reject">Reject</button>' +
@@ -331,8 +389,13 @@
     state.loading = true;
     if (cardEl) cardEl.classList.add(kind === "approve" ? "swiping-right" : "swiping-left");
     var reason = kind === "reject" ? "" : undefined; // reason optional; UI keeps it simple
+    var route = "";
+    if (kind === "approve" && cardEl) {
+      var select = cardEl.querySelector("select[data-route-select]");
+      route = select && select.value ? select.value : defaultRoute(item);
+    }
 
-    postDecision(kind, item, reason).then(function (result) {
+    postDecision(kind, item, reason, route).then(function (result) {
       state.loading = false;
       if (result && (result.status === "already_decided" || result.error === "already_decided")) {
         // Expected concurrency outcome -- another surface handled it. Don't
@@ -341,7 +404,7 @@
         advance();
         return;
       }
-      flash(kind === "approve" ? "Approved." : "Rejected.", "info");
+      flash(kind === "approve" ? "Approved -> " + routeLabel(route) + "." : "Rejected.", "info");
       advance();
     }).catch(function (err) {
       state.loading = false;
@@ -400,6 +463,7 @@
     state.loading = true;
     getInbox().then(function (data) {
       state.loading = false;
+      state.routeOptions = normalizeRouteOptions(data && data.route_options);
       state.groups = groupInboxItems((data && data.items) || []);
       state.index = 0;
       setBadge(data && typeof data.count === "number" ? data.count : state.groups.length);
@@ -462,6 +526,7 @@
         message: "Staffing risk: guard removed self from required group and no-showed.",
         evidence: "Jordan removed themselves from the required group and no-showed again.",
         job_type: "log_personnel_event",
+        default_route: "open_issue",
         payload: { employee: "Jordan", event_type: "attendance", summary: "Removed self from required group; no-show.", reported_by: "operator" },
       },
       {
@@ -470,6 +535,7 @@
         message: "Supply need: paper towels out in the east restroom.",
         evidence: "Photo shows empty dispenser.",
         job_type: "log_supply_need",
+        default_route: "supply_need",
         payload: { site_id: "7050", item_name: "Paper towels", requested_by: "operator" },
       },
       {
@@ -478,6 +544,7 @@
         message: "Note appended to site record.",
         evidence: "Front entrance mats need replacement.",
         job_type: "append_to_note",
+        default_route: "open_issue",
         payload: { path: "Accounts/7060.md", content: "Front entrance mats need replacement.", destination: "site_note" },
       },
       {
@@ -486,6 +553,7 @@
         message: "Checklist item: log site note.",
         evidence: "Three follow-up actions from one memo.",
         job_type: "append_to_note",
+        default_route: "open_issue",
         payload: { path: "Accounts/7050.md", content: "East gate needs follow-up.", destination: "site_note" },
       },
       {
@@ -494,8 +562,16 @@
         message: "Checklist item: log supply need.",
         evidence: "Three follow-up actions from one memo.",
         job_type: "log_supply_need",
+        default_route: "supply_need",
         payload: { site_id: "7050", item_name: "Traffic cones", requested_by: "operator" },
       },
+    ];
+    var routeOptions = [
+      { value: "open_issue", label: "Open issue" },
+      { value: "access_constraint", label: "Access constraint" },
+      { value: "supply_need", label: "Supply need" },
+      { value: "equipment_request", label: "Equipment request" },
+      { value: "no_action", label: "No action" },
     ];
     var decided = {};
     var CONFLICT_ID = "jd_mock_3"; // approving/rejecting this returns already_decided
@@ -503,15 +579,15 @@
       count: function () { return items.filter(function (i) { return !decided[i.draft_id]; }).length; },
       inbox: function () {
         var live = items.filter(function (i) { return !decided[i.draft_id]; });
-        return { count: live.length, items: live.map(function (i) { return JSON.parse(JSON.stringify(i)); }) };
+        return { count: live.length, route_options: routeOptions, items: live.map(function (i) { return JSON.parse(JSON.stringify(i)); }) };
       },
-      decide: function (kind, item) {
+      decide: function (kind, item, body) {
         if (item.draft_id === CONFLICT_ID) {
           decided[item.draft_id] = true; // it's gone now
           return { error: "already_decided", draft_id: item.draft_id };
         }
         decided[item.draft_id] = true;
-        return { status: kind === "approve" ? "approved" : "rejected", draft_id: item.draft_id };
+        return { status: kind === "approve" ? "approved" : "rejected", draft_id: item.draft_id, route: body && body.route };
       },
       decideSet: function (_group, drafts) {
         var approved = 0;

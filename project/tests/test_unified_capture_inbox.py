@@ -57,6 +57,13 @@ from event_pipeline.couchdb_job_draft_writer import (
     job_draft_doc_id,
     upsert_job_draft,
 )
+from field_capture.approval_routes import (
+    APPROVAL_ROUTE_ACCESS_CONSTRAINT,
+    APPROVAL_ROUTE_EQUIPMENT_REQUEST,
+    APPROVAL_ROUTE_NO_ACTION,
+    APPROVAL_ROUTE_OPEN_ISSUE,
+    APPROVAL_ROUTE_SUPPLY_NEED,
+)
 from unified_capture import server as uc_server
 from unified_capture.server import UnifiedCaptureHandler
 
@@ -565,7 +572,17 @@ class InboxListShapeTests(_AdminInboxMixin, unittest.TestCase):
             stop_all(started)
         self.assertEqual(r.status, 200, r.text)
         body = r.json()
-        self.assertEqual(set(body.keys()), {"count", "items"})
+        self.assertEqual(set(body.keys()), {"count", "route_options", "items"})
+        self.assertEqual(
+            body["route_options"],
+            [
+                {"value": APPROVAL_ROUTE_OPEN_ISSUE, "label": "Open issue"},
+                {"value": APPROVAL_ROUTE_ACCESS_CONSTRAINT, "label": "Access constraint"},
+                {"value": APPROVAL_ROUTE_SUPPLY_NEED, "label": "Supply need"},
+                {"value": APPROVAL_ROUTE_EQUIPMENT_REQUEST, "label": "Equipment request"},
+                {"value": APPROVAL_ROUTE_NO_ACTION, "label": "No action"},
+            ],
+        )
         self.assertEqual(body["count"], 2)
         self.assertEqual(len(body["items"]), 2)
 
@@ -576,7 +593,7 @@ class InboxListShapeTests(_AdminInboxMixin, unittest.TestCase):
             {
                 "draft_id", "_rev", "source_capture_id", "source", "message",
                 "evidence", "site", "site_id", "group_id", "submitter_name",
-                "created_at", "job_type", "payload",
+                "created_at", "job_type", "default_route", "payload",
             },
         )
         self.assertEqual(item["draft_id"], "draft_001")
@@ -587,12 +604,47 @@ class InboxListShapeTests(_AdminInboxMixin, unittest.TestCase):
         self.assertEqual(item["created_at"], "2026-06-01T10:00:00+00:00")
         self.assertEqual(item["group_id"], "draft_001")
         self.assertEqual(item["job_type"], "log_supply_need")
+        self.assertEqual(item["default_route"], APPROVAL_ROUTE_SUPPLY_NEED)
         self.assertEqual(item["payload"], VALID_JOB["payload"])
 
         # _rev MUST be the live doc rev (so concurrent mutate is gated).
         live_rev = self.double.docs["draft_001"]["_rev"]
         self.assertEqual(item["_rev"], live_rev)
         self.assertTrue(item["_rev"])
+
+    def test_inbox_default_route_matches_job_type_with_open_issue_fallback(self) -> None:
+        self.double.seed(
+            pending_draft(
+                "draft_access",
+                job_type="flag_access_constraint",
+                payload={"site": "7060", "details": "Gate code missing."},
+            )
+        )
+        self.double.seed(
+            pending_draft(
+                "draft_equipment",
+                job_type="log_equipment_request",
+                payload={"site_id": "7060", "equipment_name": "Vacuum", "requested_by": "Casey Worker"},
+            )
+        )
+        self.double.seed(
+            pending_draft(
+                "draft_unmapped",
+                job_type="append_to_note",
+                payload={"path": "Accounts/7060.md", "content": "Follow up.", "destination": "site_note"},
+            )
+        )
+        started = install_couch_fakes(EMP_SINGLE, SITES_TWO)
+        srv = self._server()
+        try:
+            r = self._list(srv)
+        finally:
+            stop_all(started)
+        self.assertEqual(r.status, 200, r.text)
+        by_id = {item["draft_id"]: item for item in r.json()["items"]}
+        self.assertEqual(by_id["draft_access"]["default_route"], APPROVAL_ROUTE_ACCESS_CONSTRAINT)
+        self.assertEqual(by_id["draft_equipment"]["default_route"], APPROVAL_ROUTE_EQUIPMENT_REQUEST)
+        self.assertEqual(by_id["draft_unmapped"]["default_route"], APPROVAL_ROUTE_OPEN_ISSUE)
 
     def test_draft_without_valid_job_is_excluded(self) -> None:
         self.double.seed(pending_draft("draft_ok"))
@@ -634,7 +686,19 @@ class InboxListShapeTests(_AdminInboxMixin, unittest.TestCase):
         finally:
             stop_all(started)
         self.assertEqual(r.status, 200, r.text)
-        self.assertEqual(r.json(), {"count": 0, "items": []})
+        body = r.json()
+        self.assertEqual(body["count"], 0)
+        self.assertEqual(body["items"], [])
+        self.assertEqual(
+            [option["value"] for option in body["route_options"]],
+            [
+                APPROVAL_ROUTE_OPEN_ISSUE,
+                APPROVAL_ROUTE_ACCESS_CONSTRAINT,
+                APPROVAL_ROUTE_SUPPLY_NEED,
+                APPROVAL_ROUTE_EQUIPMENT_REQUEST,
+                APPROVAL_ROUTE_NO_ACTION,
+            ],
+        )
 
 
 # --------------------------------------------------------------------------- #

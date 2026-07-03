@@ -1209,6 +1209,31 @@ textarea:focus {
 .inbox-payload th, .inbox-payload td { text-align: left; padding: 3px 6px; border-bottom: 1px solid var(--border); vertical-align: top; }
 .inbox-payload th { color: var(--muted); font-weight: 700; width: 38%; }
 
+.inbox-checklist { display: grid; gap: 12px; margin-top: 10px; }
+.inbox-checkitem {
+  display: grid; gap: 8px; padding: 10px;
+  border: 1px solid var(--border); border-radius: var(--radius);
+  background: var(--surface-strong);
+}
+.inbox-checklabel { display: flex; gap: 10px; align-items: flex-start; }
+.inbox-checklabel input { margin-top: 3px; min-width: 20px; min-height: 20px; }
+.inbox-checklabel strong { display: block; font-size: 14px; color: var(--text); }
+.inbox-checklabel small { display: block; margin-top: 3px; color: var(--muted); line-height: 1.35; }
+.inbox-route { display: grid; gap: 5px; margin-top: 10px; }
+.inbox-checkitem .inbox-route { margin-top: 0; }
+.inbox-route span {
+  color: var(--muted); font-size: 12px; font-weight: 800;
+  text-transform: uppercase; letter-spacing: 0;
+}
+.inbox-route select {
+  width: 100%; min-height: 46px; padding: 0 38px 0 12px;
+  border: 1px solid var(--border); border-radius: var(--radius);
+  background: var(--surface); color: var(--text);
+  font: inherit; font-size: 15px; font-weight: 700;
+}
+.inbox-route.is-disabled { opacity: .55; }
+.inbox-route select:disabled { cursor: not-allowed; }
+
 .inbox-actions { display: flex; gap: 10px; margin-top: 14px; }
 .inbox-btn.approve, .inbox-btn.reject, .inbox-actions .inbox-btn {
   flex: 1; min-height: 46px; border-radius: var(--radius); cursor: pointer;
