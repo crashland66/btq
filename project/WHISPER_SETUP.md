@@ -19,9 +19,18 @@ Useful options:
 
 ```sh
 ./scripts/whisper-watch --once
+./scripts/whisper-watch --once --whisper-mode local
 ./scripts/whisper-watch --model small
 ./scripts/whisper-watch --poll-seconds 10
 ```
+
+Backend modes:
+
+- `auto` uses `BTQ_WHISPER_URL` / `--whisper-url` when present, otherwise local subprocess Whisper.
+- `local` ignores any configured Whisper URL and runs the short-lived worker on this machine.
+- `remote` requires `BTQ_WHISPER_URL` / `--whisper-url` and is intended only for a LAN/tailnet Whisper appliance.
+
+The macOS LaunchAgent installer writes `BTQ_WHISPER_MODE=local` by default so the watcher does not depend on the Dell inference node being powered on.
 
 Before enabling the background service on a fresh machine, run:
 

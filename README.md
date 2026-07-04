@@ -488,6 +488,13 @@ cd project
 .venv/bin/python -m transcription_pipeline.main --once
 ```
 
+Whisper backend selection:
+
+- Default CLI behavior is `--whisper-mode auto`: use `BTQ_WHISPER_URL` / `--whisper-url` when present, otherwise run local subprocess Whisper.
+- Use `--whisper-mode local` when the Dell/remote Whisper appliance is offline. This ignores `BTQ_WHISPER_URL` and runs Whisper on the current machine.
+- Use `--whisper-mode remote --whisper-url http://<local-or-tailnet-host>:<port>` only when a local-network Whisper appliance is deliberately available.
+- The macOS `install-whisper-launch-agent` script defaults the background watcher to `BTQ_WHISPER_MODE=local`.
+
 What that actually does today:
 
 1. scans the configured inbox for stable audio files

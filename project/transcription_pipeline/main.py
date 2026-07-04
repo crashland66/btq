@@ -57,6 +57,7 @@ DEFAULT_FFMPEG_PATH_PREFIX = DEFAULT_CONFIG.ffmpeg_path_prefix
 DEFAULT_COMPARE_MODE = False
 DEFAULT_WORKER_TIMEOUT_SECONDS = 60 * 60
 DEFAULT_TRANSCRIPTION_WORKER_COUNT = 2
+DEFAULT_WHISPER_MODE = os.environ.get("BTQ_WHISPER_MODE", "auto").strip().lower() or "auto"
 # Whisper decoding hint. Operators supply their own site/customer/employee term
 # hints via the BTQ_WHISPER_INITIAL_PROMPT env var (set in the whisper-watch
 # launchd environment) so real names and customer identities never live in the
@@ -135,6 +136,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--stable-seconds", type=float, default=DEFAULT_STABLE_SECONDS)
     parser.add_argument("--worker-timeout-seconds", type=float, default=DEFAULT_WORKER_TIMEOUT_SECONDS)
     parser.add_argument("--worker-count", type=int, default=DEFAULT_TRANSCRIPTION_WORKER_COUNT)
+    parser.add_argument(
+        "--whisper-mode",
+        choices=("auto", "local", "remote"),
+        default=DEFAULT_WHISPER_MODE,
+        help=(
+            "Whisper backend selection. 'auto' uses --whisper-url/BTQ_WHISPER_URL when present; "
+            "'local' always runs the subprocess worker; 'remote' requires a Whisper URL."
+        ),
+    )
     parser.add_argument("--whisper-url", default=os.environ.get("BTQ_WHISPER_URL"))
     parser.add_argument("--no-voice-memo-intake", action="store_true", help="Skip the optional voice-memo CouchDB intake poll before scanning.")
     parser.add_argument("--once", action="store_true", help="Process one scan and exit.")
@@ -146,6 +156,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             args.worker_count,
         )
         args.worker_count = 1
+    if args.whisper_mode not in {"auto", "local", "remote"}:
+        parser.error("--whisper-mode must be one of: auto, local, remote")
     return args
 
 
@@ -1761,12 +1773,16 @@ def run(argv: list[str] | None = None) -> int:
             "vault_dir": DEFAULT_VAULT_ROOT,
         }
     )
+    whisper_url = str(args.whisper_url).strip() if args.whisper_url else None
+    use_remote_whisper = args.whisper_mode == "remote" or (args.whisper_mode == "auto" and whisper_url)
 
     def transcriber_factory() -> Callable[[Path], str]:
-        if args.whisper_url:
-            validate_local_whisper_url(args.whisper_url)
+        if use_remote_whisper:
+            if not whisper_url:
+                raise TranscriptionPipelineError("--whisper-mode remote requires --whisper-url or BTQ_WHISPER_URL")
+            validate_local_whisper_url(whisper_url)
             return RemoteWhisperTranscriber(
-                args.whisper_url,
+                whisper_url,
                 args.model,
                 timeout_seconds=args.worker_timeout_seconds,
                 logger=logger,
@@ -1786,10 +1802,13 @@ def run(argv: list[str] | None = None) -> int:
         logger.error("%s", exc)
         return 1
 
-    if args.whisper_url:
-        logger.info("transcription mode=remote url=%s", args.whisper_url)
+    if use_remote_whisper:
+        logger.info("transcription mode=remote url=%s whisper_mode=%s", whisper_url, args.whisper_mode)
     else:
-        logger.info("transcription mode=local-subprocess")
+        if whisper_url:
+            logger.info("transcription mode=local-subprocess whisper_mode=%s ignored_whisper_url=%s", args.whisper_mode, whisper_url)
+        else:
+            logger.info("transcription mode=local-subprocess whisper_mode=%s", args.whisper_mode)
 
     logger.info(
         "watching inbox=%s archive=%s local_root=%s local_runtime_dir=%s model=%s compare_mode=%s interval=%.1fs stable=%.1fs",

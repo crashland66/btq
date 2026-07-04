@@ -45,6 +45,8 @@ cat > "${PLIST_PATH}" <<EOF
     <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
     <key>BTQ_WHISPER_INITIAL_PROMPT</key>
     <string>${BTQ_WHISPER_INITIAL_PROMPT:-}</string>
+    <key>BTQ_WHISPER_MODE</key>
+    <string>${BTQ_WHISPER_MODE:-local}</string>
     <key>BTQ_VOICE_MEMO_SEMANTIC_ENGINE</key>
     <string>${BTQ_VOICE_MEMO_SEMANTIC_ENGINE:-ollama}</string>
     <key>BTQ_VOICE_MEMO_SEMANTIC_URL</key>

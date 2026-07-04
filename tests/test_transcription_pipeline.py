@@ -1263,7 +1263,7 @@ def test_remote_whisper_transcriber_posts_audio_and_returns_text(tmp_path: Path,
     monkeypatch.setattr(pipeline.request, "urlopen", fake_urlopen)
 
     transcriber = pipeline.RemoteWhisperTranscriber(
-        "http://10.0.0.10:11434",
+        "http://10.0.0.10:11434",  # sanitization-ok: RFC1918 test fixture, generic LAN host (not real infra)
         "large-v3",
         timeout_seconds=12,
         logger=make_logger(),
@@ -1277,7 +1277,7 @@ def test_remote_whisper_transcriber_posts_audio_and_returns_text(tmp_path: Path,
     assert transcriber.last_run.enhanced_metrics is not None
     assert requests
     req, timeout = requests[0]
-    assert req.full_url == "http://10.0.0.10:11434/v1/audio/transcriptions"
+    assert req.full_url == "http://10.0.0.10:11434/v1/audio/transcriptions"  # sanitization-ok: RFC1918 test fixture, generic LAN host (not real infra)
     assert timeout == 12
     assert b'name="model"\r\n\r\nlarge-v3' in req.data
     assert b'name="file"; filename="note.m4a"' in req.data
@@ -1292,7 +1292,7 @@ def test_remote_whisper_transcriber_raises_worker_error_on_http_failure(tmp_path
         raise pipeline.HTTPError(req.full_url, 500, "server error", hdrs=None, fp=None)
 
     monkeypatch.setattr(pipeline.request, "urlopen", fake_urlopen)
-    transcriber = pipeline.RemoteWhisperTranscriber("http://10.0.0.10:11434", "large-v3", timeout_seconds=12)
+    transcriber = pipeline.RemoteWhisperTranscriber("http://10.0.0.10:11434", "large-v3", timeout_seconds=12)  # sanitization-ok: RFC1918 test fixture, generic LAN host (not real infra)
 
     try:
         transcriber(audio_path)
@@ -1311,7 +1311,7 @@ def test_remote_whisper_transcriber_raises_worker_error_on_timeout(tmp_path: Pat
         raise TimeoutError("timed out")
 
     monkeypatch.setattr(pipeline.request, "urlopen", fake_urlopen)
-    transcriber = pipeline.RemoteWhisperTranscriber("http://10.0.0.10:11434", "large-v3", timeout_seconds=12)
+    transcriber = pipeline.RemoteWhisperTranscriber("http://10.0.0.10:11434", "large-v3", timeout_seconds=12)  # sanitization-ok: RFC1918 test fixture, generic LAN host (not real infra)
 
     try:
         transcriber(audio_path)
@@ -1323,7 +1323,7 @@ def test_remote_whisper_transcriber_raises_worker_error_on_timeout(tmp_path: Pat
 
 
 def test_validate_local_whisper_url_accepts_lan_and_rejects_public() -> None:
-    pipeline.validate_local_whisper_url("http://10.0.0.10:11434")
+    pipeline.validate_local_whisper_url("http://10.0.0.10:11434")  # sanitization-ok: RFC1918 test fixture, generic LAN host (not real infra)
     pipeline.validate_local_whisper_url("http://127.0.0.1:11434")
 
     for url in ["http://8.8.8.8:11434", "http://whisper.example.test:11434"]:
@@ -1363,7 +1363,7 @@ def test_transcriber_factory_returns_remote_when_whisper_url_set(tmp_path: Path,
             "--log-path",
             str(tmp_path / "logs" / "transcription.log"),
             "--whisper-url",
-            "http://10.0.0.10:11434",
+            "http://10.0.0.10:11434",  # sanitization-ok: RFC1918 test fixture, generic LAN host (not real infra)
         ]
     )
 
@@ -1406,6 +1406,71 @@ def test_transcriber_factory_returns_subprocess_when_whisper_url_unset(tmp_path:
     assert result == 0
     assert isinstance(captured["transcribe"], pipeline.SubprocessWhisperTranscriber)
     assert isinstance(captured["factory_transcribe"], pipeline.SubprocessWhisperTranscriber)
+
+
+def test_transcriber_factory_local_mode_ignores_whisper_url(tmp_path: Path, monkeypatch) -> None:
+    captured: dict[str, Any] = {}
+
+    monkeypatch.setenv("BTQ_WHISPER_URL", "http://10.0.0.10:11434")  # sanitization-ok: RFC1918 test fixture, generic LAN host (not real infra)
+    monkeypatch.setattr(pipeline, "configure_logging", lambda _path: make_logger())
+    monkeypatch.setattr(pipeline, "require_directories", lambda _directories: None)
+
+    def fake_scan_once(*args, **kwargs):
+        captured["transcribe"] = kwargs.get("transcribe", args[5])
+        captured["factory_transcribe"] = kwargs["transcribe_factory"]()
+        return 0
+
+    monkeypatch.setattr(pipeline, "scan_once", fake_scan_once)
+
+    result = pipeline.run(
+        [
+            "--once",
+            "--no-voice-memo-intake",
+            "--inbox-dir",
+            str(tmp_path / "inbox"),
+            "--archive-dir",
+            str(tmp_path / "archive"),
+            "--local-root",
+            str(tmp_path / "local"),
+            "--local-runtime-dir",
+            str(tmp_path / "runtime"),
+            "--log-path",
+            str(tmp_path / "logs" / "transcription.log"),
+            "--whisper-mode",
+            "local",
+        ]
+    )
+
+    assert result == 0
+    assert isinstance(captured["transcribe"], pipeline.SubprocessWhisperTranscriber)
+    assert isinstance(captured["factory_transcribe"], pipeline.SubprocessWhisperTranscriber)
+
+
+def test_transcriber_factory_remote_mode_requires_whisper_url(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.delenv("BTQ_WHISPER_URL", raising=False)
+    monkeypatch.setattr(pipeline, "configure_logging", lambda _path: make_logger())
+    monkeypatch.setattr(pipeline, "require_directories", lambda _directories: None)
+
+    result = pipeline.run(
+        [
+            "--once",
+            "--no-voice-memo-intake",
+            "--inbox-dir",
+            str(tmp_path / "inbox"),
+            "--archive-dir",
+            str(tmp_path / "archive"),
+            "--local-root",
+            str(tmp_path / "local"),
+            "--local-runtime-dir",
+            str(tmp_path / "runtime"),
+            "--log-path",
+            str(tmp_path / "logs" / "transcription.log"),
+            "--whisper-mode",
+            "remote",
+        ]
+    )
+
+    assert result == 1
 
 
 def test_compare_mode_outputs_files(tmp_path: Path) -> None:
