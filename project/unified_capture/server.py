@@ -486,11 +486,14 @@ class UnifiedCaptureHandler(BaseHTTPRequestHandler):
         session = self.authorize_token_from_request()
         if session is None:
             return None
-        # Worker-token-403 gate: inbox review endpoints are operator-only.
-        if session.record.token_type != "admin_viewer":
+        # Worker-token-403 gate: inbox review endpoints are site_admin-only.
+        if not self.can_review_inbox(session):
             self.write_json({"error": "not_authorized"}, HTTPStatus.FORBIDDEN)
             return None
         return session
+
+    def can_review_inbox(self, session: AuthorizedSession) -> bool:
+        return session.record.role == "site_admin"
 
     def handle_inbox(self) -> None:
         if self.authorize_inbox_operator() is None:
@@ -1031,10 +1034,10 @@ class UnifiedCaptureHandler(BaseHTTPRequestHandler):
                 self.session_site_payload(site, registry, default_categories, session.record.role) for site in session.sites
             ],
             "can_submit": session.record.can_submit,
-            "can_review": session.record.token_type == "admin_viewer",
+            "can_review": self.can_review_inbox(session),
             "max_images": int(getattr(self.server, "max_images", 6)),
         }
-        payload["inbox_count"] = self.inbox_count() if session.record.token_type == "admin_viewer" else 0
+        payload["inbox_count"] = self.inbox_count() if self.can_review_inbox(session) else 0
         self.write_json(payload, HTTPStatus.OK)
 
     def session_site_payload(

@@ -383,9 +383,9 @@ class InboxAuthTripwireTests(unittest.TestCase):
 
     def _admin_store(self):
         store, token = make_store(self.tmp.name, site_ids=["7060"])
-        # Re-issue an admin_viewer token for the same person in the same store.
+        # Re-issue a site_admin token for the same person in the same store.
         created = store.create_token(
-            person_id="per_unified01", label="admin", role="cleaner", token_type="admin_viewer", site_ids=["7060"]
+            person_id="per_unified01", label="admin", role="site_admin", token_type="capture", site_ids=["7060"]
         )
         return store, created.token_value
 
@@ -397,7 +397,7 @@ class InboxAuthTripwireTests(unittest.TestCase):
         )
         return store, created.token_value
 
-    def test_admin_viewer_can_list_approve_reject(self) -> None:
+    def test_site_admin_can_list_approve_reject(self) -> None:
         store, token = self._admin_store()
         started = install_couch_fakes(EMP_SINGLE, SITES_TWO)
         srv = self._server(store)
@@ -415,7 +415,7 @@ class InboxAuthTripwireTests(unittest.TestCase):
         finally:
             stop_all(started)
 
-    def test_admin_viewer_can_reject(self) -> None:
+    def test_site_admin_can_reject(self) -> None:
         store, token = self._admin_store()
         started = install_couch_fakes(EMP_SINGLE, SITES_TWO)
         srv = self._server(store)
@@ -432,8 +432,8 @@ class InboxAuthTripwireTests(unittest.TestCase):
         finally:
             stop_all(started)
 
-    def test_admin_viewer_can_approve_set(self) -> None:
-        # New operator route must be allowed for admin_viewer.
+    def test_site_admin_can_approve_set(self) -> None:
+        # New operator route must be allowed for site_admin.
         store, token = self._admin_store()
         started = install_couch_fakes(EMP_SINGLE, SITES_TWO)
         srv = self._server(store)
@@ -458,7 +458,7 @@ class InboxAuthTripwireTests(unittest.TestCase):
             uc_server, "apply_job_draft_review",
             side_effect=AssertionError("apply_job_draft_review reached by non-admin token"),
         )
-        for token_type in ("capture", "viewer", "client_viewer", "import"):
+        for token_type in ("capture", "viewer", "client_viewer", "import", "admin_viewer"):
             with self.subTest(token_type=token_type):
                 store, token = self._worker_store(token_type)
                 started = install_couch_fakes(EMP_SINGLE, SITES_TWO)
@@ -529,7 +529,7 @@ class _AdminInboxMixin:
         self.store = TokenStore(Path(self.tmp.name) / "tok.sqlite3")
         self.store.initialize()
         created = self.store.create_token(
-            person_id="per_unified01", label="admin", role="cleaner", token_type="admin_viewer", site_ids=["7060"]
+            person_id="per_unified01", label="admin", role="site_admin", token_type="capture", site_ids=["7060"]
         )
         self.token = created.token_value
         self.double = FakeJobDraftCouch()
@@ -1002,7 +1002,7 @@ class InboxCountTests(_AdminInboxMixin, unittest.TestCase):
 
     # ----- can_review gating on /api/session ------------------------------- #
 
-    def test_session_can_review_true_for_admin_viewer(self) -> None:
+    def test_session_can_review_true_for_site_admin(self) -> None:
         started = install_couch_fakes(EMP_SINGLE, SITES_TWO)
         srv = self._server()
         try:
@@ -1309,7 +1309,7 @@ class RealCouchInboxTests(unittest.TestCase):
         self.store = TokenStore(Path(self.tmp.name) / "tok.sqlite3")
         self.store.initialize()
         created = self.store.create_token(
-            person_id="per_unified01", label="admin", role="cleaner", token_type="admin_viewer", site_ids=["7060"]
+            person_id="per_unified01", label="admin", role="site_admin", token_type="capture", site_ids=["7060"]
         )
         self.token = created.token_value
 
