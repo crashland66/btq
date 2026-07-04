@@ -9,7 +9,7 @@ import pytest
 
 import field_capture.auth as auth_module
 from field_capture.auth import TokenStore, authorize_token, ensure_token_columns, token_hash, utc_now
-from field_capture.server import create_token
+from field_capture.server import build_parser, create_token
 from vault_errors import NotFoundError
 
 
@@ -489,11 +489,31 @@ def test_token_record_accepts_site_admin_role(tmp_path: Path) -> None:
     assert record.role == "site_admin"
 
 
+def test_token_record_accepts_read_only_role(tmp_path: Path) -> None:
+    store = TokenStore(tmp_path / "tokens.sqlite3")
+
+    created = store.create_token("jordan-avery", role="read_only")
+    record = store.get_token(created.record.token_id)
+
+    assert record is not None
+    assert record.role == "read_only"
+
+
 def test_token_create_rejects_unknown_role(tmp_path: Path) -> None:
     store = TokenStore(tmp_path / "tokens.sqlite3")
 
     with pytest.raises(ValueError):
         store.create_token("jordan-avery", role="superuser")
+
+
+def test_token_cli_accepts_read_only_role_choice() -> None:
+    parser = build_parser()
+
+    create_args = parser.parse_args(["token", "create", "--person", "jordan-avery", "--role", "read_only"])
+    edit_args = parser.parse_args(["token", "edit", "--token-id", "fct_1", "--role", "read_only"])
+
+    assert create_args.role == "read_only"
+    assert edit_args.role == "read_only"
 
 
 def test_legacy_token_record_has_none_token_value(tmp_path: Path) -> None:

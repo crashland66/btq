@@ -384,7 +384,7 @@ class FieldCaptureHandler(BaseHTTPRequestHandler):
                     "label": session.record.label,
                     "expires_at": session.record.expires_at,
                     "token_type": session.record.token_type,
-                    "can_submit": session.record.can_submit,
+                    "can_submit": session.record.can_submit and session.record.role != "read_only",
                     "can_view_site": session.record.can_view_site,
                     "role": session.record.role,
                 },
@@ -1112,6 +1112,8 @@ class FieldCaptureHandler(BaseHTTPRequestHandler):
         return session
 
     def validate_submit_authorization(self, session: AuthorizedSession, fields: dict[str, str]) -> None:
+        if session.record.role == "read_only":
+            raise SubmissionError(HTTPStatus.FORBIDDEN, "submit_not_allowed", "This token cannot submit captures")
         if not session.record.can_submit:
             raise SubmissionError(HTTPStatus.FORBIDDEN, "submit_not_allowed", "This token cannot submit captures")
         site_id = fields.get("site_id", "").strip()
@@ -1738,7 +1740,7 @@ def build_parser() -> argparse.ArgumentParser:
     create_parser.add_argument("--label", default="", help="Operational label, such as device owner.")
     create_parser.add_argument("--expires-at", help="Optional ISO timestamp. Example: 2026-06-01T00:00:00Z")
     create_parser.add_argument("--viewer-only", action="store_true", help="Create a token that can view assigned sites but cannot submit captures.")
-    create_parser.add_argument("--role", choices=["cleaner", "site_admin"], default="cleaner", help="Capture role for category access.")
+    create_parser.add_argument("--role", choices=["cleaner", "site_admin", "read_only"], default="cleaner", help="Capture role for category access.")
     create_parser.add_argument("--token-type", choices=["capture", "viewer", "client_viewer", "admin_viewer", "import"], help="Operational token type metadata.")
     create_parser.add_argument("--site-id", action="append", help="Optional explicit site scope. Repeat for multiple sites.")
     create_parser.add_argument("--all-sites", action="store_true", help="Give this token universal site scope.")
@@ -1750,7 +1752,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     edit_parser = token_subparsers.add_parser("edit", help="Edit mutable token metadata without rotating the secret.")
     edit_parser.add_argument("--token-id", required=True)
-    edit_parser.add_argument("--role", choices=["cleaner", "site_admin"])
+    edit_parser.add_argument("--role", choices=["cleaner", "site_admin", "read_only"])
     edit_parser.add_argument("--add-site", action="append", help="Add a site id to the token scope. Repeat for multiple sites.")
     edit_parser.add_argument("--remove-site", action="append", help="Remove a site id from the token scope. Repeat for multiple sites.")
     edit_parser.add_argument("--all-sites", action="store_true", help="Replace scope with universal site access.")

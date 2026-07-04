@@ -120,6 +120,15 @@ def test_post_retarget_requires_site_admin_role(tmp_path: Path, monkeypatch: pyt
     assert body["error"] == "role_not_allowed"
 
 
+def test_post_retarget_rejects_read_only_role(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    server, token, _runtime = build_server(tmp_path, monkeypatch, role="read_only")
+
+    status, body = request(server, token, "POST", "/api/retarget", {"capture_id": "cap-1", "new_target_type": "location", "new_target_id": "7050"})
+
+    assert status == HTTPStatus.FORBIDDEN
+    assert body["error"] == "role_not_allowed"
+
+
 def test_post_retarget_returns_202_and_writes_queue_job(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     server, token, runtime = build_server(tmp_path, monkeypatch)
     patch_capture(monkeypatch, capture_doc())

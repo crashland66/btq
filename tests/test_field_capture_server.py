@@ -584,6 +584,65 @@ def test_submit_rejects_baseline_category_from_cleaner_token(tmp_path: Path, mon
     assert json.loads(response_body)["error"] == "category_not_allowed"
 
 
+def test_submit_rejects_read_only_token_even_when_can_submit_true(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    app, store, vault_root = start_field_capture_server(tmp_path)
+    write_vault_site(vault_root, "7050", "Summit Wire")
+    write_vault_person(vault_root, person_id="jordan-avery", name="Avery, Jordan", job="7050")
+    token = store.create_token("jordan-avery", site_ids=["7050"], role="read_only", can_submit=True)
+    monkeypatch.setattr("field_capture.server.load_system_defaults", lambda: {})
+    body, content_type = multipart_body(
+        valid_submit_fields("Restrooms"),
+        [("photos", "sink.jpg", "image/jpeg", b"\xff\xd8photo")],
+    )
+
+    status, _headers, response_body = app.submit(token.token_value, body, content_type)
+
+    assert status == 403
+    assert json.loads(response_body)["error"] == "submit_not_allowed"
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        valid_submit_fields("baseline"),
+        {
+            **valid_submit_fields("Restrooms"),
+            "site": "KMF Birch Ave",
+            "site_id": "",
+            "target_type": "prospect",
+            "target_id": "kmf-birch-1",
+        },
+    ],
+)
+def test_read_only_submit_denies_operator_qc_and_prospect_inputs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fields: dict[str, str]) -> None:
+    app, store, vault_root = start_field_capture_server(tmp_path)
+    write_vault_site(vault_root, "7050", "Summit Wire")
+    write_vault_person(vault_root, person_id="jordan-avery", name="Avery, Jordan", job="7050")
+    token = store.create_token("jordan-avery", site_ids=["7050"], role="read_only", can_submit=True)
+    monkeypatch.setattr("field_capture.server.load_system_defaults", lambda: {})
+    body, content_type = multipart_body(fields, [("photos", "sink.jpg", "image/jpeg", b"\xff\xd8photo")])
+
+    status, _headers, response_body = app.submit(token.token_value, body, content_type)
+
+    assert status == 403
+    assert json.loads(response_body)["error"] == "submit_not_allowed"
+
+
+def test_read_only_session_reports_effective_non_submitter(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    app, store, vault_root = start_field_capture_server(tmp_path)
+    write_vault_site(vault_root, "7050", "Summit Wire")
+    write_vault_person(vault_root, person_id="jordan-avery", name="Avery, Jordan", job="7050")
+    token = store.create_token("jordan-avery", site_ids=["7050"], role="read_only", can_submit=True)
+    monkeypatch.setattr("field_capture.server.load_system_defaults", lambda: {})
+
+    status, _headers, body = app.request("GET", f"/api/session?token={token.token_value}")
+
+    assert status == 200
+    payload = json.loads(body)
+    assert payload["token"]["role"] == "read_only"
+    assert payload["token"]["can_submit"] is False
+
+
 def test_server_audio_extensions_are_subset_of_worker_supported() -> None:
     accepted = {ext for exts in AUDIO_ALLOWED_EXTENSIONS.values() for ext in exts}
     missing = accepted - SUPPORTED_EXTENSIONS

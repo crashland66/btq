@@ -191,7 +191,7 @@ def authenticate_request(
     record = token_store.authenticate(token)
     if record is None:
         return AuthResult(None, HTTPStatus.UNAUTHORIZED, "The reporting token is invalid or expired.")
-    if not record.can_view_site or record.role not in {"site_admin"}:
+    if not record.can_view_site or record.role not in {"site_admin", "read_only"}:
         return AuthResult(None, HTTPStatus.FORBIDDEN, "The token is not authorized for this reporting view. A site_admin token is required.")
     return AuthResult(record, HTTPStatus.OK, "", query_token=query_token)
 

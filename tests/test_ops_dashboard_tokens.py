@@ -143,6 +143,26 @@ def test_edit_form_renders_with_current_values(tmp_path: Path) -> None:
     assert "S1\nS2" in body
 
 
+def test_new_form_renders_read_only_role_radio(monkeypatch) -> None:
+    monkeypatch.setattr(tokens, "load_employees", lambda: [])
+
+    body = tokens.render_new_form({})
+
+    assert '<fieldset><legend>Role</legend>' in body
+    assert 'name="role" value="read_only"' in body
+    assert "> Read-only</label>" in body
+
+
+def test_edit_form_renders_read_only_role_selected(tmp_path: Path) -> None:
+    runtime_root = tmp_path / "runtime"
+    created = create_token(runtime_root, role="read_only", token_type="admin_viewer", site_ids=["S1"])
+
+    body = request_text("GET", f"/tokens/edit?token_id={created.record.token_id}", runtime_root)[2]
+
+    assert 'name="role" value="read_only" checked' in body
+    assert "> Read-only</label>" in body
+
+
 def test_handle_edit_post_updates_token_and_redirects(tmp_path: Path, monkeypatch) -> None:
     runtime_root = tmp_path / "runtime"
     created = create_token(runtime_root, role="cleaner", token_type="capture")
@@ -167,6 +187,43 @@ def test_handle_edit_post_updates_token_and_redirects(tmp_path: Path, monkeypatc
     record = TokenStore(runtime_root / "field_capture_tokens.sqlite3").get_token(created.record.token_id)
     assert record is not None
     assert record.role == "site_admin"
+
+
+def test_handle_new_post_persists_read_only_role_with_site_view(tmp_path: Path) -> None:
+    runtime_root = tmp_path / "runtime"
+
+    status, _content_type, _body, headers = route_response_with_headers(
+        "POST",
+        "/tokens/new",
+        runtime_root,
+        b"person_id=per_admin&label=Reports&token_type=admin_viewer&role=read_only&site_ids=*",
+    )
+
+    token_id = parse_qs(urlsplit(headers["Location"]).query)["token_id"][0]
+    record = TokenStore(runtime_root / "field_capture_tokens.sqlite3").get_token(token_id)
+    assert status == HTTPStatus.SEE_OTHER
+    assert record is not None
+    assert record.role == "read_only"
+    assert record.can_view_site is True
+
+
+def test_handle_edit_post_persists_read_only_role_with_site_view(tmp_path: Path) -> None:
+    runtime_root = tmp_path / "runtime"
+    created = create_token(runtime_root, role="cleaner", token_type="capture", can_view_site=False)
+
+    status, _content_type, _body, headers = route_response_with_headers(
+        "POST",
+        "/tokens/edit",
+        runtime_root,
+        f"token_id={created.record.token_id}&role=read_only&token_type=admin_viewer&site_ids=*".encode(),
+    )
+
+    record = TokenStore(runtime_root / "field_capture_tokens.sqlite3").get_token(created.record.token_id)
+    assert status == HTTPStatus.SEE_OTHER
+    assert headers["Location"] == f"/tokens?token_id={created.record.token_id}&edited=1"
+    assert record is not None
+    assert record.role == "read_only"
+    assert record.can_view_site is True
 
 
 def test_handle_edit_post_propagates_sync_failure_to_redirect(tmp_path: Path, monkeypatch) -> None:

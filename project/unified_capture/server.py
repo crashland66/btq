@@ -829,6 +829,8 @@ class UnifiedCaptureHandler(BaseHTTPRequestHandler):
         )
 
     def validate_submit_authorization(self, session: object, fields: dict[str, str]) -> None:
+        if session.record.role == "read_only":
+            raise SubmissionError(HTTPStatus.FORBIDDEN, "submit_not_allowed", "This token cannot submit captures")
         if not session.record.can_submit:
             raise SubmissionError(HTTPStatus.FORBIDDEN, "submit_not_allowed", "This token cannot submit captures")
         site_id = fields.get("site_id", "").strip()
@@ -1033,7 +1035,7 @@ class UnifiedCaptureHandler(BaseHTTPRequestHandler):
             "sites": [
                 self.session_site_payload(site, registry, default_categories, session.record.role) for site in session.sites
             ],
-            "can_submit": session.record.can_submit,
+            "can_submit": session.record.can_submit and session.record.role != "read_only",
             "can_review": self.can_review_inbox(session),
             "max_images": int(getattr(self.server, "max_images", 6)),
         }

@@ -23,6 +23,7 @@ RAW_TOKEN_TTL_SECONDS = 300
 TOKEN_SYNC_SSH_TARGET = os.environ.get("BTQ_VPS_SSH_TARGET", "deploy@vps.example.com")
 TOKEN_SYNC_REMOTE_WORKDIR = "/srv/btq/apps/field-capture/project"
 TOKEN_SYNC_REMOTE_DB = "/srv/btq/data/field_capture_tokens.sqlite3"
+ROLE_OPTIONS = (("cleaner", "Cleaner"), ("site_admin", "Site Admin"), ("read_only", "Read-only"))
 
 
 def token_store(root: Path) -> TokenStore:
@@ -35,10 +36,21 @@ def bool_label(value: bool) -> str:
 
 def render_role_cell(value: object, _row: dict[str, object]) -> str:
     role = str(value or "cleaner")
-    label = humanize_key(role)
+    label = role_label(role)
     if role == "site_admin":
         return f'<span class="pill success">{html.escape(label)}</span>'
     return f'<span class="pill">{html.escape(label)}</span>'
+
+
+def role_label(role: str) -> str:
+    return dict(ROLE_OPTIONS).get(role, humanize_key(role))
+
+
+def role_radio(current: str) -> str:
+    return "".join(
+        f'<label><input type="radio" name="role" value="{html.escape(value)}" {"checked" if current == value else ""}> {html.escape(label)}</label>'
+        for value, label in ROLE_OPTIONS
+    )
 
 
 def short_token_id(token_id: str) -> str:
@@ -242,8 +254,8 @@ def render_new_form(query: dict[str, list[str]] | None = None) -> str:
         <label><input type="radio" name="token_type" value="client_viewer"> Client Viewer</label>
         <label><input type="radio" name="token_type" value="admin_viewer"> Admin Viewer</label>
         <label><input type="radio" name="token_type" value="import"> Import</label>
-        <label>Role <select name="role"><option value="cleaner" selected>Cleaner</option><option value="site_admin">Site Admin</option></select></label>
-        <p class="muted">Use Site Admin for operator capture tokens that need QC, Baseline, or Pre-Engagement categories.</p>
+        <fieldset><legend>Role</legend>{role_radio("cleaner")}</fieldset>
+        <p class="muted">Use Site Admin for operator capture tokens that need QC, Baseline, or Pre-Engagement categories. Use Read-only for reporting links that must not submit captures.</p>
         <label><input type="checkbox" name="can_submit" value="1" checked> Can Submit</label>
         <label><input type="checkbox" name="can_view_site" value="1" checked> Can View Site</label>
         <label>Site IDs <textarea name="site_ids">*</textarea></label>
@@ -273,7 +285,7 @@ def render_edit_form(ctx: object) -> str:
         """
         return html_page("Edit Token", body, active_section="tokens")
     site_ids = "\n".join(record.site_ids)
-    role_radios = radio("role", record.role, ["cleaner", "site_admin"])
+    role_radios = role_radio(record.role)
     token_type_radios = radio("token_type", record.token_type, ["capture", "viewer", "client_viewer", "admin_viewer", "import"])
     body = f"""
     <header><h1>Edit Token</h1><p class="muted">Updates token scope and role without rotating the secret.</p></header>
@@ -524,6 +536,7 @@ def handle_new_post(ctx: object, body: bytes):
     form = parse_qs(body.decode("utf-8", errors="replace"), keep_blank_values=True)
     person_id = first_query_value(form, "person_id").strip()
     label = first_query_value(form, "label").strip()
+    role = first_query_value(form, "role") or "cleaner"
     try:
         if not person_id:
             raise ValueError("person_id_required")
@@ -534,8 +547,8 @@ def handle_new_post(ctx: object, body: bytes):
             label=label,
             expires_at=parse_timestamp(first_query_value(form, "expires_at")),
             can_submit=first_query_value(form, "can_submit") == "1",
-            can_view_site=first_query_value(form, "can_view_site") == "1",
-            role=first_query_value(form, "role") or "cleaner",
+            can_view_site=role == "read_only" or first_query_value(form, "can_view_site") == "1",
+            role=role,
             token_type=first_query_value(form, "token_type") or "capture",
             site_ids=parse_site_ids(first_query_value(form, "site_ids")),
         )
@@ -555,13 +568,14 @@ def handle_edit_post(ctx: object, body: bytes):
     form = parse_qs(body.decode("utf-8", errors="replace"), keep_blank_values=True)
     token_id = first_query_value(form, "token_id").strip()
     store = token_store(root)
+    role = first_query_value(form, "role") or "cleaner"
     try:
         updated = store.update_token(
             token_id,
-            role=first_query_value(form, "role") or "cleaner",
+            role=role,
             site_ids=parse_site_ids(first_query_value(form, "site_ids")),
             can_submit=first_query_value(form, "can_submit") == "1",
-            can_view_site=first_query_value(form, "can_view_site") == "1",
+            can_view_site=role == "read_only" or first_query_value(form, "can_view_site") == "1",
             token_type=first_query_value(form, "token_type") or "capture",
         )
         if updated is None:

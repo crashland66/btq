@@ -28,6 +28,16 @@ def test_update_token_changes_role_only(tmp_path: Path) -> None:
     assert updated.can_view_site == before.can_view_site
 
 
+def test_update_token_accepts_read_only_role(tmp_path: Path) -> None:
+    store = create_store(tmp_path)
+    created = store.create_token("per_alice")
+
+    updated = store.update_token(created.record.token_id, role="read_only")
+
+    assert updated is not None
+    assert updated.role == "read_only"
+
+
 def test_update_token_changes_site_ids(tmp_path: Path) -> None:
     store = create_store(tmp_path)
     created = store.create_token("per_alice", site_ids=["S1"])

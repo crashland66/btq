@@ -20,7 +20,7 @@ from typing import Iterable
 
 
 UNIVERSAL_SITE_SCOPE = "*"
-ALLOWED_ROLES = ("cleaner", "site_admin")
+ALLOWED_ROLES = ("cleaner", "site_admin", "read_only")
 DEFAULT_ROLE = "cleaner"
 
 

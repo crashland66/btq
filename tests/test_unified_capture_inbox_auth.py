@@ -125,6 +125,37 @@ def draft_doc(draft_id: str) -> dict[str, object]:
     }
 
 
+def multipart_body(fields: dict[str, str], files: list[tuple[str, str, str, bytes]]) -> tuple[bytes, str]:
+    boundary = "----btq-unified-capture-read-only-test"
+    chunks: list[bytes] = []
+    for name, value in fields.items():
+        chunks.append(f"--{boundary}\r\n".encode("utf-8"))
+        chunks.append(f'Content-Disposition: form-data; name="{name}"\r\n\r\n'.encode("utf-8"))
+        chunks.append(value.encode("utf-8"))
+        chunks.append(b"\r\n")
+    for name, filename, content_type, content in files:
+        chunks.append(f"--{boundary}\r\n".encode("utf-8"))
+        chunks.append(f'Content-Disposition: form-data; name="{name}"; filename="{filename}"\r\n'.encode("utf-8"))
+        chunks.append(f"Content-Type: {content_type}\r\n\r\n".encode("utf-8"))
+        chunks.append(content)
+        chunks.append(b"\r\n")
+    chunks.append(f"--{boundary}--\r\n".encode("utf-8"))
+    return b"".join(chunks), f"multipart/form-data; boundary={boundary}"
+
+
+def valid_submit_fields() -> dict[str, str]:
+    return {
+        "job_id": "2026-07-04T09-00-00-04-00__photo-capture-summit-wire",
+        "capture_id": "cap-read-only",
+        "site": "Summit Wire",
+        "site_id": "7050",
+        "qc_category": "Restrooms",
+        "note": "Sink checked.",
+        "captured_at": "2026-07-04T09:00:00-04:00",
+        "exported_at": "2026-07-04T09:01:00-04:00",
+    }
+
+
 def test_site_admin_capture_token_can_review_inbox_and_get_count(tmp_path: Path, monkeypatch) -> None:
     server, token_store = build_server(tmp_path, monkeypatch)
     token = token_store.create_token("jordan-avery", role="site_admin", token_type="capture", site_ids=["7050"])
@@ -173,3 +204,52 @@ def test_cleaner_token_type_admin_viewer_cannot_review_inbox(tmp_path: Path, mon
         status, _headers, response_body = request(server, method, path, token=token.token_value, body=body)
         assert status == 403
         assert json.loads(response_body) == {"error": "not_authorized"}
+
+
+def test_read_only_token_cannot_review_inbox(tmp_path: Path, monkeypatch) -> None:
+    server, token_store = build_server(tmp_path, monkeypatch)
+    token = token_store.create_token("jordan-avery", role="read_only", token_type="admin_viewer", site_ids=["7050"])
+
+    session_status, _session_headers, session_body = request(server, "GET", "/api/session", token=token.token_value)
+    assert session_status == 200
+    session_payload = json.loads(session_body)
+    assert session_payload["can_review"] is False
+    assert session_payload["can_submit"] is False
+    assert session_payload["inbox_count"] == 0
+    assert session_payload["token"]["role"] == "read_only"
+
+    status, _headers, response_body = request(server, "GET", "/api/inbox", token=token.token_value)
+
+    assert status == 403
+    assert json.loads(response_body) == {"error": "not_authorized"}
+
+
+def test_unified_submit_rejects_read_only_token_even_when_can_submit_true(tmp_path: Path, monkeypatch) -> None:
+    server, token_store = build_server(tmp_path, monkeypatch)
+    token = token_store.create_token("jordan-avery", role="read_only", can_submit=True, site_ids=["7050"])
+    body, content_type = multipart_body(
+        valid_submit_fields(),
+        [("photos", "sink.jpg", "image/jpeg", b"\xff\xd8photo")],
+    )
+
+    handler = object.__new__(UnifiedCaptureHandler)
+    handler.server = server
+    handler.rfile = io.BytesIO(body)
+    handler.wfile = io.BytesIO()
+    handler.client_address = ("127.0.0.1", 0)
+    handler.requestline = "POST /api/submit HTTP/1.1"
+    handler.request_version = "HTTP/1.1"
+    handler.command = "POST"
+    handler.path = "/api/submit"
+    handler.close_connection = True
+    headers = Message()
+    headers["Authorization"] = f"Bearer {token.token_value}"
+    headers["Content-Type"] = content_type
+    headers["Content-Length"] = str(len(body))
+    handler.headers = headers
+
+    handler.do_POST()
+
+    status, _headers, response_body = parse_handler_response(handler.wfile.getvalue())
+    assert status == 403
+    assert json.loads(response_body)["error"] == "submit_not_allowed"
