@@ -453,6 +453,17 @@ struct CaptureNotebookView: View {
                             .disabled(!canEditDraft)
                             .accessibilityLabel("Photo note for \(photo.filename)")
                     }
+                    Button(role: .destructive) {
+                        removePendingPhoto(photo)
+                    } label: {
+                        Image(systemName: "trash")
+                            .font(.body)
+                            .foregroundStyle(.red)
+                            .frame(width: 44, height: 44) // comfortable tap target
+                    }
+                    .buttonStyle(.borderless)
+                    .disabled(!canEditDraft)
+                    .accessibilityLabel("Delete this photo")
                 }
                 .accessibilityElement(children: .contain)
             }
@@ -728,6 +739,21 @@ struct CaptureNotebookView: View {
             model.selectedCategoryValue = draft.qcCategory
         }
         model.statusMessage = "Recovered local draft."
+    }
+
+    /// Delete a single pending photo before submitting (the per-image trash can), leaving the
+    /// rest of the draft intact. Removes it from the strip, deletes its local media file, and
+    /// re-persists the reduced draft — or drops the draft capture entirely if no media remains.
+    private func removePendingPhoto(_ photo: CapturePhoto) {
+        pendingPhotos.removeAll { $0.id == photo.id }
+        mediaStore.deletePendingMedia(photos: [photo])
+        Task {
+            if pendingPhotos.isEmpty && activeDraftAudios.isEmpty {
+                await model.removeDraftCapture()
+            } else {
+                await model.upsertDraftCapture(photos: pendingPhotos, audios: activeDraftAudios)
+            }
+        }
     }
 
     private func discardPendingMedia(draftSiteID: String? = nil) {
