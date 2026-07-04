@@ -59,6 +59,7 @@ public struct BTQFieldCaptureRootView: View {
             .tint(.btqAccent)
             .task {
                 await model.load()
+                await model.resumeOnlineWork()
             }
             .task {
                 for await status in connectivityMonitor.statusStream() {

@@ -638,12 +638,16 @@ import UniformTypeIdentifiers
     #expect(queueView.contains("case .done: .btqAccent"))
     #expect(queueView.contains("case .uploading: .btqUploading"))
     #expect(queueView.contains("DisclosureGroup(isExpanded: $isExpanded)"))
-    #expect(queueView.contains("QueueCaptureDetailSheet(detail: detail)"))
+    #expect(queueView.contains("QueueCaptureDetailSheet(model: model, detail: detail)"))
     #expect(queueView.contains("selectedDetail = .local(capture)"))
     #expect(queueView.contains("selectedDetail = .submitted(submission)"))
-    #expect(queueView.contains("LocalCaptureDetailContent(capture: capture)"))
-    #expect(queueView.contains("SubmittedCaptureDetailContent(submission: submission)"))
-    #expect(queueView.contains("CapturePhotoThumbnail(photo: photo)"))
+    #expect(queueView.contains("LocalCaptureDetailContent(model: model, capture: capture)"))
+    #expect(queueView.contains("SubmittedCaptureDetailContent(model: model, submission: submission)"))
+    #expect(queueView.contains("remoteBaseURL: model.account.baseURL"))
+    #expect(queueView.contains("authorizationToken: { await model.mediaAuthorizationToken() }"))
+    #expect(queueView.contains("remoteCapablePhoto(for: photo)"))
+    #expect(queueView.contains("model.remotePhotoPath(for: capture, filename: photo.filename)"))
+    #expect(queueView.contains("submission.photoURLs"))
     #expect(queueView.contains("Retry upload for"))
     #expect(queueView.contains("Moves this failed capture back to pending."))
     #expect(queueView.contains("private var canRetryFailedCapture"))
@@ -665,6 +669,10 @@ import UniformTypeIdentifiers
     #expect(appVersionFooter.contains("CFBundleVersion"))
     #expect(appVersionFooter.contains("\"app.version.footer\""))
     #expect(photoThumbnail.contains("struct CapturePhotoThumbnail"))
+    #expect(photoThumbnail.contains("var remoteBaseURL: URL?"))
+    #expect(photoThumbnail.contains("var authorizationToken: (() async -> String?)?"))
+    #expect(photoThumbnail.contains("request.setValue(\"Bearer \\(token)\", forHTTPHeaderField: \"Authorization\")"))
+    #expect(photoThumbnail.contains("URLSession.shared.data(for: request)"))
     #expect(photoThumbnail.contains("CGImageSourceCreateThumbnailAtIndex"))
     #expect(photoThumbnail.contains("kCGImageSourceThumbnailMaxPixelSize"))
     #expect(!photoThumbnail.contains("Data(contentsOf: fileURL)"))
@@ -2479,11 +2487,68 @@ import UniformTypeIdentifiers
     #expect(submitted?.audio?.fileURL == managedAudioURL)
     #expect(model.captures.first?.status == .done)
     #expect(model.captures.first?.photos[0].fileURL == nil)
+    #expect(model.captures.first?.photos[0].remoteURL == "/media/2027-01-15/capture-release/photo.jpg")
     #expect(model.captures.first?.photos[1].fileURL == externalPhotoURL)
+    #expect(model.captures.first?.photos[1].remoteURL == "/media/2027-01-15/capture-release/external.jpg")
     #expect(model.captures.first?.audio?.fileURL == nil)
     #expect(FileManager.default.fileExists(atPath: managedPhotoURL.path) == false)
     #expect(FileManager.default.fileExists(atPath: managedAudioURL.path) == false)
     #expect(FileManager.default.fileExists(atPath: externalPhotoURL.path) == true)
+}
+
+@Test @MainActor func shortServerMediaCountKeepsCaptureFailedAndRetainsLocalMedia() async throws {
+    let mediaRoot = FileManager.default.temporaryDirectory.appendingPathComponent("btq-sync-short-count-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: mediaRoot, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: mediaRoot) }
+
+    let account = BTQAccount.defaultProduction
+    let mediaStore = LocalMediaStore(rootDirectory: mediaRoot)
+    let bucketURL = mediaStore.mediaDirectory(bucketID: "capture-short")
+    try FileManager.default.createDirectory(at: bucketURL, withIntermediateDirectories: true)
+    let firstPhotoURL = bucketURL.appendingPathComponent("one.jpg")
+    let secondPhotoURL = bucketURL.appendingPathComponent("two.jpg")
+    try Data("one".utf8).write(to: firstPhotoURL)
+    try Data("two".utf8).write(to: secondPhotoURL)
+
+    let capture = LocalCapture(
+        captureID: "capture-short",
+        jobID: "job-short",
+        visitID: nil,
+        siteID: "site_1",
+        siteLabel: "Site One",
+        targetID: "site_1",
+        qcCategory: "general_note",
+        note: "Partial upload response",
+        capturedAt: Date(timeIntervalSince1970: 1_800_000_000),
+        exportedAt: Date(timeIntervalSince1970: 1_800_000_001),
+        photos: [
+            CapturePhoto(filename: "one.jpg", fileURL: firstPhotoURL),
+            CapturePhoto(filename: "two.jpg", fileURL: secondPhotoURL),
+        ]
+    )
+    let apiClient = ShortMediaCountAPIClient(photoCount: 1, audioCount: 0)
+    let tokenStore = MemoryTokenStore()
+    let notifications = RecordingUploadNotificationScheduler()
+    let model = FieldCaptureModel(
+        store: MemoryFieldCaptureStore(snapshot: captureSnapshot(account: account, captures: [capture])),
+        apiClient: apiClient,
+        tokenStore: tokenStore,
+        notificationScheduler: notifications,
+        mediaStore: mediaStore
+    )
+    await model.load()
+    await tokenStore.saveToken("token-submit", accountID: account.id)
+
+    await model.syncPending()
+
+    #expect(await apiClient.submittedCount == 1)
+    #expect(model.captures.first?.status == .failed)
+    #expect(model.captures.first?.lastError == "Server accepted 1 of 2 photos. Retry before deleting local media.")
+    #expect(model.captures.first?.photos[0].fileURL == firstPhotoURL)
+    #expect(model.captures.first?.photos[1].fileURL == secondPhotoURL)
+    #expect(FileManager.default.fileExists(atPath: firstPhotoURL.path))
+    #expect(FileManager.default.fileExists(atPath: secondPhotoURL.path))
+    #expect(await notifications.failedUploads.first?.reason == "Server accepted 1 of 2 photos. Retry before deleting local media.")
 }
 
 @Test @MainActor func syncPreparesMultipleVoiceMemosAsSingleUploadAudio() async throws {
@@ -4462,6 +4527,42 @@ private actor FlakySubmitAPIClient: CaptureAPIClient {
             photoCount: capture.photos.count,
             audioCount: capture.audioAttachments.count,
             idempotentReplay: false
+        )
+    }
+}
+
+private actor ShortMediaCountAPIClient: CaptureAPIClient {
+    private let photoCount: Int
+    private let audioCount: Int
+    private(set) var submitted: [LocalCapture] = []
+
+    var submittedCount: Int {
+        submitted.count
+    }
+
+    init(photoCount: Int, audioCount: Int) {
+        self.photoCount = photoCount
+        self.audioCount = audioCount
+    }
+
+    func session(baseURL: URL, token: String) async throws -> BTQSession {
+        .demo
+    }
+
+    func mySubmissions(baseURL: URL, token: String) async throws -> MySubmissionsResponse {
+        MySubmissionsResponse(submissions: [])
+    }
+
+    func submit(capture: LocalCapture, baseURL: URL, token: String) async throws -> SubmitCaptureResponse {
+        submitted.append(capture)
+        return SubmitCaptureResponse(
+            status: "submitted",
+            jobID: capture.jobID,
+            captureID: capture.captureID,
+            couchdbDocID: capture.captureID,
+            photoCount: photoCount,
+            audioCount: audioCount,
+            idempotentReplay: true
         )
     }
 }

@@ -21,7 +21,7 @@ struct QueueView: View {
             .disabled(model.isSyncing || !model.canSubmitCaptures)
         }
         .sheet(item: $selectedDetail) { detail in
-            QueueCaptureDetailSheet(detail: detail)
+            QueueCaptureDetailSheet(model: model, detail: detail)
         }
     }
 
@@ -462,6 +462,7 @@ private enum QueueCaptureDetail: Identifiable {
 }
 
 private struct QueueCaptureDetailSheet: View {
+    @Bindable var model: FieldCaptureModel
     let detail: QueueCaptureDetail
     @Environment(\.dismiss) private var dismiss
 
@@ -470,9 +471,9 @@ private struct QueueCaptureDetailSheet: View {
             List {
                 switch detail {
                 case .local(let capture):
-                    LocalCaptureDetailContent(capture: capture)
+                    LocalCaptureDetailContent(model: model, capture: capture)
                 case .submitted(let submission):
-                    SubmittedCaptureDetailContent(submission: submission)
+                    SubmittedCaptureDetailContent(model: model, submission: submission)
                 }
             }
             .navigationTitle("Capture Details")
@@ -491,6 +492,7 @@ private struct QueueCaptureDetailSheet: View {
 }
 
 private struct LocalCaptureDetailContent: View {
+    @Bindable var model: FieldCaptureModel
     let capture: LocalCapture
 
     var body: some View {
@@ -513,7 +515,11 @@ private struct LocalCaptureDetailContent: View {
             Section("Photos") {
                 ForEach(capture.photos) { photo in
                     HStack(alignment: .top, spacing: 12) {
-                        CapturePhotoThumbnail(photo: photo)
+                        CapturePhotoThumbnail(
+                            photo: remoteCapablePhoto(for: photo),
+                            remoteBaseURL: model.account.baseURL,
+                            authorizationToken: { await model.mediaAuthorizationToken() }
+                        )
                         VStack(alignment: .leading, spacing: 4) {
                             Text(photo.filename)
                                 .font(.caption)
@@ -544,9 +550,19 @@ private struct LocalCaptureDetailContent: View {
             }
         }
     }
+
+    private func remoteCapablePhoto(for photo: CapturePhoto) -> CapturePhoto {
+        guard photo.remoteURL == nil, capture.status == .done else {
+            return photo
+        }
+        var updated = photo
+        updated.remoteURL = model.remotePhotoPath(for: capture, filename: photo.filename)
+        return updated
+    }
 }
 
 private struct SubmittedCaptureDetailContent: View {
+    @Bindable var model: FieldCaptureModel
     let submission: SubmittedCapture
 
     var body: some View {
@@ -568,6 +584,39 @@ private struct SubmittedCaptureDetailContent: View {
             LabeledContent("Photos", value: "\(submission.photoCount)")
             LabeledContent("Voice memo", value: submission.hasAudio ? "Yes" : "No")
             LabeledContent("Text note", value: submission.hasTextNote ? "Yes" : "No")
+        }
+
+        if !submission.photoURLs.isEmpty {
+            Section("Photos") {
+                ForEach(Array(submission.photoURLs.enumerated()), id: \.offset) { index, photoURL in
+                    HStack(alignment: .top, spacing: 12) {
+                        CapturePhotoThumbnail(
+                            photo: CapturePhoto(filename: photoFilename(from: photoURL), remoteURL: photoURL),
+                            remoteBaseURL: model.account.baseURL,
+                            authorizationToken: { await model.mediaAuthorizationToken() }
+                        )
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Photo \(index + 1)")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(.secondary)
+                            Text(photoFilename(from: photoURL))
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            if index < submission.perPhotoQuality.count {
+                                let quality = submission.perPhotoQuality[index]
+                                if !quality.description.isEmpty {
+                                    Text(quality.description)
+                                }
+                                if !quality.flags.isEmpty {
+                                    Text(quality.flags.joined(separator: ", "))
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
 
         if !submission.outcomeLabel.isEmpty || !submission.perPhotoQuality.isEmpty {
@@ -607,5 +656,11 @@ private struct SubmittedCaptureDetailContent: View {
         default:
             submission.stage.isEmpty ? "Submitted" : submission.stage
         }
+    }
+
+    private func photoFilename(from photoURL: String) -> String {
+        URL(string: photoURL)?.lastPathComponent.removingPercentEncoding
+            ?? photoURL.split(separator: "/").last.map(String.init)
+            ?? "photo"
     }
 }

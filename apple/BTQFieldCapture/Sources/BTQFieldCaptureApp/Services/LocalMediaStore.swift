@@ -11,6 +11,7 @@ public struct LocalMediaStore: Sendable {
     public init(rootDirectory: URL = LocalMediaStore.defaultRootDirectory(), imagePolicy: ImageUploadPolicy = .fieldCapture) {
         self.rootDirectory = rootDirectory
         self.imagePolicy = imagePolicy
+        repairKnownBucketDirectories()
     }
 
     public func savePhotoData(_ data: Data, preferredStem: String = "photo", bucketID: String = UUID().uuidString) throws -> CapturePhoto {
@@ -123,6 +124,26 @@ public struct LocalMediaStore: Sendable {
         return released
     }
 
+    public func repairManagedMediaURLs(for capture: LocalCapture) -> LocalCapture {
+        var repaired = capture
+        repaired.photos = capture.photos.map { photo in
+            var repairedPhoto = photo
+            if mediaURLNeedsRepair(photo.fileURL), let foundURL = findManagedMedia(named: photo.filename) {
+                repairedPhoto.fileURL = foundURL
+            }
+            return repairedPhoto
+        }
+        repaired.audios = capture.audioAttachments.map { audio in
+            var repairedAudio = audio
+            if mediaURLNeedsRepair(audio.fileURL), let foundURL = findManagedMedia(named: audio.filename) {
+                repairedAudio.fileURL = foundURL
+            }
+            return repairedAudio
+        }
+        repaired.audio = repaired.audios.first
+        return repaired
+    }
+
     public static func defaultRootDirectory() -> URL {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
             ?? FileManager.default.temporaryDirectory
@@ -156,9 +177,41 @@ public struct LocalMediaStore: Sendable {
         return mediaPath == rootPath || mediaPath.hasPrefix(rootPath + "/")
     }
 
+    private func mediaURLNeedsRepair(_ url: URL?) -> Bool {
+        guard let url else { return true }
+        return !FileManager.default.fileExists(atPath: url.path)
+    }
+
+    private func findManagedMedia(named filename: String) -> URL? {
+        let safeName = safeFilename(filename, fallback: filename)
+        guard let enumerator = FileManager.default.enumerator(
+            at: rootDirectory,
+            includingPropertiesForKeys: [.isRegularFileKey],
+            options: [.skipsHiddenFiles]
+        ) else {
+            return nil
+        }
+        for case let url as URL in enumerator where url.lastPathComponent == safeName {
+            guard isManagedMediaURL(url) else { continue }
+            return url
+        }
+        return nil
+    }
+
     private func prepareMediaDirectory(for fileURL: URL) throws {
         try LocalFilePrivacy.prepareDirectory(rootDirectory)
         try LocalFilePrivacy.prepareDirectory(fileURL.deletingLastPathComponent())
+    }
+
+    private func repairKnownBucketDirectories() {
+        for bucketID in ["loose-capture"] {
+            let directory = mediaDirectory(bucketID: bucketID)
+            var isDirectory: ObjCBool = false
+            if FileManager.default.fileExists(atPath: directory.path, isDirectory: &isDirectory), !isDirectory.boolValue {
+                try? FileManager.default.removeItem(at: directory)
+            }
+            try? LocalFilePrivacy.prepareDirectory(directory)
+        }
     }
 
     private func removeEmptyParentDirectories(startingAt directory: URL) {

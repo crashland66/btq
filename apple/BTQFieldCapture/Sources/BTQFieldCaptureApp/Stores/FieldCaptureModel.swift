@@ -436,6 +436,17 @@ public final class FieldCaptureModel {
         }
     }
 
+    public func mediaAuthorizationToken() async -> String? {
+        guard let token = try? await tokenStore.loadToken(accountID: account.id), !token.isEmpty else {
+            return nil
+        }
+        return token
+    }
+
+    public func remotePhotoPath(for capture: LocalCapture, filename: String) -> String {
+        remoteMediaPath(for: capture, filename: filename)
+    }
+
     public func refreshInbox() async {
         guard !isRefreshingInbox else { return }
         guard canReviewInbox else {
@@ -879,6 +890,10 @@ public final class FieldCaptureModel {
         var successfulUploadCount = 0
         for capture in captures where capture.status == .pending && isReadyToRetry(capture) {
             guard let index = captures.firstIndex(where: { $0.captureID == capture.captureID }) else { continue }
+            let repairedCapture = mediaStore.repairManagedMediaURLs(for: captures[index])
+            if repairedCapture != captures[index] {
+                captures[index] = repairedCapture
+            }
             if let missingMedia = missingMediaDescription(for: captures[index]) {
                 captures[index].status = .failed
                 captures[index].lastError = missingMedia
@@ -900,10 +915,12 @@ public final class FieldCaptureModel {
             do {
                 let captureForUpload = try await audioUploadPreparer.capturePreparedForUpload(uploadingCapture)
                 preparedCapture = captureForUpload
-                _ = try await apiClient.submit(capture: captureForUpload, baseURL: account.baseURL, token: token)
+                let submitResponse = try await apiClient.submit(capture: captureForUpload, baseURL: account.baseURL, token: token)
+                try validateSubmitResponse(submitResponse, for: captureForUpload)
                 guard let completedIndex = captures.firstIndex(where: { $0.captureID == uploadingCapture.captureID }) else {
                     continue
                 }
+                captures[completedIndex] = captureWithRemotePhotoURLs(captures[completedIndex])
                 var releasedCapture = mediaStore.releaseManagedMedia(for: captures[completedIndex])
                 releasedCapture.status = .done
                 releasedCapture.lastError = nil
@@ -1195,6 +1212,25 @@ public final class FieldCaptureModel {
         return nil
     }
 
+    private func validateSubmitResponse(_ response: SubmitCaptureResponse, for capture: LocalCapture) throws {
+        let expectedPhotos = capture.photos.count
+        let expectedAudio = capture.audioAttachments.count
+        guard response.photoCount == expectedPhotos else {
+            throw CaptureAPIError.serverStatus(
+                status: 409,
+                code: "photo_count_mismatch",
+                message: "Server accepted \(response.photoCount) of \(expectedPhotos) photos. Retry before deleting local media."
+            )
+        }
+        guard response.audioCount == expectedAudio else {
+            throw CaptureAPIError.serverStatus(
+                status: 409,
+                code: "audio_count_mismatch",
+                message: "Server accepted \(response.audioCount) of \(expectedAudio) voice memos. Retry before deleting local media."
+            )
+        }
+    }
+
     private func defaultCategoryValue(for site: BTQSite?) -> String? {
         site?.displayCategories.first { category in
             category.value.compare("qc", options: [.caseInsensitive, .diacriticInsensitive]) == .orderedSame
@@ -1232,6 +1268,36 @@ public final class FieldCaptureModel {
             guard let fileURL = audio.fileURL, !sourceAudioURLs.contains(fileURL) else { continue }
             mediaStore.deletePendingMedia(photos: [], audio: audio)
         }
+    }
+
+    private func captureWithRemotePhotoURLs(_ capture: LocalCapture) -> LocalCapture {
+        var updated = capture
+        updated.photos = capture.photos.map { photo in
+            var updatedPhoto = photo
+            if updatedPhoto.remoteURL == nil {
+                updatedPhoto.remoteURL = remoteMediaPath(for: capture, filename: photo.filename)
+            }
+            return updatedPhoto
+        }
+        return updated
+    }
+
+    private func remoteMediaPath(for capture: LocalCapture, filename: String) -> String {
+        let date = Self.remoteMediaDateString(from: capture.capturedAt)
+        return "/media/\(Self.escapeMediaPathComponent(date))/\(Self.escapeMediaPathComponent(capture.captureID))/\(Self.escapeMediaPathComponent(filename))"
+    }
+
+    private nonisolated static func remoteMediaDateString(from date: Date) -> String {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0) ?? .gmt
+        let components = calendar.dateComponents([.year, .month, .day], from: date)
+        return String(format: "%04d-%02d-%02d", components.year ?? 1970, components.month ?? 1, components.day ?? 1)
+    }
+
+    private nonisolated static func escapeMediaPathComponent(_ value: String) -> String {
+        var allowed = CharacterSet.urlPathAllowed
+        allowed.remove(charactersIn: "/?#[]@!$&'()*+,;=")
+        return value.addingPercentEncoding(withAllowedCharacters: allowed) ?? value
     }
 
     private func setInboxCount(_ count: Int) {

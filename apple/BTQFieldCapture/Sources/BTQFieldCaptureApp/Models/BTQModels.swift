@@ -842,13 +842,22 @@ public struct CapturePhoto: Identifiable, Codable, Equatable, Sendable {
     public var filename: String
     public var mimeType: String
     public var fileURL: URL?
+    public var remoteURL: String?
     public var note: String
 
-    public init(id: UUID = UUID(), filename: String, mimeType: String = "image/jpeg", fileURL: URL? = nil, note: String = "") {
+    public init(
+        id: UUID = UUID(),
+        filename: String,
+        mimeType: String = "image/jpeg",
+        fileURL: URL? = nil,
+        remoteURL: String? = nil,
+        note: String = ""
+    ) {
         self.id = id
         self.filename = filename
         self.mimeType = mimeType
         self.fileURL = fileURL
+        self.remoteURL = remoteURL
         self.note = note
     }
 }
