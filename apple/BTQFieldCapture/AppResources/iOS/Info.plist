@@ -2,66 +2,68 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-  <key>CFBundleDisplayName</key>
-  <string>BTQ Capture</string>
-  <key>CFBundleExecutable</key>
-  <string>$(EXECUTABLE_NAME)</string>
-  <key>CFBundleIdentifier</key>
-  <string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
-  <key>CFBundleName</key>
-  <string>BTQFieldCapture</string>
-  <key>CFBundlePackageType</key>
-  <string>APPL</string>
-    <key>CFBundleShortVersionString</key>
-    <string>$(MARKETING_VERSION)</string>
-    <key>CFBundleVersion</key>
-    <string>$(CURRENT_PROJECT_VERSION)</string>
-  <key>CFBundleURLTypes</key>
-  <array>
-    <dict>
-      <key>CFBundleURLName</key>
-      <string>BTQ Field Capture</string>
-      <key>CFBundleURLSchemes</key>
-      <array>
-        <string>btq-field-capture</string>
-        <string>btq</string>
-      </array>
-    </dict>
-  </array>
-  <key>LSRequiresIPhoneOS</key>
-  <true/>
-  <key>NSCameraUsageDescription</key>
-  <string>BTQ Field Capture uses the camera to document site conditions.</string>
-  <key>NSMicrophoneUsageDescription</key>
-  <string>BTQ Field Capture records voice notes for site observations.</string>
-  <key>NSPhotoLibraryUsageDescription</key>
-  <string>BTQ Field Capture can attach selected photos to site observations.</string>
-  <key>NSUserNotificationsUsageDescription</key>
-  <string>BTQ Field Capture sends sync and upload failure alerts.</string>
-  <key>UIBackgroundModes</key>
-  <array>
-    <string>audio</string>
-    <string>fetch</string>
-    <string>processing</string>
-  </array>
-  <key>BGTaskSchedulerPermittedIdentifiers</key>
-  <array>
-    <string>com.btq.fieldcapture.upload.background</string>
-  </array>
-  <key>UILaunchScreen</key>
-  <dict/>
-  <key>UISupportedInterfaceOrientations</key>
-  <array>
-    <string>UIInterfaceOrientationPortrait</string>
-    <string>UIInterfaceOrientationLandscapeLeft</string>
-    <string>UIInterfaceOrientationLandscapeRight</string>
-  </array>
-  <key>UISupportedInterfaceOrientations~ipad</key>
-  <array>
-    <string>UIInterfaceOrientationPortrait</string>
-    <string>UIInterfaceOrientationPortraitUpsideDown</string>
-    <string>UIInterfaceOrientationLandscapeLeft</string>
-    <string>UIInterfaceOrientationLandscapeRight</string>
-  </array>
+	<key>BGTaskSchedulerPermittedIdentifiers</key>
+	<array>
+		<string>com.btq.fieldcapture.upload.background</string>
+	</array>
+	<key>CFBundleDisplayName</key>
+	<string>BTQ Capture</string>
+	<key>CFBundleExecutable</key>
+	<string>$(EXECUTABLE_NAME)</string>
+	<key>CFBundleIdentifier</key>
+	<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+	<key>CFBundleName</key>
+	<string>BTQFieldCapture</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>$(MARKETING_VERSION)</string>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>BTQ Field Capture</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>btq-field-capture</string>
+				<string>btq</string>
+			</array>
+		</dict>
+	</array>
+	<key>CFBundleVersion</key>
+	<string>$(CURRENT_PROJECT_VERSION)</string>
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
+	<key>LSRequiresIPhoneOS</key>
+	<true/>
+	<key>NSCameraUsageDescription</key>
+	<string>BTQ Field Capture uses the camera to document site conditions.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>BTQ Field Capture records voice notes for site observations.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>BTQ Field Capture can attach selected photos to site observations.</string>
+	<key>NSUserNotificationsUsageDescription</key>
+	<string>BTQ Field Capture sends sync and upload failure alerts.</string>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>audio</string>
+		<string>fetch</string>
+		<string>processing</string>
+	</array>
+	<key>UILaunchScreen</key>
+	<dict/>
+	<key>UISupportedInterfaceOrientations</key>
+	<array>
+		<string>UIInterfaceOrientationPortrait</string>
+		<string>UIInterfaceOrientationLandscapeLeft</string>
+		<string>UIInterfaceOrientationLandscapeRight</string>
+	</array>
+	<key>UISupportedInterfaceOrientations~ipad</key>
+	<array>
+		<string>UIInterfaceOrientationPortrait</string>
+		<string>UIInterfaceOrientationPortraitUpsideDown</string>
+		<string>UIInterfaceOrientationLandscapeLeft</string>
+		<string>UIInterfaceOrientationLandscapeRight</string>
+	</array>
 </dict>
 </plist>
