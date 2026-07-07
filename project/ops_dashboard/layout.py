@@ -139,11 +139,23 @@ def html_page(title: str, body: str, *, active_section: str, refresh: bool = Fal
           ta.value = text;
           ta.setAttribute('readonly', '');
           ta.style.position = 'fixed';
-          ta.style.top = '-10000px';
-          ta.style.left = '-10000px';
+          ta.style.top = '0';
+          ta.style.left = '0';
+          ta.style.width = '1px';
+          ta.style.height = '1px';
+          ta.style.padding = '0';
+          ta.style.border = 'none';
+          ta.style.outline = 'none';
+          ta.style.boxShadow = 'none';
+          ta.style.background = 'transparent';
+          ta.style.opacity = '0';
           document.body.appendChild(ta);
-          ta.select();
           try {{
+            ta.focus();
+            ta.select();
+            if (ta.setSelectionRange) {{
+              ta.setSelectionRange(0, text.length);
+            }}
             const ok = document.execCommand('copy');
             ok ? resolve() : reject(new Error('execCommand returned false'));
           }} catch (err) {{
