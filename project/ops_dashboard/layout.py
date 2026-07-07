@@ -115,8 +115,11 @@ def html_page(title: str, body: str, *, active_section: str, refresh: bool = Fal
           const target = targetSel ? document.querySelector(targetSel) : null;
           const text = valueAttr !== null ? valueAttr : (target ? target.textContent || '' : '');
           if (!text) return;
+          const original = button.getAttribute('data-copy-original-label') || button.textContent;
+          button.setAttribute('data-copy-original-label', original);
+          button.classList.remove('is-copy-failed');
+          button.textContent = original;
           copyTextToClipboard(text).then(() => {{
-            const original = button.textContent;
             button.textContent = 'Copied!';
             button.disabled = true;
             setTimeout(() => {{
@@ -124,16 +127,18 @@ def html_page(title: str, body: str, *, active_section: str, refresh: bool = Fal
               button.disabled = false;
             }}, 1500);
           }}, () => {{
-            const original = button.textContent;
+            button.classList.add('is-copy-failed');
             button.textContent = 'Copy failed';
-            setTimeout(() => {{ button.textContent = original; }}, 1500);
           }});
         }});
       }});
       function copyTextToClipboard(text) {{
         if (navigator.clipboard && navigator.clipboard.writeText) {{
-          return navigator.clipboard.writeText(text);
+          return navigator.clipboard.writeText(text).catch(function () {{ return fallbackCopy(text); }});
         }}
+        return fallbackCopy(text);
+      }}
+      function fallbackCopy(text) {{
         return new Promise((resolve, reject) => {{
           const ta = document.createElement('textarea');
           ta.value = text;

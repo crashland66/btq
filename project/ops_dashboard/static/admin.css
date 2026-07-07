@@ -448,6 +448,12 @@ button, .button {
 
 button.approve { background: var(--approve-bg); border-color: var(--approve-border); }
 button.reject { background: var(--reject-bg); border-color: var(--reject-border); }
+button.is-copy-failed {
+  background: var(--reject-bg);
+  border-color: var(--danger);
+  color: var(--danger);
+  font-weight: 700;
+}
 .icon-btn {
   padding: 2px 8px;
   font-size: 1rem;
