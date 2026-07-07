@@ -74,16 +74,22 @@ public extension CaptureAPIClient {
 }
 
 public final class HTTPCaptureAPIClient: CaptureAPIClient, @unchecked Sendable {
+    /// Foreground session for the JSON GET/POST calls (session, submissions, inbox, decisions).
     let session: URLSession
+    /// The capture upload runs on this — a background uploader in production, so it survives the
+    /// phone being locked mid-transfer.
+    private let uploader: any CaptureUploader
     private let encoder: JSONEncoder
     private let decoder: JSONDecoder
     private let uploadBodyDirectory: URL
 
     public init(
         session: URLSession = BackgroundUploadSupport.makeForegroundUploadSession(),
+        uploader: any CaptureUploader = BackgroundUploader.shared,
         uploadBodyDirectory: URL = FileManager.default.temporaryDirectory
     ) {
         self.session = session
+        self.uploader = uploader
         self.uploadBodyDirectory = uploadBodyDirectory
         encoder = JSONEncoder()
         decoder = JSONDecoder()
@@ -215,7 +221,7 @@ public final class HTTPCaptureAPIClient: CaptureAPIClient, @unchecked Sendable {
         try MultipartCaptureBuilder.writeBody(for: capture, boundary: boundary, to: bodyFile)
         defer { try? FileManager.default.removeItem(at: bodyFile) }
 
-        let (data, response) = try await session.upload(for: request, fromFile: bodyFile)
+        let (data, response) = try await uploader.upload(request, fromFile: bodyFile)
         guard let http = response as? HTTPURLResponse else {
             throw CaptureAPIError.invalidResponse
         }

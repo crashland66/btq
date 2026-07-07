@@ -296,7 +296,7 @@ import UniformTypeIdentifiers
     #expect(projectFile.components(separatedBy: "ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;").count - 1 == 4)
     #expect(projectFile.contains("PRODUCT_BUNDLE_IDENTIFIER = com.btq.fieldcapture;"))
     #expect(projectFile.contains("PRODUCT_BUNDLE_IDENTIFIER = com.btq.fieldcapture.mac;"))
-    #expect(projectFile.components(separatedBy: "MARKETING_VERSION = 1.1;").count - 1 == 4)
+    #expect(projectFile.components(separatedBy: "MARKETING_VERSION = 1.3;").count - 1 == 4)
     #expect(projectFile.contains("SUPPORTED_PLATFORMS = \"iphoneos iphonesimulator\";"))
     #expect(projectFile.components(separatedBy: "baseConfigurationReference = 10A000000000000000000019 /* Signing.xcconfig */;").count - 1 == 4)
     #expect(!projectFile.contains("DEVELOPMENT_TEAM = "))
@@ -3896,7 +3896,12 @@ import UniformTypeIdentifiers
     let photoURL = temp.appendingPathComponent("photo.jpg")
     try makeTestImageData(type: .jpeg).write(to: photoURL)
     let recorder = RequestRecorder()
-    let client = HTTPCaptureAPIClient(session: makeStubbedSession(recorder: recorder), uploadBodyDirectory: temp)
+    let stubbedSession = makeStubbedSession(recorder: recorder)
+    let client = HTTPCaptureAPIClient(
+        session: stubbedSession,
+        uploader: ForegroundUploader(session: stubbedSession),
+        uploadBodyDirectory: temp
+    )
 
     let session = try await client.session(baseURL: URL(string: "https://example.test")!, token: "token-123")
     let sessionRequest = await recorder.requests.first
@@ -3981,11 +3986,13 @@ import UniformTypeIdentifiers
     #expect(request?.value(forHTTPHeaderField: "Authorization") == "Bearer token-456")
     #expect(request?.value(forHTTPHeaderField: "Content-Type")?.contains("multipart/form-data") == true)
 
+    let errorSession = makeBackendErrorSession(
+        status: 400,
+        body: #"{"error":"too_many_images","message":"At most one photo may be submitted"}"#
+    )
     let errorClient = HTTPCaptureAPIClient(
-        session: makeBackendErrorSession(
-            status: 400,
-            body: #"{"error":"too_many_images","message":"At most one photo may be submitted"}"#
-        ),
+        session: errorSession,
+        uploader: ForegroundUploader(session: errorSession),
         uploadBodyDirectory: temp
     )
     do {
@@ -4022,6 +4029,33 @@ import UniformTypeIdentifiers
     #expect(configuration.allowsConstrainedNetworkAccess)
     #expect(configuration.httpMaximumConnectionsPerHost == 2)
     #expect(configuration.identifier == nil)
+}
+
+@Test func backgroundUploaderBridgesDelegateCompletionToAsyncResult() async throws {
+    // The real background uploader is delegate-based (background sessions have no async upload
+    // convenience). This exercises that bridge — uploadTask + URLSessionDataDelegate →
+    // continuation — with a foreground config so the stub URLProtocol can intercept (a real
+    // background config ignores URLProtocol); the bridge code under test is identical.
+    let temp = FileManager.default.temporaryDirectory.appendingPathComponent("btq-bg-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: temp, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: temp) }
+    let bodyFile = temp.appendingPathComponent("body.multipart")
+    try Data("multipart-body".utf8).write(to: bodyFile)
+
+    // A dedicated protocol with a fixed response — no shared static (which would race the other
+    // URLProtocol-stubbed tests that run in parallel).
+    let config = URLSessionConfiguration.ephemeral
+    config.protocolClasses = [FixedSubmitResponseURLProtocol.self]
+    let uploader = BackgroundUploader(configuration: config)
+
+    var request = URLRequest(url: URL(string: "https://example.test/api/submit")!)
+    request.httpMethod = "POST"
+    let (data, response) = try await uploader.upload(request, fromFile: bodyFile)
+
+    #expect((response as? HTTPURLResponse)?.statusCode == 200)
+    let decoded = try JSONDecoder().decode(SubmitCaptureResponse.self, from: data)
+    #expect(decoded.captureID == "cap-bg")
+    #expect(decoded.photoCount == 3)
 }
 
 private enum TestImageType {
@@ -4353,6 +4387,24 @@ private func streamData(_ stream: InputStream?) -> Data {
     return data
 }
 
+/// A URLProtocol with a fixed /api/submit response and no shared mutable state, so parallel
+/// tests can't race its handler (used by the background-uploader bridge test).
+private final class FixedSubmitResponseURLProtocol: URLProtocol, @unchecked Sendable {
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func startLoading() {
+        let json = #"{"status":"submitted","job_id":"j","capture_id":"cap-bg","couchdb_doc_id":"d","photo_count":3,"audio_count":0}"#.data(using: .utf8)!
+        let response = HTTPURLResponse(
+            url: request.url!, statusCode: 200, httpVersion: "HTTP/1.1",
+            headerFields: ["Content-Type": "application/json"]
+        )!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: json)
+        client?.urlProtocolDidFinishLoading(self)
+    }
+    override func stopLoading() {}
+}
+
 private final class StubURLProtocol: URLProtocol, @unchecked Sendable {
     nonisolated(unsafe) static var handler: ((URLRequest) async throws -> (Int, Data))?
 
@@ -4365,6 +4417,11 @@ private final class StubURLProtocol: URLProtocol, @unchecked Sendable {
     }
 
     override func startLoading() {
+        // URLProtocol loading is single-threaded; `nonisolated(unsafe)` lets the async Task
+        // deliver via the non-Sendable protocol/client without tripping Swift 6 strict concurrency.
+        nonisolated(unsafe) let this = self
+        nonisolated(unsafe) let sink = self.client
+        let request = self.request
         Task {
             do {
                 let (status, data) = try await Self.handler?(request) ?? (500, Data())
@@ -4374,11 +4431,11 @@ private final class StubURLProtocol: URLProtocol, @unchecked Sendable {
                     httpVersion: "HTTP/1.1",
                     headerFields: ["Content-Type": "application/json"]
                 )!
-                client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
-                client?.urlProtocol(self, didLoad: data)
-                client?.urlProtocolDidFinishLoading(self)
+                sink?.urlProtocol(this, didReceive: response, cacheStoragePolicy: .notAllowed)
+                sink?.urlProtocol(this, didLoad: data)
+                sink?.urlProtocolDidFinishLoading(this)
             } catch {
-                client?.urlProtocol(self, didFailWithError: error)
+                sink?.urlProtocol(this, didFailWithError: error)
             }
         }
     }
