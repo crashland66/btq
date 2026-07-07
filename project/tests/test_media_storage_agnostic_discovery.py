@@ -242,6 +242,45 @@ def test_discovery_resolves_presigned_urls_for_non_local_store(monkeypatch, tmp_
     }
 
 
+def test_media_url_for_key_prefers_local_file_over_non_local_store(tmp_path):
+    uploads = tmp_path / "uploads"
+    date, cid = "2026-07-07", "cap-local-first"
+    _write_capture_files(uploads, date, cid, ["img-001.jpg"])
+
+    stub = _StubPresignedStore()
+    key = f"{date}/{cid}/img-001.jpg"
+    assert common._media_url_for_key(key, uploads, stub) == f"/media/{key}"
+    assert stub.url_for_calls == []
+
+
+def test_media_url_for_key_falls_back_to_non_local_store_when_missing(tmp_path):
+    uploads = tmp_path / "uploads"
+    stub = _StubPresignedStore()
+    key = "2026-07-07/cap-r2-only/img-001.jpg"
+
+    assert common._media_url_for_key(key, uploads, stub) == _StubPresignedStore.PRESIGNED
+    assert stub.url_for_calls == [key]
+
+
+def test_media_url_for_key_empty_and_stat_error_preserve_blank_return(tmp_path, caplog):
+    uploads = tmp_path / "uploads"
+    stub = _StubPresignedStore()
+
+    assert common._media_url_for_key("", uploads, stub) == ""
+
+    with caplog.at_level(logging.WARNING):
+        assert common._media_url_for_key("../secret.jpg", uploads, stub) == ""
+
+    assert stub.url_for_calls == []
+    assert any(
+        "media url resolution failed for key=../secret.jpg" in rec.getMessage()
+        for rec in caplog.records
+    )
+    assert _StubPresignedStore.PRESIGNED not in "\n".join(
+        rec.getMessage() for rec in caplog.records
+    )
+
+
 def test_non_local_store_takes_no_filesystem_fallback(monkeypatch, tmp_path):
     """Files exist on disk, but with a NON-local store and zero CouchDB docs the
     discovery must NOT silently fall back to the on-disk glob (only local does)."""

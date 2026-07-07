@@ -16,6 +16,7 @@ os.environ.setdefault("BTQ_MEDIA_STORE", "local")
 
 import media_store
 from media_store import (
+    DEFAULT_PRESIGNED_URL_EXPIRES_SECONDS,
     LocalFilesystemStore,
     MediaStoreConfigError,
     S3Store,
@@ -172,6 +173,8 @@ class S3StoreWithMockedBoto3Tests(unittest.TestCase):
             self.assertEqual(
                 kwargs["Params"], {"Bucket": "my-bucket", "Key": "k/photo.jpg"}
             )
+            self.assertEqual(kwargs["ExpiresIn"], DEFAULT_PRESIGNED_URL_EXPIRES_SECONDS)
+            self.assertEqual(DEFAULT_PRESIGNED_URL_EXPIRES_SECONDS, 3600)
 
     def test_construct_without_boto3_clear_error(self) -> None:
         # boto3 forcibly absent -> RuntimeError mentioning boto3 / r2 extra.

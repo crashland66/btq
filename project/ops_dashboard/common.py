@@ -415,6 +415,9 @@ def _media_url_for_key(key: str, upload_root: Path, media_store: object | None =
     if not key:
         return ""
     try:
+        local_store = LocalFilesystemStore(upload_root)
+        if local_store.exists(key):
+            return local_store.url_for(key)
         store = media_store if media_store is not None else get_media_store(upload_root)
         # Do not log the url_for result. S3 implementations return a fresh
         # per-request presigned URL and logs must contain only the key.

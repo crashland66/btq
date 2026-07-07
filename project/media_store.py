@@ -12,6 +12,7 @@ _R2_REGION_ATTR = _R2_ATTR_PREFIX + "region"
 _R2_ACCESS_KEY_ATTR = _R2_ATTR_PREFIX + "access_key_id"
 _R2_SECRET_ACCESS_KEY_ATTR = _R2_ATTR_PREFIX + "secret_access_key"
 _R2_SECRET_PREFIX_ATTR = _R2_ATTR_PREFIX + "secret_prefix"
+DEFAULT_PRESIGNED_URL_EXPIRES_SECONDS = 3600
 
 
 class MediaStore(Protocol):
@@ -160,7 +161,7 @@ class S3Store:
         return self.client.generate_presigned_url(
             "get_object",
             Params={"Bucket": self.bucket, "Key": _guard_s3_key(key)},
-            ExpiresIn=300,
+            ExpiresIn=DEFAULT_PRESIGNED_URL_EXPIRES_SECONDS,
         )
 
 
