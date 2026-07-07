@@ -2551,6 +2551,64 @@ import UniformTypeIdentifiers
     #expect(await notifications.failedUploads.first?.reason == "Server accepted 1 of 2 photos. Retry before deleting local media.")
 }
 
+@Test @MainActor func cancelledUploadKeepsCaptureFailedAndRetainsLocalMedia() async throws {
+    let mediaRoot = FileManager.default.temporaryDirectory.appendingPathComponent("btq-sync-cancelled-upload-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: mediaRoot, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: mediaRoot) }
+
+    let account = BTQAccount.defaultProduction
+    let mediaStore = LocalMediaStore(rootDirectory: mediaRoot)
+    let bucketURL = mediaStore.mediaDirectory(bucketID: "capture-cancelled")
+    try FileManager.default.createDirectory(at: bucketURL, withIntermediateDirectories: true)
+    let firstPhotoURL = bucketURL.appendingPathComponent("one.jpg")
+    let secondPhotoURL = bucketURL.appendingPathComponent("two.jpg")
+    try Data("one".utf8).write(to: firstPhotoURL)
+    try Data("two".utf8).write(to: secondPhotoURL)
+
+    let capture = LocalCapture(
+        captureID: "capture-cancelled",
+        jobID: "job-cancelled",
+        visitID: nil,
+        siteID: "site_1",
+        siteLabel: "Site One",
+        targetID: "site_1",
+        qcCategory: "general_note",
+        note: "Cancelled upload",
+        capturedAt: Date(timeIntervalSince1970: 1_800_000_000),
+        exportedAt: Date(timeIntervalSince1970: 1_800_000_001),
+        photos: [
+            CapturePhoto(filename: "one.jpg", fileURL: firstPhotoURL),
+            CapturePhoto(filename: "two.jpg", fileURL: secondPhotoURL),
+        ]
+    )
+    let apiClient = FailingSubmitAPIClient(error: URLError(.cancelled))
+    let tokenStore = MemoryTokenStore()
+    let notifications = RecordingUploadNotificationScheduler()
+    let model = FieldCaptureModel(
+        store: MemoryFieldCaptureStore(snapshot: captureSnapshot(account: account, captures: [capture])),
+        apiClient: apiClient,
+        tokenStore: tokenStore,
+        notificationScheduler: notifications,
+        mediaStore: mediaStore
+    )
+    await model.load()
+    await tokenStore.saveToken("token-submit", accountID: account.id)
+
+    await model.syncPending()
+
+    let savedCapture = try #require(model.captures.first)
+    let expectedReason = "Upload interrupted before server confirmation. Local media is still saved; check for duplicates before retrying."
+    #expect(savedCapture.status == .failed)
+    #expect(savedCapture.attempts == 1)
+    #expect(savedCapture.lastError == expectedReason)
+    #expect(savedCapture.retryAfter == nil)
+    #expect(savedCapture.photos[0].fileURL == firstPhotoURL)
+    #expect(savedCapture.photos[1].fileURL == secondPhotoURL)
+    #expect(FileManager.default.fileExists(atPath: firstPhotoURL.path))
+    #expect(FileManager.default.fileExists(atPath: secondPhotoURL.path))
+    #expect(await notifications.failedUploads.first?.reason == expectedReason)
+}
+
 @Test @MainActor func syncPreparesMultipleVoiceMemosAsSingleUploadAudio() async throws {
     let mediaRoot = FileManager.default.temporaryDirectory.appendingPathComponent("btq-sync-audio-prepare-\(UUID().uuidString)", isDirectory: true)
     try FileManager.default.createDirectory(at: mediaRoot, withIntermediateDirectories: true)

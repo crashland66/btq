@@ -966,6 +966,19 @@ public final class FieldCaptureModel {
                 captures[failedIndex].retryAfter = nextRetryDate(attempts: captures[failedIndex].attempts)
                 statusMessage = "Sync paused. Will retry."
                 continue
+            } catch let error as URLError where error.code == .cancelled {
+                guard let failedIndex = captures.firstIndex(where: { $0.captureID == uploadingCapture.captureID }) else {
+                    statusMessage = "Upload interrupted before confirmation."
+                    continue
+                }
+                let errorDescription = "Upload interrupted before server confirmation. Local media is still saved; check for duplicates before retrying."
+                captures[failedIndex].attempts += 1
+                captures[failedIndex].status = .failed
+                captures[failedIndex].lastError = errorDescription
+                captures[failedIndex].retryAfter = nil
+                statusMessage = "Capture failed: \(errorDescription)"
+                await notificationScheduler.notifyUploadFailed(capture: captures[failedIndex], reason: errorDescription)
+                continue
             } catch {
                 guard let failedIndex = captures.firstIndex(where: { $0.captureID == uploadingCapture.captureID }) else {
                     statusMessage = "Offline. Capture will sync later."
