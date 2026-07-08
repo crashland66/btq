@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+from concurrent.futures import ThreadPoolExecutor
 from email.message import Message
 from pathlib import Path
 from types import SimpleNamespace
@@ -9,7 +10,7 @@ from urllib import error
 
 from event_pipeline import couchdb_config
 from field_capture.auth import TokenStore
-from field_capture.server import FieldCaptureHandler, run_server
+from field_capture.server import FieldCaptureHandler, FieldCaptureServer, run_server
 from tests.test_field_capture_auth import employee_doc, patch_canonical
 
 
@@ -148,6 +149,8 @@ def build_test_server(tmp_path: Path, monkeypatch) -> tuple[SimpleNamespace, str
         couchdb_config=couchdb_config.CouchDBConfig("http://couchdb.test", "jordan", "secret", 10.0, 10000),
         couchdb_database="btq_field_captures",
     )
+    server.mirror_candidates = []
+    server.enqueue_capture_media_mirror = lambda candidates: server.mirror_candidates.append(list(candidates))
     return server, token.token_value, queue_dir, upload_dir
 
 
@@ -195,6 +198,12 @@ def test_handle_submit_writes_media_and_puts_couchdb_document_when_configured(
     assert status == 201
     assert stored_photo.read_bytes() == b"\xff\xd8photo"
     assert stored_audio.read_bytes() == b"audio-bytes"
+    assert server.mirror_candidates == [
+        [
+            ("2026-05-02/cap-photo-couchdb/sink.jpg", stored_photo),
+            ("2026-05-02/cap-photo-couchdb/voice.webm", stored_audio),
+        ]
+    ]
     assert response["couchdb_doc_id"] == "cap-photo-couchdb"
     assert response["capture_id"] == "cap-photo-couchdb"
     assert not list(queue_dir.glob("*.json"))
@@ -483,3 +492,81 @@ def test_handle_submit_returns_503_when_idempotency_lookup_fails(
     response = json.loads(response_body)
     assert status == 503
     assert response == {"error": "couchdb_unavailable", "message": "CouchDB capture ingress unavailable"}
+
+
+def test_field_capture_media_mirror_enqueue_ignores_empty_candidates(tmp_path: Path) -> None:
+    calls: list[tuple[object, ...]] = []
+
+    class RecordingExecutor:
+        def submit(self, *args: object) -> None:
+            calls.append(args)
+
+    server = SimpleNamespace(upload_dir=tmp_path, _r2_mirror_executor=RecordingExecutor())
+
+    FieldCaptureServer.enqueue_capture_media_mirror(server, [])
+
+    assert calls == []
+
+
+def test_handle_submit_succeeds_when_mirror_executor_submit_fails(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    server, token, _queue_dir, upload_dir = build_test_server(tmp_path, monkeypatch)
+
+    class FailingExecutor:
+        def submit(self, *args: object) -> None:
+            raise RuntimeError("executor closed")
+
+    server._r2_mirror_executor = FailingExecutor()
+    server.enqueue_capture_media_mirror = FieldCaptureServer.enqueue_capture_media_mirror.__get__(server, type(server))
+
+    def fake_urlopen(req: object, timeout: float) -> FakeResponse:
+        method = getattr(req, "method", "GET")
+        if method == "GET":
+            from urllib import error as _error
+            raise _error.HTTPError(getattr(req, "full_url", ""), 404, "Not Found", hdrs=None, fp=None)
+        return FakeResponse({"ok": True, "id": "cap-photo-couchdb", "rev": "1-a"})
+
+    monkeypatch.setattr("event_pipeline.couchdb_capture_writer.request.urlopen", fake_urlopen)
+    body, content_type = multipart_body(valid_fields(), [("photos", "sink.jpg", "image/jpeg", b"\xff\xd8photo")])
+
+    status, _headers, response_body = submit_request(server, token, body, content_type)
+
+    response = json.loads(response_body)
+    assert status == 201
+    assert response["status"] == "submitted"
+    assert (upload_dir / "2026-05-02" / "cap-photo-couchdb" / "sink.jpg").read_bytes() == b"\xff\xd8photo"
+
+
+def test_handle_submit_succeeds_when_mirror_worker_raises(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    server, token, _queue_dir, upload_dir = build_test_server(tmp_path, monkeypatch)
+    server._r2_mirror_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="test-r2-mirror")
+    server.enqueue_capture_media_mirror = FieldCaptureServer.enqueue_capture_media_mirror.__get__(server, type(server))
+
+    def fake_mirror(_candidates: object, _upload_dir: Path) -> None:
+        raise RuntimeError("mirror failed")
+
+    def fake_urlopen(req: object, timeout: float) -> FakeResponse:
+        method = getattr(req, "method", "GET")
+        if method == "GET":
+            from urllib import error as _error
+            raise _error.HTTPError(getattr(req, "full_url", ""), 404, "Not Found", hdrs=None, fp=None)
+        return FakeResponse({"ok": True, "id": "cap-photo-couchdb", "rev": "1-a"})
+
+    monkeypatch.setattr("field_capture.server.mirror_capture_media_from_disk", fake_mirror)
+    monkeypatch.setattr("event_pipeline.couchdb_capture_writer.request.urlopen", fake_urlopen)
+    body, content_type = multipart_body(valid_fields(), [("photos", "sink.jpg", "image/jpeg", b"\xff\xd8photo")])
+
+    try:
+        status, _headers, response_body = submit_request(server, token, body, content_type)
+    finally:
+        server._r2_mirror_executor.shutdown(wait=True)
+
+    response = json.loads(response_body)
+    assert status == 201
+    assert response["status"] == "submitted"
+    assert (upload_dir / "2026-05-02" / "cap-photo-couchdb" / "sink.jpg").read_bytes() == b"\xff\xd8photo"

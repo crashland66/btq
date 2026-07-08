@@ -4,9 +4,11 @@ import argparse
 import html
 import re
 import json
+import logging
 import mimetypes
 import os
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from http.cookies import SimpleCookie
 from dataclasses import dataclass
 from datetime import datetime
@@ -31,6 +33,7 @@ from capture_ingest import (
     utc_now_iso,
     validate_uploaded_audio as capture_ingest_validate_uploaded_audio,
     validate_uploaded_photos as capture_ingest_validate_uploaded_photos,
+    mirror_capture_media_from_disk,
     write_capture_media,
 )
 from config import get_config
@@ -194,6 +197,29 @@ class FieldCaptureServer(ThreadingHTTPServer):
         self.request_max_bytes = request_max_bytes
         self.couchdb_config = couchdb_config
         self.couchdb_database = couchdb_database
+        self._r2_mirror_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="btq-r2-mirror")
+
+    def enqueue_capture_media_mirror(self, media_candidates: list[tuple[str, Path]]) -> None:
+        if not media_candidates:
+            return
+        try:
+            self._r2_mirror_executor.submit(
+                mirror_capture_media_from_disk,
+                list(media_candidates),
+                self.upload_dir,
+            )
+        except RuntimeError as exc:
+            logging.warning("btq R2 mirror enqueue failed: %s", exc)
+
+    def shutdown(self) -> None:
+        super().shutdown()
+        self._r2_mirror_executor.shutdown(wait=True)
+
+    def server_close(self) -> None:
+        try:
+            self._r2_mirror_executor.shutdown(wait=True)
+        finally:
+            super().server_close()
 
 
 class FieldCaptureHandler(BaseHTTPRequestHandler):
@@ -1045,7 +1071,7 @@ class FieldCaptureHandler(BaseHTTPRequestHandler):
             audio_records = payload.get("audio", [])
             if not isinstance(photo_records, list) or not isinstance(audio_records, list):
                 raise SubmissionError(HTTPStatus.BAD_REQUEST, "invalid_media", "Invalid media")
-            write_capture_media(photo_records + audio_records, photos + audio_files, self.server.upload_dir)
+            mirror_candidates = write_capture_media(photo_records + audio_records, photos + audio_files, self.server.upload_dir)
         except SubmissionError as error:
             self.write_json({"error": error.code, "message": error.message}, error.status)
             return
@@ -1074,6 +1100,7 @@ class FieldCaptureHandler(BaseHTTPRequestHandler):
             },
             HTTPStatus.CREATED,
         )
+        self.server.enqueue_capture_media_mirror(mirror_candidates)
 
     def read_multipart_submission(
         self, *, max_images: int | None = None

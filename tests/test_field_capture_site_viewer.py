@@ -266,6 +266,7 @@ def start_field_capture_server(tmp_path: Path) -> tuple[RunningFieldCaptureServe
         capture_reader=lambda _config, site_id, *, database: capture_docs_for_site(queue_dir, site_id),
         target_lookup_reader=lambda _config, upload_id, *, database: target_for_upload_id(queue_dir, upload_id),
         site_lookup_reader=lambda _config, upload_id, *, database: site_id_for_upload_id(queue_dir, upload_id),
+        enqueue_capture_media_mirror=lambda _candidates: None,
     )
     return RunningFieldCaptureServer(server), token_store, vault_root, queue_dir, upload_dir
 

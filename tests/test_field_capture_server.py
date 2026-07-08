@@ -145,6 +145,7 @@ def start_field_capture_server(tmp_path: Path) -> tuple[RunningFieldCaptureServe
         couchdb_database="btq_field_captures",
         capture_reader=lambda _config, _site_id, *, database: [],
         site_lookup_reader=lambda _config, _upload_id, *, database: None,
+        enqueue_capture_media_mirror=lambda _candidates: None,
     )
     return RunningFieldCaptureServer(server), token_store, vault_root
 
