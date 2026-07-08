@@ -523,6 +523,57 @@ button.is-copy-failed {
   overflow: visible;
 }
 .quick-facts > section:last-child { margin-bottom: 0; }
+.contacts-panel {
+  overflow: visible;
+}
+.contacts-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px;
+}
+.contact-card {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  padding: 14px;
+  min-width: 0;
+}
+.contact-card h3 {
+  margin: 0 0 8px;
+  font-size: .9rem;
+  color: var(--muted);
+}
+.contact-card p {
+  margin: 0;
+}
+.contact-readout {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.contact-readout + .contact-list {
+  margin-top: 10px;
+}
+.contact-readout strong {
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+.contact-details,
+.contact-note {
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+.contact-details a {
+  overflow-wrap: anywhere;
+}
+.contact-list {
+  display: grid;
+  gap: 8px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
 .reference-links {
   overflow: visible;
 }
@@ -1307,6 +1358,14 @@ details.raw-json pre { margin-top: 4px; }
   }
   .reference-link-meta {
     white-space: normal;
+  }
+  .contacts-grid {
+    grid-template-columns: 1fr;
+  }
+  .contact-details a[href^="tel:"] {
+    display: inline-flex;
+    align-items: center;
+    min-height: 44px;
   }
   header, section, article, .card {
     padding: 12px;

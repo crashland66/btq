@@ -147,6 +147,85 @@ def test_build_site_dashboard_shows_contact_from_location_doc(monkeypatch: pytes
     assert "jane@testco.com" in html
 
 
+def test_build_site_records_keeps_customer_contact_and_adds_structured_contacts() -> None:
+    rows = [
+        {
+            "key": ["account", "account_phn"],
+            "value": None,
+            "doc": {
+                "type": "account",
+                "_id": "account_phn",
+                "account_contacts": [
+                    {
+                        "id": "contact_jeremy",
+                        "name": "Jeremy Fabian",
+                        "title": "Operations Manager",
+                        "phone": "(724) 977-5591",
+                        "email": "jeremy@example.com",
+                        "role": "account_escalation",
+                        "scope": "account",
+                        "source": "synthetic_fixture",
+                        "source_date": "2026-07-07",
+                        "notes": "",
+                    }
+                ],
+            },
+        },
+        {
+            "key": ["location", "location_592"],
+            "value": None,
+            "doc": {
+                "type": "location",
+                "_id": "location_592",
+                "site_id": "592",
+                "location": "PHN 592",
+                "account": "PHN",
+                "customer_name": "Jeremy Fabian",
+                "customer_phone": "724-977-5591",
+                "customer_email": "legacy@example.com",
+                "site_contacts": [
+                    {
+                        "id": "contact_other",
+                        "name": "Other Contact",
+                        "title": "",
+                        "phone": "",
+                        "email": "other@example.com",
+                        "role": "other",
+                        "scope": "site",
+                        "source": "synthetic_fixture",
+                        "source_date": "2026-07-07",
+                        "notes": "",
+                    },
+                    {
+                        "id": "contact_jackie",
+                        "name": "Jackie",
+                        "title": "Site Contact",
+                        "phone": "724-699-5846",
+                        "email": "",
+                        "role": "site_contact",
+                        "scope": "site",
+                        "source": "synthetic_fixture",
+                        "source_date": "2026-07-07",
+                        "notes": "",
+                    },
+                ],
+            },
+        },
+    ]
+
+    record = projector._build_site_records(rows)["592"]
+
+    assert record.contact_name == "Jeremy Fabian"
+    assert record.contact_phone == "724-977-5591"
+    assert record.contact_email == "legacy@example.com"
+    assert [contact["name"] for contact in record.site_contacts] == ["Other Contact", "Jackie"]
+    assert record.primary_site_contact is not None
+    assert record.primary_site_contact["name"] == "Jackie"
+    assert record.account_contacts[0]["name"] == "Jeremy Fabian"
+    assert record.account_escalation_contact is not None
+    assert record.account_escalation_contact["phone"] == "(724) 977-5591"
+
+
 def test_build_site_dashboard_marks_sites_without_recent_visits(monkeypatch: pytest.MonkeyPatch) -> None:
     old_date = (date.today() - timedelta(days=31)).isoformat()
     install_fake_views(

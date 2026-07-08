@@ -10,6 +10,15 @@ from urllib import error, parse, request
 
 import markdown
 
+from btq_vault.contacts import (
+    ACCOUNT_ESCALATION_ROLE,
+    PRIMARY_SITE_CONTACT_ROLES,
+    contacts_from_doc,
+    first_contact_by_role_priority,
+    first_contact_with_role,
+)
+from processing_core.slugs import lower_underscore_slug
+
 
 DDOC = "btq_vault"
 BROWSE_TYPES: list[str] = [
@@ -546,6 +555,10 @@ class _SiteRecord:
         contact_name: str = "",
         contact_phone: str = "",
         contact_email: str = "",
+        site_contacts: list[dict[str, Any]] | None = None,
+        primary_site_contact: dict[str, Any] | None = None,
+        account_contacts: list[dict[str, Any]] | None = None,
+        account_escalation_contact: dict[str, Any] | None = None,
     ) -> None:
         self.site_id = site_id
         self.name = name or site_id
@@ -553,6 +566,10 @@ class _SiteRecord:
         self.contact_name = contact_name
         self.contact_phone = contact_phone
         self.contact_email = contact_email
+        self.site_contacts = site_contacts or []
+        self.primary_site_contact = primary_site_contact
+        self.account_contacts = account_contacts or []
+        self.account_escalation_contact = account_escalation_contact
 
 
 def _locations(base_url: str, auth_headers: dict, database: str, timeout: float) -> list[_Location]:
@@ -572,6 +589,7 @@ def _locations(base_url: str, auth_headers: dict, database: str, timeout: float)
 
 def _build_site_records(by_type_rows: list[dict]) -> dict[str, _SiteRecord]:
     records: dict[str, _SiteRecord] = {}
+    account_docs = _account_docs_by_id(by_type_rows)
 
     ordered = sorted(
         (row for row in by_type_rows if isinstance(row.get("doc"), dict)),
@@ -589,6 +607,8 @@ def _build_site_records(by_type_rows: list[dict]) -> dict[str, _SiteRecord]:
         account = _string(doc.get("account"))
 
         if doc.get("type") == "location":
+            site_contacts = contacts_from_doc(doc, "site_contacts")
+            account_contacts = contacts_from_doc(_account_doc_for_location(doc, account_docs), "account_contacts")
             records[site_id] = _SiteRecord(
                 site_id=site_id,
                 name=name or site_id,
@@ -596,6 +616,10 @@ def _build_site_records(by_type_rows: list[dict]) -> dict[str, _SiteRecord]:
                 contact_name=_string(doc.get("customer_name")),
                 contact_phone=_string(doc.get("customer_phone")),
                 contact_email=_string(doc.get("customer_email")),
+                site_contacts=site_contacts,
+                primary_site_contact=first_contact_by_role_priority(site_contacts, PRIMARY_SITE_CONTACT_ROLES),
+                account_contacts=account_contacts,
+                account_escalation_contact=first_contact_with_role(account_contacts, ACCOUNT_ESCALATION_ROLE),
             )
         elif existing is None:
             records[site_id] = _SiteRecord(
@@ -610,6 +634,38 @@ def _build_site_records(by_type_rows: list[dict]) -> dict[str, _SiteRecord]:
                 existing.account = account
 
     return records
+
+
+def _account_docs_by_id(by_type_rows: list[dict]) -> dict[str, dict[str, Any]]:
+    docs: dict[str, dict[str, Any]] = {}
+    for row in by_type_rows:
+        doc = row.get("doc")
+        if not isinstance(doc, dict) or doc.get("type") != "account":
+            continue
+        doc_id = _string(doc.get("_id"))
+        if doc_id:
+            docs[doc_id] = doc
+    return docs
+
+
+def _account_doc_for_location(doc: dict[str, Any], account_docs: dict[str, dict[str, Any]]) -> dict[str, Any] | None:
+    for doc_id in _account_doc_id_candidates(doc):
+        account_doc = account_docs.get(doc_id)
+        if account_doc is not None:
+            return account_doc
+    return None
+
+
+def _account_doc_id_candidates(doc: dict[str, Any]) -> list[str]:
+    candidates: list[str] = []
+    for field in ("account_id", "account_doc_id", "parent_account_id"):
+        raw = _string(doc.get(field))
+        if raw:
+            candidates.append(raw if raw.startswith("account_") else f"account_{lower_underscore_slug(raw, fallback='')}")
+    account = _string(doc.get("account"))
+    if account:
+        candidates.append(account if account.startswith("account_") else f"account_{lower_underscore_slug(account, fallback='')}")
+    return [candidate for candidate in dict.fromkeys(candidates) if candidate != "account_"]
 
 
 def _all_site_ids_from_doc(doc: dict) -> set[str]:

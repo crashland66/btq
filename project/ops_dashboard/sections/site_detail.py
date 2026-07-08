@@ -23,6 +23,13 @@ from btq_vault.facility_hours import (
     normalize_facility_hours,
     unknown_facility_hours,
 )
+from btq_vault.contacts import (
+    ACCOUNT_ESCALATION_ROLE,
+    PRIMARY_SITE_CONTACT_ROLES,
+    contacts_from_doc,
+    first_contact_by_role_priority,
+    first_contact_with_role,
+)
 from event_pipeline import couchdb_config
 from ops_dashboard.common import (
     default_actor,
@@ -51,6 +58,7 @@ from btq_vault.projector import (  # noqa: PLC2701 - reuse projector renderers f
     query_view,
     render_markdown,
 )
+from processing_core.slugs import lower_underscore_slug
 
 
 _SUMMARY_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
@@ -221,6 +229,36 @@ def _load_location(site_id: str) -> dict[str, Any] | None:
         return None
 
 
+def _load_account_doc_for_location(doc: dict[str, Any]) -> dict[str, Any] | None:
+    try:
+        base, headers, database, timeout = _cdb()
+    except Exception:
+        return None
+    for doc_id in _account_doc_id_candidates(doc):
+        url = f"{base.rstrip('/')}/{urlparse.quote(database, safe='')}/{urlparse.quote(doc_id, safe='')}"
+        req = urlrequest.Request(url, headers={"Accept": "application/json", **headers})
+        try:
+            with urlrequest.urlopen(req, timeout=timeout) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+        except Exception:
+            continue
+        if isinstance(payload, dict) and payload.get("type") == "account":
+            return payload
+    return None
+
+
+def _account_doc_id_candidates(doc: dict[str, Any]) -> list[str]:
+    candidates: list[str] = []
+    for field in ("account_id", "account_doc_id", "parent_account_id"):
+        raw = _clean_contact_text(doc.get(field))
+        if raw:
+            candidates.append(raw if raw.startswith("account_") else f"account_{lower_underscore_slug(raw, fallback='')}")
+    account = _clean_contact_text(doc.get("account"))
+    if account:
+        candidates.append(account if account.startswith("account_") else f"account_{lower_underscore_slug(account, fallback='')}")
+    return [candidate for candidate in dict.fromkeys(candidates) if candidate != "account_"]
+
+
 def _builtin_location_doc(site_id: str) -> dict[str, Any] | None:
     doc = _BUILTIN_LOCATION_DOCS.get(site_id)
     return dict(doc) if doc is not None else None
@@ -285,7 +323,13 @@ def _strip_dataview_blocks(body: str) -> str:
     return "".join(output)
 
 
-def _quick_facts_section(doc: dict[str, Any], site_id: str, edit_section: str) -> str:
+def _quick_facts_section(
+    doc: dict[str, Any],
+    site_id: str,
+    edit_section: str,
+    *,
+    structured_contacts_exist: bool = False,
+) -> str:
     sections: list[str] = []
     site_id_escaped = html.escape(site_id, quote=True)
     editable_sections = {
@@ -294,6 +338,8 @@ def _quick_facts_section(doc: dict[str, Any], site_id: str, edit_section: str) -
         "Billing & Wages": "billing_wages",
     }
     for title, keys in _SUMMARY_GROUPS:
+        if structured_contacts_exist and title == "Contact":
+            continue
         if title in {"Identity", "Supply Budget"}:
             section = record_section(title, doc, keys, dl_class="fields summary-fields")
             if section:
@@ -345,6 +391,180 @@ def _capture_provenance(doc: dict[str, Any]) -> str:
     if not parts:
         return ""
     return f"<details><summary>Capture provenance</summary>{''.join(parts)}</details>"
+
+
+def _contacts_panel(
+    doc: dict[str, Any],
+    site_contacts: list[dict[str, Any]],
+    primary_site_contact: dict[str, Any] | None,
+    account_contacts: list[dict[str, Any]],
+    account_escalation_contact: dict[str, Any] | None,
+) -> str:
+    if not site_contacts and not account_contacts:
+        return ""
+
+    site_contact_html = _site_contacts_block(site_contacts, primary_site_contact)
+    escalation_html = _contact_block(
+        "Account escalation",
+        account_escalation_contact,
+        empty="No account escalation contact recorded.",
+    )
+    access_note = _access_note(doc)
+    access_note_html = (
+        '<div class="contact-card contact-card--note">'
+        "<h3>Access note</h3>"
+        f"<p>{html.escape(access_note)}</p>"
+        "</div>"
+        if access_note
+        else ""
+    )
+    legacy = _legacy_contact(doc)
+    structured_contacts = site_contacts + account_contacts
+    legacy_html = ""
+    if legacy and not any(_contacts_match(legacy, contact) for contact in structured_contacts):
+        legacy_html = _contact_block("Legacy primary contact", legacy)
+
+    return (
+        '<section class="contacts-panel">'
+        "<h2>Contacts</h2>"
+        '<div class="contacts-grid">'
+        f"{site_contact_html}{escalation_html}{access_note_html}{legacy_html}"
+        "</div>"
+        "</section>"
+    )
+
+
+def _site_contacts_block(site_contacts: list[dict[str, Any]], primary: dict[str, Any] | None) -> str:
+    if not site_contacts:
+        return (
+            '<div class="contact-card">'
+            "<h3>Site contact</h3>"
+            '<p class="zero-state">No site contact recorded.</p>'
+            "</div>"
+        )
+    ordered = []
+    if primary is not None:
+        ordered.append(primary)
+    ordered.extend(contact for contact in site_contacts if contact is not primary)
+    primary_html = _contact_readout(ordered[0], featured=True)
+    other_html = ""
+    if len(ordered) > 1:
+        items = "".join(f"<li>{_contact_readout(contact)}</li>" for contact in ordered[1:])
+        other_html = f'<ul class="contact-list">{items}</ul>'
+    return (
+        '<div class="contact-card">'
+        "<h3>Site contact</h3>"
+        f"{primary_html}{other_html}"
+        "</div>"
+    )
+
+
+def _contact_block(title: str, contact: dict[str, Any] | None, *, empty: str = "") -> str:
+    body = _contact_readout(contact, featured=True) if contact else f'<p class="zero-state">{html.escape(empty)}</p>'
+    return f'<div class="contact-card"><h3>{html.escape(title)}</h3>{body}</div>'
+
+
+def _contact_readout(contact: dict[str, Any] | None, *, featured: bool = False) -> str:
+    if not contact:
+        return ""
+    name = _clean_contact_text(contact.get("name")) or "Unnamed contact"
+    title = _clean_contact_text(contact.get("title"))
+    phone = _clean_contact_text(contact.get("phone"))
+    email = _clean_contact_text(contact.get("email"))
+    notes = _clean_contact_text(contact.get("notes"))
+    details = []
+    if title:
+        details.append(html.escape(title))
+    if phone:
+        details.append(_phone_link(phone))
+    if email:
+        escaped_email = html.escape(email, quote=True)
+        details.append(f'<a href="mailto:{escaped_email}">{html.escape(email)}</a>')
+    detail_html = f'<span class="contact-details">{" &mdash; ".join(details)}</span>' if details else ""
+    notes_html = f'<span class="contact-note">{html.escape(notes)}</span>' if notes else ""
+    class_name = "contact-readout contact-readout--featured" if featured else "contact-readout"
+    return (
+        f'<div class="{class_name}">'
+        f"<strong>{html.escape(name)}</strong>"
+        f"{detail_html}{notes_html}"
+        "</div>"
+    )
+
+
+def _phone_link(phone: str) -> str:
+    href = "".join(ch for ch in phone if ch.isdigit() or ch == "+")
+    if not href:
+        return html.escape(phone)
+    return f'<a href="tel:{html.escape(href, quote=True)}">{html.escape(phone)}</a>'
+
+
+def _legacy_contact(doc: dict[str, Any]) -> dict[str, Any] | None:
+    contact = {
+        "name": _clean_contact_text(doc.get("customer_name")),
+        "title": _clean_contact_text(doc.get("customer_title")),
+        "phone": _clean_contact_text(doc.get("customer_phone")),
+        "email": _clean_contact_text(doc.get("customer_email")),
+        "notes": "",
+        "role": "legacy_primary",
+        "scope": "site",
+    }
+    if any(contact[key] for key in ("name", "title", "phone", "email")):
+        return contact
+    return None
+
+
+def _contacts_match(left: dict[str, Any], right: dict[str, Any]) -> bool:
+    left_email = _clean_contact_text(left.get("email")).lower()
+    right_email = _clean_contact_text(right.get("email")).lower()
+    if left_email and right_email and left_email == right_email:
+        return True
+    left_phone = _phone_digits(left.get("phone"))
+    right_phone = _phone_digits(right.get("phone"))
+    if left_phone and right_phone and left_phone == right_phone:
+        return True
+    left_name = _normalized_contact_name(left.get("name"))
+    right_name = _normalized_contact_name(right.get("name"))
+    return bool(left_name and right_name and left_name == right_name)
+
+
+def _phone_digits(value: object) -> str:
+    digits = "".join(ch for ch in _clean_contact_text(value) if ch.isdigit())
+    return digits if len(digits) >= 7 else ""
+
+
+def _normalized_contact_name(value: object) -> str:
+    return " ".join(_clean_contact_text(value).lower().split())
+
+
+def _clean_contact_text(value: object) -> str:
+    if value is None or isinstance(value, (list, tuple, dict)):
+        return ""
+    return str(value).strip()
+
+
+def _access_note(doc: dict[str, Any]) -> str:
+    for key in ("access_note", "access_notes", "access"):
+        value = _clean_contact_text(doc.get(key))
+        if value:
+            return value
+    return _access_constraints_from_content(_clean_contact_text(doc.get("content")))
+
+
+def _access_constraints_from_content(content: str) -> str:
+    if not content:
+        return ""
+    match = _ACCESS_CONSTRAINT_RE.search(content)
+    if not match:
+        return ""
+    following = content[match.end() :].splitlines()
+    lines: list[str] = []
+    for line in following:
+        stripped = line.strip()
+        if stripped.startswith("#"):
+            break
+        if stripped:
+            lines.append(stripped.lstrip("-* ").strip())
+    return " ".join(lines[:3]).strip()
 
 
 def _humanize_url_value(value: object) -> str:
@@ -1286,6 +1506,12 @@ def render(ctx: object, site_id: str) -> str:
         if not isinstance(doc, dict) or doc.get("type") != "location":
             return _not_found(site_id)
 
+        account_doc = _load_account_doc_for_location(doc)
+        site_contacts = contacts_from_doc(doc, "site_contacts")
+        primary_site_contact = first_contact_by_role_priority(site_contacts, PRIMARY_SITE_CONTACT_ROLES)
+        account_contacts = contacts_from_doc(account_doc, "account_contacts")
+        account_escalation_contact = first_contact_with_role(account_contacts, ACCOUNT_ESCALATION_ROLE)
+        structured_contacts_exist = bool(site_contacts or account_contacts)
         primary_name = sites.canonical_name(doc) or str(doc.get("location") or site_id)
         escaped_id = html.escape(site_id, quote=True)
         related_data = _related_data(site_id)
@@ -1315,7 +1541,23 @@ def render(ctx: object, site_id: str) -> str:
             )
         )
         sections.append(_capture_processing_breakdown(capture_processing_counts))
-        sections.append(_quick_facts_section(doc, site_id, edit_section))
+        sections.append(
+            _quick_facts_section(
+                doc,
+                site_id,
+                edit_section,
+                structured_contacts_exist=structured_contacts_exist,
+            )
+        )
+        sections.append(
+            _contacts_panel(
+                doc,
+                site_contacts,
+                primary_site_contact,
+                account_contacts,
+                account_escalation_contact,
+            )
+        )
         sections.append(_reference_links_section(doc, site_id))
         sections.append(_facility_hours_section(doc, site_id))
         if edit_section == "about":

@@ -33,15 +33,57 @@ def _empty_related() -> dict[str, object]:
     }
 
 
-def render_with_doc(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, doc: dict[str, object]) -> str:
+def render_with_doc(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    doc: dict[str, object],
+    *,
+    account_doc: dict[str, object] | None = None,
+) -> str:
     monkeypatch.setattr(site_detail, "_load_location", lambda site_id: doc)
+    monkeypatch.setattr(site_detail, "_load_account_doc_for_location", lambda loaded_doc: account_doc)
     # The redesigned render pulls related data (notes/employees/opportunities/
     # visits) and field captures from CouchDB; neutralize those so we exercise
     # the genuine non-degraded page without a live backend.
     monkeypatch.setattr(site_detail, "_related_data", lambda site_id: _empty_related())
     monkeypatch.setattr(site_detail, "_related_sections", lambda data: [])
     monkeypatch.setattr(site_detail, "_site_capture_records", lambda ctx, site_id: ([], False, 0))
+    monkeypatch.setattr(site_detail, "_site_capture_processing_counts", lambda site_id: None)
     return site_detail.render(SimpleNamespace(runtime_root=tmp_path / "runtime", query={}), "7040")
+
+
+def site_contact(**overrides: object) -> dict[str, object]:
+    contact: dict[str, object] = {
+        "id": "contact_jackie",
+        "name": "Jackie Synthetic",
+        "title": "Site Lead",
+        "phone": "724-699-5846",
+        "email": "jackie@example.com",
+        "role": "site_contact",
+        "scope": "site",
+        "source": "synthetic_fixture",
+        "source_date": "2026-07-07",
+        "notes": "",
+    }
+    contact.update(overrides)
+    return contact
+
+
+def account_contact(**overrides: object) -> dict[str, object]:
+    contact: dict[str, object] = {
+        "id": "contact_jeremy",
+        "name": "Jeremy Fabian",
+        "title": "Operations Manager",
+        "phone": "(724) 977-5591",
+        "email": "jeremy@example.com",
+        "role": "account_escalation",
+        "scope": "account",
+        "source": "synthetic_fixture",
+        "source_date": "2026-07-07",
+        "notes": "",
+    }
+    contact.update(overrides)
+    return contact
 
 
 def test_site_detail_strip_dataview_drops_three_known_blocks() -> None:
@@ -113,6 +155,82 @@ def test_site_detail_render_renders_grouped_summary(monkeypatch: pytest.MonkeyPa
     ]
     assert all(heading in html for heading in headings)
     assert [html.index(heading) for heading in headings] == sorted(html.index(heading) for heading in headings)
+
+
+def test_site_detail_structured_contacts_panel_shows_site_escalation_and_access_note(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    html = render_with_doc(
+        monkeypatch,
+        tmp_path,
+        location_doc(
+            site_contacts=[site_contact()],
+            access_note="Use the rear staff entrance after 7 PM.",
+            customer_name="Legacy Person",
+            customer_phone="555-0111",
+        ),
+        account_doc={
+            "_id": "account_kmf_industries",
+            "type": "account",
+            "account_contacts": [account_contact()],
+        },
+    )
+
+    assert '<section class="contacts-panel">' in html
+    assert "<h3>Site contact</h3>" in html
+    assert "Jackie Synthetic" in html
+    assert 'href="tel:7246995846"' in html
+    assert "<h3>Account escalation</h3>" in html
+    assert "Jeremy Fabian" in html
+    assert 'href="tel:7249775591"' in html
+    assert "<h3>Access note</h3>" in html
+    assert "Use the rear staff entrance after 7 PM." in html
+    assert "<h3>Legacy primary contact</h3>" in html
+    assert "Legacy Person" in html
+
+
+def test_site_detail_no_structured_contacts_keeps_legacy_contact_section_unchanged(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    doc = location_doc(customer_name="Jane Customer", customer_phone="555-1234")
+    html = render_with_doc(monkeypatch, tmp_path, doc)
+
+    expected = (
+        '<section><h3>Contact</h3><p class="actions"><a class="button" href="?edit=contact">Edit</a></p>'
+        '<dl class="fields summary-fields">'
+        '<div class="field-row"><dt>Customer Name</dt><dd>Jane Customer</dd></div>'
+        '<div class="field-row"><dt>Customer Phone</dt><dd>555-1234</dd></div>'
+        "</dl></section>"
+    )
+    assert expected in html
+    assert '<section class="contacts-panel">' not in html
+
+
+def test_site_detail_phn_592_shape_shows_jackie_and_jeremy_without_legacy_duplicate(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    html = render_with_doc(
+        monkeypatch,
+        tmp_path,
+        location_doc(
+            account="PHN",
+            site_id="592",
+            site_contacts=[site_contact(name="Jackie", phone="724-699-5846")],
+            customer_name="Jeremy Fabian",
+            customer_phone="724-977-5591",
+        ),
+        account_doc={
+            "_id": "account_phn",
+            "type": "account",
+            "account_contacts": [account_contact(name="Jeremy Fabian", phone="(724) 977-5591")],
+        },
+    )
+
+    assert "Jackie" in html
+    assert "Jeremy Fabian" in html
+    assert "<h3>Account escalation</h3>" in html
+    assert "Legacy primary contact" not in html
+    assert html.index("Jackie") < html.index("Jeremy Fabian")
 
 
 def test_site_detail_render_omits_empty_groups(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

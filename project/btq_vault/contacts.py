@@ -21,6 +21,13 @@ CONTACT_ROLES: frozenset[str] = frozenset(
 CONTACT_ACTIONS: frozenset[str] = frozenset({"upsert", "remove"})
 CONTACT_SCOPES: frozenset[str] = frozenset({"account", "site"})
 CONTACT_COLLECTIONS: frozenset[str] = frozenset({"account_contacts", "site_contacts"})
+PRIMARY_SITE_CONTACT_ROLES: tuple[str, ...] = (
+    "site_contact",
+    "access_contact",
+    "practice_manager",
+    "facilities",
+)
+ACCOUNT_ESCALATION_ROLE = "account_escalation"
 CONTACT_FIELDS: frozenset[str] = frozenset(
     {
         "id",
@@ -92,6 +99,26 @@ def contacts_from_doc(doc: dict[str, Any] | None, collection: str) -> list[dict[
         contacts.append(entry)
         seen.add(entry["id"])
     return contacts
+
+
+def first_contact_by_role_priority(
+    contacts: list[dict[str, Any]],
+    priority: tuple[str, ...],
+) -> dict[str, Any] | None:
+    if not contacts:
+        return None
+    priority_index = {role: index for index, role in enumerate(priority)}
+    return min(
+        contacts,
+        key=lambda contact: priority_index.get(str(contact.get("role") or ""), len(priority_index)),
+    )
+
+
+def first_contact_with_role(contacts: list[dict[str, Any]], role: str) -> dict[str, Any] | None:
+    for contact in contacts:
+        if contact.get("role") == role:
+            return contact
+    return None
 
 
 def upsert_contact_by_id(
