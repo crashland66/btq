@@ -25,6 +25,7 @@ from btq_vault.facility_hours import (
 )
 from btq_vault.contacts import (
     ACCOUNT_ESCALATION_ROLE,
+    CONTACT_ROLES,
     PRIMARY_SITE_CONTACT_ROLES,
     contacts_from_doc,
     first_contact_by_role_priority,
@@ -160,6 +161,7 @@ _FACILITY_HOURS_DAYS = (
     ("sat", "Sat"),
     ("sun", "Sun"),
 )
+_CONTACT_ROLE_OPTIONS = tuple(sorted(CONTACT_ROLES))
 _EMPTY_ABOUT_SECTION = (
     '<section><h2>About &amp; operational notes</h2>'
     '<p class="zero-state">No operational notes yet.</p></section>'
@@ -257,6 +259,14 @@ def _account_doc_id_candidates(doc: dict[str, Any]) -> list[str]:
     if account:
         candidates.append(account if account.startswith("account_") else f"account_{lower_underscore_slug(account, fallback='')}")
     return [candidate for candidate in dict.fromkeys(candidates) if candidate != "account_"]
+
+
+def _account_contact_target_id(doc: dict[str, Any], account_doc: dict[str, Any] | None) -> str:
+    account_doc_id = _clean_contact_text((account_doc or {}).get("_id"))
+    if account_doc_id:
+        return account_doc_id
+    candidates = _account_doc_id_candidates(doc)
+    return candidates[0] if candidates else ""
 
 
 def _builtin_location_doc(site_id: str) -> dict[str, Any] | None:
@@ -393,22 +403,33 @@ def _capture_provenance(doc: dict[str, Any]) -> str:
     return f"<details><summary>Capture provenance</summary>{''.join(parts)}</details>"
 
 
+def _contact_error_notice(message: str) -> str:
+    return (
+        '<section class="notice contact-error-notice" role="alert">'
+        f"<strong>Contact update was not queued.</strong> {html.escape(message)}"
+        "</section>"
+    )
+
+
 def _contacts_panel(
     doc: dict[str, Any],
+    site_id: str,
     site_contacts: list[dict[str, Any]],
     primary_site_contact: dict[str, Any] | None,
+    account_doc: dict[str, Any] | None,
     account_contacts: list[dict[str, Any]],
     account_escalation_contact: dict[str, Any] | None,
 ) -> str:
+    account_target_id = _account_contact_target_id(doc, account_doc)
+    displayed_structured_contacts = _displayed_structured_contacts(site_contacts, account_escalation_contact)
+    legacy = _legacy_contact(doc)
     if not site_contacts and not account_contacts:
         return ""
+    if not displayed_structured_contacts and not legacy and not account_target_id:
+        return ""
 
-    site_contact_html = _site_contacts_block(site_contacts, primary_site_contact)
-    escalation_html = _contact_block(
-        "Account escalation",
-        account_escalation_contact,
-        empty="No account escalation contact recorded.",
-    )
+    site_contact_html = _site_contacts_block(site_contacts, primary_site_contact) if site_contacts else ""
+    escalation_html = _contact_block("Account escalation", account_escalation_contact) if account_escalation_contact else ""
     access_note = _access_note(doc)
     access_note_html = (
         '<div class="contact-card contact-card--note">'
@@ -418,20 +439,46 @@ def _contacts_panel(
         if access_note
         else ""
     )
-    legacy = _legacy_contact(doc)
-    structured_contacts = site_contacts + account_contacts
     legacy_html = ""
-    if legacy and not any(_contacts_match(legacy, contact) for contact in structured_contacts):
+    if legacy and not any(_contacts_match(legacy, contact) for contact in displayed_structured_contacts):
         legacy_html = _contact_block("Legacy primary contact", legacy)
+    readout_html = f"{site_contact_html}{escalation_html}{access_note_html}{legacy_html}"
+    readout_grid = f'<div class="contacts-grid">{readout_html}</div>' if readout_html else ""
+    editor_html = (
+        _contact_authoring_block(
+            "Site contacts",
+            action_path=f"/sites/{html.escape(site_id, quote=True)}/contacts",
+            contacts=site_contacts,
+            target_scope="site",
+        )
+    )
+    if account_target_id:
+        editor_html += _contact_authoring_block(
+            "Account contacts",
+            action_path=f"/sites/{html.escape(site_id, quote=True)}/account-contacts",
+            contacts=account_contacts,
+            target_scope="account",
+        )
 
     return (
         '<section class="contacts-panel">'
         "<h2>Contacts</h2>"
-        '<div class="contacts-grid">'
-        f"{site_contact_html}{escalation_html}{access_note_html}{legacy_html}"
+        f"{readout_grid}"
+        '<div class="contact-authoring-grid">'
+        f"{editor_html}"
         "</div>"
         "</section>"
     )
+
+
+def _displayed_structured_contacts(
+    site_contacts: list[dict[str, Any]],
+    account_escalation_contact: dict[str, Any] | None,
+) -> list[dict[str, Any]]:
+    displayed = list(site_contacts)
+    if account_escalation_contact is not None:
+        displayed.append(account_escalation_contact)
+    return displayed
 
 
 def _site_contacts_block(site_contacts: list[dict[str, Any]], primary: dict[str, Any] | None) -> str:
@@ -456,6 +503,91 @@ def _site_contacts_block(site_contacts: list[dict[str, Any]], primary: dict[str,
         "<h3>Site contact</h3>"
         f"{primary_html}{other_html}"
         "</div>"
+    )
+
+
+def _contact_authoring_block(
+    title: str,
+    *,
+    action_path: str,
+    contacts: list[dict[str, Any]],
+    target_scope: str,
+) -> str:
+    escaped_title = html.escape(title)
+    add_label = "Add site contact" if target_scope == "site" else "Add account contact"
+    if contacts:
+        items = "".join(
+            f"<li>{_contact_edit_item(contact, action_path=action_path, target_scope=target_scope, index=index)}</li>"
+            for index, contact in enumerate(contacts)
+        )
+        list_html = f'<ul class="contact-edit-list">{items}</ul>'
+    else:
+        list_html = '<p class="zero-state">No structured contacts recorded.</p>'
+    return (
+        '<div class="contact-card contact-card--authoring">'
+        f"<h3>{escaped_title}</h3>"
+        f"{list_html}"
+        '<details class="contact-add">'
+        f"<summary>{html.escape(add_label)}</summary>"
+        f'<form method="post" action="{action_path}">'
+        '<input type="hidden" name="action" value="add">'
+        f'<input type="hidden" name="actor" value="{html.escape(default_actor(), quote=True)}">'
+        f'{_contact_form_fields(None, target_scope=target_scope)}'
+        f'<button type="submit">{html.escape(add_label)}</button>'
+        '</form>'
+        '</details>'
+        '</div>'
+    )
+
+
+def _contact_edit_item(contact: dict[str, Any], *, action_path: str, target_scope: str, index: int) -> str:
+    contact_id = html.escape(str(contact.get("id") or ""), quote=True)
+    label = _clean_contact_text(contact.get("name")) or str(contact.get("id") or f"contact {index + 1}")
+    return (
+        '<div class="contact-edit-item">'
+        f"{_contact_readout(contact)}"
+        '<details class="contact-edit">'
+        f"<summary>Edit {html.escape(label)}</summary>"
+        f'<form method="post" action="{action_path}">'
+        '<input type="hidden" name="action" value="edit">'
+        f'<input type="hidden" name="contact_id" value="{contact_id}">'
+        f'<input type="hidden" name="actor" value="{html.escape(default_actor(), quote=True)}">'
+        f'{_contact_form_fields(contact, target_scope=target_scope)}'
+        '<button type="submit">Save contact</button>'
+        '</form>'
+        '</details>'
+        f'<form class="contact-remove" method="post" action="{action_path}">'
+        '<input type="hidden" name="action" value="remove">'
+        f'<input type="hidden" name="contact_id" value="{contact_id}">'
+        f'<input type="hidden" name="actor" value="{html.escape(default_actor(), quote=True)}">'
+        '<input type="hidden" name="confirm" value="1">'
+        f'<button class="reject" type="submit" aria-label="Remove contact {html.escape(label, quote=True)}">Remove</button>'
+        '</form>'
+        '</div>'
+    )
+
+
+def _contact_form_fields(contact: dict[str, Any] | None, *, target_scope: str) -> str:
+    current = contact or {}
+    role = str(current.get("role") or ("site_contact" if target_scope == "site" else ACCOUNT_ESCALATION_ROLE))
+    values = {
+        "name": _clean_contact_text(current.get("name")),
+        "title": _clean_contact_text(current.get("title")),
+        "phone": _clean_contact_text(current.get("phone")),
+        "email": _clean_contact_text(current.get("email")),
+        "source": _clean_contact_text(current.get("source")) or "ops_dashboard_site_detail",
+        "source_date": _clean_contact_text(current.get("source_date")),
+        "notes": _clean_contact_text(current.get("notes")),
+    }
+    return (
+        f'<label>Name <input name="name" value="{html.escape(values["name"], quote=True)}" required></label>'
+        f'<label>Title <input name="title" value="{html.escape(values["title"], quote=True)}"></label>'
+        f'<label>Phone <input type="tel" name="phone" value="{html.escape(values["phone"], quote=True)}"></label>'
+        f'<label>Email <input type="email" name="email" value="{html.escape(values["email"], quote=True)}"></label>'
+        f'<label>Role <select name="role" required>{_select_options(_CONTACT_ROLE_OPTIONS, role)}</select></label>'
+        f'<label>Source <input name="source" value="{html.escape(values["source"], quote=True)}" required></label>'
+        f'<label>Source date <input type="date" name="source_date" value="{html.escape(values["source_date"], quote=True)}"></label>'
+        f'<label>Notes <textarea name="notes">{html.escape(values["notes"])}</textarea></label>'
     )
 
 
@@ -859,6 +991,82 @@ def _write_site_hours_job(runtime_root: Path, payload: dict[str, object]) -> Pat
     queue_dir = runtime_root.expanduser().resolve(strict=False) / "queue"
     queue_dir.mkdir(parents=True, exist_ok=True)
     queue_path = queue_dir / f"set-site-hours-{suffix}.json"
+    temp_path = queue_path.with_name(f".{queue_path.name}.tmp")
+    temp_path.write_text(json.dumps(job, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    temp_path.replace(queue_path)
+    return queue_path
+
+
+def _contact_job_payload(
+    form: dict[str, list[str]],
+    site_id: str,
+    *,
+    target_type: str,
+    location_doc: dict[str, Any],
+    account_doc: dict[str, Any] | None,
+) -> dict[str, object]:
+    action = first_query_value(form, "action").strip()
+    if action not in {"add", "edit", "remove"}:
+        raise ValueError("unsupported contact action")
+    target_id = site_id if target_type == "site" else _account_contact_target_id(location_doc, account_doc)
+    if not target_id:
+        raise ValueError("account contact target could not be resolved")
+
+    actor = first_query_value(form, "actor").strip() or default_actor()
+    payload: dict[str, object] = {
+        "action": "remove" if action == "remove" else "upsert",
+        "target": {"type": target_type, "id": target_id},
+        "actor": actor,
+        "source": "ops_dashboard_site_detail",
+    }
+    if action == "remove":
+        payload["contact"] = {"id": first_query_value(form, "contact_id").strip()}
+        return payload
+
+    role = first_query_value(form, "role").strip()
+    name = first_query_value(form, "name").strip()
+    contact_id = first_query_value(form, "contact_id").strip()
+    if action == "add" and not contact_id:
+        contact_id = _generated_contact_id(target_type, target_id, name, role)
+    contact: dict[str, object] = {
+        "id": contact_id,
+        "name": name,
+        "role": role,
+        "scope": target_type,
+        "source": first_query_value(form, "source").strip(),
+    }
+    for field in ("title", "phone", "email", "notes"):
+        value = first_query_value(form, field).strip()
+        if value:
+            contact[field] = value
+    source_date = first_query_value(form, "source_date").strip()
+    if source_date:
+        contact["source_date"] = source_date
+    payload["contact"] = contact
+    return payload
+
+
+def _generated_contact_id(scope: str, target_id: str, name: str, role: str) -> str:
+    target_slug = lower_underscore_slug(target_id.removeprefix("account_"), fallback="target")
+    name_slug = lower_underscore_slug(name, fallback="contact")
+    role_slug = lower_underscore_slug(role, fallback="role")
+    return f"cnt_{scope}_{target_slug}_{name_slug}_{role_slug}"
+
+
+def _write_set_contact_job(runtime_root: Path, payload: dict[str, object]) -> Path:
+    from queue_spec import JOB_SET_CONTACT, validate_job
+
+    suffix = str(uuid.uuid4())
+    job = {
+        "job_id": f"set-contact-{suffix}",
+        "job_type": JOB_SET_CONTACT,
+        "payload": payload,
+    }
+    if not validate_job(job):
+        raise ValueError("invalid set_contact payload")
+    queue_dir = runtime_root.expanduser().resolve(strict=False) / "queue"
+    queue_dir.mkdir(parents=True, exist_ok=True)
+    queue_path = queue_dir / f"set-contact-{suffix}.json"
     temp_path = queue_path.with_name(f".{queue_path.name}.tmp")
     temp_path.write_text(json.dumps(job, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     temp_path.replace(queue_path)
@@ -1494,6 +1702,58 @@ def handle_site_hours_post(ctx: object, site_id: str, body: bytes):
     return _redirect(f"/sites/{quote(site_id)}?message=facility_hours_queued")
 
 
+def handle_contacts_post(ctx: object, site_id: str, body: bytes, *, target_type: str = "site"):
+    from urllib.parse import parse_qs, quote
+
+    form = parse_qs(body.decode("utf-8", errors="replace"), keep_blank_values=True)
+    root = Path(getattr(ctx, "runtime_root", Path("."))).expanduser().resolve(strict=False)
+    form_payload = {key: values[0] if values else "" for key, values in form.items()}
+    route_suffix = "account-contacts" if target_type == "account" else "contacts"
+
+    def _redirect(location: str) -> tuple:
+        return 303, "text/html; charset=utf-8", f'<a href="{html.escape(location)}">Return</a>'.encode(), {"Location": location}
+
+    def _rerender_error(message: str) -> tuple:
+        current_query = dict(getattr(ctx, "query", {}) or {})
+        current_query["contact_error"] = [message]
+        try:
+            setattr(ctx, "query", current_query)
+        except Exception:
+            pass
+        return 200, "text/html; charset=utf-8", render(ctx, site_id).encode("utf-8"), {}
+
+    action = first_query_value(form, "action").strip()
+    if action == "remove" and first_query_value(form, "confirm") != "1":
+        if hasattr(ctx, "audit"):
+            ctx.audit(f"/sites/{site_id}/{route_suffix}", form_payload, "failed: confirm_required")
+        return _redirect(f"/sites/{quote(site_id)}?error=confirm_required")
+
+    location_doc = _load_location(site_id)
+    if not isinstance(location_doc, dict) or location_doc.get("type") != "location":
+        if hasattr(ctx, "audit"):
+            ctx.audit(f"/sites/{site_id}/{route_suffix}", form_payload, "failed: not_found")
+        return _redirect(f"/sites/{quote(site_id)}?error=not_found")
+    account_doc = _load_account_doc_for_location(location_doc)
+
+    try:
+        payload = _contact_job_payload(
+            form,
+            site_id,
+            target_type=target_type,
+            location_doc=location_doc,
+            account_doc=account_doc,
+        )
+        queue_path = _write_set_contact_job(root, payload)
+    except (ValueError, OSError) as exc:
+        if hasattr(ctx, "audit"):
+            ctx.audit(f"/sites/{site_id}/{route_suffix}", form_payload, f"failed: {exc}")
+        return _rerender_error(str(exc))
+
+    if hasattr(ctx, "audit"):
+        ctx.audit(f"/sites/{site_id}/{route_suffix}", form_payload, f"success: staged queue_path={queue_path}")
+    return _redirect(f"/sites/{quote(site_id)}?message=contact_queued")
+
+
 def render(ctx: object, site_id: str) -> str:
     """Render the per-site detail page wrapped by html_page(active_section='site_detail')."""
     try:
@@ -1511,7 +1771,8 @@ def render(ctx: object, site_id: str) -> str:
         primary_site_contact = first_contact_by_role_priority(site_contacts, PRIMARY_SITE_CONTACT_ROLES)
         account_contacts = contacts_from_doc(account_doc, "account_contacts")
         account_escalation_contact = first_contact_with_role(account_contacts, ACCOUNT_ESCALATION_ROLE)
-        structured_contacts_exist = bool(site_contacts or account_contacts)
+        displayed_structured_contacts = _displayed_structured_contacts(site_contacts, account_escalation_contact)
+        structured_contacts_displayed = bool(displayed_structured_contacts)
         primary_name = sites.canonical_name(doc) or str(doc.get("location") or site_id)
         escaped_id = html.escape(site_id, quote=True)
         related_data = _related_data(site_id)
@@ -1532,6 +1793,9 @@ def render(ctx: object, site_id: str) -> str:
                 "</p></header>"
             )
         ]
+        contact_error = first_query_value(getattr(ctx, "query", {}), "contact_error").strip()
+        if contact_error:
+            sections.append(_contact_error_notice(contact_error))
         sections.append(
             _metric_cards(
                 open_opportunities=len(related_data["opportunity_rows"]),
@@ -1546,14 +1810,16 @@ def render(ctx: object, site_id: str) -> str:
                 doc,
                 site_id,
                 edit_section,
-                structured_contacts_exist=structured_contacts_exist,
+                structured_contacts_exist=structured_contacts_displayed,
             )
         )
         sections.append(
             _contacts_panel(
                 doc,
+                site_id,
                 site_contacts,
                 primary_site_contact,
+                account_doc,
                 account_contacts,
                 account_escalation_contact,
             )

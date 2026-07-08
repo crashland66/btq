@@ -89,6 +89,14 @@ def dispatch_post_route(
         site_id = route_path.removeprefix("/sites/").removesuffix("/urls").strip("/")
         if site_id and "/" not in site_id:
             return site_detail.handle_site_url_post(ctx, site_id, body)
+    if route_path.startswith("/sites/") and route_path.endswith("/account-contacts"):
+        site_id = route_path.removeprefix("/sites/").removesuffix("/account-contacts").strip("/")
+        if site_id and "/" not in site_id:
+            return site_detail.handle_contacts_post(ctx, site_id, body, target_type="account")
+    if route_path.startswith("/sites/") and route_path.endswith("/contacts"):
+        site_id = route_path.removeprefix("/sites/").removesuffix("/contacts").strip("/")
+        if site_id and "/" not in site_id:
+            return site_detail.handle_contacts_post(ctx, site_id, body, target_type="site")
     if route_path.startswith("/sites/") and route_path.endswith("/facility-hours"):
         site_id = route_path.removeprefix("/sites/").removesuffix("/facility-hours").strip("/")
         if site_id and "/" not in site_id:

@@ -8,6 +8,7 @@ from urllib.parse import urlencode
 import pytest
 
 from ops_dashboard.sections import entity_edit, site_detail
+from queue_spec import validate_job
 
 
 class DummyContext(SimpleNamespace):
@@ -178,6 +179,102 @@ def test_site_detail_facility_hours_render_controls(monkeypatch: pytest.MonkeyPa
     assert 'name="action" value="clear"' in html
 
 
+def test_site_detail_contacts_render_authoring_controls(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(
+        site_detail,
+        "_load_location",
+        lambda site_id: _minimal_location(
+            account="Acme",
+            customer_name="Legacy Person",
+            site_contacts=[
+                {
+                    "id": "cnt_site_7050_alex_site_contact",
+                    "name": "Alex Site",
+                    "role": "site_contact",
+                    "scope": "site",
+                    "source": "operator_verified",
+                    "phone": "555-0101",
+                }
+            ],
+        ),
+    )
+    monkeypatch.setattr(
+        site_detail,
+        "_load_account_doc_for_location",
+        lambda doc: {
+            "_id": "account_acme",
+            "type": "account",
+            "account_contacts": [
+                {
+                    "id": "cnt_account_acme_jordan_account_escalation",
+                    "name": "Jordan Escalation",
+                    "role": "account_escalation",
+                    "scope": "account",
+                    "source": "operator_verified",
+                    "email": "jordan@example.com",
+                }
+            ],
+        },
+    )
+    _stub_expensive_sections(monkeypatch)
+    monkeypatch.setattr(site_detail, "_site_capture_processing_counts", lambda site_id: None)
+    ctx = DummyContext(tmp_path, {})
+
+    html = site_detail.render(ctx, "7050")
+
+    assert "Contacts" in html
+    assert "Alex Site" in html
+    assert "Jordan Escalation" in html
+    assert 'action="/sites/7050/contacts"' in html
+    assert 'action="/sites/7050/account-contacts"' in html
+    assert 'name="role"' in html
+    assert "Account Escalation" in html
+    assert 'name="action" value="add"' in html
+    assert 'name="action" value="edit"' in html
+    assert 'name="action" value="remove"' in html
+
+
+def test_contact_panel_legacy_fallback_uses_displayed_structured_contacts(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(
+        site_detail,
+        "_load_location",
+        lambda site_id: _minimal_location(
+            account="Acme",
+            customer_name="Jordan Legacy",
+            customer_email="jordan@example.com",
+        ),
+    )
+    monkeypatch.setattr(
+        site_detail,
+        "_load_account_doc_for_location",
+        lambda doc: {
+            "_id": "account_acme",
+            "type": "account",
+            "account_contacts": [
+                {
+                    "id": "cnt_account_acme_jordan_billing",
+                    "name": "Jordan Legacy",
+                    "role": "billing",
+                    "scope": "account",
+                    "source": "operator_verified",
+                    "email": "jordan@example.com",
+                }
+            ],
+        },
+    )
+    _stub_expensive_sections(monkeypatch)
+    monkeypatch.setattr(site_detail, "_site_capture_processing_counts", lambda site_id: None)
+    ctx = DummyContext(tmp_path, {})
+
+    html = site_detail.render(ctx, "7050")
+
+    assert "Jordan Legacy" in html
+    assert "Contact</h3>" in html or "Contact</h2>" in html
+    assert "No account escalation contact recorded" not in html
+
+
 def test_facility_hours_form_json_preserves_literal_empty_array_note_text() -> None:
     note = "Operator note with literal [] bytes."
     rendered = site_detail._facility_hours_json_for_form(
@@ -336,6 +433,166 @@ def test_site_hours_post_enqueues_job(monkeypatch: pytest.MonkeyPatch, tmp_path:
     assert payload["facility_hours"]["status"] == "verified"
     assert payload["facility_hours"]["weekly"]["fri"] == [{"open": "08:30", "close": "15:00"}]
     assert payload["source"] == "ops_dashboard_site_detail"
+
+
+@pytest.mark.parametrize(
+    ("target_type", "body", "expected_target", "expected_action", "expected_id"),
+    [
+        (
+            "site",
+            {
+                "action": "add",
+                "name": "Alex Site",
+                "title": "Facility Manager",
+                "phone": "555-0101",
+                "email": "alex@example.com",
+                "role": "site_contact",
+                "source": "operator_verified",
+                "source_date": "2026-07-07",
+                "notes": "Synthetic fixture.",
+                "actor": "Greg",
+            },
+            {"type": "site", "id": "7050"},
+            "upsert",
+            "cnt_site_7050_alex_site_site_contact",
+        ),
+        (
+            "site",
+            {
+                "action": "edit",
+                "contact_id": "cnt_existing",
+                "name": "Alex Updated",
+                "phone": "555-0102",
+                "role": "site_contact",
+                "source": "operator_verified",
+                "actor": "Greg",
+            },
+            {"type": "site", "id": "7050"},
+            "upsert",
+            "cnt_existing",
+        ),
+        (
+            "site",
+            {
+                "action": "remove",
+                "contact_id": "cnt_existing",
+                "confirm": "1",
+                "actor": "Greg",
+            },
+            {"type": "site", "id": "7050"},
+            "remove",
+            "cnt_existing",
+        ),
+        (
+            "account",
+            {
+                "action": "add",
+                "name": "Jordan Account",
+                "email": "jordan@example.com",
+                "role": "account_escalation",
+                "source": "operator_verified",
+                "actor": "Greg",
+            },
+            {"type": "account", "id": "account_acme"},
+            "upsert",
+            "cnt_account_acme_jordan_account_account_escalation",
+        ),
+        (
+            "account",
+            {
+                "action": "edit",
+                "contact_id": "cnt_account_existing",
+                "name": "Jordan Updated",
+                "email": "jordan.updated@example.com",
+                "role": "billing",
+                "source": "operator_verified",
+                "actor": "Greg",
+            },
+            {"type": "account", "id": "account_acme"},
+            "upsert",
+            "cnt_account_existing",
+        ),
+        (
+            "account",
+            {
+                "action": "remove",
+                "contact_id": "cnt_account_existing",
+                "confirm": "1",
+                "actor": "Greg",
+            },
+            {"type": "account", "id": "account_acme"},
+            "remove",
+            "cnt_account_existing",
+        ),
+    ],
+)
+def test_contacts_post_enqueues_set_contact_job(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    target_type: str,
+    body: dict[str, str],
+    expected_target: dict[str, str],
+    expected_action: str,
+    expected_id: str,
+) -> None:
+    monkeypatch.setattr(site_detail.sites, "request_json", lambda *args, **kwargs: pytest.fail("must not direct-write CouchDB"))
+    monkeypatch.setattr(site_detail, "_load_location", lambda site_id: _minimal_location(account="Acme"))
+    monkeypatch.setattr(site_detail, "_load_account_doc_for_location", lambda doc: {"_id": "account_acme", "type": "account"})
+    ctx = DummyContext(tmp_path)
+
+    status, _content_type, _response_body, headers = site_detail.handle_contacts_post(
+        ctx,
+        "7050",
+        urlencode(body).encode(),
+        target_type=target_type,
+    )
+
+    assert status == 303
+    assert headers["Location"] == "/sites/7050?message=contact_queued"
+    queue_files = list((ctx.runtime_root / "queue").glob("set-contact-*.json"))
+    assert len(queue_files) == 1
+    job = json.loads(queue_files[0].read_text(encoding="utf-8"))
+    assert job["job_type"] == "set_contact"
+    assert validate_job(job) is True
+    payload = job["payload"]
+    assert payload["action"] == expected_action
+    assert payload["target"] == expected_target
+    assert payload["actor"] == "Greg"
+    assert payload["contact"]["id"] == expected_id
+    if expected_action == "upsert":
+        assert payload["contact"]["scope"] == expected_target["type"]
+        assert payload["source"] == "ops_dashboard_site_detail"
+    else:
+        assert payload["contact"] == {"id": expected_id}
+
+
+def test_contacts_post_invalid_input_rerenders_without_queue(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(site_detail, "_load_location", lambda site_id: _minimal_location(account="Acme"))
+    monkeypatch.setattr(site_detail, "_load_account_doc_for_location", lambda doc: {"_id": "account_acme", "type": "account"})
+    _stub_expensive_sections(monkeypatch)
+    monkeypatch.setattr(site_detail, "_site_capture_processing_counts", lambda site_id: None)
+    ctx = DummyContext(tmp_path)
+    body = {
+        "action": "add",
+        "name": "Broken Email",
+        "email": "broken.example.com",
+        "role": "site_contact",
+        "source": "operator_verified",
+        "actor": "Greg",
+    }
+
+    status, _content_type, response_body, _headers = site_detail.handle_contacts_post(
+        ctx,
+        "7050",
+        urlencode(body).encode(),
+        target_type="site",
+    )
+
+    assert status == 200
+    assert b"Contact update was not queued" in response_body
+    assert list((ctx.runtime_root / "queue").glob("set-contact-*.json")) == []
 
 
 def test_post_save_section_updates_only_contact_fields(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

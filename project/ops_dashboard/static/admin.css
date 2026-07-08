@@ -574,6 +574,49 @@ button.is-copy-failed {
   margin: 0;
   padding: 0;
 }
+.contact-authoring-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 12px;
+  margin-top: 12px;
+}
+.contact-card--authoring {
+  background: var(--panel-soft);
+}
+.contact-edit-list {
+  display: grid;
+  gap: 10px;
+  list-style: none;
+  margin: 0 0 12px;
+  padding: 0;
+}
+.contact-edit-item {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  padding: 10px;
+}
+.contact-edit summary,
+.contact-add summary {
+  cursor: pointer;
+  font-weight: 700;
+  color: var(--link);
+  margin-top: 8px;
+}
+.contact-edit form,
+.contact-add form {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 8px;
+  margin-top: 8px;
+}
+.contact-edit textarea,
+.contact-add textarea {
+  min-height: 96px;
+}
+.contact-remove {
+  margin-top: 8px;
+}
 .reference-links {
   overflow: visible;
 }
@@ -1360,6 +1403,11 @@ details.raw-json pre { margin-top: 4px; }
     white-space: normal;
   }
   .contacts-grid {
+    grid-template-columns: 1fr;
+  }
+  .contact-authoring-grid,
+  .contact-edit form,
+  .contact-add form {
     grid-template-columns: 1fr;
   }
   .contact-details a[href^="tel:"] {
