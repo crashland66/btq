@@ -63,6 +63,7 @@ KNOWN_JOB_SUMMARY_TYPES = {
     "log_availability_constraint",
     "set_entity_status",
     "set_employee_id",
+    "set_contact",
     "set_site_hours",
     "set_site_url",
     "update_site_equipment",
@@ -1332,6 +1333,20 @@ def render_job_summary(job_type: object, payload: object) -> str:
             status = html.escape(_clean_display_part(hours.get("status")))
         suffix = _join_summary_parts(site, action, status)
         return _summary_with_suffix("Set facility hours", suffix)
+    if job_type_text == "set_contact":
+        action = html.escape(_clean_display_part(body.get("action") or "upsert"))
+        target = body.get("target")
+        contact = body.get("contact")
+        target_text = ""
+        contact_text = ""
+        if isinstance(target, dict):
+            target_type = html.escape(_clean_display_part(target.get("type")))
+            target_id = html.escape(_clean_display_part(target.get("id")))
+            target_text = _join_summary_parts(target_type, target_id)
+        if isinstance(contact, dict):
+            contact_text = html.escape(_clean_display_part(contact.get("name") or contact.get("id")))
+        suffix = _join_summary_parts(target_text, action, contact_text)
+        return _summary_with_suffix("Set contact", suffix)
     if job_type_text == "update_site_equipment":
         site = _site_summary(body)
         equipment = body.get("equipment")

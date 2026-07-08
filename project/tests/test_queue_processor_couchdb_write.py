@@ -95,6 +95,9 @@ class RecordingRmwVaultStore(RecordingVaultStore):
         ]
         return matches[:limit]
 
+    def find_account_docs(self, *, limit: int = 10000) -> list[dict[str, Any]]:
+        return [dict(doc) for doc in self.docs if doc.get("type") == "account"][:limit]
+
     def update_doc(
         self,
         doc_id: str,

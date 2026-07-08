@@ -11,6 +11,7 @@ from btq_vault.location_urls import (
     LOCATION_URL_STATUSES,
     is_http_url,
 )
+from btq_vault.contacts import CONTACT_ACTIONS, CONTACT_ROLES
 from btq_vault.facility_hours import (
     FACILITY_HOURS_RULES,
     FACILITY_HOURS_STATUSES,
@@ -73,6 +74,7 @@ JOB_SET_ENTITY_STATUS = "set_entity_status"
 JOB_UPDATE_SITE_EQUIPMENT = "update_site_equipment"
 JOB_SET_SITE_URL = "set_site_url"
 JOB_SET_SITE_HOURS = "set_site_hours"
+JOB_SET_CONTACT = "set_contact"
 JOB_MARK_SUPPLY_ORDERED = "mark_supply_ordered"
 JOB_MARK_SUPPLY_DELIVERED = "mark_supply_delivered"
 JOB_MARK_SUPPLY_STOCKED = "mark_supply_stocked"
@@ -175,6 +177,7 @@ ALLOWED_JOB_TYPES = {
     JOB_UPDATE_SITE_EQUIPMENT,
     JOB_SET_SITE_URL,
     JOB_SET_SITE_HOURS,
+    JOB_SET_CONTACT,
     JOB_MARK_SUPPLY_ORDERED,
     JOB_MARK_SUPPLY_DELIVERED,
     JOB_MARK_SUPPLY_STOCKED,
@@ -241,6 +244,7 @@ JOB_SCHEMAS = {
     JOB_UPDATE_SITE_EQUIPMENT: ["equipment", "inspection_date", "inspected_by"],
     JOB_SET_SITE_URL: ["site_id", "action", "url", "actor"],
     JOB_SET_SITE_HOURS: ["site_id", "actor"],
+    JOB_SET_CONTACT: ["action", "target", "actor", "contact"],
     JOB_MARK_SUPPLY_ORDERED: ["supply_id", "actor"],
     JOB_MARK_SUPPLY_DELIVERED: ["supply_id", "actor"],
     JOB_MARK_SUPPLY_STOCKED: ["supply_id", "actor"],
@@ -461,6 +465,26 @@ SET_SITE_HOURS_ALLOWED_PAYLOAD_FIELDS = {
     "facility_hours",
     "actor",
     "source",
+}
+SET_CONTACT_ALLOWED_PAYLOAD_FIELDS = {
+    "action",
+    "target",
+    "actor",
+    "source",
+    "contact",
+}
+SET_CONTACT_TARGET_FIELDS = {"type", "id"}
+SET_CONTACT_FIELDS = {
+    "id",
+    "name",
+    "title",
+    "phone",
+    "email",
+    "role",
+    "scope",
+    "source",
+    "source_date",
+    "notes",
 }
 MARK_SUPPLY_ALLOWED_PAYLOAD_FIELDS = {
     "supply_id",
@@ -1101,6 +1125,66 @@ def _validate_set_site_hours_payload(payload: dict) -> bool:
     return True
 
 
+def _validate_set_contact_payload(payload: dict) -> bool:
+    if set(payload) - SET_CONTACT_ALLOWED_PAYLOAD_FIELDS:
+        return False
+    action = payload.get("action")
+    if action not in CONTACT_ACTIONS:
+        return False
+    if not _is_non_empty_string(payload.get("actor")):
+        return False
+    source = payload.get("source")
+    if source is not None and not isinstance(source, str):
+        return False
+
+    target = payload.get("target")
+    if not isinstance(target, dict) or set(target) - SET_CONTACT_TARGET_FIELDS:
+        return False
+    target_type = target.get("type")
+    if target_type not in {"account", "site"}:
+        return False
+    if not _is_non_empty_string(target.get("id")):
+        return False
+
+    contact = payload.get("contact")
+    if not isinstance(contact, dict) or set(contact) - SET_CONTACT_FIELDS:
+        return False
+    if not _is_non_empty_string(contact.get("id")):
+        return False
+
+    if action == "remove":
+        return set(contact) == {"id"}
+
+    if action != "upsert":
+        return False
+    for field in ("name", "role", "scope", "source"):
+        if not _is_non_empty_string(contact.get(field)):
+            return False
+    if contact.get("scope") != target_type:
+        return False
+    if contact.get("role") not in CONTACT_ROLES:
+        return False
+    if not any(_is_non_empty_string(contact.get(field)) for field in ("phone", "email", "notes")):
+        return False
+    for field in ("title",):
+        value = contact.get(field)
+        if value is not None and not isinstance(value, str):
+            return False
+    phone = contact.get("phone")
+    if phone is not None and not _is_non_empty_string(phone):
+        return False
+    email = contact.get("email")
+    if email is not None and (not isinstance(email, str) or not _is_simple_email(email)):
+        return False
+    notes = contact.get("notes")
+    if notes is not None and not isinstance(notes, str):
+        return False
+    source_date = contact.get("source_date")
+    if source_date is not None and not _is_iso_date(source_date):
+        return False
+    return True
+
+
 def _validate_set_entity_status_payload(payload: dict) -> bool:
     if set(payload) - SET_ENTITY_STATUS_ALLOWED_PAYLOAD_FIELDS:
         return False
@@ -1118,6 +1202,21 @@ def _validate_set_entity_status_payload(payload: dict) -> bool:
     if details is not None and not isinstance(details, str):
         return False
     return True
+
+
+def _is_iso_date(value: object) -> bool:
+    if not isinstance(value, str) or INSPECTION_DATE_RE.match(value) is None:
+        return False
+    try:
+        datetime.fromisoformat(value)
+    except ValueError:
+        return False
+    return True
+
+
+def _is_simple_email(value: str) -> bool:
+    stripped = value.strip()
+    return bool(re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", stripped))
 
 
 def _validate_mark_supply_payload(payload: dict) -> bool:
@@ -1380,6 +1479,9 @@ def validate_job(job: dict) -> bool:
             return False
     if job_type == JOB_SET_SITE_HOURS:
         if not _validate_set_site_hours_payload(payload):
+            return False
+    if job_type == JOB_SET_CONTACT:
+        if not _validate_set_contact_payload(payload):
             return False
     if job_type in {
         JOB_MARK_SUPPLY_ORDERED,

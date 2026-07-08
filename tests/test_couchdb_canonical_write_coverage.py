@@ -55,6 +55,7 @@ CANONICAL_WRITERS: frozenset[str] = frozenset(
         "record_shift_report",
         "record_unknown_capture",
         "remove_from_schedule",
+        "set_contact",
         "set_employee_id",
         "set_entity_status",
         "set_site_hours",
@@ -180,6 +181,9 @@ COUCHDB_PATH_TESTS: dict[str, list[str]] = {
     ],
     "remove_from_schedule": [
         "project/tests/test_queue_processor_couchdb_write.py::test_remove_from_schedule_appends_to_canonical_content",
+    ],
+    "set_contact": [
+        "project/tests/test_set_contact_job.py::test_site_upsert_adds_and_replaces_by_id_without_touching_customer_fields",
     ],
     "set_employee_id": [
         "project/tests/test_set_employee_id_job.py::test_happy_path",

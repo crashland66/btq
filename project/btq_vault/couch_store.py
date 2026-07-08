@@ -183,6 +183,31 @@ class CouchDBEntityStore:
             raise CouchDBEntityStoreError("CouchDB location query returned no docs list")
         return [doc for doc in docs if isinstance(doc, dict)]
 
+    def find_account_docs(self, *, limit: int = 10000) -> list[dict[str, Any]]:
+        """Return canonical account docs needed for account target resolution."""
+        response = self._request_json(
+            "POST",
+            "_find",
+            {
+                "selector": {"type": "account"},
+                "fields": [
+                    "_id",
+                    "type",
+                    "account",
+                    "name",
+                    "canonical",
+                    "aliases",
+                    "account_aliases",
+                    "status",
+                ],
+                "limit": limit,
+            },
+        )
+        docs = response.get("docs")
+        if not isinstance(docs, list):
+            raise CouchDBEntityStoreError("CouchDB account query returned no docs list")
+        return [doc for doc in docs if isinstance(doc, dict)]
+
     def find_docs_with_field(self, field_name: str, *, limit: int = 100000) -> list[dict[str, Any]]:
         """Return docs where a top-level field exists, with enough data for CAS updates."""
         field = str(field_name).strip()

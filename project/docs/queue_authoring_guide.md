@@ -1672,6 +1672,96 @@ Do not use when:
 }
 ```
 
+## 13c. `set_contact`
+
+Use when:
+
+- an operator has reviewed a structured account or site contact
+- the contact should be stored on the canonical `account` or `location` doc as
+  first-class structured metadata
+- the action is to upsert or remove one contact by stable contact `id`
+
+Do not use when:
+
+- the contact is raw intake, unresolved interpretation, or unreviewed AI output
+- the action should mutate legacy `customer_*` fields
+- the target account or site does not already exist canonically
+- the intent is to seed contacts directly without an approved queue job
+
+### Required payload fields
+
+- `action`: one of `upsert`, `remove`
+- `target`: object with:
+  - `type`: one of `account`, `site`
+  - `id`: account canonical id/name/alias or site canonical name/alias/site ID
+- `actor`: operator/person string
+- `contact`: object; for `remove`, only `id` is allowed
+
+### Required `contact` fields for `upsert`
+
+- `id`: stable contact ID string
+- `name`: non-empty display name
+- `role`: one of `account_escalation`, `site_contact`, `access_contact`,
+  `practice_manager`, `facilities`, `billing`, `safety`, `regional_manager`,
+  `client_admin`, `emergency_access`, `other`
+- `scope`: one of `account`, `site`; must match `target.type`
+- `source`: non-empty provenance string
+
+At least one of `phone`, `email`, or non-empty `notes` is required for
+`upsert`.
+
+### Optional payload fields
+
+- `source`: job-level source string such as `manual_review` or
+  `ops_dashboard_site_detail`
+
+### Optional `contact` fields for `upsert`
+
+- `title`, `phone`, `email`, `source_date`, `notes`
+- `source_date` must be `YYYY-MM-DD` when present
+- `email` must be simple email-shaped when present
+- `phone` is stored as a non-empty string when present; it is not reformatted
+
+### Runtime behavior notes
+
+- `site` targets resolve through the site registry and mutate
+  `location_<site_id>.site_contacts`
+- `account` targets accept a canonical `account_<slug>` id or an unambiguous
+  account name/alias and mutate `account_<slug>.account_contacts`
+- the target document must already exist; `set_contact` never creates accounts
+  or locations
+- `upsert` replaces an existing contact with the same `id` and never creates
+  duplicates; `remove` is a no-op when the contact is absent
+- `customer_*` fields are neither read nor written by this job
+- reprocessing the same job is idempotent via the `btq_job_ids` marker
+
+### Valid example
+
+```json
+{
+  "job_id": "2026-07-07T14-30-00Z__phn-contact",
+  "job_type": "set_contact",
+  "payload": {
+    "action": "upsert",
+    "target": {"type": "account", "id": "account_phn"},
+    "actor": "Greg",
+    "source": "manual_review",
+    "contact": {
+      "id": "contact_public_safe",
+      "name": "Public Safe Contact",
+      "title": "Operations Manager",
+      "phone": "555-0100",
+      "email": "contact@example.com",
+      "role": "account_escalation",
+      "scope": "account",
+      "source": "operator_verified",
+      "source_date": "2026-07-07",
+      "notes": "Public-safe synthetic example."
+    }
+  }
+}
+```
+
 ## 14. `log_personnel_event`
 
 Use when:
