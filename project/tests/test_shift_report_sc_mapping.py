@@ -12,9 +12,22 @@ from btq_cli.shift_report_sc_mapping import (
     ANSWER_QC_COUNT,
     ANSWER_YES_NO_QUITS,
     ANSWER_YES_NO_SHARED,
+    ITEM_ACCOUNTS_COMPLETED_QC,
+    ITEM_CLEANING_FILL_IN_COUNT,
+    ITEM_CUSTOMER_INTERACTIONS,
+    ITEM_EHUB_WINTEAM_ALERTS,
+    ITEM_EMPLOYEES_VISITED,
+    ITEM_EXCUSED_MISSED_SHIFTS,
+    ITEM_INTERVIEWS_HIRES,
     ITEM_NIGHTLY_SUMMARY,
+    ITEM_OPEN_POSITIONS_DETAIL,
+    ITEM_OPEN_POSITIONS_FULL_AREA,
+    ITEM_OVER_HOURS,
+    ITEM_QC_VISITS_COUNT,
     ITEM_QUITS_TERMINATIONS,
     ITEM_REPORT_DATE,
+    ITEM_TEAM_MEMBER_CONNECTION,
+    ITEM_TEAM_MEMBERS_COUNT,
     TEMPLATE_ID,
     build_prefill_payload,
     count_bucket,
@@ -28,51 +41,110 @@ SAMPLE = """# Area Manager Shift Report — 2026-06-24
 ## Nightly Summary
 Altoona loop: QC at two sites, supply delivery, coaching.
 
-## eHub / WinTeam Alerts
+## eHub / WinTeam Alert Updates Needed
 None noted.
 
-## Over-Hours Accounts Discussed + Solution
+## Over-Hours Accounts
 None noted.
 
-## QC Visits Count
+## Accounts Visited for QC / Issue Ticket Follow-Up (how many)
 2 accounts.
 
 ## Accounts Completed QC In
 - Interfuse (222)
 - PHN Altoona (592)
 
-## Team Members Visited / Trained Count
+## Team Members Visited (Safety, QC, Training) (how many)
 2 team members.
 
-## Employees Visited, Trained, Etc.
+## Employees Visited, Trained, Etc. (Who and Account)
 - Megan Greenwood (592): coached on flat-mop method.
 
-## Team Member Connection
+## Team Member Connection (First and Last Name)
 - Megan Greenwood
 
-## Cleaning Fill-In Count
+## Accounts Worked Strictly for Cleaning Fill-In (how many)
 0.
 
-## Customer Interactions In Person
+## Customer Interactions (In-Person, Who and Account)
 - Jackie (592): floor concern.
 
-## Open Positions — Full Area
+## Open Positions (Full Area)
 - Mobile cleaner — area-wide
 
-## Open Positions Detail
+## Open Positions — Account, Days, Hours, Pay
 - Mobile cleaner, area-wide — ~$17/hr.
 
-## Interviews / Hires Today
+## Interviews Conducted or Hires Made Today
 No interviews or hires noted.
 
-## Quits / Terminations Today
+## Voluntary / Involuntary Quits or Terminations Today
 No quits or terminations noted.
 
-## Excused / Missed Shifts Today
+## Excused / Approved / Unexcused Missed Shifts
 None noted.
 
 ## Notes for Operations Manager
 - Interfuse (222): order bulk rags, trace missing delivery.
+"""
+
+CLOSEDAY_SAMPLE = """---
+date: 2026-07-08
+operator: greg
+---
+# Area Manager Shift Report — 2026-07-08
+
+## Title Page
+**Nightly Summary:**
+Public-safe nightly summary with QC follow-up, staffing review, and client communication.
+
+## Operations
+**eHub / WinTeam Alert Updates Needed:**
+- Account 101: confirm schedule exception was cleared.
+
+**Over-Hours Accounts:**
+- Account 202: reviewed 1.5 over-hours and set correction plan.
+
+**Accounts Visited for QC / Issue Ticket Follow-Up (how many):**
+1-2 — 1 account
+
+**Accounts Completed QC In:**
+- Account 101
+
+**Team Members Visited (Safety, QC, Training) (how many):**
+2
+
+**Employees Visited, Trained, Etc. (Who and Account):**
+- Sample Employee at Account 101: reviewed floor detail.
+
+**Team Member Connection (First and Last Name):**
+Sample Employee
+
+**Accounts Worked Strictly for Cleaning Fill-In (how many):**
+1-2 — 1 account
+
+**Customer Interactions (In-Person, Who and Account):**
+- Sample Customer at Account 202: reviewed service status.
+
+## Human Resources
+**Open Positions (Full Area):**
+2 open positions across the area.
+
+**Open Positions — Account, Days, Hours, Pay:**
+- Account 101 — Mon/Wed/Fri — 6:00 PM-8:00 PM — $16/hr
+- Account 202 — Tue/Thu — 7:00 PM-9:30 PM — $17/hr
+
+**Interviews Conducted or Hires Made Today:** No
+
+**Voluntary / Involuntary Quits or Terminations Today:** Yes
+- Sample Employee resigned from Account 303.
+
+**Excused / Approved / Unexcused Missed Shifts:**
+- Account 101: one approved absence covered.
+
+## Requests-Notes
+**Notes for Operations Manager:**
+- Internal note that must not publish.
 """
 
 
@@ -80,11 +152,24 @@ def _sections():
     return parse_shift_report(SAMPLE)
 
 
+def _closeday_sections():
+    return parse_shift_report(CLOSEDAY_SAMPLE)
+
+
 def test_parse_splits_sections_on_h2():
     sections = _sections()
-    assert sections["QC Visits Count"] == "2 accounts."
-    assert sections["Cleaning Fill-In Count"] == "0."
+    assert sections["Accounts Visited for QC / Issue Ticket Follow-Up (how many)"] == "2 accounts."
+    assert sections["Accounts Worked Strictly for Cleaning Fill-In (how many)"] == "0."
     assert "order bulk rags" in sections["Notes for Operations Manager"]
+
+
+def test_parse_extracts_bold_label_blocks_from_closeday_shape():
+    sections = _closeday_sections()
+    assert sections["Nightly Summary"].startswith("Public-safe nightly summary")
+    assert sections["Interviews Conducted or Hires Made Today"] == "No"
+    assert sections["Voluntary / Involuntary Quits or Terminations Today"].startswith("Yes")
+    assert "Account 101" in sections["Open Positions — Account, Days, Hours, Pay"]
+    assert "Internal note" in sections["Notes for Operations Manager"]
 
 
 def test_title_page_fields_go_in_header_items_not_items():
@@ -114,9 +199,55 @@ def test_nightly_summary_uses_entry_field_not_the_static_label():
     assert "Altoona loop" in summary["responses"]["text"]
 
 
+def test_closeday_label_fields_prefill_safetyculture_text_and_choices():
+    payload = build_prefill_payload(_closeday_sections(), "2026-07-08")
+    text_items = {
+        i["item_id"]: i["responses"]["text"]
+        for i in payload["header_items"] + payload["items"]
+        if i["type"] == "text"
+    }
+    choice_items = {
+        i["item_id"]: i["responses"]["selected"][0]["id"]
+        for i in payload["items"]
+        if i["type"] == "question"
+    }
+
+    expected_text = {
+        ITEM_NIGHTLY_SUMMARY: "Public-safe nightly summary",
+        ITEM_EHUB_WINTEAM_ALERTS: "schedule exception",
+        ITEM_OVER_HOURS: "1.5 over-hours",
+        ITEM_ACCOUNTS_COMPLETED_QC: "Account 101",
+        ITEM_EMPLOYEES_VISITED: "Sample Employee at Account 101",
+        ITEM_TEAM_MEMBER_CONNECTION: "Sample Employee",
+        ITEM_CUSTOMER_INTERACTIONS: "Sample Customer",
+        ITEM_OPEN_POSITIONS_FULL_AREA: "2 open positions",
+        ITEM_OPEN_POSITIONS_DETAIL: "$16/hr",
+        ITEM_EXCUSED_MISSED_SHIFTS: "approved absence",
+    }
+    for item_id, expected in expected_text.items():
+        assert text_items[item_id]
+        assert expected in text_items[item_id]
+        assert text_items[item_id] != "None noted."
+
+    assert choice_items[ITEM_QC_VISITS_COUNT] == ANSWER_QC_COUNT["1-2"]
+    assert choice_items[ITEM_TEAM_MEMBERS_COUNT] == ANSWER_QC_COUNT["1-2"]
+    assert choice_items[ITEM_CLEANING_FILL_IN_COUNT] == ANSWER_CLEANING_COUNT["1-2"]
+    assert choice_items[ITEM_INTERVIEWS_HIRES] == ANSWER_YES_NO_SHARED["No"]
+    assert choice_items[ITEM_QUITS_TERMINATIONS] == ANSWER_YES_NO_QUITS["Yes"]
+    assert "Internal note" not in json.dumps(payload)
+
+
 @pytest.mark.parametrize(
     "body,bucket",
-    [("0.", "0"), ("1 account", "1-2"), ("2 accounts.", "1-2"), ("3 sites", "3 or more"), ("7", "3 or more"), ("", "0")],
+    [
+        ("0.", "0"),
+        ("1 account", "1-2"),
+        ("1-2 — 1 account", "1-2"),
+        ("2 accounts.", "1-2"),
+        ("3 sites", "3 or more"),
+        ("7", "3 or more"),
+        ("", "0"),
+    ],
 )
 def test_count_buckets(body, bucket):
     assert count_bucket(body) == bucket

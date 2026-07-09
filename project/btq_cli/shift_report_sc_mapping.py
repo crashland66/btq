@@ -50,28 +50,63 @@ ANSWER_YES_NO_QUITS = {
 }
 
 _SECTION_HEADING_RE = re.compile(r"^##\s+(.+?)\s*$")
-_LEADING_COUNT_RE = re.compile(r"^\s*(\d+)")
+_FIELD_LABEL_RE = re.compile(r"^\s*\*\*(?P<label>.+?):\*\*\s*(?P<body>.*)$")
+_LEADING_COUNT_RE = re.compile(r"^\s*(\d+)(?:\s*[-\u2013\u2014]\s*(\d+))?")
 _NEGATIVE_BODY_RE = re.compile(r"^\s*(?:none|no|n/a)(?:\b|[\s.,;:!-]|$)", re.IGNORECASE)
 
 
 def parse_shift_report(md_text: str) -> dict[str, str]:
     sections: dict[str, list[str]] = {}
-    current_name: str | None = None
-    current_lines: list[str] = []
+    heading_name: str | None = None
+    heading_lines: list[str] = []
+    field_name: str | None = None
+    field_lines: list[str] = []
+
+    def flush_heading() -> None:
+        nonlocal heading_name, heading_lines
+        if heading_name is not None:
+            sections[heading_name] = heading_lines
+        heading_name = None
+        heading_lines = []
+
+    def flush_field() -> None:
+        nonlocal field_name, field_lines
+        if field_name is not None:
+            sections[field_name] = field_lines
+        field_name = None
+        field_lines = []
 
     for line in md_text.splitlines():
-        match = _SECTION_HEADING_RE.match(line)
-        if match:
-            if current_name is not None:
-                sections[current_name] = current_lines
-            current_name = _clean_heading(match.group(1))
-            current_lines = []
+        if line.strip() == "---":
+            flush_field()
             continue
-        if current_name is not None:
-            current_lines.append(line)
 
-    if current_name is not None:
-        sections[current_name] = current_lines
+        field_match = _FIELD_LABEL_RE.match(line)
+        heading_match = _SECTION_HEADING_RE.match(line)
+
+        if field_match:
+            flush_field()
+            field_name = _clean_heading(field_match.group("label"))
+            body = field_match.group("body").strip()
+            field_lines = [body] if body else []
+            if heading_name is not None:
+                heading_lines.append(line)
+            continue
+
+        if heading_match:
+            flush_field()
+            flush_heading()
+            heading_name = _clean_heading(heading_match.group(1))
+            heading_lines = []
+            continue
+
+        if field_name is not None:
+            field_lines.append(line)
+        if heading_name is not None:
+            heading_lines.append(line)
+
+    flush_field()
+    flush_heading()
 
     return {name: "\n".join(lines).strip() for name, lines in sections.items()}
 
@@ -79,9 +114,9 @@ def parse_shift_report(md_text: str) -> dict[str, str]:
 def build_prefill_payload(sections: dict[str, str], date: str | date_cls | datetime) -> dict[str, Any]:
     report_day = _coerce_report_date(date)
     nightly_summary = _section_body(sections, "Nightly Summary")
-    qc_count_bucket = count_bucket(_section_body(sections, "QC Visits Count"))
-    team_count_bucket = count_bucket(_section_body(sections, "Team Members Visited / Trained Count"))
-    cleaning_count_bucket = count_bucket(_section_body(sections, "Cleaning Fill-In Count"))
+    qc_count_bucket = count_bucket(_section_body(sections, "Accounts Visited for QC / Issue Ticket Follow-Up (how many)"))
+    team_count_bucket = count_bucket(_section_body(sections, "Team Members Visited (Safety, QC, Training) (how many)"))
+    cleaning_count_bucket = count_bucket(_section_body(sections, "Accounts Worked Strictly for Cleaning Fill-In (how many)"))
 
     return {
         "template_id": TEMPLATE_ID,
@@ -91,25 +126,25 @@ def build_prefill_payload(sections: dict[str, str], date: str | date_cls | datet
             text_item(ITEM_NIGHTLY_SUMMARY, nightly_summary),
         ],
         "items": [
-            text_item(ITEM_EHUB_WINTEAM_ALERTS, _section_body(sections, "eHub / WinTeam Alerts", default="None noted.")),
-            text_item(ITEM_OVER_HOURS, _section_body(sections, "Over-Hours Accounts Discussed + Solution")),
+            text_item(ITEM_EHUB_WINTEAM_ALERTS, _section_body(sections, "eHub / WinTeam Alert Updates Needed", default="None noted.")),
+            text_item(ITEM_OVER_HOURS, _section_body(sections, "Over-Hours Accounts")),
             choice_item(ITEM_QC_VISITS_COUNT, ANSWER_QC_COUNT[qc_count_bucket]),
             text_item(ITEM_ACCOUNTS_COMPLETED_QC, _section_body(sections, "Accounts Completed QC In")),
             choice_item(ITEM_TEAM_MEMBERS_COUNT, ANSWER_QC_COUNT[team_count_bucket]),
-            yes_no_item(ITEM_EMPLOYEES_VISITED, _section_body(sections, "Employees Visited, Trained, Etc.")),
-            text_item(ITEM_TEAM_MEMBER_CONNECTION, _section_body(sections, "Team Member Connection")),
+            text_item(ITEM_EMPLOYEES_VISITED, _section_body(sections, "Employees Visited, Trained, Etc. (Who and Account)")),
+            text_item(ITEM_TEAM_MEMBER_CONNECTION, _section_body(sections, "Team Member Connection (First and Last Name)")),
             choice_item(ITEM_CLEANING_FILL_IN_COUNT, ANSWER_CLEANING_COUNT[cleaning_count_bucket]),
             choice_item(ITEM_CLEANED_ACCOUNTS_YN, ANSWER_YES_NO_SHARED["No" if cleaning_count_bucket == "0" else "Yes"]),
-            text_item(ITEM_CUSTOMER_INTERACTIONS, _section_body(sections, "Customer Interactions In Person")),
-            text_item(ITEM_OPEN_POSITIONS_FULL_AREA, _section_body(sections, "Open Positions - Full Area")),
-            text_item(ITEM_OPEN_POSITIONS_DETAIL, _section_body(sections, "Open Positions Detail")),
-            yes_no_item(ITEM_INTERVIEWS_HIRES, _section_body(sections, "Interviews / Hires Today")),
+            text_item(ITEM_CUSTOMER_INTERACTIONS, _section_body(sections, "Customer Interactions (In-Person, Who and Account)")),
+            text_item(ITEM_OPEN_POSITIONS_FULL_AREA, _section_body(sections, "Open Positions (Full Area)")),
+            text_item(ITEM_OPEN_POSITIONS_DETAIL, _section_body(sections, "Open Positions \u2014 Account, Days, Hours, Pay")),
+            yes_no_item(ITEM_INTERVIEWS_HIRES, _section_body(sections, "Interviews Conducted or Hires Made Today")),
             yes_no_item(
                 ITEM_QUITS_TERMINATIONS,
-                _section_body(sections, "Quits / Terminations Today"),
+                _section_body(sections, "Voluntary / Involuntary Quits or Terminations Today"),
                 answers=ANSWER_YES_NO_QUITS,
             ),
-            text_item(ITEM_EXCUSED_MISSED_SHIFTS, _section_body(sections, "Excused / Missed Shifts Today", default="None noted.")),
+            text_item(ITEM_EXCUSED_MISSED_SHIFTS, _section_body(sections, "Excused / Approved / Unexcused Missed Shifts", default="None noted.")),
         ],
     }
 
@@ -133,7 +168,7 @@ def yes_no_item(item_id: str, body: str, *, answers: dict[str, str] = ANSWER_YES
 
 def count_bucket(body: str) -> str:
     match = _LEADING_COUNT_RE.match(body)
-    count = int(match.group(1)) if match else 0
+    count = int(match.group(2) or match.group(1)) if match else 0
     if count <= 0:
         return "0"
     if count <= 2:
@@ -171,5 +206,6 @@ def _clean_heading(value: str) -> str:
 
 def _normalize_section_name(value: str) -> str:
     normalized = value.replace("\u2013", "-").replace("\u2014", "-")
-    normalized = re.sub(r"\s+", " ", normalized.strip().lower())
+    normalized = re.sub(r"[^a-z0-9]+", " ", normalized.strip().lower())
+    normalized = re.sub(r"\s+", " ", normalized)
     return normalized
