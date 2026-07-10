@@ -1,0 +1,85 @@
+#!/bin/zsh
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+PROJECT_ROOT="${REPO_ROOT}/project"
+PYTHON_BIN="${PROJECT_ROOT}/.venv/bin/python"
+SWIFT_ROOT="${REPO_ROOT}/apple/BTQFieldCapture"
+JS_TEST_ROOT="${PROJECT_ROOT}/unified_capture/public/tests"
+
+run_stage() {
+  local label="$1"
+  shift
+
+  echo "==> ${label}"
+  if "$@"; then
+    echo "<== PASS: ${label}"
+  else
+    local exit_code=$?
+    echo "<== FAIL: ${label} (exit ${exit_code})" >&2
+    return "${exit_code}"
+  fi
+}
+
+if [[ ! -x "${PYTHON_BIN}" ]]; then
+  echo "Missing Python interpreter: ${PYTHON_BIN}" >&2
+  echo "Create project/.venv and install the dev dependencies before running this command." >&2
+  exit 1
+fi
+
+cd "${REPO_ROOT}"
+
+run_stage "Python test suite" \
+  "${PYTHON_BIN}" -m pytest
+
+host_platform="$(uname -s)"
+if [[ "${host_platform}" == "Darwin" ]]; then
+  xcode_developer_dir="${DEVELOPER_DIR:-$(xcode-select -p 2>/dev/null || true)}"
+  if [[ "${xcode_developer_dir}" == "/Library/Developer/CommandLineTools" && \
+        -d "/Applications/Xcode.app/Contents/Developer" ]]; then
+    xcode_developer_dir="/Applications/Xcode.app/Contents/Developer"
+  fi
+  if [[ "${xcode_developer_dir}" != */Contents/Developer || \
+        ! -x "${xcode_developer_dir}/usr/bin/xcodebuild" ]]; then
+    echo "Missing required full Xcode toolchain on Apple host." >&2
+    echo "Install Xcode or set DEVELOPER_DIR to its Contents/Developer directory." >&2
+    exit 1
+  fi
+  xcrun_bin="$(command -v xcrun || true)"
+  if [[ -z "${xcrun_bin}" ]]; then
+    echo "Missing required Xcode launcher on Apple host: xcrun" >&2
+    exit 1
+  fi
+  run_stage "Native Swift test suite" env \
+    DEVELOPER_DIR="${xcode_developer_dir}" \
+    "${xcrun_bin}" swift test --package-path "${SWIFT_ROOT}"
+  native_result="passed"
+else
+  echo "==> Native Swift test suite"
+  echo "<== SKIP: supported on Apple hosts only (host: ${host_platform})"
+  native_result="skipped (unsupported platform: ${host_platform})"
+fi
+
+if ! command -v node >/dev/null 2>&1; then
+  echo "Missing required tool: node" >&2
+  echo "Install Node.js before running this command." >&2
+  exit 1
+fi
+if ! command -v npm >/dev/null 2>&1; then
+  echo "Missing required tool: npm" >&2
+  echo "Install npm before running this command." >&2
+  exit 1
+fi
+if [[ ! -f "${JS_TEST_ROOT}/node_modules/jsdom/lib/api.js" ]]; then
+  echo "Missing locked JS test dependencies under ${JS_TEST_ROOT}/node_modules." >&2
+  echo "Run: npm --prefix ${JS_TEST_ROOT} ci" >&2
+  exit 1
+fi
+
+run_stage "Unified-capture JS test suite" npm --prefix "${JS_TEST_ROOT}" test
+
+echo "Repository verification passed."
+echo "  Python: passed"
+echo "  Native Swift: ${native_result}"
+echo "  Unified-capture JS: passed"

@@ -274,6 +274,33 @@ Lint first-party Python:
 ./scripts/lint-python
 ```
 
+## Repository Verification
+
+Prepare these deterministic test dependencies before running the repository-wide
+verification command:
+
+- create `project/.venv` and install the Python dev dependencies as described in
+  [Setup](#setup)
+- install Node.js 18 or newer with npm, then install the pinned unified-capture
+  test dependency with `npm --prefix project/unified_capture/public/tests ci`
+- on macOS, install full Xcode; when it is not the active developer directory,
+  the wrapper uses `/Applications/Xcode.app/Contents/Developer` if available,
+  or accepts an explicit `DEVELOPER_DIR`
+
+Run every shipped-code test gate from the repository root:
+
+```bash
+./scripts/btq-test-all
+```
+
+The wrapper runs the canonical Python suite first, `swift test` in
+`apple/BTQFieldCapture` on macOS, and the three locked jsdom suites last. It
+fails immediately when an executed gate or required dependency is unavailable
+and does not install anything, contact production, deploy, or run device and
+simulator checks. On non-Apple hosts, the native Swift gate is explicitly
+reported as skipped because this package depends on Apple frameworks; Python
+and JavaScript remain required.
+
 ## Configuration
 
 Runtime paths are defined in the repository root at:

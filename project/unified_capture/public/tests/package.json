@@ -1,0 +1,10 @@
+{
+  "name": "btq-unified-capture-tests",
+  "private": true,
+  "scripts": {
+    "test": "node inbox_can_review_gate.mjs ./node_modules/jsdom/lib/api.js .. && node inbox_live_flow.mjs ./node_modules/jsdom/lib/api.js && node inbox_mock_flow.mjs ./node_modules/jsdom/lib/api.js"
+  },
+  "devDependencies": {
+    "jsdom": "26.1.0"
+  }
+}
