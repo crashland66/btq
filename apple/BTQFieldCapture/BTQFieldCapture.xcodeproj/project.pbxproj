@@ -260,7 +260,7 @@
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = AppResources/iOS/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
-				MARKETING_VERSION = 1.3;
+				MARKETING_VERSION = 1.3.1;
 				PRODUCT_BUNDLE_IDENTIFIER = com.btq.fieldcapture;
 				PRODUCT_NAME = "BTQ Capture";
 				SDKROOT = iphoneos;
@@ -281,7 +281,7 @@
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = AppResources/iOS/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
-				MARKETING_VERSION = 1.3;
+				MARKETING_VERSION = 1.3.1;
 				PRODUCT_BUNDLE_IDENTIFIER = com.btq.fieldcapture;
 				PRODUCT_NAME = "BTQ Capture";
 				SDKROOT = iphoneos;
@@ -303,7 +303,7 @@
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = AppResources/macOS/Info.plist;
 				MACOSX_DEPLOYMENT_TARGET = 15.0;
-				MARKETING_VERSION = 1.3;
+				MARKETING_VERSION = 1.3.1;
 				PRODUCT_BUNDLE_IDENTIFIER = com.btq.fieldcapture.mac;
 				PRODUCT_NAME = "BTQ Capture Mac";
 				SDKROOT = macosx;
@@ -323,7 +323,7 @@
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = AppResources/macOS/Info.plist;
 				MACOSX_DEPLOYMENT_TARGET = 15.0;
-				MARKETING_VERSION = 1.3;
+				MARKETING_VERSION = 1.3.1;
 				PRODUCT_BUNDLE_IDENTIFIER = com.btq.fieldcapture.mac;
 				PRODUCT_NAME = "BTQ Capture Mac";
 				SDKROOT = macosx;

@@ -79,7 +79,7 @@ grep -q 'com.btq.fieldcapture' "$PROJECT_FILE" || fail "missing iOS bundle ident
 grep -q 'com.btq.fieldcapture.mac' "$PROJECT_FILE" || fail "missing macOS bundle identifier"
 grep -q 'SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";' "$PROJECT_FILE" || fail "missing iOS supported platforms"
 grep -q 'PRODUCT_BUNDLE_IDENTIFIER = com.btq.fieldcapture.mac;' "$PROJECT_FILE" || fail "missing macOS app bundle identifier"
-grep -q 'MARKETING_VERSION = 1.0;' "$PROJECT_FILE" || fail "missing MARKETING_VERSION build setting"
+grep -q 'MARKETING_VERSION = 1.3.1;' "$PROJECT_FILE" || fail "missing MARKETING_VERSION 1.3.1 build setting"
 grep -q 'PrivacyInfo.xcprivacy in Resources' "$PROJECT_FILE" || fail "privacy manifest is not included in the Xcode project"
 grep -q 'Signing.xcconfig' "$PROJECT_FILE" || fail "Xcode project must use public-safe Signing.xcconfig"
 grep -q '^DEVELOPMENT_TEAM = *$' "$SIGNING_CONFIG" || fail "Signing.xcconfig must keep DEVELOPMENT_TEAM empty"
