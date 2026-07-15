@@ -25,6 +25,7 @@ from btq_cli.shift_report_sc_mapping import (
     ITEM_OVER_HOURS,
     ITEM_QC_VISITS_COUNT,
     ITEM_QUITS_TERMINATIONS,
+    ITEM_QUITS_TERMINATIONS_DETAIL,
     ITEM_REPORT_DATE,
     ITEM_TEAM_MEMBER_CONNECTION,
     ITEM_TEAM_MEMBERS_COUNT,
@@ -33,6 +34,7 @@ from btq_cli.shift_report_sc_mapping import (
     count_bucket,
     is_no_body,
     parse_shift_report,
+    yes_no_detail,
 )
 
 
@@ -222,6 +224,7 @@ def test_closeday_label_fields_prefill_safetyculture_text_and_choices():
         ITEM_CUSTOMER_INTERACTIONS: "Sample Customer",
         ITEM_OPEN_POSITIONS_FULL_AREA: "2 open positions",
         ITEM_OPEN_POSITIONS_DETAIL: "$16/hr",
+        ITEM_QUITS_TERMINATIONS_DETAIL: "Sample Employee resigned",
         ITEM_EXCUSED_MISSED_SHIFTS: "approved absence",
     }
     for item_id, expected in expected_text.items():
@@ -279,6 +282,38 @@ def test_quits_uses_its_own_yes_no_answer_set():
     quits = next(i for i in payload["items"] if i["item_id"] == ITEM_QUITS_TERMINATIONS)
     assert quits["responses"]["selected"][0]["id"] == ANSWER_YES_NO_QUITS["No"]
     assert ANSWER_YES_NO_QUITS["No"] != ANSWER_YES_NO_SHARED["No"]
+
+
+def test_quits_detail_prefills_conditional_text_field_from_closeday_report():
+    report = """## Human Resources
+**Voluntary / Involuntary Quits or Terminations Today:** Yes
+Sandy Sandbox — Sandbox Site (900), voluntary resignation effective after the July 17 shift; the synthetic employee agreed to finish the week and is eligible for rehire.
+"""
+    payload = build_prefill_payload(parse_shift_report(report), "2026-07-14")
+    by_id = {item["item_id"]: item for item in payload["items"]}
+
+    assert by_id[ITEM_QUITS_TERMINATIONS]["responses"]["selected"][0]["id"] == ANSWER_YES_NO_QUITS["Yes"]
+    assert by_id[ITEM_QUITS_TERMINATIONS_DETAIL]["responses"]["text"].startswith("Sandy Sandbox")
+    assert not by_id[ITEM_QUITS_TERMINATIONS_DETAIL]["responses"]["text"].startswith("Yes")
+
+
+def test_no_quits_omits_conditional_detail_field():
+    payload = build_prefill_payload(_sections(), "2026-06-24")
+    item_ids = {item["item_id"] for item in payload["items"]}
+    assert ITEM_QUITS_TERMINATIONS_DETAIL not in item_ids
+
+
+@pytest.mark.parametrize(
+    "body,expected",
+    [
+        ("Yes\nEmployee resigned.", "Employee resigned."),
+        ("- Employee resigned.", "- Employee resigned."),
+        ("No quits noted.", ""),
+        ("Yes", ""),
+    ],
+)
+def test_yes_no_detail(body, expected):
+    assert yes_no_detail(body) == expected
 
 
 def test_notes_for_operations_manager_is_dropped():

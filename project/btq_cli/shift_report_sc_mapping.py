@@ -27,6 +27,7 @@ ITEM_OPEN_POSITIONS_FULL_AREA = "867d2e67-6ecc-4f28-b7b4-d02fb61f8122"
 ITEM_OPEN_POSITIONS_DETAIL = "309cbb25-106a-47fa-b1eb-4d2fb32e411b"
 ITEM_INTERVIEWS_HIRES = "5bf7cdfd-76f3-480b-bbb8-2cc0e95c8e2d"
 ITEM_QUITS_TERMINATIONS = "0eff9059-bf4a-4160-9f80-f717f94cdf7d"
+ITEM_QUITS_TERMINATIONS_DETAIL = "5d8a8e88-74c2-4e05-a1b4-23765bd40d32"
 ITEM_EXCUSED_MISSED_SHIFTS = "fa3c326d-650c-4874-b150-bc29e78be13f"
 
 ANSWER_QC_COUNT = {
@@ -53,6 +54,10 @@ _SECTION_HEADING_RE = re.compile(r"^##\s+(.+?)\s*$")
 _FIELD_LABEL_RE = re.compile(r"^\s*\*\*(?P<label>.+?):\*\*\s*(?P<body>.*)$")
 _LEADING_COUNT_RE = re.compile(r"^\s*(\d+)(?:\s*[-\u2013\u2014]\s*(\d+))?")
 _NEGATIVE_BODY_RE = re.compile(r"^\s*(?:none|no|n/a)(?:\b|[\s.,;:!-]|$)", re.IGNORECASE)
+_NO_CALL_OR_SHOW_DETAIL_RE = re.compile(
+    r"^\s*(?:no[- ]call(?:\s*/\s*no[- ]show)?|no[- ]show)\b",
+    re.IGNORECASE,
+)
 
 
 def parse_shift_report(md_text: str) -> dict[str, str]:
@@ -117,6 +122,33 @@ def build_prefill_payload(sections: dict[str, str], date: str | date_cls | datet
     qc_count_bucket = count_bucket(_section_body(sections, "Accounts Visited for QC / Issue Ticket Follow-Up (how many)"))
     team_count_bucket = count_bucket(_section_body(sections, "Team Members Visited (Safety, QC, Training) (how many)"))
     cleaning_count_bucket = count_bucket(_section_body(sections, "Accounts Worked Strictly for Cleaning Fill-In (how many)"))
+    quits_terminations = _section_body(sections, "Voluntary / Involuntary Quits or Terminations Today")
+
+    items = [
+        text_item(ITEM_EHUB_WINTEAM_ALERTS, _section_body(sections, "eHub / WinTeam Alert Updates Needed", default="None noted.")),
+        text_item(ITEM_OVER_HOURS, _section_body(sections, "Over-Hours Accounts")),
+        choice_item(ITEM_QC_VISITS_COUNT, ANSWER_QC_COUNT[qc_count_bucket]),
+        text_item(ITEM_ACCOUNTS_COMPLETED_QC, _section_body(sections, "Accounts Completed QC In")),
+        choice_item(ITEM_TEAM_MEMBERS_COUNT, ANSWER_QC_COUNT[team_count_bucket]),
+        text_item(ITEM_EMPLOYEES_VISITED, _section_body(sections, "Employees Visited, Trained, Etc. (Who and Account)")),
+        text_item(ITEM_TEAM_MEMBER_CONNECTION, _section_body(sections, "Team Member Connection (First and Last Name)")),
+        choice_item(ITEM_CLEANING_FILL_IN_COUNT, ANSWER_CLEANING_COUNT[cleaning_count_bucket]),
+        choice_item(ITEM_CLEANED_ACCOUNTS_YN, ANSWER_YES_NO_SHARED["No" if cleaning_count_bucket == "0" else "Yes"]),
+        text_item(ITEM_CUSTOMER_INTERACTIONS, _section_body(sections, "Customer Interactions (In-Person, Who and Account)")),
+        text_item(ITEM_OPEN_POSITIONS_FULL_AREA, _section_body(sections, "Open Positions (Full Area)")),
+        text_item(ITEM_OPEN_POSITIONS_DETAIL, _section_body(sections, "Open Positions \u2014 Account, Days, Hours, Pay")),
+        yes_no_item(ITEM_INTERVIEWS_HIRES, _section_body(sections, "Interviews Conducted or Hires Made Today")),
+        choice_item(
+            ITEM_QUITS_TERMINATIONS,
+            ANSWER_YES_NO_QUITS["No" if is_no_quits_body(quits_terminations) else "Yes"],
+        ),
+    ]
+    quits_terminations_detail = yes_no_detail(quits_terminations)
+    if quits_terminations_detail:
+        items.append(text_item(ITEM_QUITS_TERMINATIONS_DETAIL, quits_terminations_detail))
+    items.append(
+        text_item(ITEM_EXCUSED_MISSED_SHIFTS, _section_body(sections, "Excused / Approved / Unexcused Missed Shifts", default="None noted."))
+    )
 
     return {
         "template_id": TEMPLATE_ID,
@@ -125,27 +157,7 @@ def build_prefill_payload(sections: dict[str, str], date: str | date_cls | datet
             datetime_item(ITEM_REPORT_DATE, f"{report_day.isoformat()}T12:00:00Z"),
             text_item(ITEM_NIGHTLY_SUMMARY, nightly_summary),
         ],
-        "items": [
-            text_item(ITEM_EHUB_WINTEAM_ALERTS, _section_body(sections, "eHub / WinTeam Alert Updates Needed", default="None noted.")),
-            text_item(ITEM_OVER_HOURS, _section_body(sections, "Over-Hours Accounts")),
-            choice_item(ITEM_QC_VISITS_COUNT, ANSWER_QC_COUNT[qc_count_bucket]),
-            text_item(ITEM_ACCOUNTS_COMPLETED_QC, _section_body(sections, "Accounts Completed QC In")),
-            choice_item(ITEM_TEAM_MEMBERS_COUNT, ANSWER_QC_COUNT[team_count_bucket]),
-            text_item(ITEM_EMPLOYEES_VISITED, _section_body(sections, "Employees Visited, Trained, Etc. (Who and Account)")),
-            text_item(ITEM_TEAM_MEMBER_CONNECTION, _section_body(sections, "Team Member Connection (First and Last Name)")),
-            choice_item(ITEM_CLEANING_FILL_IN_COUNT, ANSWER_CLEANING_COUNT[cleaning_count_bucket]),
-            choice_item(ITEM_CLEANED_ACCOUNTS_YN, ANSWER_YES_NO_SHARED["No" if cleaning_count_bucket == "0" else "Yes"]),
-            text_item(ITEM_CUSTOMER_INTERACTIONS, _section_body(sections, "Customer Interactions (In-Person, Who and Account)")),
-            text_item(ITEM_OPEN_POSITIONS_FULL_AREA, _section_body(sections, "Open Positions (Full Area)")),
-            text_item(ITEM_OPEN_POSITIONS_DETAIL, _section_body(sections, "Open Positions \u2014 Account, Days, Hours, Pay")),
-            yes_no_item(ITEM_INTERVIEWS_HIRES, _section_body(sections, "Interviews Conducted or Hires Made Today")),
-            yes_no_item(
-                ITEM_QUITS_TERMINATIONS,
-                _section_body(sections, "Voluntary / Involuntary Quits or Terminations Today"),
-                answers=ANSWER_YES_NO_QUITS,
-            ),
-            text_item(ITEM_EXCUSED_MISSED_SHIFTS, _section_body(sections, "Excused / Approved / Unexcused Missed Shifts", default="None noted.")),
-        ],
+        "items": items,
     }
 
 
@@ -179,6 +191,19 @@ def count_bucket(body: str) -> str:
 def is_no_body(body: str) -> bool:
     stripped = body.strip()
     return not stripped or bool(_NEGATIVE_BODY_RE.match(stripped))
+
+
+def is_no_quits_body(body: str) -> bool:
+    return not _NO_CALL_OR_SHOW_DETAIL_RE.match(body) and is_no_body(body)
+
+
+def yes_no_detail(body: str) -> str:
+    if is_no_quits_body(body):
+        return ""
+    lines = body.strip().splitlines()
+    if lines and lines[0].strip().rstrip(".:;- ").lower() == "yes":
+        lines = lines[1:]
+    return "\n".join(lines).strip()
 
 
 def _coerce_report_date(value: str | date_cls | datetime) -> date_cls:
