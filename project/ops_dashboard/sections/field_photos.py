@@ -10,6 +10,9 @@ from http import HTTPStatus
 from pathlib import Path
 from urllib.parse import parse_qs, urlencode
 
+from event_pipeline.couchdb.system_defaults import load_system_defaults
+from event_pipeline.couchdb_registry import CouchDBSiteRegistry
+from field_capture.display_categories import BUILTIN_FALLBACK_CATEGORIES, resolve_display_categories
 from field_capture.deep_analysis import DEEP_ANALYSIS_PRESETS
 from field_capture.site_viewer import UnsafeMediaPath, resolve_media_request, upload_id_for_path
 from media_store import get_media_store
@@ -29,7 +32,11 @@ from ops_dashboard.common import (
     submitters_by_capture,
 )
 from ops_dashboard.layout import html_page
-from field_capture.photo_vision_categories import CATEGORY_AGREEMENT_MISMATCH
+from field_capture.photo_vision_categories import (
+    CATEGORY_AGREEMENT_MISMATCH,
+    CATEGORY_AGREEMENT_UNVERIFIABLE,
+    GENERIC_QC_CATEGORY,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -199,6 +206,7 @@ def _in_memory_filter(
     vision_category: str = "",
     vision_disagrees: bool = False,
     has_deep_analysis: bool = False,
+    limit: int = PAGE_LIMIT,
 ) -> list[dict[str, object]]:
     results = sidecars
     if q:
@@ -223,7 +231,7 @@ def _in_memory_filter(
     if has_deep_analysis:
         results = [s for s in results if isinstance(s.get("deep_analysis"), list) and s.get("deep_analysis")]
     results.sort(key=lambda s: str(s.get("generated_at") or ""), reverse=True)
-    return results[:PAGE_LIMIT]
+    return results[:limit]
 
 
 def _load_site_options() -> list[tuple[str, str]]:
@@ -423,6 +431,8 @@ def _render_card(
     card_index: int = 0,
     show_selection_controls: bool = True,
     show_deep_analysis_controls: bool = True,
+    selection_group: str = "",
+    handoff_presentation: bool = False,
 ) -> str:
     capture_id = str(sidecar.get("capture_id") or "")
     provenance = sidecar.get("provenance") if isinstance(sidecar.get("provenance"), dict) else {}
@@ -436,7 +446,7 @@ def _render_card(
     category_agreement = str(sidecar.get("category_agreement") or "").strip()
     site_id_val = str(sidecar.get("site_id") or "")
     description = str(sidecar.get("description") or "")
-    generated_at = str(sidecar.get("generated_at") or "")
+    captured_at = str(provenance.get("captured_at") or sidecar.get("captured_at") or sidecar.get("generated_at") or "")
 
     full_name = submitters.get(capture_id, {}).get("submitter_name", "")
     first = _first_name(full_name)
@@ -450,10 +460,14 @@ def _render_card(
     if url:
         escaped_url = html.escape(url, quote=True)
         js_arg = html.escape(json.dumps(url), quote=True)
+        image_class = "field-photo-image field-photo-image--handoff" if handoff_presentation else "field-photo-image"
+        object_fit = "contain" if handoff_presentation else "cover"
+        image_context = area or vision_category or "Field photo"
+        image_alt = f"{image_context}: {description[:140]}" if description else image_context
         img_html = (
             f'<a class="field-photo-image-link" href="#" onclick="openLb({js_arg});return false">'
-            f'<img class="field-photo-image" src="{escaped_url}" alt="field photo" loading="lazy"'
-            f' style="width:100%;aspect-ratio:4/3;object-fit:cover;display:block;border-radius:6px 6px 0 0">'
+            f'<img class="{image_class}" src="{escaped_url}" alt="{html.escape(image_alt, quote=True)}" loading="lazy"'
+            f' style="width:100%;aspect-ratio:4/3;object-fit:{object_fit};display:block;border-radius:6px 6px 0 0">'
             f"</a>"
         )
     else:
@@ -490,8 +504,8 @@ def _render_card(
     sub_parts = []
     if first:
         sub_parts.append(html.escape(first))
-    if generated_at:
-        sub_parts.append(render_relative_time(generated_at))
+    if captured_at:
+        sub_parts.append(render_relative_time(captured_at))
     sub_line = " · ".join(sub_parts)
 
     pills_html = " ".join(f'<span class="pill">{html.escape(t)}</span>' for t in tags)
@@ -533,19 +547,45 @@ def _render_card(
             label = f"Select photo: {label_detail}"
         escaped_media_key = html.escape(media_key, quote=True)
         escaped_filename = html.escape(filename_hint, quote=True)
+        group_attr = f' data-photo-group="{html.escape(selection_group, quote=True)}"' if selection_group else ""
         selection_html = (
             '<div style="display:flex;align-items:center;gap:8px;margin:0 0 8px">'
             f'<input type="checkbox" name="media_key" value="{escaped_media_key}" '
-            f'data-filename-hint="{escaped_filename}" aria-label="{html.escape(label, quote=True)}">'
+            f'data-filename-hint="{escaped_filename}"{group_attr} aria-label="{html.escape(label, quote=True)}">'
             f'<span class="muted" style="font-size:.85rem">JPEG export: {html.escape(filename_hint)}</span>'
             "</div>"
         )
 
+    article_class = "field-photo-card field-photo-card--handoff" if handoff_presentation else "field-photo-card"
     return (
-        f'<article class="field-photo-card" style="border:1px solid var(--line);border-radius:8px;overflow:hidden;background:var(--panel)">'
+        f'<article class="{article_class}" style="border:1px solid var(--line);border-radius:8px;overflow:hidden;background:var(--panel)">'
         f"{img_html}"
         f'<div style="padding:10px">{drag_html}{selection_html}{inner}</div>'
         f"</article>"
+    )
+
+
+def render_photo_card(
+    sidecar: dict[str, object],
+    submitters: dict[str, dict[str, str]],
+    vault_root: Path,
+    *,
+    card_index: int = 0,
+    show_selection_controls: bool = True,
+    show_deep_analysis_controls: bool = True,
+    selection_group: str = "",
+    handoff_presentation: bool = False,
+) -> str:
+    """Render the shared Field Photos card used by gallery and handoff views."""
+    return _render_card(
+        sidecar,
+        submitters,
+        vault_root,
+        card_index=card_index,
+        show_selection_controls=show_selection_controls,
+        show_deep_analysis_controls=show_deep_analysis_controls,
+        selection_group=selection_group,
+        handoff_presentation=handoff_presentation,
     )
 
 
@@ -892,6 +932,71 @@ def render_filter_form(
     )
 
 
+def load_site_options() -> list[tuple[str, str]]:
+    """Return the canonical site choices shared by photo presentation views."""
+    return _load_site_options()
+
+
+def load_filtered_photo_sidecars(
+    ctx: object,
+    *,
+    q: str = "",
+    site_id: str = "",
+    capture_id: str = "",
+    area_guess: str = "",
+    qc_category: str = "",
+    vision_category: str = "",
+    vision_disagrees: bool = False,
+    date_from: str = "",
+    date_to: str = "",
+    has_deep_analysis: bool = False,
+) -> tuple[list[dict[str, object]], bool, bool]:
+    """Load filtered sidecars through the canonical Field Photos data path.
+
+    Returns ``(sidecars, disk_fallback_used, has_more)`` while preserving the
+    gallery's configured page limit and constrained media references.
+    """
+    cdb_config = _photo_vision_couchdb_config()
+    fallback = False
+    if cdb_config is not None:
+        mango = _build_mango_selector(
+            q,
+            site_id,
+            area_guess,
+            date_from,
+            date_to,
+            capture_id=capture_id,
+            qc_category=qc_category,
+            vision_category=vision_category,
+            vision_disagrees=vision_disagrees,
+            has_deep_analysis=has_deep_analysis,
+        )
+        docs = _query_couchdb(cdb_config, mango)
+        if docs is not None:
+            return docs[:PAGE_LIMIT], False, len(docs) > PAGE_LIMIT
+        fallback = True
+
+    from field_capture import photo_vision as field_photo_vision
+
+    runtime_root = ctx.runtime_root
+    photo_vision_dir = field_photo_vision.default_photo_vision_dir(runtime_root)
+    sidecars = _in_memory_filter(
+        load_photo_vision_sidecars(photo_vision_dir),
+        q,
+        site_id,
+        area_guess,
+        date_from,
+        date_to,
+        capture_id=capture_id,
+        qc_category=qc_category,
+        vision_category=vision_category,
+        vision_disagrees=vision_disagrees,
+        has_deep_analysis=has_deep_analysis,
+        limit=PAGE_LIMIT + 1,
+    )
+    return sidecars[:PAGE_LIMIT], fallback, len(sidecars) > PAGE_LIMIT
+
+
 def _render_export_form(cards_html: str, capture_id: str) -> str:
     if not cards_html:
         return '<p class="zero-state">No photos match this query.</p>'
@@ -901,7 +1006,7 @@ def _render_export_form(cards_html: str, capture_id: str) -> str:
         '<div style="display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin:12px 0">'
         '<button type="button" data-select-all-photos>Select all in view</button>'
         '<button type="button" data-clear-photo-selection>Clear</button>'
-        '<span class="muted" data-selected-photo-count>0 selected</span>'
+        '<span class="muted" data-selected-photo-count role="status" aria-live="polite" aria-atomic="true">0 selected</span>'
         '<button type="submit" data-export-selected-photos disabled>Download selected as JPEGs</button>'
         '</div>'
         f'<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:16px;margin-top:12px">{cards_html}</div>'
@@ -926,6 +1031,11 @@ def _render_selection_script() -> str:
           if (count) count.textContent = total + ' selected';
           if (submit) submit.disabled = total === 0;
         }
+        function submitSelection() {
+          if (!selectedBoxes().length) return;
+          if (typeof form.requestSubmit === 'function') form.requestSubmit(submit || undefined);
+          else if (submit) submit.click();
+        }
         form.querySelector('[data-select-all-photos]')?.addEventListener('click', function () {
           checkboxes.forEach(function (box) { box.checked = true; });
           sync();
@@ -933,6 +1043,19 @@ def _render_selection_script() -> str:
         form.querySelector('[data-clear-photo-selection]')?.addEventListener('click', function () {
           checkboxes.forEach(function (box) { box.checked = false; });
           sync();
+        });
+        form.querySelector('[data-download-all-photos]')?.addEventListener('click', function () {
+          checkboxes.forEach(function (box) { box.checked = true; });
+          sync();
+          submitSelection();
+        });
+        form.querySelectorAll('[data-download-photo-category]').forEach(function (button) {
+          button.addEventListener('click', function () {
+            const group = button.getAttribute('data-download-photo-category') || '';
+            checkboxes.forEach(function (box) { box.checked = (box.dataset.photoGroup || '') === group; });
+            sync();
+            submitSelection();
+          });
         });
         checkboxes.forEach(function (box) { box.addEventListener('change', sync); });
         form.addEventListener('submit', function () {
@@ -950,6 +1073,11 @@ def _render_selection_script() -> str:
       });
     </script>
     """
+
+
+def render_photo_selection_script() -> str:
+    """Return the shared selected/category/full-walk export initializer."""
+    return _render_selection_script()
 
 
 def render_photo_file_drag_script() -> str:
@@ -1152,6 +1280,521 @@ def render_photo_file_drag_script() -> str:
       })();
     </script>
     """
+
+
+NEEDS_SORTING_KEY = "needs_sorting"
+_HANDOFF_OPERATIONAL_CATEGORIES = frozenset({"qc", "baseline", "pre_engagement", "report_an_issue"})
+
+
+def load_site_handoff_categories(site_id: str) -> list[dict[str, str]]:
+    """Resolve the selected site's established display-category contract."""
+    site_categories = None
+    if site_id:
+        try:
+            site_categories = CouchDBSiteRegistry().get_display_categories(site_id)
+        except Exception as exc:
+            logger.warning("QC Handoff site categories unavailable for %s: %s", site_id, exc)
+    default_categories = None
+    try:
+        system_defaults = load_system_defaults()
+        if isinstance(system_defaults, dict):
+            default_categories = system_defaults.get("default_display_categories")
+    except Exception as exc:
+        logger.warning("QC Handoff system display categories unavailable: %s", exc)
+    return resolve_display_categories(site_categories, default_categories)
+
+
+def _handoff_category_order(categories: list[dict[str, str]]) -> tuple[dict[str, str], ...]:
+    ordered: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for category in categories:
+        canonical = str(category.get("canonical") or "").strip()
+        label = str(category.get("label") or "").strip()
+        key = canonical.casefold()
+        if not canonical or not label or key in seen or key in _HANDOFF_OPERATIONAL_CATEGORIES:
+            continue
+        seen.add(key)
+        ordered.append({"canonical": canonical, "label": label})
+    return tuple(ordered)
+
+
+def _handoff_category_lookup(categories: list[dict[str, str]]) -> dict[str, str]:
+    values: dict[str, str] = {}
+    for category in categories:
+        canonical = str(category.get("canonical") or "").strip()
+        label = str(category.get("label") or "").strip()
+        if canonical:
+            values[canonical.casefold()] = canonical
+        if label and canonical:
+            values[label.casefold()] = canonical
+    return values
+
+
+HANDOFF_CATEGORY_ORDER = _handoff_category_order(BUILTIN_FALLBACK_CATEGORIES)
+
+
+def _handoff_capture_time(sidecar: dict[str, object]) -> str:
+    provenance = sidecar.get("provenance") if isinstance(sidecar.get("provenance"), dict) else {}
+    return str(provenance.get("captured_at") or sidecar.get("captured_at") or sidecar.get("generated_at") or "")
+
+
+def _handoff_sidecar_identity(sidecar: dict[str, object], index: int) -> str:
+    photo_asset_id = str(sidecar.get("photo_asset_id") or "").strip()
+    if photo_asset_id:
+        return f"asset:{photo_asset_id}"
+    provenance = sidecar.get("provenance") if isinstance(sidecar.get("provenance"), dict) else {}
+    media_url = str(provenance.get("image_media_url") or sidecar.get("image_media_url") or "").strip()
+    if media_url:
+        return f"media:{media_url}"
+    capture_id = str(sidecar.get("capture_id") or "").strip()
+    photo_id = str(sidecar.get("photo_id") or "").strip()
+    if capture_id and photo_id:
+        return f"photo:{capture_id}:{photo_id}"
+    return f"row:{index}"
+
+
+def _handoff_resolved_category(value: object, category_lookup: dict[str, str]) -> str:
+    return category_lookup.get(str(value or "").strip().casefold(), "")
+
+
+def _handoff_sorting_reason(
+    sidecar: dict[str, object],
+    category_lookup: dict[str, str],
+) -> tuple[str, str]:
+    proposed = str(sidecar.get("vision_category") or "").strip()
+    if not proposed:
+        return "", "No SafetyCulture section was proposed."
+    if proposed.casefold() in _HANDOFF_OPERATIONAL_CATEGORIES:
+        return "", "This is an operational capture category, not a report section."
+
+    resolved = _handoff_resolved_category(proposed, category_lookup)
+    if not resolved:
+        return "", "The proposed section is not in the SafetyCulture order."
+
+    agreement = str(sidecar.get("category_agreement") or "").strip().casefold()
+    if agreement == CATEGORY_AGREEMENT_MISMATCH:
+        return "", "Vision and operator categories disagree."
+
+    operator_category = str(sidecar.get("qc_category") or "").strip()
+    operator_key = operator_category.casefold()
+    if operator_key in _HANDOFF_OPERATIONAL_CATEGORIES - {GENERIC_QC_CATEGORY}:
+        return "", "The operator category requires manual placement."
+    if agreement == CATEGORY_AGREEMENT_UNVERIFIABLE and operator_key != GENERIC_QC_CATEGORY:
+        return "", "The proposed section could not be verified."
+
+    operator_resolved = _handoff_resolved_category(operator_category, category_lookup)
+    if operator_resolved and operator_key != GENERIC_QC_CATEGORY and operator_resolved != resolved:
+        return "", "Vision and operator categories disagree."
+    return resolved, ""
+
+
+def group_handoff_sidecars(
+    sidecars: list[dict[str, object]],
+    display_categories: list[dict[str, str]] | None = None,
+) -> dict[str, object]:
+    """Deduplicate and group one walk in selected-site display order."""
+    active_categories = display_categories or BUILTIN_FALLBACK_CATEGORIES
+    category_order = _handoff_category_order(active_categories)
+    category_lookup = _handoff_category_lookup(active_categories)
+    unique: list[tuple[int, dict[str, object]]] = []
+    seen: set[str] = set()
+    for index, sidecar in enumerate(sidecars):
+        identity = _handoff_sidecar_identity(sidecar, index)
+        if identity in seen:
+            continue
+        seen.add(identity)
+        unique.append((index, sidecar))
+
+    unique.sort(key=lambda item: (_handoff_capture_time(item[1]), item[0]))
+    needs_sorting: list[dict[str, object]] = []
+    grouped = {str(category["canonical"]): [] for category in category_order}
+    for _index, sidecar in unique:
+        category, reason = _handoff_sorting_reason(sidecar, category_lookup)
+        if reason:
+            needs_sorting.append({"sidecar": sidecar, "reason": reason})
+        else:
+            grouped[category].append(sidecar)
+
+    sections = [
+        {
+            "canonical": str(category["canonical"]),
+            "label": str(category["label"]),
+            "sidecars": grouped[str(category["canonical"])],
+        }
+        for category in category_order
+        if grouped[str(category["canonical"])]
+    ]
+    return {"needs_sorting": needs_sorting, "sections": sections, "total": len(unique)}
+
+
+def _handoff_site_options_html(options: list[tuple[str, str]], selected: str) -> str:
+    rows = ['<option value="">Choose a site</option>']
+    for value, label in options:
+        selected_attr = " selected" if value == selected else ""
+        rows.append(
+            f'<option value="{html.escape(value, quote=True)}"{selected_attr}>{html.escape(label)}</option>'
+        )
+    return "".join(rows)
+
+
+def _handoff_photo_site_options(sidecars: list[dict[str, object]]) -> list[tuple[str, str]]:
+    site_ids = sorted({str(sidecar.get("site_id") or "").strip() for sidecar in sidecars})
+    return [(site_id, f"{site_id} — from photo data") for site_id in site_ids if site_id]
+
+
+def _handoff_scope_form(
+    site_id: str,
+    capture_id: str,
+    date_from: str,
+    date_to: str,
+    *,
+    site_options: list[tuple[str, str]],
+    degraded_site_choices: bool,
+) -> str:
+    if degraded_site_choices:
+        datalist_options = "".join(
+            f'<option value="{html.escape(value, quote=True)}">{html.escape(label)}</option>'
+            for value, label in site_options
+        )
+        site_control = (
+            '<label>Site ID (photo-data fallback)'
+            f'<input name="site_id" value="{html.escape(site_id, quote=True)}" '
+            'list="qc-handoff-photo-sites" placeholder="Enter or choose a site ID" required>'
+            f'<datalist id="qc-handoff-photo-sites">{datalist_options}</datalist></label>'
+        )
+    else:
+        options = _handoff_site_options_html(site_options, site_id)
+        site_control = f'<label>Site<select name="site_id" required>{options}</select></label>'
+    return f"""
+    <form method="get" action="/qc-handoff" class="qc-handoff-scope-form">
+      {site_control}
+      <label>Walk ID
+        <input name="capture_id" value="{html.escape(capture_id, quote=True)}" placeholder="Choose a walk below or paste its ID">
+      </label>
+      <label>From
+        <input type="date" name="date_from" value="{html.escape(date_from, quote=True)}">
+      </label>
+      <label>To
+        <input type="date" name="date_to" value="{html.escape(date_to, quote=True)}">
+      </label>
+      <button type="submit">{ "Open handoff" if capture_id else "Find walks" }</button>
+    </form>
+    """
+
+
+def _handoff_walk_discovery(sidecars: list[dict[str, object]]) -> list[dict[str, object]]:
+    walks: dict[str, dict[str, object]] = {}
+    for sidecar in sidecars:
+        capture_id = str(sidecar.get("capture_id") or "").strip()
+        if not capture_id:
+            continue
+        walk = walks.setdefault(capture_id, {"capture_id": capture_id, "count": 0, "captured_at": ""})
+        walk["count"] = int(walk["count"]) + 1
+        captured_at = _handoff_capture_time(sidecar)
+        if captured_at > str(walk["captured_at"]):
+            walk["captured_at"] = captured_at
+    return sorted(walks.values(), key=lambda walk: str(walk["captured_at"]), reverse=True)
+
+
+def _handoff_discovery_url(site_id: str, capture_id: str) -> str:
+    return "/qc-handoff?" + urlencode({"site_id": site_id, "capture_id": capture_id})
+
+
+def _render_handoff_discovery(
+    walks: list[dict[str, object]],
+    *,
+    site_id: str,
+    fallback: bool,
+    has_more: bool,
+) -> str:
+    fallback_notice = (
+        '<p class="notice">CouchDB is unavailable. Walk choices are from the local photo cache.</p>' if fallback else ""
+    )
+    limit_notice = (
+        f'<p class="notice">Showing walks found in the first {PAGE_LIMIT} photos. Narrow the dates if needed.</p>'
+        if has_more
+        else ""
+    )
+    if not walks:
+        return (
+            f"{fallback_notice}{limit_notice}"
+            '<div class="qc-handoff-empty" role="status">'
+            '<h2>No walks found</h2><p>Try a wider date range, or paste a walk ID above.</p></div>'
+        )
+
+    count = len(walks)
+    heading = f"Choose one walk ({count} found)" if count != 1 else "Choose the walk"
+    items = []
+    for walk in walks:
+        capture_id = str(walk["capture_id"])
+        photo_count = int(walk["count"])
+        captured_at = str(walk["captured_at"])
+        time_text = render_relative_time(captured_at) if captured_at else "Capture time unavailable"
+        href = _handoff_discovery_url(site_id, capture_id)
+        items.append(
+            '<li class="qc-handoff-walk-choice">'
+            f'<a href="{html.escape(href, quote=True)}">Open {render_short_id(capture_id)}</a>'
+            f'<span>{photo_count} photo{"s" if photo_count != 1 else ""} · {time_text}</span>'
+            "</li>"
+        )
+    return (
+        f"{fallback_notice}{limit_notice}"
+        '<div class="qc-handoff-discovery">'
+        f'<h2>{html.escape(heading)}</h2>'
+        '<p>Select one walk so photos from separate walks are never mixed.</p>'
+        f'<ul class="qc-handoff-walk-list">{"".join(items)}</ul></div>'
+    )
+
+
+def _handoff_heading_id(label: str, index: int) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "-", label.casefold()).strip("-") or "section"
+    return f"qc-handoff-{index}-{slug}"
+
+
+def _render_handoff_card_shell(
+    sidecar: dict[str, object],
+    *,
+    index: int,
+    group: str,
+    submitters: dict[str, dict[str, str]],
+    vault_root: Path,
+    sorting_reason: str = "",
+) -> str:
+    reason_html = ""
+    if sorting_reason:
+        reason_html = (
+            '<p class="qc-handoff-sort-reason"><strong>Needs sorting:</strong> '
+            f"{html.escape(sorting_reason)}</p>"
+        )
+    card = render_photo_card(
+        sidecar,
+        submitters,
+        vault_root,
+        card_index=index,
+        show_deep_analysis_controls=False,
+        selection_group=group,
+        handoff_presentation=True,
+    )
+    return f'<div class="qc-handoff-card-shell">{reason_html}{card}</div>'
+
+
+def _render_handoff_category_section(
+    label: str,
+    group: str,
+    card_shells: list[str],
+    *,
+    section_index: int,
+    needs_sorting: bool = False,
+) -> str:
+    heading_id = _handoff_heading_id(label, section_index)
+    count = len(card_shells)
+    class_name = "qc-handoff-category qc-handoff-category--needs-sorting" if needs_sorting else "qc-handoff-category"
+    download_label = f'Download {label} section ({count} photo{"s" if count != 1 else ""})'
+    return f"""
+    <section class="{class_name}" aria-labelledby="{heading_id}">
+      <div class="qc-handoff-category-heading">
+        <div>
+          <h2 id="{heading_id}">{html.escape(label)}</h2>
+          <span class="muted">{count} photo{"s" if count != 1 else ""}</span>
+        </div>
+        <button type="button" data-download-photo-category="{html.escape(group, quote=True)}"
+                aria-label="{html.escape(download_label, quote=True)}">
+          Download section
+        </button>
+      </div>
+      <div class="qc-handoff-grid">{"".join(card_shells)}</div>
+    </section>
+    """
+
+
+def _render_handoff_board(
+    ctx: object,
+    sidecars: list[dict[str, object]],
+    capture_id: str,
+    fallback: bool,
+    has_more: bool,
+    display_categories: list[dict[str, str]],
+) -> str:
+    grouped = group_handoff_sidecars(sidecars, display_categories)
+    total = int(grouped["total"])
+    if total == 0:
+        return (
+            '<div class="qc-handoff-empty" role="status"><h2>No photos for this walk</h2>'
+            '<p>Check the site and walk ID, or return to walk discovery.</p></div>'
+        )
+
+    submitters = submitters_by_capture(ctx.runtime_root)
+    vault_root = Path(getattr(ctx.config, "vault_root", ctx.runtime_root / "vault")).expanduser()
+    sections_html: list[str] = []
+    card_index = 0
+    needs = grouped["needs_sorting"]
+    if isinstance(needs, list) and needs:
+        cards = []
+        for item in needs:
+            sidecar = item["sidecar"]
+            cards.append(
+                _render_handoff_card_shell(
+                    sidecar,
+                    index=card_index,
+                    group=NEEDS_SORTING_KEY,
+                    submitters=submitters,
+                    vault_root=vault_root,
+                    sorting_reason=str(item["reason"]),
+                )
+            )
+            card_index += 1
+        sections_html.append(
+            _render_handoff_category_section(
+                "Needs sorting",
+                NEEDS_SORTING_KEY,
+                cards,
+                section_index=0,
+                needs_sorting=True,
+            )
+        )
+
+    sections = grouped["sections"]
+    if isinstance(sections, list):
+        for section_index, section in enumerate(sections, start=1):
+            group = str(section["canonical"])
+            cards = []
+            for sidecar in section["sidecars"]:
+                cards.append(
+                    _render_handoff_card_shell(
+                        sidecar,
+                        index=card_index,
+                        group=group,
+                        submitters=submitters,
+                        vault_root=vault_root,
+                    )
+                )
+                card_index += 1
+            sections_html.append(
+                _render_handoff_category_section(
+                    str(section["label"]),
+                    group,
+                    cards,
+                    section_index=section_index,
+                )
+            )
+
+    fallback_notice = (
+        '<p class="notice">CouchDB is unavailable. This board is rendered from the local photo cache.</p>'
+        if fallback
+        else ""
+    )
+    limit_notice = (
+        f'<p class="notice">This walk has more than {PAGE_LIMIT} photos; showing the first {PAGE_LIMIT}.</p>'
+        if has_more
+        else ""
+    )
+    return f"""
+    {fallback_notice}
+    {limit_notice}
+    <form method="post" action="/field-photos/export" id="qc-handoff-export-form" data-photo-export-form>
+      <input type="hidden" name="capture_id" value="{html.escape(capture_id, quote=True)}">
+      <div class="qc-handoff-toolbar">
+        <div>
+          <strong>{total} photo{"s" if total != 1 else ""} in this walk</strong>
+          <p>Drag one ready photo into the matching SafetyCulture section. Downloads are the reliable fallback.</p>
+        </div>
+        <button type="button" data-download-all-photos>Download full walk</button>
+        <button type="button" data-select-all-photos>Select all</button>
+        <button type="button" data-clear-photo-selection>Clear</button>
+        <span class="muted" data-selected-photo-count role="status" aria-live="polite" aria-atomic="true">0 selected</span>
+        <button type="submit" data-export-selected-photos disabled>Download selected</button>
+      </div>
+      {"".join(sections_html)}
+    </form>
+    {render_photo_selection_script()}
+    {render_photo_file_drag_script()}
+    """
+
+
+def render_qc_handoff(ctx: object) -> str:
+    query = getattr(ctx, "query", {})
+    site_id = first_filter_value(query, "site_id")
+    capture_id = first_filter_value(query, "capture_id")
+    date_from = first_filter_value(query, "date_from")
+    date_to = first_filter_value(query, "date_to")
+
+    site_options = load_site_options()
+    degraded_site_choices = not site_options
+    site_choices_notice = ""
+    if degraded_site_choices:
+        option_sidecars, option_fallback, option_has_more = load_filtered_photo_sidecars(ctx)
+        site_options = _handoff_photo_site_options(option_sidecars)
+        if site_id and site_id not in {value for value, _label in site_options}:
+            site_options.append((site_id, f"{site_id} — entered site ID"))
+        source_text = "local photo cache" if option_fallback else "available photo data"
+        limit_text = (
+            f" Suggestions use the first {PAGE_LIMIT} photos; you can also type a site ID."
+            if option_has_more
+            else " You can also type a site ID."
+        )
+        site_choices_notice = (
+            '<p class="notice">The site registry is unavailable. Site suggestions come from the '
+            f"{source_text}.{limit_text}</p>"
+        )
+
+    scope_form = _handoff_scope_form(
+        site_id,
+        capture_id,
+        "" if capture_id else date_from,
+        "" if capture_id else date_to,
+        site_options=site_options,
+        degraded_site_choices=degraded_site_choices,
+    )
+    content = (
+        '<div class="qc-handoff-empty" role="status"><h2>Select a site and walk</h2>'
+        '<p>Choose a site first, then find a walk. The board never combines separate walks.</p></div>'
+    )
+    if site_id:
+        if capture_id:
+            sidecars, fallback, has_more = load_filtered_photo_sidecars(
+                ctx,
+                site_id=site_id,
+                capture_id=capture_id,
+            )
+            content = _render_handoff_board(
+                ctx,
+                sidecars,
+                capture_id,
+                fallback,
+                has_more,
+                load_site_handoff_categories(site_id),
+            )
+        else:
+            sidecars, fallback, has_more = load_filtered_photo_sidecars(
+                ctx,
+                site_id=site_id,
+                date_from=date_from,
+                date_to=date_to,
+            )
+            content = _render_handoff_discovery(
+                _handoff_walk_discovery(sidecars),
+                site_id=site_id,
+                fallback=fallback,
+                has_more=has_more,
+            )
+
+    body = f"""
+    <header class="qc-handoff-header">
+      <div>
+        <h1>QC Handoff</h1>
+        <p class="muted">Large, SafetyCulture-ordered photos for one QC walk at a time.</p>
+      </div>
+      <a href="/field-photos">Browse all field photos</a>
+    </header>
+    <section class="qc-handoff-scope">
+      <h2>Choose the QC walk</h2>
+      <p class="muted">Dates help find a walk. Once selected, the board loads the complete walk.</p>
+      {site_choices_notice}
+      {scope_form}
+    </section>
+    {content}
+    """
+    return html_page("QC Handoff — BTQ Ops", body, active_section="qc_handoff")
 
 
 def latest_photo_cards(
@@ -1430,6 +2073,9 @@ def _render_deep_analysis_dialogs(return_to: str) -> str:
 
 
 def render(ctx: object) -> str:
+    if str(getattr(ctx, "route_path", "") or "") == "/qc-handoff":
+        return render_qc_handoff(ctx)
+
     query = getattr(ctx, "query", {})
     runtime_root = ctx.runtime_root
 
@@ -1445,29 +2091,19 @@ def render(ctx: object) -> str:
     vision_disagrees = first_filter_value(query, "vision_disagrees").lower() in {"1", "true", "yes", "on"}
 
     cdb_config = _photo_vision_couchdb_config()
-    sidecars: list[dict[str, object]] = []
-    fallback = False
-    has_more = False
-
-    if cdb_config is not None:
-        mango = _build_mango_selector(
-            q,
-            site_id,
-            area_guess,
-            date_from,
-            date_to,
-            capture_id=capture_id,
-            qc_category=qc_category,
-            vision_category=vision_category,
-            vision_disagrees=vision_disagrees,
-            has_deep_analysis=has_deep_analysis,
-        )
-        docs = _query_couchdb(cdb_config, mango)
-        if docs is not None:
-            has_more = len(docs) > PAGE_LIMIT
-            sidecars = docs[:PAGE_LIMIT]
-        else:
-            fallback = True
+    sidecars, fallback, has_more = load_filtered_photo_sidecars(
+        ctx,
+        q=q,
+        site_id=site_id,
+        capture_id=capture_id,
+        area_guess=area_guess,
+        qc_category=qc_category,
+        vision_category=vision_category,
+        vision_disagrees=vision_disagrees,
+        date_from=date_from,
+        date_to=date_to,
+        has_deep_analysis=has_deep_analysis,
+    )
 
     processed_asset_ids: set[str] | None = None
     terminal_capture_ids: set[str] | None = None

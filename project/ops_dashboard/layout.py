@@ -15,6 +15,7 @@ NAV_ITEMS = (
     ("site_orders", "Site Orders", "/site-orders", "$"),
     ("records", "Records", "/records", "D"),
     ("field_photos", "Field Photos", "/field-photos", "P"),
+    ("qc_handoff", "QC Handoff", "/qc-handoff", "Q"),
     ("admin", "Admin", "/admin", "A"),
     ("help", "Help", "/help", "?"),
 )
