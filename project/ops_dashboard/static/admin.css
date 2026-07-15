@@ -1402,6 +1402,88 @@ details.raw-json pre { margin-top: 4px; }
   font-weight: 700;
 }
 
+/* ---- Field photo file drag ------------------------------------------------ */
+.field-photo-image-link {
+  display: block;
+  cursor: zoom-in;
+}
+
+.field-photo-file-actions {
+  display: flex;
+  align-items: center;
+  margin: 0 0 8px;
+}
+
+.field-photo-file-drag {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 36px;
+  padding: 5px 10px;
+  border: 1px solid var(--btn-border);
+  border-radius: 6px;
+  background: var(--btn-bg);
+  color: var(--text);
+  font-size: .85rem;
+  font-weight: 600;
+  line-height: 1.3;
+  text-decoration: none;
+  cursor: grab;
+  user-select: none;
+}
+
+.field-photo-file-drag:hover {
+  border-color: var(--accent);
+  color: var(--text);
+}
+
+.field-photo-file-drag:focus-visible {
+  outline: 3px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.field-photo-file-drag:active,
+.field-photo-file-drag.is-ready:active {
+  cursor: grabbing;
+}
+
+.field-photo-file-drag.is-preparing {
+  border-color: var(--line-strong);
+  background: var(--panel-soft);
+  color: var(--text);
+  cursor: progress;
+}
+
+.field-photo-file-drag.is-ready {
+  border-color: var(--accent);
+  background: var(--highlight-bg);
+  color: var(--text);
+}
+
+.field-photo-file-drag.is-fallback {
+  border-color: var(--danger);
+  background: var(--reject-bg);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.field-photo-file-drag-icon {
+  font-size: 1rem;
+  line-height: 1;
+}
+
+.field-photo-file-drag.is-preparing .field-photo-file-drag-icon {
+  color: var(--muted);
+}
+
+.field-photo-file-drag.is-ready .field-photo-file-drag-icon {
+  color: var(--accent);
+}
+
+.field-photo-file-drag.is-fallback .field-photo-file-drag-icon {
+  color: var(--danger);
+}
+
 @media (max-width: 900px) {
   .home-grid {
     grid-template-columns: 1fr;

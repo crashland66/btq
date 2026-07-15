@@ -377,6 +377,9 @@ def _media_key_from_url(url: str) -> str:
 
 
 _FILENAME_SAFE_RE = re.compile(r"[^A-Za-z0-9._-]+")
+_SOURCE_IMAGE_SUFFIXES = frozenset(
+    {".avif", ".bmp", ".gif", ".heic", ".jpeg", ".jpg", ".png", ".tif", ".tiff", ".webp"}
+)
 
 
 def _safe_filename_part(value: object, *, fallback: str) -> str:
@@ -384,9 +387,31 @@ def _safe_filename_part(value: object, *, fallback: str) -> str:
     return text[:80] if text else fallback
 
 
-def _photo_filename_hint(sidecar: dict[str, object], index: int, media_key: str) -> str:
+def _source_photo_filename_stem(sidecar: dict[str, object]) -> str:
+    provenance = sidecar.get("provenance") if isinstance(sidecar.get("provenance"), dict) else {}
+    candidates = (
+        sidecar.get("source_filename"),
+        sidecar.get("original_filename"),
+        sidecar.get("original_file_name"),
+        sidecar.get("image_filename"),
+        provenance.get("source_filename"),
+        provenance.get("original_filename"),
+        provenance.get("original_file_name"),
+        provenance.get("image_filename"),
+    )
+    for candidate in candidates:
+        basename = Path(str(candidate or "").replace("\\", "/")).name
+        if not basename or Path(basename).suffix.lower() not in _SOURCE_IMAGE_SUFFIXES:
+            continue
+        stem = _safe_filename_part(Path(basename).stem, fallback="")
+        if stem:
+            return stem
+    return ""
+
+
+def _photo_filename_hint(sidecar: dict[str, object], index: int) -> str:
     area = _safe_filename_part(sidecar.get("area_guess"), fallback="area")
-    stem = _safe_filename_part(Path(media_key).stem, fallback=f"photo-{index + 1:03d}")
+    stem = _source_photo_filename_stem(sidecar) or f"photo-{index + 1:03d}"
     return f"{area}-{index + 1:03d}-{stem}.jpg"
 
 
@@ -420,12 +445,14 @@ def _render_card(
     issues = string_list(sidecar.get("possible_issues"))
     tags = (conditions + issues)[:5]
 
+    filename_hint = _photo_filename_hint(sidecar, card_index) if media_key else ""
+
     if url:
         escaped_url = html.escape(url, quote=True)
         js_arg = html.escape(json.dumps(url), quote=True)
         img_html = (
-            f'<a href="#" onclick="openLb({js_arg});return false" style="cursor:zoom-in;display:block">'
-            f'<img src="{escaped_url}" alt="field photo" loading="lazy"'
+            f'<a class="field-photo-image-link" href="#" onclick="openLb({js_arg});return false">'
+            f'<img class="field-photo-image" src="{escaped_url}" alt="field photo" loading="lazy"'
             f' style="width:100%;aspect-ratio:4/3;object-fit:cover;display:block;border-radius:6px 6px 0 0">'
             f"</a>"
         )
@@ -481,9 +508,24 @@ def _render_card(
     if pills_html:
         inner += f'<div style="margin-top:4px">{pills_html}</div>'
 
+    drag_html = ""
+    if url and filename_hint:
+        escaped_url = html.escape(url, quote=True)
+        escaped_filename = html.escape(filename_hint, quote=True)
+        drag_label = html.escape(f"Drag or download {filename_hint}", quote=True)
+        drag_html = (
+            '<div class="field-photo-file-actions">'
+            f'<a class="field-photo-file-drag" href="{escaped_url}" download="{escaped_filename}" '
+            'draggable="true" data-photo-file-drag '
+            f'data-photo-drag-url="{escaped_url}" data-photo-drag-filename="{escaped_filename}" '
+            f'aria-label="{drag_label}" title="Prepare this photo for dragging, or click to download">'
+            '<span class="field-photo-file-drag-icon" aria-hidden="true">&#x2637;</span>'
+            '<span data-photo-drag-label aria-live="polite">Drag or download</span>'
+            "</a></div>"
+        )
+
     selection_html = ""
     if show_selection_controls and media_key:
-        filename_hint = _photo_filename_hint(sidecar, card_index, media_key)
         label = "Select photo"
         label_bits = [area, capture_id, filename_hint]
         label_detail = " · ".join(bit for bit in label_bits if bit)
@@ -500,9 +542,9 @@ def _render_card(
         )
 
     return (
-        f'<article style="border:1px solid var(--line);border-radius:8px;overflow:hidden;background:var(--panel)">'
+        f'<article class="field-photo-card" style="border:1px solid var(--line);border-radius:8px;overflow:hidden;background:var(--panel)">'
         f"{img_html}"
-        f'<div style="padding:10px">{selection_html}{inner}</div>'
+        f'<div style="padding:10px">{drag_html}{selection_html}{inner}</div>'
         f"</article>"
     )
 
@@ -910,6 +952,208 @@ def _render_selection_script() -> str:
     """
 
 
+def render_photo_file_drag_script() -> str:
+    """Return the reusable, framework-free single-photo file drag initializer."""
+    return """
+    <script>
+      (function () {
+        if (window.BTQPhotoFileDrag) {
+          window.BTQPhotoFileDrag.init(document);
+          return;
+        }
+
+        const MAX_PREPARED_FILES = 6;
+        const preparedFiles = new Map();
+        const pendingFiles = new Map();
+        const initializedControls = new WeakSet();
+
+        function fileDragSupported() {
+          return typeof window.File === 'function'
+            && typeof window.DataTransferItemList !== 'undefined'
+            && typeof window.DataTransferItemList.prototype.add === 'function';
+        }
+
+        function controlsForUrl(url) {
+          return Array.from(document.querySelectorAll('[data-photo-file-drag]')).filter(function (control) {
+            return control.getAttribute('data-photo-drag-url') === url;
+          });
+        }
+
+        function setState(control, state) {
+          const label = control.querySelector('[data-photo-drag-label]');
+          const filename = control.getAttribute('data-photo-drag-filename') || 'photo.jpg';
+          control.classList.remove('is-preparing', 'is-ready', 'is-fallback');
+          control.setAttribute('data-photo-drag-state', state);
+          if (state === 'preparing') {
+            control.classList.add('is-preparing');
+            control.setAttribute('draggable', 'true');
+            control.setAttribute('aria-label', 'Preparing ' + filename + ' for dragging; click to download');
+            control.setAttribute('title', 'Preparing ' + filename + ' for dragging; click to download now');
+            if (label) label.textContent = 'Preparing photo';
+          } else if (state === 'ready') {
+            control.classList.add('is-ready');
+            control.setAttribute('draggable', 'true');
+            control.setAttribute('aria-label', 'Drag ' + filename + ' as a file, or click to download');
+            control.setAttribute('title', 'Drag ' + filename + ' to a file drop target, or click to download');
+            if (label) label.textContent = 'Ready — drag photo';
+          } else if (state === 'fallback') {
+            control.classList.add('is-fallback');
+            control.setAttribute('draggable', 'false');
+            control.setAttribute('aria-label', 'File dragging is unavailable; download ' + filename + ' instead');
+            control.setAttribute('title', 'File dragging is unavailable; click to download ' + filename);
+            if (label) label.textContent = 'Download photo';
+          } else {
+            control.setAttribute('draggable', 'true');
+            control.setAttribute('aria-label', 'Drag or download ' + filename);
+            control.setAttribute('title', 'Hover or focus to prepare ' + filename + ' for dragging, or click to download');
+            if (label) label.textContent = 'Drag or download';
+          }
+        }
+
+        function setUrlState(url, state) {
+          controlsForUrl(url).forEach(function (control) { setState(control, state); });
+        }
+
+        function rememberFile(url, file) {
+          if (preparedFiles.has(url)) preparedFiles.delete(url);
+          preparedFiles.set(url, file);
+          while (preparedFiles.size > MAX_PREPARED_FILES) {
+            const oldestUrl = preparedFiles.keys().next().value;
+            preparedFiles.delete(oldestUrl);
+            setUrlState(oldestUrl, 'idle');
+          }
+        }
+
+        function preparedFile(url) {
+          const file = preparedFiles.get(url);
+          if (!file) return null;
+          preparedFiles.delete(url);
+          preparedFiles.set(url, file);
+          return file;
+        }
+
+        function prepare(control) {
+          if (!fileDragSupported()) {
+            setState(control, 'fallback');
+            return Promise.resolve(null);
+          }
+
+          const rawUrl = control.getAttribute('data-photo-drag-url') || '';
+          const filename = control.getAttribute('data-photo-drag-filename') || '';
+          let mediaUrl;
+          try {
+            mediaUrl = new URL(rawUrl, window.location.origin);
+          } catch (_error) {
+            setState(control, 'fallback');
+            return Promise.resolve(null);
+          }
+          if (mediaUrl.origin !== window.location.origin || !mediaUrl.pathname.startsWith('/media/') || !filename) {
+            setState(control, 'fallback');
+            return Promise.resolve(null);
+          }
+
+          const url = mediaUrl.pathname + mediaUrl.search;
+          if (preparedFile(url)) {
+            setUrlState(url, 'ready');
+            return Promise.resolve(preparedFiles.get(url));
+          }
+          if (pendingFiles.has(url)) {
+            setState(control, 'preparing');
+            return pendingFiles.get(url);
+          }
+
+          setUrlState(url, 'preparing');
+          const request = fetch(url, {
+            credentials: 'same-origin',
+            headers: {'Accept': 'image/*'},
+          }).then(function (response) {
+            if (!response.ok) throw new Error('photo fetch failed');
+            return response.blob();
+          }).then(function (blob) {
+            if (!blob.size) throw new Error('photo is empty');
+            const mimeType = blob.type && blob.type.startsWith('image/') ? blob.type : 'image/jpeg';
+            const file = new File([blob], filename, {type: mimeType, lastModified: Date.now()});
+            rememberFile(url, file);
+            setUrlState(url, 'ready');
+            return file;
+          }).catch(function () {
+            setUrlState(url, 'fallback');
+            return null;
+          }).finally(function () {
+            pendingFiles.delete(url);
+          });
+          pendingFiles.set(url, request);
+          return request;
+        }
+
+        function startFileDrag(control, event) {
+          const rawUrl = control.getAttribute('data-photo-drag-url') || '';
+          let url = '';
+          try {
+            const mediaUrl = new URL(rawUrl, window.location.origin);
+            if (mediaUrl.origin === window.location.origin && mediaUrl.pathname.startsWith('/media/')) {
+              url = mediaUrl.pathname + mediaUrl.search;
+            }
+          } catch (_error) {
+            url = '';
+          }
+          const file = url ? preparedFile(url) : null;
+          const transfer = event.dataTransfer;
+          if (!fileDragSupported() || !file || !transfer || !transfer.items || typeof transfer.items.add !== 'function') {
+            event.preventDefault();
+            setState(control, 'fallback');
+            return;
+          }
+
+          try {
+            transfer.clearData();
+            const item = transfer.items.add(file);
+            if (!item) throw new Error('file drag item was rejected');
+          } catch (_error) {
+            event.preventDefault();
+            setState(control, 'fallback');
+            return;
+          }
+
+          transfer.effectAllowed = 'copy';
+          try {
+            transfer.setData('text/plain', file.name);
+            transfer.setData('text/uri-list', window.location.origin + window.location.pathname);
+          } catch (_error) {
+            // The file item is the contract; compatibility text is optional.
+          }
+          const image = control.closest('.field-photo-card')?.querySelector('.field-photo-image');
+          if (image && typeof transfer.setDragImage === 'function') {
+            const bounds = image.getBoundingClientRect();
+            transfer.setDragImage(image, Math.max(0, Math.round(bounds.width / 2)), Math.max(0, Math.round(bounds.height / 2)));
+          }
+          setState(control, 'ready');
+        }
+
+        function init(root) {
+          const scope = root && typeof root.querySelectorAll === 'function' ? root : document;
+          scope.querySelectorAll('[data-photo-file-drag]').forEach(function (control) {
+            if (initializedControls.has(control)) return;
+            initializedControls.add(control);
+            if (!fileDragSupported()) setState(control, 'fallback');
+            else setState(control, 'idle');
+            control.addEventListener('pointerenter', function () { prepare(control); });
+            control.addEventListener('focus', function () { prepare(control); });
+            control.addEventListener('dragstart', function (event) { startFileDrag(control, event); });
+          });
+        }
+
+        window.BTQPhotoFileDrag = {init: init, prepare: prepare};
+        if (document.readyState === 'loading') {
+          document.addEventListener('DOMContentLoaded', function () { init(document); }, {once: true});
+        } else {
+          init(document);
+        }
+      })();
+    </script>
+    """
+
+
 def latest_photo_cards(
     ctx: object,
     limit: int,
@@ -956,13 +1200,11 @@ def latest_photo_cards(
 
     submitters = submitters_by_capture(runtime_root)
     vault_root = Path(getattr(ctx.config, "vault_root", runtime_root / "vault")).expanduser()
-    return (
-        "".join(
+    cards_html = "".join(
             _render_card(s, submitters, vault_root, show_selection_controls=False, show_deep_analysis_controls=False)
             for s in sidecars
-        ),
-        fallback,
     )
+    return (cards_html + (render_photo_file_drag_script() if cards_html else ""), fallback)
 
 
 def _with_target_fields(sidecar: dict[str, object]) -> dict[str, object]:
@@ -1310,6 +1552,7 @@ def render(ctx: object) -> str:
       {grid_html}
     </section>
     {_render_selection_script()}
+    {render_photo_file_drag_script()}
     {_render_deep_analysis_dialogs(_field_photos_return_to(query))}
     """
     return html_page("Field Photos — BTQ Ops", body, active_section="field_photos")
