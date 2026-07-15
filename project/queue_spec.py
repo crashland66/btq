@@ -53,6 +53,7 @@ JOB_FLAG_RETENTION_RISK = "flag_retention_risk"
 JOB_ADD_PERSON = "add_person"
 JOB_ASSIGN_EMPLOYEE_SITE = "assign_employee_site"
 JOB_SET_EMPLOYEE_ID = "set_employee_id"
+JOB_SET_EMPLOYEE_CONTACT = "set_employee_contact"
 JOB_RECORD_SHIFT_REPORT = "record_shift_report"
 JOB_SHIFT_REPORT_NOTE = "shift_report_note"
 JOB_RECORD_DAY_RECORD = "record_day_record"
@@ -156,6 +157,7 @@ ALLOWED_JOB_TYPES = {
     JOB_ADD_PERSON,
     JOB_ASSIGN_EMPLOYEE_SITE,
     JOB_SET_EMPLOYEE_ID,
+    JOB_SET_EMPLOYEE_CONTACT,
     JOB_RECORD_SHIFT_REPORT,
     JOB_SHIFT_REPORT_NOTE,
     JOB_RECORD_DAY_RECORD,
@@ -223,6 +225,7 @@ JOB_SCHEMAS = {
     JOB_ADD_PERSON: ["name", "role"],
     JOB_ASSIGN_EMPLOYEE_SITE: ["employee_id", "site_id", "actor"],
     JOB_SET_EMPLOYEE_ID: ["person", "employee_id"],
+    JOB_SET_EMPLOYEE_CONTACT: ["person", "actor", "contact"],
     JOB_RECORD_SHIFT_REPORT: ["date", "content"],
     JOB_SHIFT_REPORT_NOTE: ["date", "content", "actor", "capture_id", "photo_asset_id"],
     JOB_RECORD_DAY_RECORD: ["date", "content"],
@@ -297,6 +300,8 @@ SET_EMPLOYEE_ID_ALLOWED_PAYLOAD_FIELDS = {
     "source",
     "metadata",
 }
+SET_EMPLOYEE_CONTACT_ALLOWED_PAYLOAD_FIELDS = {"person", "actor", "contact", "source"}
+SET_EMPLOYEE_CONTACT_FIELDS = {"phone", "email"}
 RECORD_SHIFT_REPORT_ALLOWED_PAYLOAD_FIELDS = {"date", "content", "prepared_by", "source"}
 SHIFT_REPORT_NOTE_ALLOWED_PAYLOAD_FIELDS = {
     "date",
@@ -798,6 +803,24 @@ def _validate_set_employee_id_payload(payload: dict) -> bool:
             return False
         source = metadata.get("source")
         if source is not None and not _is_non_empty_string(source):
+            return False
+    return True
+
+
+def _validate_set_employee_contact_payload(payload: dict) -> bool:
+    if set(payload) - SET_EMPLOYEE_CONTACT_ALLOWED_PAYLOAD_FIELDS:
+        return False
+    for field in ("person", "actor"):
+        if not _is_non_empty_string(payload.get(field)):
+            return False
+    source = payload.get("source")
+    if source is not None and not _is_non_empty_string(source):
+        return False
+    contact = payload.get("contact")
+    if not isinstance(contact, dict) or not contact or set(contact) - SET_EMPLOYEE_CONTACT_FIELDS:
+        return False
+    for value in contact.values():
+        if value is not None and not _is_non_empty_string(value):
             return False
     return True
 
@@ -1372,6 +1395,9 @@ def validate_job(job: dict) -> bool:
             return False
     if job_type == JOB_SET_EMPLOYEE_ID:
         if not _validate_set_employee_id_payload(payload):
+            return False
+    if job_type == JOB_SET_EMPLOYEE_CONTACT:
+        if not _validate_set_employee_contact_payload(payload):
             return False
     if job_type == JOB_RECORD_SHIFT_REPORT:
         if not _validate_record_shift_report_payload(payload):

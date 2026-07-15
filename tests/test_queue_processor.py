@@ -852,6 +852,11 @@ def _drift_guard_sample_payloads() -> dict[str, dict]:
             "audio_file": "memo.m4a",
         },
         qp.JOB_SET_EMPLOYEE_ID: {"person": "Pearson, David", "employee_id": "567"},
+        qp.JOB_SET_EMPLOYEE_CONTACT: {
+            "person": "Sandbox, Sandy",
+            "actor": "Sandbox Operator",
+            "contact": {"phone": "202-555-0100"},
+        },
         qp.JOB_SHIFT_REPORT_NOTE: {
             "date": "2026-04-21",
             "content": "note body",

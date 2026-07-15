@@ -421,7 +421,40 @@ Use a stable source-system key when available, for example `ehub-9213`.
 }
 ```
 
-## 2b. `assign_employee_site`
+## 2b. `set_employee_contact`
+
+Use when an existing employee's phone number or email address must be added,
+corrected, or cleared. The employee must resolve uniquely by person ID,
+employee ID, or current display name.
+
+Required payload fields:
+
+- `person`: non-empty resolver string
+- `actor`: non-empty audit label
+- `contact`: a non-empty object containing only `phone` and/or `email`; each
+  value is a non-empty string or `null` to clear that field
+
+Optional payload fields:
+
+- `source`: non-empty provenance label
+
+The writer changes only the supplied contact fields, preserves all identity and
+assignment data, records `updated_at` and `edited_by`, and appends the queue job
+ID through canonical read-modify-write.
+
+```json
+{
+  "job_type": "set_employee_contact",
+  "payload": {
+    "person": "9001",
+    "actor": "Sandbox Operator",
+    "contact": {"phone": "2025550100"},
+    "source": "employee_message"
+  }
+}
+```
+
+## 2c. `assign_employee_site`
 
 Use when:
 
@@ -492,7 +525,7 @@ Do not use when:
 }
 ```
 
-## 2c. `record_shift_report`
+## 2d. `record_shift_report`
 
 Use when:
 
@@ -552,7 +585,7 @@ Use a stable date-keyed value when available, for example
 }
 ```
 
-## 2c. `shift_report_note`
+## 2e. `shift_report_note`
 
 Use when:
 
@@ -625,7 +658,7 @@ photo asset id, and prompt metadata.
 }
 ```
 
-## 2d. `record_day_record`
+## 2f. `record_day_record`
 
 Use when:
 

@@ -27,7 +27,7 @@ from queue_spec import (
     JOB_DEEP_ANALYSIS, JOB_LOG_AVAILABILITY_CONSTRAINT,
     JOB_PARSE_SUPPLY_EMAIL, JOB_PERSONAL_JOURNAL_ENTRY, JOB_PHOTO_CAPTURE, JOB_PROMOTE_PROSPECT,
     JOB_RECORD_DAY_RECORD, JOB_RECORD_SHIFT_REPORT, JOB_RECORD_UNKNOWN_CAPTURE, JOB_RECLASSIFY_UNKNOWN,
-    JOB_REMOVE_FROM_SCHEDULE, JOB_RETARGET_CAPTURE, JOB_SET_EMPLOYEE_ID, JOB_SHIFT_REPORT_NOTE, JOB_TRIGGER_RECRUITING,
+    JOB_REMOVE_FROM_SCHEDULE, JOB_RETARGET_CAPTURE, JOB_SET_EMPLOYEE_CONTACT, JOB_SET_EMPLOYEE_ID, JOB_SHIFT_REPORT_NOTE, JOB_TRIGGER_RECRUITING,
     JOB_SET_CONTACT, JOB_SET_ENTITY_STATUS, JOB_SET_SITE_HOURS, JOB_SET_SITE_URL, JOB_UPDATE_SITE_EQUIPMENT, JOB_VISIT_CREATE, JOB_VOICE_MEMO_NOTE,
 )
 
@@ -363,6 +363,8 @@ def target_path_hint(job: QueueJob, context: RunContext) -> str:
         if job.job_type == JOB_ASSIGN_EMPLOYEE_SITE:
             return _canonical_employee_hint(payload["employee_id"])
         if job.job_type == JOB_SET_EMPLOYEE_ID:
+            return _canonical_employee_hint(payload["person"])
+        if job.job_type == JOB_SET_EMPLOYEE_CONTACT:
             return _canonical_employee_hint(payload["person"])
         if job.job_type == JOB_PARSE_SUPPLY_EMAIL:
             return str(misc.resolve_supply_email_path(context, str(payload["html_path"])))

@@ -62,6 +62,7 @@ KNOWN_JOB_SUMMARY_TYPES = {
     "log_personnel_event",
     "log_availability_constraint",
     "set_entity_status",
+    "set_employee_contact",
     "set_employee_id",
     "set_contact",
     "set_site_hours",
@@ -1293,6 +1294,12 @@ def render_job_summary(job_type: object, payload: object) -> str:
         emp = html.escape(_clean_display_part(body.get("employee_id")))
         suffix = _join_summary_parts(person, f"(employee_id {emp})" if emp else "")
         return _summary_with_suffix("Set employee ID for", suffix)
+    if job_type_text == "set_employee_contact":
+        person = html.escape(_clean_display_part(body.get("person")))
+        contact = body.get("contact") if isinstance(body.get("contact"), dict) else {}
+        changed = ", ".join(field for field in ("phone", "email") if field in contact)
+        suffix = _join_summary_parts(person, f"({changed})" if changed else "")
+        return _summary_with_suffix("Update contact for", suffix)
     if job_type_text == "trigger_recruiting":
         suffix = _join_summary_parts(_site_summary(body), f"({html.escape(_clean_display_part(body.get('priority')))})" if _clean_display_part(body.get("priority")) else "")
         return _summary_with_suffix("Trigger recruiting at", suffix)

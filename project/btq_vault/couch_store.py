@@ -11,6 +11,7 @@ CANONICAL_EMPLOYEE_FIELDS: frozenset[str] = frozenset({
     "additional_jobs",
     "assignments",
     "employee_id",
+    "email",
     "employment_type",
     "first",
     "hire_date",

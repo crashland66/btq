@@ -415,6 +415,11 @@ def _build_employee_entity_doc(payload: dict, job: QueueJob, person_id: str, cre
         "btq_job_ids": [job.job_id],
     }
     doc.update({key: payload[key] for key in CANONICAL_EMPLOYEE_FIELDS if key in payload})
+    contact = payload.get("contact")
+    if isinstance(contact, dict):
+        for field in ("phone", "email"):
+            if field in contact:
+                doc[field] = contact[field]
     return doc
 
 
