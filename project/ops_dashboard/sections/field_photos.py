@@ -13,7 +13,11 @@ from urllib.parse import parse_qs, urlencode
 
 from event_pipeline.couchdb.system_defaults import load_system_defaults
 from event_pipeline.couchdb_registry import CouchDBSiteRegistry
-from field_capture.display_categories import BUILTIN_FALLBACK_CATEGORIES, resolve_display_categories
+from field_capture.display_categories import (
+    BUILTIN_FALLBACK_CATEGORIES,
+    QC_CAPTURE_CATEGORY,
+    resolve_display_categories,
+)
 from field_capture.deep_analysis import DEEP_ANALYSIS_PRESETS
 from field_capture.site_viewer import UnsafeMediaPath, resolve_media_request, upload_id_for_path
 from media_store import get_media_store
@@ -1760,7 +1764,10 @@ def render_qc_handoff(ctx: object) -> str:
     degraded_site_choices = not site_options
     site_choices_notice = ""
     if degraded_site_choices:
-        option_sidecars, option_fallback, option_has_more = load_filtered_photo_sidecars(ctx)
+        option_sidecars, option_fallback, option_has_more = load_filtered_photo_sidecars(
+            ctx,
+            qc_category=QC_CAPTURE_CATEGORY,
+        )
         site_options = _handoff_photo_site_options(option_sidecars)
         if site_id and site_id not in {value for value, _label in site_options}:
             site_options.append((site_id, f"{site_id} — entered site ID"))
@@ -1786,7 +1793,11 @@ def render_qc_handoff(ctx: object) -> str:
         '<p>Choose a site first, then choose one local evidence capture date.</p></div>'
     )
     if site_id:
-        sidecars, fallback, has_more = load_filtered_photo_sidecars(ctx, site_id=site_id)
+        sidecars, fallback, has_more = load_filtered_photo_sidecars(
+            ctx,
+            site_id=site_id,
+            qc_category=QC_CAPTURE_CATEGORY,
+        )
         if qc_date and not _valid_handoff_date(qc_date):
             content = (
                 '<div class="qc-handoff-empty" role="alert"><h2>Enter a valid QC date</h2>'

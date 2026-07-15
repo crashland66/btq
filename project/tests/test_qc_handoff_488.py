@@ -14,7 +14,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from field_capture.display_categories import BUILTIN_FALLBACK_CATEGORIES
+from field_capture.display_categories import BUILTIN_FALLBACK_CATEGORIES, QC_CAPTURE_CATEGORY
 from ops_dashboard import app, layout
 from ops_dashboard.common import SectionContext
 from ops_dashboard.sections import field_photos
@@ -232,7 +232,7 @@ def test_render_requires_site_then_date_and_discovery_does_not_build_a_board(
 
     discovery = field_photos.render(_ctx(tmp_path, {"site_id": ["site-one"]}))
     assert calls[-1]["site_id"] == "site-one"
-    assert calls[-1] == {"site_id": "site-one"}
+    assert calls[-1] == {"site_id": "site-one", "qc_category": QC_CAPTURE_CATEGORY}
     assert "Choose the QC date" in discovery
     assert "2 photos · 2 contributing captures" in discovery
     assert "walk-one" not in discovery and "walk-two" not in discovery
@@ -263,7 +263,7 @@ def test_selected_day_passes_site_to_canonical_loader_and_uses_neutral_archive_l
         )
     )
 
-    assert observed == {"site_id": "site-one"}
+    assert observed == {"site_id": "site-one", "qc_category": QC_CAPTURE_CATEGORY}
     assert "qc-handoff-export-form" in rendered
     assert 'name="capture_id" value="site-one-2026-07-15"' in rendered
     assert '<input type="date" name="qc_date" value="2026-07-15" required>' in rendered
@@ -293,7 +293,7 @@ def test_discovery_uses_local_dates_and_links_only_site_and_qc_date(
         )
     )
 
-    assert observed == [{"site_id": "site-one"}]
+    assert observed == [{"site_id": "site-one", "qc_category": QC_CAPTURE_CATEGORY}]
     assert 'href="/qc-handoff?site_id=site-one&amp;qc_date=2026-07-15"' in rendered
     discovery_link = rendered.split('href="/qc-handoff?', 1)[1].split('"', 1)[0]
     assert "capture_id" not in discovery_link and "walk-one" not in rendered
@@ -364,7 +364,7 @@ def test_selected_site_custom_sections_control_board_order_and_recognition(
         field_photos,
         "load_filtered_photo_sidecars",
         lambda _ctx, **filters: (docs, False, False)
-        if filters == {"site_id": "site-one"}
+        if filters == {"site_id": "site-one", "qc_category": QC_CAPTURE_CATEGORY}
         else pytest.fail(f"unexpected filters: {filters}"),
     )
     monkeypatch.setattr(field_photos, "submitters_by_capture", lambda _root: {})
@@ -403,14 +403,17 @@ def test_registry_outage_offers_photo_cache_sites_and_manual_site_id_escape(
 
     def load(_ctx: object, **filters: object) -> tuple[list[dict[str, object]], bool, bool]:
         calls.append(filters)
-        if not filters:
+        if filters == {"qc_category": QC_CAPTURE_CATEGORY}:
             return [_sidecar("cached", "Restrooms", site_id="cached-site")], True, True
         return [], True, False
 
     monkeypatch.setattr(field_photos, "load_filtered_photo_sidecars", load)
     rendered = field_photos.render(_ctx(tmp_path, {"site_id": ["typed-site"]}))
 
-    assert calls == [{}, {"site_id": "typed-site"}]
+    assert calls == [
+        {"qc_category": QC_CAPTURE_CATEGORY},
+        {"site_id": "typed-site", "qc_category": QC_CAPTURE_CATEGORY},
+    ]
     assert "The site registry is unavailable" in rendered
     assert "local photo cache" in rendered
     assert f"first {field_photos.PAGE_LIMIT} photos" in rendered

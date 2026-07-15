@@ -119,7 +119,9 @@ def test_one_site_and_local_date_aggregates_every_loaded_capture_without_midnigh
         _ctx(tmp_path, {"site_id": ["site-one"], "qc_date": ["2026-07-15"]})
     )
 
-    assert calls == [{"site_id": "site-one"}]
+    assert calls == [
+        {"site_id": "site-one", "qc_category": field_photos.QC_CAPTURE_CATEGORY}
+    ]
     assert "2 photos on this QC day" in rendered
     assert rendered.count('name="media_key" value="first.jpg"') == 1
     assert rendered.count('name="media_key" value="second.jpg"') == 1
