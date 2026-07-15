@@ -2576,6 +2576,9 @@ def test_health_runtime_panel_uses_human_labels(tmp_path: Path) -> None:
     panel = runtime_health_fragment(body)
     assert "Queue Depth" in panel
     assert "Runtime Root" in panel
+    assert "Durable Source Files" in panel
+    assert "Local Cached Files" in panel
+    assert ">Uploads<" not in panel
     assert "queue_count" not in panel
     assert "runtime_root_exists" not in panel
 

@@ -1,0 +1,105 @@
+#!/usr/bin/env bash
+# Retire CouchDB replication documents for the decommissioned Dell peer.
+#
+# Safe by default: without --apply this only prints the matching document ids.
+# Run on the Mac that hosts CouchDB.
+
+set -euo pipefail
+
+APPLY=0
+case "${1:-}" in
+  "") ;;
+  --dry-run) ;;
+  --apply) APPLY=1 ;;
+  -h|--help)
+    echo "usage: ./scripts/btq-retire-dell-replicators [--dry-run|--apply]"
+    exit 0
+    ;;
+  *)
+    echo "usage: ./scripts/btq-retire-dell-replicators [--dry-run|--apply]" >&2
+    exit 2
+    ;;
+esac
+
+PLIST="$HOME/Library/LaunchAgents/com.btq.couchdb-field-capture-watcher.plist"
+PLIST_KEY() { /usr/libexec/PlistBuddy -c "Print :EnvironmentVariables:$1" "$PLIST" 2>/dev/null || true; }
+
+USER="${BTQ_COUCHDB_USER:-$(PLIST_KEY BTQ_COUCHDB_USER)}"
+PASS="${BTQ_COUCHDB_PASSWORD:-$(PLIST_KEY BTQ_COUCHDB_PASSWORD)}"
+URL="${BTQ_COUCHDB_URL:-$(PLIST_KEY BTQ_COUCHDB_URL)}"
+URL="${URL:-http://127.0.0.1:5984}"
+
+if [[ -z "$USER" || -z "$PASS" ]]; then
+  echo "error: BTQ_COUCHDB_USER / BTQ_COUCHDB_PASSWORD not set in env or plist" >&2
+  exit 1
+fi
+
+export BTQ_USER="$USER" BTQ_PASS="$PASS" BTQ_URL="$URL" BTQ_APPLY="$APPLY"
+
+python3 - <<'PYEOF'
+import base64
+import json
+import os
+import sys
+import urllib.error
+import urllib.parse
+import urllib.request
+
+USER = os.environ["BTQ_USER"]
+PASS = os.environ["BTQ_PASS"]
+URL = os.environ["BTQ_URL"].rstrip("/")
+APPLY = os.environ["BTQ_APPLY"] == "1"
+BASIC = "Basic " + base64.b64encode(f"{USER}:{PASS}".encode("utf-8")).decode("ascii")
+DELL_PREFIXES = ("dell_to_pro_", "pro_to_dell_")
+
+
+def req(method, path):
+    request = urllib.request.Request(URL + path, method=method)
+    request.add_header("Accept", "application/json")
+    request.add_header("Authorization", BASIC)
+    with urllib.request.urlopen(request, timeout=15) as response:
+        raw = response.read()
+    return json.loads(raw.decode("utf-8")) if raw else {}
+
+
+try:
+    listing = req("GET", "/_replicator/_all_docs?include_docs=true")
+except (urllib.error.URLError, OSError, json.JSONDecodeError) as exc:
+    print(f"error: could not read _replicator docs: {exc}", file=sys.stderr)
+    sys.exit(2)
+
+matches = []
+for row in listing.get("rows", []):
+    doc = row.get("doc") or {}
+    doc_id = str(doc.get("_id") or "")
+    rev = str(doc.get("_rev") or "")
+    if doc_id.startswith(DELL_PREFIXES) and rev:
+        matches.append((doc_id, rev))
+
+errors = 0
+for doc_id, rev in sorted(matches):
+    if not APPLY:
+        print(f"{doc_id}: would retire")
+        continue
+    encoded_id = urllib.parse.quote(doc_id, safe="")
+    encoded_rev = urllib.parse.quote(rev, safe="")
+    try:
+        result = req("DELETE", f"/_replicator/{encoded_id}?rev={encoded_rev}")
+    except urllib.error.HTTPError as exc:
+        print(f"{doc_id}: ERROR HTTP {exc.code} {exc.reason}", file=sys.stderr)
+        errors += 1
+        continue
+    except (urllib.error.URLError, OSError, json.JSONDecodeError) as exc:
+        print(f"{doc_id}: ERROR {exc}", file=sys.stderr)
+        errors += 1
+        continue
+    if result.get("ok"):
+        print(f"{doc_id}: retired")
+    else:
+        print(f"{doc_id}: ERROR (no ok in response)", file=sys.stderr)
+        errors += 1
+
+mode = "applied" if APPLY else "dry-run"
+print(f"mode={mode} matched={len(matches)} errors={errors}")
+sys.exit(2 if errors else 0)
+PYEOF

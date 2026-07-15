@@ -11,7 +11,7 @@ import pytest
 
 import ops_dashboard.common as common
 from event_pipeline.couchdb_registry import CouchDBRegistryError
-from ops_dashboard.common import KNOWN_JOB_SUMMARY_TYPES, bucket_processing_states, humanize_key, parse_display_categories_rows, render_back_link, render_count_badge, render_display_categories_editor, render_fields, render_job_summary, render_kv, render_list, render_relative_time, render_short_filename, render_short_id, render_site_label, render_status_transition, render_table, reset_voice_memo_intake_cache, resolve_site_label, voice_memo_intake_state, voice_memo_status
+from ops_dashboard.common import KNOWN_JOB_SUMMARY_TYPES, bucket_processing_states, field_capture_media_inventory, humanize_key, parse_display_categories_rows, render_back_link, render_count_badge, render_display_categories_editor, render_fields, render_job_summary, render_kv, render_list, render_relative_time, render_short_filename, render_short_id, render_site_label, render_status_transition, render_table, reset_field_capture_media_inventory_cache, reset_voice_memo_intake_cache, resolve_site_label, voice_memo_intake_state, voice_memo_status
 from queue_spec import ALLOWED_JOB_TYPES
 
 
@@ -727,6 +727,33 @@ def test_voice_memo_intake_state_couchdb_unreachable(monkeypatch) -> None:
     state = voice_memo_intake_state()
     assert state["available"] is False
     assert state["reason"] == "couchdb unreachable"
+
+
+def test_field_capture_media_inventory_counts_durable_media(monkeypatch) -> None:
+    reset_field_capture_media_inventory_cache()
+    monkeypatch.setattr(
+        common,
+        "_query_field_capture_docs_all_result",
+        lambda fields, limit=5000: (
+            [
+                {"_id": "cap-1", "photos": [{"upload_id": "one.jpg"}, {"upload_id": "two.jpg"}], "audio": []},
+                {"_id": "cap-2", "photos": [], "audio": [{"upload_id": "voice.webm"}]},
+                {"_id": "cap-text", "photos": [], "audio": []},
+            ],
+            True,
+        ),
+    )
+
+    inventory = field_capture_media_inventory()
+
+    assert inventory == {
+        "available": True,
+        "total_count": 3,
+        "image_count": 2,
+        "audio_count": 1,
+        "capture_count": 2,
+    }
+    reset_field_capture_media_inventory_cache()
 
 
 # --- prompt 299: render_fields field-group panel sibling of render_kv ---

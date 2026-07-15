@@ -357,10 +357,12 @@ def _query_field_capture_docs(mango: dict[str, object]) -> list[dict[str, object
     return [doc for doc in docs if isinstance(doc, dict)] if isinstance(docs, list) else []
 
 
-def _query_field_capture_docs_all(fields: list[str], *, limit: int = 5000) -> list[dict[str, object]]:
+def _query_field_capture_docs_all_result(
+    fields: list[str], *, limit: int = 5000
+) -> tuple[list[dict[str, object]], bool]:
     config = _field_capture_couchdb_config()
     if config is None:
-        return []
+        return [], False
     docs: list[dict[str, object]] = []
     bookmark: object = None
     for _ in range(400):
@@ -375,15 +377,84 @@ def _query_field_capture_docs_all(fields: list[str], *, limit: int = 5000) -> li
             response = query_couchdb_find(config, couchdb_config.field_captures_database(), mango)
         except Exception as exc:
             logger.warning("field-capture CouchDB media discovery failed: %s", exc)
-            return docs
+            return docs, False
         page = response.get("docs") if isinstance(response, dict) else None
         if not isinstance(page, list):
-            return docs
+            return docs, False
         docs.extend(doc for doc in page if isinstance(doc, dict))
         bookmark = response.get("bookmark")
         if len(page) < limit or not bookmark:
-            break
+            return docs, True
+    logger.warning("field-capture CouchDB media discovery hit the pagination safety limit")
+    return docs, False
+
+
+def _query_field_capture_docs_all(fields: list[str], *, limit: int = 5000) -> list[dict[str, object]]:
+    docs, _available = _query_field_capture_docs_all_result(fields, limit=limit)
     return docs
+
+
+_FIELD_CAPTURE_MEDIA_INVENTORY_CACHE_TTL_SECONDS = 300.0
+_field_capture_media_inventory_cache: tuple[float, dict[str, object]] | None = None
+_field_capture_media_inventory_lock = threading.Lock()
+
+
+def field_capture_media_inventory() -> dict[str, object]:
+    """Count durable capture-media references stored in canonical CouchDB docs.
+
+    The local uploads directory is a bounded working cache and is pruned after
+    its retention window.  This inventory is therefore the stable dashboard
+    count operators should compare with the local cache size.
+    """
+
+    global _field_capture_media_inventory_cache
+
+    def _fresh() -> dict[str, object] | None:
+        cached = _field_capture_media_inventory_cache
+        if cached is None or time.monotonic() - cached[0] >= _FIELD_CAPTURE_MEDIA_INVENTORY_CACHE_TTL_SECONDS:
+            return None
+        return cached[1]
+
+    hit = _fresh()
+    if hit is not None:
+        return hit
+    with _field_capture_media_inventory_lock:
+        hit = _fresh()
+        if hit is not None:
+            return hit
+        docs, available = _query_field_capture_docs_all_result(
+            ["_id", "capture_id", "photos", "audio"]
+        )
+        image_count = 0
+        audio_count = 0
+        capture_count = 0
+        for doc in docs:
+            doc_media_count = 0
+            photos = doc.get("photos")
+            if isinstance(photos, list):
+                image_count += len(photos)
+                doc_media_count += len(photos)
+            audio = doc.get("audio")
+            if isinstance(audio, list):
+                audio_count += len(audio)
+                doc_media_count += len(audio)
+            if doc_media_count:
+                capture_count += 1
+        result: dict[str, object] = {
+            "available": available,
+            "total_count": image_count + audio_count,
+            "image_count": image_count,
+            "audio_count": audio_count,
+            "capture_count": capture_count,
+        }
+        _field_capture_media_inventory_cache = (time.monotonic(), result)
+        return result
+
+
+def reset_field_capture_media_inventory_cache() -> None:
+    global _field_capture_media_inventory_cache
+    with _field_capture_media_inventory_lock:
+        _field_capture_media_inventory_cache = None
 
 
 def _capture_doc_timestamp(doc: dict[str, object]) -> str:

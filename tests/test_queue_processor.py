@@ -1554,6 +1554,53 @@ def test_existing_processed_destination_with_indexed_job_exits_cleanly(tmp_path:
     assert "indexed-replay.json" in events_text
 
 
+def test_revised_job_uses_collision_free_processed_archive(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = use_recording_vault_store(monkeypatch)
+    project_root, _vault_root, runtime_root, _log_path = make_roots(tmp_path)
+    revised_payload = {
+        "job_id": "legacy-explicit-id",
+        "idempotency_key": "legacy-idempotency-key",
+        "job_type": "record_day_record",
+        "payload": {
+            "date": "2026-06-19",
+            "content": "Newer day record revision.",
+        },
+    }
+    queue_path = runtime_root / "queue" / "unknown_job.legacy-day-record.json"
+    write_job(runtime_root / "queue", queue_path.name, revised_payload)
+    processed_path = runtime_root / "processed" / queue_path.name
+    archived_payload = {
+        **revised_payload,
+        "payload": {
+            "date": "2026-06-19",
+            "content": "Older archived day record revision.",
+        },
+    }
+    write_job(runtime_root / "processed", processed_path.name, archived_payload)
+    original_archive = processed_path.read_text(encoding="utf-8")
+
+    report = qp.process_all(
+        project_root=project_root,
+        runtime_root=runtime_root,
+        dry_run=False,
+        skip_unknowns=True,
+    )
+
+    assert report["failed"] == 0
+    assert report["queue_after"] == 0
+    assert processed_path.exists()
+    assert processed_path.read_text(encoding="utf-8") == original_archive
+    revision_archives = list((runtime_root / "processed").glob("unknown_job.legacy-day-record.*.json"))
+    assert len(revision_archives) == 1
+    assert not (runtime_root / "failed" / queue_path.name).exists()
+    day_record = next(doc for doc in store.docs if doc.get("_id") == "day_record_2026_06_19")
+    assert day_record["content"] == "Newer day record revision."
+    events_text = (runtime_root / "logs" / "queue_processor_events.jsonl").read_text(encoding="utf-8")
+    assert "queue_revision_renamed" in events_text
+
+
 def test_existing_processed_destination_with_applied_job_exits_cleanly(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     store = use_recording_vault_store(monkeypatch)
     project_root, vault_root, runtime_root, _log_path = make_roots(tmp_path)

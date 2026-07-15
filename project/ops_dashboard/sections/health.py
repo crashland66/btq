@@ -15,6 +15,7 @@ from field_capture.review_maintenance import review_maintenance_status_report
 from ops_dashboard.common import (
     DEFAULT_LOG_LINES,
     count_files,
+    field_capture_media_inventory,
     latest_json_artifacts,
     latest_uploads,
     photo_vision_status,
@@ -39,7 +40,8 @@ HEALTH_LABELS = {
     "processed_count": "Processed",
     "failed_count": "Failed",
     "field_capture_intake_count": "FC Intakes",
-    "uploads_count": "Uploads",
+    "durable_media_count": "Durable Source Files",
+    "uploads_count": "Local Cached Files",
     "reviews_count": "Reviews",
     "disk_usage": "Disk",
     "runtime_size": "Runtime Size",
@@ -169,6 +171,8 @@ def render_health_value(key: str, value: object) -> str:
         return f"{_format_gb(value)} GB"
     if key == "runtime_files":
         return render_runtime_files(value)
+    if key == "durable_media_count" and value is None:
+        return "unavailable"
     if key == "failed_count":
         return f'<a href="/failed">{render_count_badge(value, kind="danger")}</a>'
     if key.endswith("_count"):
@@ -345,6 +349,7 @@ def build_status(ctx: object, *, log_lines: int = DEFAULT_LOG_LINES) -> dict[str
     for lines in logs.values():
         recent_warnings.extend(warning_lines(lines))
     footprint = runtime_footprint(runtime_resolved)
+    durable_media = field_capture_media_inventory()
     audio_inbox = getattr(config, "audio_inbox_dir", None)
     audio_inbox_dir = Path(audio_inbox).expanduser() if audio_inbox else None
     return {
@@ -361,11 +366,13 @@ def build_status(ctx: object, *, log_lines: int = DEFAULT_LOG_LINES) -> dict[str
             # those are operator-acknowledged dead ends not "needs attention".
             "failed_count": count_files(paths["failed"], "*.json", recursive=False),
             "field_capture_intake_count": count_files(paths["field_capture_intake"], "*.json"),
+            "durable_media_count": durable_media.get("total_count") if durable_media.get("available") else None,
             "uploads_count": count_files(paths["uploads"], recursive=True),
             "reviews_count": count_files(paths["reviews"], "*.json", recursive=True),
         },
         "latest_health_alert": latest_health_alert(runtime_resolved),
         "field_capture": {
+            "durable_media": durable_media,
             "latest_uploads": latest_uploads(paths["uploads"], capture_submitters),
             "intake_records": latest_json_artifacts(paths["field_capture_intake"]),
             "transcript_count": count_files(paths["transcripts"], "*.json"),

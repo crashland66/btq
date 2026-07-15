@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import sys
 from datetime import datetime, timezone
@@ -182,6 +183,49 @@ def _job_has_applied_marker(job: QueueJob, context: RunContext) -> tuple[bool, s
     except Exception:
         return False, None
     return doc_id is not None, doc_id
+
+
+def _files_have_identical_content(left: Path, right: Path) -> bool:
+    try:
+        if left.stat().st_size != right.stat().st_size:
+            return False
+        with left.open("rb") as left_handle, right.open("rb") as right_handle:
+            while True:
+                left_chunk = left_handle.read(64 * 1024)
+                right_chunk = right_handle.read(64 * 1024)
+                if left_chunk != right_chunk:
+                    return False
+                if not left_chunk:
+                    return True
+    except OSError:
+        return False
+
+
+def _revision_queue_job_path(job_path: Path, context: RunContext, job: QueueJob) -> Path:
+    """Give a revised job a collision-free archive name before processing it."""
+    digest = hashlib.sha256(job_path.read_bytes()).hexdigest()[:12]
+    revision_path = job_path.with_name(f"{job_path.stem}.{digest}{job_path.suffix}")
+    revision_path = context.assert_runtime_write_path(revision_path, "revisioned queue job path")
+    if revision_path.exists():
+        if _files_have_identical_content(job_path, revision_path):
+            job_path.unlink()
+            return revision_path
+        raise QueueProcessorError(f"Revision queue destination already exists: {revision_path}")
+    job_path.replace(revision_path)
+    _shared.write_log_line(
+        context.log_path,
+        f"job_id={job.job_id} action=queue-revision-rename status=success source={job_path} destination={revision_path}",
+    )
+    _shared.structured_log(
+        context,
+        "queue_revision_renamed",
+        computed_job_id=job.job_id,
+        job_type=job.job_type,
+        source_queue_file=str(job_path),
+        revision_queue_file=str(revision_path),
+        capture_id=_shared.capture_id_for_job(job),
+    )
+    return revision_path
 
 
 def _archive_job_file(
@@ -411,6 +455,36 @@ def process_job(job_path: Path, context: RunContext, processed_dir: Path, failed
                 return
         processed_destination = processed_dir / job_path.name
         if not context.dry_run and processed_destination.exists():
+            if _files_have_identical_content(job_path, processed_destination):
+                print(f"Job {job.job_id}: identical processed archive already present — skipping")
+                moved_path = _archive_job_file(
+                    job_path,
+                    processed_dir,
+                    context,
+                    job=job,
+                    already_handled=True,
+                    handled_source="identical-processed-archive",
+                    processed_job_ids=processed_job_ids,
+                )
+                print(f"Job {job.job_id}: moved queue file to {moved_path}")
+                _shared.write_log_line(
+                    context.log_path,
+                    f"job_id={job.job_id} action=skip status=success reason=identical-processed-archive",
+                )
+                append_processed_index_record(
+                    job_path, job, context, target_path_hint(job, context), processed_job_ids
+                )
+                _shared.structured_log(
+                    context,
+                    "replay_skip",
+                    computed_job_id=job.job_id,
+                    job_type=job.job_type,
+                    reason="identical-processed-archive",
+                    source="identical-processed-archive",
+                    moved_to=str(moved_path),
+                    capture_id=_shared.capture_id_for_job(job),
+                )
+                return
             applied, applied_target = _job_has_applied_marker(job, context)
             if applied:
                 print(f"Job {job.job_id}: job_id marker already present — skipping")
@@ -420,6 +494,8 @@ def process_job(job_path: Path, context: RunContext, processed_dir: Path, failed
                 append_processed_index_record(job_path, job, context, target_path_hint(job, context), processed_job_ids)
                 _shared.structured_log(context, "replay_skip", computed_job_id=job.job_id, job_type=job.job_type, reason="job-id-marker-present", source="applied-marker", moved_to=str(moved_path), target_path=applied_target, capture_id=_shared.capture_id_for_job(job))
                 return
+            job_path = _revision_queue_job_path(job_path, context, job)
+            processed_destination = processed_dir / job_path.name
         handler = JOB_HANDLERS.get(job.job_type)
         if handler is None:
             raise QueueProcessorError(f"Unsupported job type object: {job.job_type}")
