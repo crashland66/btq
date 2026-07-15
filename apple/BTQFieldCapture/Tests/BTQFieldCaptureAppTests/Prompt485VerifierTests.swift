@@ -1,0 +1,201 @@
+import Foundation
+import Testing
+
+@testable import BTQFieldCaptureApp
+
+// Verifier-owned source-contract probes for prompt 485. These intentionally live
+// apart from the implementation-authored ContractTests additions and exercise the
+// iOS-only paths even when `swift test` is compiling the shared package for macOS.
+
+@Test func prompt485VerifierRotationAssignmentsRequireAVFoundationSupport() throws {
+    let source = try prompt485VerifierSource("Views/CaptureRotation.swift")
+
+    #expect(prompt485Occurrences(of: "connection.videoRotationAngle = angle", in: source) == 2)
+    #expect(prompt485Occurrences(of: "connection.isVideoRotationAngleSupported(angle)", in: source) == 2)
+
+    let preview = try prompt485Slice(
+        source,
+        from: "private func applyPreviewAngle(_ angle: CGFloat)",
+        to: "/// Applies the current physical-device angle"
+    )
+    #expect(prompt485Ordered([
+        "connection.isVideoRotationAngleSupported(angle)",
+        "connection.videoRotationAngle = angle",
+    ], in: preview))
+
+    let capture = try prompt485Slice(
+        source,
+        from: "func applyCaptureRotation(_ angle: CGFloat?",
+        to: "#endif"
+    )
+    #expect(prompt485Ordered([
+        "connection.isVideoRotationAngleSupported(angle)",
+        "connection.videoRotationAngle = angle",
+    ], in: capture))
+}
+
+@Test func prompt485VerifierCaptureStampsOutputOnSessionQueueBeforePhotoCapture() throws {
+    let source = try prompt485VerifierSource("Views/CameraCaptureView.swift")
+    let capture = try prompt485Slice(
+        source,
+        from: "func capturePhoto()",
+        to: "// MARK: - Capture delegate"
+    )
+
+    #expect(prompt485Ordered([
+        "let rotationAngle = rotation.captureAngle",
+        "sessionQueue.async",
+        "applyCaptureRotation(rotationAngle, to: self.photoOutput)",
+        "let settings = AVCapturePhotoSettings()",
+        "self.photoOutput.capturePhoto(with: settings, delegate: self)",
+    ], in: capture))
+    #expect(prompt485Occurrences(of: "applyCaptureRotation(", in: capture) == 1)
+    #expect(prompt485Occurrences(of: "capturePhoto(with:", in: capture) == 1)
+}
+
+@Test func prompt485VerifierCameraReplacementRebindsRotationAndKeepsInputFallback() throws {
+    let source = try prompt485VerifierSource("Views/CameraCaptureView.swift")
+    let switchInput = try prompt485Slice(
+        source,
+        from: "private func applyInput(for target:",
+        to: "private static func wideCamera"
+    )
+
+    #expect(prompt485Ordered([
+        "if let existing = currentInput { session.removeInput(existing) }",
+        "if session.canAddInput(input)",
+        "session.addInput(input)",
+        "currentInput = input",
+        "self.rotation.setDevice(device)",
+        "else if let existing = currentInput",
+        "session.addInput(existing)",
+    ], in: switchInput))
+    #expect(switchInput.contains("never leave the session with no input"))
+}
+
+@Test func prompt485VerifierIOSViewerCoversLocalRemoteStateZoomAndAccessibility() throws {
+    let source = try prompt485VerifierSource("Views/CapturePhotoThumbnail.swift")
+
+    let iosPresentation = try prompt485Slice(
+        source,
+        from: "#if os(iOS)\n        Button",
+        to: "#else\n        thumbnail"
+    )
+    #expect(iosPresentation.contains("selectedPhoto = photo"))
+    #expect(iosPresentation.contains(".fullScreenCover(item: $selectedPhoto)"))
+    #expect(iosPresentation.contains("CapturePhotoLightbox("))
+    #expect(iosPresentation.contains(".accessibilityLabel(\"View full photo\")"))
+
+    let lightbox = try prompt485Slice(
+        source,
+        from: "private struct CapturePhotoLightbox",
+        to: "#endif"
+    )
+    #expect(lightbox.contains("UIImage(contentsOfFile: fileURL.path)"))
+    #expect(prompt485Ordered([
+        "if let fileURL = photo.fileURL",
+        "UIImage(contentsOfFile: fileURL.path)",
+        "guard let remoteURL else { return }",
+        "var request = URLRequest(url: remoteURL)",
+        "request.setValue(\"Bearer \\(token)\", forHTTPHeaderField: \"Authorization\")",
+    ], in: lightbox))
+    #expect(lightbox.contains("ProgressView()"))
+    #expect(lightbox.contains("Loading full photo"))
+    #expect(lightbox.contains("ContentUnavailableView("))
+    #expect(lightbox.contains("Photo unavailable"))
+    #expect(lightbox.contains("MagnificationGesture()"))
+    #expect(lightbox.contains("min(max(scale, 1), 4)"))
+    #expect(lightbox.contains(".accessibilityLabel(\"Full photo\")"))
+    #expect(lightbox.contains(".accessibilityLabel(\"Close full photo\")"))
+}
+
+@Test func prompt485VerifierBearerCredentialsStayInHeadersAndMacThumbnailContractIsUnchanged() throws {
+    let source = try prompt485VerifierSource("Views/CapturePhotoThumbnail.swift")
+
+    #expect(prompt485Occurrences(of: "Bearer \\(token)", in: source) == 2)
+    #expect(prompt485Occurrences(
+        of: "request.setValue(\"Bearer \\(token)\", forHTTPHeaderField: \"Authorization\")",
+        in: source
+    ) == 2)
+    #expect(!source.contains("print("))
+    #expect(!source.contains("Logger("))
+    #expect(!source.contains("os_log"))
+
+    let urlResolver = try prompt485Slice(
+        source,
+        from: "private func resolvedRemoteURL(for photo:",
+        to: "private func thumbnailImage(from data:"
+    )
+    #expect(!urlResolver.contains("token"))
+    #expect(!urlResolver.contains("Authorization"))
+
+    let nonIOSBody = try prompt485Slice(
+        source,
+        from: "#else\n        thumbnail",
+        to: "#endif\n    }"
+    )
+    #expect(nonIOSBody.contains("thumbnail"))
+    #expect(nonIOSBody.contains(".accessibilityLabel(\"Photo thumbnail\")"))
+    #expect(!nonIOSBody.contains("Button"))
+    #expect(!nonIOSBody.contains("fullScreenCover"))
+}
+
+@Test func prompt485VerifierPrompt480OriginalEncodedByteContractRemainsIntact() throws {
+    let source = try prompt485VerifierSource("Views/CameraCaptureView.swift")
+    let delegate = try prompt485Slice(
+        source,
+        from: "extension CameraSessionController: AVCapturePhotoCaptureDelegate",
+        to: "// MARK: - Preview layer bridge"
+    )
+
+    #expect(source.contains("import AVFoundation"))
+    #expect(source.contains("settings.photoQualityPrioritization = CameraCaptureSettingsFactory.qualityPrioritization"))
+    #expect(source.contains("static let qualityPrioritization: AVCapturePhotoOutput.QualityPrioritization = .quality"))
+    #expect(prompt485Ordered([
+        "photo.fileDataRepresentation()",
+        "await self.onPhoto?(data)",
+    ], in: delegate))
+    #expect(!delegate.contains("UIImage(data:"))
+    #expect(!delegate.contains("jpegData("))
+    #expect(!delegate.contains("pngData("))
+}
+
+private func prompt485VerifierSource(_ relativePath: String) throws -> String {
+    let testFile = URL(fileURLWithPath: #filePath)
+    let packageRoot = testFile
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+    return try String(
+        contentsOf: packageRoot
+            .appendingPathComponent("Sources/BTQFieldCaptureApp")
+            .appendingPathComponent(relativePath),
+        encoding: .utf8
+    )
+}
+
+private func prompt485Slice(_ source: String, from start: String, to end: String) throws -> String {
+    guard let startRange = source.range(of: start),
+          let endRange = source.range(of: end, range: startRange.upperBound..<source.endIndex)
+    else {
+        throw Prompt485VerifierError.missingBoundary("\(start) ... \(end)")
+    }
+    return String(source[startRange.lowerBound..<endRange.lowerBound])
+}
+
+private func prompt485Occurrences(of needle: String, in source: String) -> Int {
+    source.components(separatedBy: needle).count - 1
+}
+
+private func prompt485Ordered(_ needles: [String], in source: String) -> Bool {
+    var remainder = source[source.startIndex...]
+    for needle in needles {
+        guard let range = remainder.range(of: needle) else { return false }
+        remainder = remainder[range.upperBound...]
+    }
+    return true
+}
+
+private enum Prompt485VerifierError: Error {
+    case missingBoundary(String)
+}

@@ -57,6 +57,8 @@ final class CameraSessionController: NSObject, ObservableObject {
     private var currentInput: AVCaptureDeviceInput?
     private let sessionQueue = DispatchQueue(label: "com.gregstoltz.btqfieldcapture.camera.session")
     private var isConfigured = false
+    /// Keeps both the live preview and encoded photos upright as the device rotates.
+    let rotation = CaptureRotation()
 
     /// Delivered per successful capture — the ORIGINAL encoded bytes. Async so the
     /// call site can save + append to the draft before the next shot.
@@ -146,7 +148,10 @@ final class CameraSessionController: NSObject, ObservableObject {
         if session.canAddInput(input) {
             session.addInput(input)
             currentInput = input
-            Task { @MainActor in self.facing = target }
+            Task { @MainActor in
+                self.facing = target
+                self.rotation.setDevice(device)
+            }
         } else if let existing = currentInput {
             session.addInput(existing) // never leave the session with no input
         }
@@ -169,8 +174,10 @@ final class CameraSessionController: NSObject, ObservableObject {
             flashOn: flashOn,
             deviceHasFlash: activeDeviceHasFlash
         )
+        let rotationAngle = rotation.captureAngle
         sessionQueue.async { [weak self] in
             guard let self else { return }
+            applyCaptureRotation(rotationAngle, to: self.photoOutput)
             let settings = AVCapturePhotoSettings()
             settings.photoQualityPrioritization = CameraCaptureSettingsFactory.qualityPrioritization
             if self.photoOutput.supportedFlashModes.contains(flashMode) {
@@ -215,11 +222,13 @@ extension CameraSessionController: AVCapturePhotoCaptureDelegate {
 /// Hosts an `AVCaptureVideoPreviewLayer` filling the sheet.
 private struct CameraPreview: UIViewRepresentable {
     let session: AVCaptureSession
+    let rotation: CaptureRotation
 
     func makeUIView(context: Context) -> PreviewView {
         let view = PreviewView()
         view.videoPreviewLayer.session = session
         view.videoPreviewLayer.videoGravity = .resizeAspectFill
+        rotation.setPreviewLayer(view.videoPreviewLayer)
         return view
     }
 
@@ -236,14 +245,13 @@ private struct CameraPreview: UIViewRepresentable {
 /// Multi-shot, original-quality field capture. Same public shape as before —
 /// `CameraCaptureView(onPhoto:)` shown in a `.sheet`, calling `onPhoto` once per photo —
 /// but the preview now STAYS UP so you can rattle off several shots, each confirmed by a
-/// shutter flash, a stamped running count, and a haptic tap. Tap Done to finish.
+/// stamped running count and a haptic tap. Tap Done to finish.
 public struct CameraCaptureView: View {
     public var onPhoto: (Data) async -> Void
     @Environment(\.dismiss) private var dismiss
     @StateObject private var controller = CameraSessionController()
 
     // Capture-feedback animation state (see `.onChange(of: capturedCount)`).
-    @State private var flashOpacity: Double = 0
     @State private var countPopScale: CGFloat = 1
     @State private var countPopOpacity: Double = 0
 
@@ -288,14 +296,8 @@ public struct CameraCaptureView: View {
 
     private var cameraUI: some View {
         ZStack {
-            CameraPreview(session: controller.session)
+            CameraPreview(session: controller.session, rotation: controller.rotation)
                 .ignoresSafeArea()
-
-            // Shutter flash — a quick white wash over the whole frame on every capture.
-            Color.white
-                .opacity(flashOpacity)
-                .ignoresSafeArea()
-                .allowsHitTesting(false)
 
             // The running count, stamped large on each shot then fading — the
             // unmistakable "yes, it captured" cue.
@@ -317,9 +319,6 @@ public struct CameraCaptureView: View {
         .onChange(of: controller.capturedCount) { _, newValue in
             guard newValue > 0 else { return }
             UIImpactFeedbackGenerator(style: .medium).impactOccurred()
-            // Shutter flash: snap bright, ease away.
-            flashOpacity = 0.9
-            withAnimation(.easeOut(duration: 0.28)) { flashOpacity = 0 }
             // Number stamp: appear big, then shrink + fade.
             countPopScale = 1.5
             countPopOpacity = 1

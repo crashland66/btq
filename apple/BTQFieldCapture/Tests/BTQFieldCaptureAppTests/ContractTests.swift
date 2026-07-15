@@ -676,6 +676,13 @@ import UniformTypeIdentifiers
     #expect(photoThumbnail.contains("CGImageSourceCreateThumbnailAtIndex"))
     #expect(photoThumbnail.contains("kCGImageSourceThumbnailMaxPixelSize"))
     #expect(!photoThumbnail.contains("Data(contentsOf: fileURL)"))
+    #expect(photoThumbnail.contains("@State private var selectedPhoto: CapturePhoto?"))
+    #expect(photoThumbnail.contains(".fullScreenCover(item: $selectedPhoto)"))
+    #expect(photoThumbnail.contains("struct CapturePhotoLightbox"))
+    #expect(photoThumbnail.contains("UIImage(contentsOfFile: fileURL.path)"))
+    #expect(photoThumbnail.contains("MagnificationGesture()"))
+    #expect(photoThumbnail.contains("accessibilityLabel(\"View full photo\")"))
+    #expect(photoThumbnail.contains("accessibilityLabel(\"Close full photo\")"))
     #expect(inboxView.contains("struct InboxView"))
     #expect(inboxView.contains("Approval Inbox"))
     #expect(inboxView.contains("model.refreshInbox()"))
@@ -1328,6 +1335,10 @@ import UniformTypeIdentifiers
         contentsOf: packageRoot().appendingPathComponent("Sources/BTQFieldCaptureApp/Views/CameraCaptureView.swift"),
         encoding: .utf8
     )
+    let captureRotationSource = try String(
+        contentsOf: packageRoot().appendingPathComponent("Sources/BTQFieldCaptureApp/Views/CaptureRotation.swift"),
+        encoding: .utf8
+    )
     let rootViewSource = try String(
         contentsOf: packageRoot().appendingPathComponent("Sources/BTQFieldCaptureApp/Views/BTQFieldCaptureRootView.swift"),
         encoding: .utf8
@@ -1391,6 +1402,16 @@ import UniformTypeIdentifiers
     #expect(cameraViewSource.contains("self.photoOutput.capturePhoto(with: settings, delegate: self)"))
     #expect(cameraViewSource.contains("photo.fileDataRepresentation()"))
     #expect(!cameraViewSource.contains("? .camera : .photoLibrary"))
+    #expect(cameraViewSource.contains("let rotation = CaptureRotation()"))
+    #expect(cameraViewSource.contains("self.rotation.setDevice(device)"))
+    #expect(cameraViewSource.contains("rotation.setPreviewLayer(view.videoPreviewLayer)"))
+    #expect(cameraViewSource.contains("applyCaptureRotation(rotationAngle, to: self.photoOutput)"))
+    #expect(!cameraViewSource.contains("flashOpacity"))
+    #expect(captureRotationSource.contains("AVCaptureDevice.RotationCoordinator"))
+    #expect(captureRotationSource.contains("videoRotationAngleForHorizonLevelPreview"))
+    #expect(captureRotationSource.contains("videoRotationAngleForHorizonLevelCapture"))
+    #expect(captureRotationSource.contains("connection.isVideoRotationAngleSupported(angle)"))
+    #expect(captureRotationSource.contains("connection.videoRotationAngle = angle"))
     #expect(captureViewSource.contains("Task { await openCameraIfAllowed() }"))
     #expect(captureViewSource.contains("CameraCapturePermissionGate.decision"))
     #expect(captureViewSource.contains("@State private var cameraDraftContext: DraftContext?"))
