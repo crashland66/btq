@@ -1499,7 +1499,7 @@ details.raw-json pre { margin-top: 4px; }
 
 .qc-handoff-scope-form {
   display: grid;
-  grid-template-columns: minmax(220px, 1.4fr) minmax(260px, 2fr) auto auto auto;
+  grid-template-columns: minmax(220px, 1.4fr) minmax(180px, .8fr) auto;
   align-items: end;
   gap: 10px;
 }
@@ -1531,7 +1531,7 @@ details.raw-json pre { margin-top: 4px; }
   margin-bottom: 0;
 }
 
-.qc-handoff-walk-list {
+.qc-handoff-date-list {
   display: grid;
   gap: 8px;
   margin: 16px 0 0;
@@ -1539,7 +1539,7 @@ details.raw-json pre { margin-top: 4px; }
   list-style: none;
 }
 
-.qc-handoff-walk-choice {
+.qc-handoff-date-choice {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -1550,14 +1550,14 @@ details.raw-json pre { margin-top: 4px; }
   background: var(--panel);
 }
 
-.qc-handoff-walk-choice a {
+.qc-handoff-date-choice a {
   min-height: 34px;
   display: inline-flex;
   align-items: center;
   font-weight: 700;
 }
 
-.qc-handoff-walk-choice span {
+.qc-handoff-date-choice span {
   color: var(--muted);
 }
 
@@ -1581,8 +1581,8 @@ details.raw-json pre { margin-top: 4px; }
 }
 
 .qc-handoff-category {
-  padding: 20px;
-  margin-bottom: 24px;
+  padding: 16px;
+  margin-bottom: 18px;
 }
 
 .qc-handoff-category--needs-sorting {
@@ -1595,7 +1595,7 @@ details.raw-json pre { margin-top: 4px; }
   align-items: center;
   justify-content: space-between;
   gap: 16px;
-  margin-bottom: 16px;
+  margin-bottom: 12px;
 }
 
 .qc-handoff-category-heading h2 {
@@ -1608,9 +1608,9 @@ details.raw-json pre { margin-top: 4px; }
 
 .qc-handoff-grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   align-items: stretch;
-  gap: 24px;
+  gap: 12px;
 }
 
 .qc-handoff-card-shell {
@@ -1648,12 +1648,16 @@ details.raw-json pre { margin-top: 4px; }
   .qc-handoff-scope-form {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
+
+  .qc-handoff-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 
 @media (max-width: 760px) {
   .qc-handoff-header,
   .qc-handoff-category-heading,
-  .qc-handoff-walk-choice {
+  .qc-handoff-date-choice {
     align-items: stretch;
     flex-direction: column;
   }

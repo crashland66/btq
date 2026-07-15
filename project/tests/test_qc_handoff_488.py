@@ -124,7 +124,7 @@ def test_grouping_uses_vision_category_in_canonical_display_order_and_deduplicat
     assert len(emitted) == len(set(emitted)) == grouped["total"] == 5
 
 
-def test_disagreements_unmapped_and_operational_proposals_each_appear_once_in_needs_sorting() -> None:
+def test_recognized_vision_wins_disagreement_while_unresolved_operational_rows_need_sorting() -> None:
     docs = [
         _sidecar("mismatch", "Hallways", qc_category="Restrooms", agreement="mismatch"),
         _sidecar("unmapped", "Imaginary Wing"),
@@ -136,9 +136,8 @@ def test_disagreements_unmapped_and_operational_proposals_each_appear_once_in_ne
     # Repeated source rows must not produce repeated cards.
     grouped = field_photos.group_handoff_sidecars(docs + docs)
 
-    assert _section_assets(grouped) == {}
+    assert _section_assets(grouped) == {"Hallways": ["mismatch"]}
     assert _needs_assets(grouped) == [
-        "mismatch",
         "unmapped",
         "generic-qc",
         "baseline",
@@ -146,7 +145,6 @@ def test_disagreements_unmapped_and_operational_proposals_each_appear_once_in_ne
         "report-issue",
     ]
     assert grouped["total"] == 6
-    assert len({item["reason"] for item in grouped["needs_sorting"]}) >= 3
 
 
 def test_board_and_gallery_share_one_clean_section_loader_and_drag_architecture() -> None:
@@ -191,7 +189,8 @@ def test_board_reuses_the_single_file_drag_initializer_and_existing_export_form(
     rendered = field_photos._render_handoff_board(
         _ctx(tmp_path),
         [_sidecar("restroom", "Restrooms")],
-        "walk-one",
+        "site-one",
+        "2026-07-15",
         False,
         False,
         BUILTIN_FALLBACK_CATEGORIES,
@@ -210,7 +209,7 @@ def test_board_reuses_the_single_file_drag_initializer_and_existing_export_form(
     assert source.count("window.BTQPhotoFileDrag = {init: init, prepare: prepare};") == 1
 
 
-def test_render_requires_site_then_one_capture_and_discovery_never_builds_a_mixed_board(
+def test_render_requires_site_then_date_and_discovery_does_not_build_a_board(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -226,21 +225,21 @@ def test_render_requires_site_then_one_capture_and_discovery_never_builds_a_mixe
 
     monkeypatch.setattr(field_photos, "load_filtered_photo_sidecars", load)
 
-    unscoped = field_photos.render(_ctx(tmp_path, {"capture_id": ["walk-one"]}))
+    unscoped = field_photos.render(_ctx(tmp_path, {"qc_date": ["2026-07-15"]}))
     assert calls == []
-    assert "Select a site and walk" in unscoped
+    assert "Select a site and QC date" in unscoped
     assert "qc-handoff-export-form" not in unscoped
 
     discovery = field_photos.render(_ctx(tmp_path, {"site_id": ["site-one"]}))
     assert calls[-1]["site_id"] == "site-one"
-    assert calls[-1].get("capture_id", "") == ""
-    assert "Choose one walk (2 found)" in discovery
-    assert "photos from separate walks are never mixed" in discovery
-    assert "walk-one" in discovery and "walk-two" in discovery
+    assert calls[-1] == {"site_id": "site-one"}
+    assert "Choose the QC date" in discovery
+    assert "2 photos · 2 contributing captures" in discovery
+    assert "walk-one" not in discovery and "walk-two" not in discovery
     assert "qc-handoff-export-form" not in discovery
 
 
-def test_selected_walk_passes_exact_site_and_capture_to_canonical_loader(
+def test_selected_day_passes_site_to_canonical_loader_and_uses_neutral_archive_label(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -259,25 +258,21 @@ def test_selected_walk_passes_exact_site_and_capture_to_canonical_loader(
             tmp_path,
             {
                 "site_id": ["site-one"],
-                "capture_id": ["walk-one"],
-                "date_from": ["2026-07-01"],
-                "date_to": ["2026-07-15"],
+                "qc_date": ["2026-07-15"],
             },
         )
     )
 
-    assert observed == {"site_id": "site-one", "capture_id": "walk-one"}
+    assert observed == {"site_id": "site-one"}
     assert "qc-handoff-export-form" in rendered
-    assert 'name="capture_id" value="walk-one"' in rendered
-    assert 'name="date_from" value=""' in rendered
-    assert 'name="date_to" value=""' in rendered
-    assert "<label>Walk ID" in rendered
+    assert 'name="capture_id" value="site-one-2026-07-15"' in rendered
+    assert '<input type="date" name="qc_date" value="2026-07-15" required>' in rendered
     assert "Capture ID" not in rendered
-    assert "Dates help find a walk. Once selected, the board loads the complete walk." in rendered
-    assert "1 photo in this walk" in rendered
+    assert "every loaded capture from the selected site and local capture date" in rendered
+    assert "1 photo on this QC day" in rendered
 
 
-def test_discovery_dates_filter_choices_but_are_not_carried_into_selected_walk_url(
+def test_discovery_uses_local_dates_and_links_only_site_and_qc_date(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -294,20 +289,14 @@ def test_discovery_dates_filter_choices_but_are_not_carried_into_selected_walk_u
             tmp_path,
             {
                 "site_id": ["site-one"],
-                "date_from": ["2026-07-01"],
-                "date_to": ["2026-07-15"],
             },
         )
     )
 
-    assert observed == [
-        {"site_id": "site-one", "date_from": "2026-07-01", "date_to": "2026-07-15"}
-    ]
-    assert 'name="date_from" value="2026-07-01"' in rendered
-    assert 'name="date_to" value="2026-07-15"' in rendered
-    assert 'href="/qc-handoff?site_id=site-one&amp;capture_id=walk-one"' in rendered
+    assert observed == [{"site_id": "site-one"}]
+    assert 'href="/qc-handoff?site_id=site-one&amp;qc_date=2026-07-15"' in rendered
     discovery_link = rendered.split('href="/qc-handoff?', 1)[1].split('"', 1)[0]
-    assert "date_from" not in discovery_link and "date_to" not in discovery_link
+    assert "capture_id" not in discovery_link and "walk-one" not in rendered
 
 
 @pytest.mark.parametrize(
@@ -375,7 +364,7 @@ def test_selected_site_custom_sections_control_board_order_and_recognition(
         field_photos,
         "load_filtered_photo_sidecars",
         lambda _ctx, **filters: (docs, False, False)
-        if filters == {"site_id": "site-one", "capture_id": "walk-one"}
+        if filters == {"site_id": "site-one"}
         else pytest.fail(f"unexpected filters: {filters}"),
     )
     monkeypatch.setattr(field_photos, "submitters_by_capture", lambda _root: {})
@@ -387,7 +376,7 @@ def test_selected_site_custom_sections_control_board_order_and_recognition(
 
     monkeypatch.setattr(field_photos, "load_site_handoff_categories", categories)
     rendered = field_photos.render(
-        _ctx(tmp_path, {"site_id": ["site-one"], "capture_id": ["walk-one"]})
+        _ctx(tmp_path, {"site_id": ["site-one"], "qc_date": ["2026-07-15"]})
     )
 
     assert loaded_sites == ["site-one"]
@@ -421,7 +410,7 @@ def test_registry_outage_offers_photo_cache_sites_and_manual_site_id_escape(
     monkeypatch.setattr(field_photos, "load_filtered_photo_sidecars", load)
     rendered = field_photos.render(_ctx(tmp_path, {"site_id": ["typed-site"]}))
 
-    assert calls == [{}, {"site_id": "typed-site", "date_from": "", "date_to": ""}]
+    assert calls == [{}, {"site_id": "typed-site"}]
     assert "The site registry is unavailable" in rendered
     assert "local photo cache" in rendered
     assert f"first {field_photos.PAGE_LIMIT} photos" in rendered
@@ -432,24 +421,24 @@ def test_registry_outage_offers_photo_cache_sites_and_manual_site_id_escape(
     assert "cached-site — from photo data" in rendered
     assert 'value="typed-site"' in rendered
     assert "typed-site — entered site ID" in rendered
-    assert "No walks found" in rendered
+    assert "No QC dates found" in rendered
 
 
-def test_empty_no_selection_fallback_truncation_and_multi_walk_states_are_explicit(
+def test_empty_no_selection_fallback_and_truncation_states_are_explicit(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
     monkeypatch.setattr(field_photos, "submitters_by_capture", lambda _root: {})
     empty_board = field_photos._render_handoff_board(
-        _ctx(tmp_path), [], "walk-one", False, False, BUILTIN_FALLBACK_CATEGORIES
+        _ctx(tmp_path), [], "site-one", "2026-07-15", False, False, BUILTIN_FALLBACK_CATEGORIES
     )
-    assert "No photos for this walk" in empty_board
-    assert "Check the site and walk ID" in empty_board
+    assert "No photos for this QC day" in empty_board
+    assert "Check the site and QC date" in empty_board
 
     discovery = field_photos._render_handoff_discovery(
         [
-            {"capture_id": "walk-one", "count": 2, "captured_at": "2026-07-15T12:00:00Z"},
-            {"capture_id": "walk-two", "count": 1, "captured_at": "2026-07-15T13:00:00Z"},
+            {"date": "2026-07-15", "count": 2, "capture_ids": {"walk-one", "walk-two"}},
+            {"date": "2026-07-14", "count": 1, "capture_ids": {"walk-three"}},
         ],
         site_id="site-one",
         fallback=True,
@@ -457,18 +446,20 @@ def test_empty_no_selection_fallback_truncation_and_multi_walk_states_are_explic
     )
     assert "CouchDB is unavailable" in discovery
     assert f"first {field_photos.PAGE_LIMIT} photos" in discovery
-    assert "Choose one walk (2 found)" in discovery
+    assert "Choose a QC date (2 found)" in discovery
 
     board = field_photos._render_handoff_board(
         _ctx(tmp_path),
         [_sidecar("one", "Restrooms")],
-        "walk-one",
+        "site-one",
+        "2026-07-15",
         True,
         True,
         BUILTIN_FALLBACK_CATEGORIES,
     )
     assert "local photo cache" in board
-    assert f"more than {field_photos.PAGE_LIMIT} photos" in board
+    assert f"first {field_photos.PAGE_LIMIT} photos" in board
+    assert "Download visible photos" in board
     assert "0 selected" in board
     assert 'data-export-selected-photos disabled' in board
 
@@ -493,7 +484,7 @@ def test_disk_fallback_reports_when_canonical_page_limit_truncates(
     assert has_more is True, "disk fallback truncated a walk without exposing the truncation state"
 
 
-def test_handoff_cards_are_large_responsive_and_uncropped() -> None:
+def test_handoff_cards_are_compact_three_two_one_responsive_and_uncropped() -> None:
     card = field_photos.render_photo_card(
         _sidecar("one", "Restrooms"),
         {},
@@ -506,8 +497,9 @@ def test_handoff_cards_are_large_responsive_and_uncropped() -> None:
     assert 'class="field-photo-image field-photo-image--handoff"' in card
     assert "aspect-ratio:4/3;object-fit:contain" in card
     assert "field-photo-card--handoff" in card
-    assert "grid-template-columns: repeat(2, minmax(0, 1fr))" in handoff_css
-    assert "gap: 24px" in handoff_css
+    assert "grid-template-columns: repeat(3, minmax(0, 1fr))" in handoff_css
+    medium = handoff_css.split("@media (max-width: 1040px)", 1)[1].split("@media (max-width: 760px)", 1)[0]
+    assert "grid-template-columns: repeat(2, minmax(0, 1fr))" in medium
     responsive = handoff_css.split("@media (max-width: 760px)", 1)[1]
     assert ".qc-handoff-grid" in responsive
     assert "grid-template-columns: 1fr" in responsive
@@ -561,7 +553,7 @@ def test_rendering_board_has_no_filesystem_writes(
     before = list(tmp_path.rglob("*"))
 
     rendered = field_photos.render(
-        _ctx(tmp_path, {"site_id": ["site-one"], "capture_id": ["walk-one"]})
+        _ctx(tmp_path, {"site_id": ["site-one"], "qc_date": ["2026-07-15"]})
     )
 
     assert "QC Handoff" in rendered

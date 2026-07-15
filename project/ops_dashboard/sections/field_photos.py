@@ -6,6 +6,7 @@ import json
 import logging
 import re
 import zipfile
+from datetime import date, datetime
 from http import HTTPStatus
 from pathlib import Path
 from urllib.parse import parse_qs, urlencode
@@ -32,11 +33,7 @@ from ops_dashboard.common import (
     submitters_by_capture,
 )
 from ops_dashboard.layout import html_page
-from field_capture.photo_vision_categories import (
-    CATEGORY_AGREEMENT_MISMATCH,
-    CATEGORY_AGREEMENT_UNVERIFIABLE,
-    GENERIC_QC_CATEGORY,
-)
+from field_capture.photo_vision_categories import CATEGORY_AGREEMENT_MISMATCH
 
 logger = logging.getLogger(__name__)
 
@@ -423,6 +420,12 @@ def _photo_filename_hint(sidecar: dict[str, object], index: int) -> str:
     return f"{area}-{index + 1:03d}-{stem}.jpg"
 
 
+def _handoff_photo_filename_hint(sidecar: dict[str, object], index: int, section: str) -> str:
+    section_name = _safe_filename_part(section, fallback="photo")
+    stem = _source_photo_filename_stem(sidecar) or f"photo-{index + 1:03d}"
+    return f"{section_name}-{index + 1:03d}-{stem}.jpg"
+
+
 def _render_card(
     sidecar: dict[str, object],
     submitters: dict[str, dict[str, str]],
@@ -455,15 +458,21 @@ def _render_card(
     issues = string_list(sidecar.get("possible_issues"))
     tags = (conditions + issues)[:5]
 
-    filename_hint = _photo_filename_hint(sidecar, card_index) if media_key else ""
+    filename_hint = (
+        _handoff_photo_filename_hint(sidecar, card_index, selection_group)
+        if handoff_presentation and media_key
+        else _photo_filename_hint(sidecar, card_index) if media_key else ""
+    )
 
     if url:
         escaped_url = html.escape(url, quote=True)
         js_arg = html.escape(json.dumps(url), quote=True)
         image_class = "field-photo-image field-photo-image--handoff" if handoff_presentation else "field-photo-image"
         object_fit = "contain" if handoff_presentation else "cover"
-        image_context = area or vision_category or "Field photo"
-        image_alt = f"{image_context}: {description[:140]}" if description else image_context
+        image_context = "Field photo" if handoff_presentation else area or vision_category or "Field photo"
+        image_alt = image_context if handoff_presentation else (
+            f"{image_context}: {description[:140]}" if description else image_context
+        )
         img_html = (
             f'<a class="field-photo-image-link" href="#" onclick="openLb({js_arg});return false">'
             f'<img class="{image_class}" src="{escaped_url}" alt="{html.escape(image_alt, quote=True)}" loading="lazy"'
@@ -472,9 +481,9 @@ def _render_card(
         )
     else:
         img_html = (
-            '<div style="width:100%;aspect-ratio:4/3;background:#e4e7eb;border-radius:6px 6px 0 0;'
+            '<div style="width:100%;aspect-ratio:4/3;background:var(--panel-soft);border-radius:6px 6px 0 0;'
             'display:flex;align-items:center;justify-content:center">'
-            '<span style="color:#627d98;font-size:.85rem">No image</span></div>'
+            '<span style="color:var(--muted);font-size:.85rem">No image</span></div>'
         )
 
     category_text = html.escape(qc_category) if qc_category else "&mdash;"
@@ -495,7 +504,7 @@ def _render_card(
         meta_parts.append(f'<span class="{class_attr}">Vision {html.escape(agreement_label)}</span>')
     if area:
         meta_parts.append(f"Vision area: {html.escape(area)}")
-    if site_id_val:
+    if site_id_val and not handoff_presentation:
         import re as _re
         label = _re.sub(r"<[^>]+>", "", resolve_site_label(site_id_val, vault_root))
         meta_parts.append(html.escape(label))
@@ -511,16 +520,17 @@ def _render_card(
     pills_html = " ".join(f'<span class="pill">{html.escape(t)}</span>' for t in tags)
 
     inner = ""
-    if show_deep_analysis_controls:
-        inner += _render_deep_analysis_actions(sidecar)
-    if meta_line:
-        inner += f"<p style='margin:0 0 4px'>{meta_line}</p>"
-    if sub_line:
-        inner += f'<p class="muted" style="margin:0 0 6px;font-size:.85rem">{sub_line}</p>'
-    if description:
-        inner += f'<p style="margin:0 0 6px;font-size:.9rem;line-height:1.45">{html.escape(description)}</p>'
-    if pills_html:
-        inner += f'<div style="margin-top:4px">{pills_html}</div>'
+    if not handoff_presentation:
+        if show_deep_analysis_controls:
+            inner += _render_deep_analysis_actions(sidecar)
+        if meta_line:
+            inner += f"<p style='margin:0 0 4px'>{meta_line}</p>"
+        if sub_line:
+            inner += f'<p class="muted" style="margin:0 0 6px;font-size:.85rem">{sub_line}</p>'
+        if description:
+            inner += f'<p style="margin:0 0 6px;font-size:.9rem;line-height:1.45">{html.escape(description)}</p>'
+        if pills_html:
+            inner += f'<div style="margin-top:4px">{pills_html}</div>'
 
     drag_html = ""
     if url and filename_hint:
@@ -541,7 +551,7 @@ def _render_card(
     selection_html = ""
     if show_selection_controls and media_key:
         label = "Select photo"
-        label_bits = [area, capture_id, filename_hint]
+        label_bits = [filename_hint] if handoff_presentation else [area, capture_id, filename_hint]
         label_detail = " · ".join(bit for bit in label_bits if bit)
         if label_detail:
             label = f"Select photo: {label_detail}"
@@ -1076,7 +1086,7 @@ def _render_selection_script() -> str:
 
 
 def render_photo_selection_script() -> str:
-    """Return the shared selected/category/full-walk export initializer."""
+    """Return the shared selected/category/full-board export initializer."""
     return _render_selection_script()
 
 
@@ -1338,6 +1348,33 @@ def _handoff_capture_time(sidecar: dict[str, object]) -> str:
     return str(provenance.get("captured_at") or sidecar.get("captured_at") or sidecar.get("generated_at") or "")
 
 
+def _handoff_local_capture_date(sidecar: dict[str, object]) -> str:
+    """Return the calendar date encoded by the evidence capture timestamp.
+
+    Field capture clients include their local UTC offset in ``captured_at``. Parsing
+    without converting zones preserves the calendar day the operator experienced.
+    ``generated_at`` remains a compatibility fallback for older sidecars only.
+    """
+    value = _handoff_capture_time(sidecar).strip()
+    if not value:
+        return ""
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).date().isoformat()
+    except ValueError:
+        try:
+            return date.fromisoformat(value[:10]).isoformat()
+        except ValueError:
+            return ""
+
+
+def _valid_handoff_date(value: str) -> bool:
+    try:
+        date.fromisoformat(value)
+    except ValueError:
+        return False
+    return True
+
+
 def _handoff_sidecar_identity(sidecar: dict[str, object], index: int) -> str:
     photo_asset_id = str(sidecar.get("photo_asset_id") or "").strip()
     if photo_asset_id:
@@ -1361,38 +1398,30 @@ def _handoff_sorting_reason(
     sidecar: dict[str, object],
     category_lookup: dict[str, str],
 ) -> tuple[str, str]:
-    proposed = str(sidecar.get("vision_category") or "").strip()
-    if not proposed:
-        return "", "No SafetyCulture section was proposed."
-    if proposed.casefold() in _HANDOFF_OPERATIONAL_CATEGORIES:
-        return "", "This is an operational capture category, not a report section."
-
-    resolved = _handoff_resolved_category(proposed, category_lookup)
-    if not resolved:
-        return "", "The proposed section is not in the SafetyCulture order."
-
-    agreement = str(sidecar.get("category_agreement") or "").strip().casefold()
-    if agreement == CATEGORY_AGREEMENT_MISMATCH:
-        return "", "Vision and operator categories disagree."
+    vision_category = str(sidecar.get("vision_category") or "").strip()
+    vision_key = vision_category.casefold()
+    if vision_key not in _HANDOFF_OPERATIONAL_CATEGORIES:
+        vision_resolved = _handoff_resolved_category(vision_category, category_lookup)
+        if vision_resolved:
+            return vision_resolved, ""
 
     operator_category = str(sidecar.get("qc_category") or "").strip()
     operator_key = operator_category.casefold()
-    if operator_key in _HANDOFF_OPERATIONAL_CATEGORIES - {GENERIC_QC_CATEGORY}:
-        return "", "The operator category requires manual placement."
-    if agreement == CATEGORY_AGREEMENT_UNVERIFIABLE and operator_key != GENERIC_QC_CATEGORY:
-        return "", "The proposed section could not be verified."
+    if operator_key not in _HANDOFF_OPERATIONAL_CATEGORIES:
+        operator_resolved = _handoff_resolved_category(operator_category, category_lookup)
+        if operator_resolved:
+            return operator_resolved, ""
 
-    operator_resolved = _handoff_resolved_category(operator_category, category_lookup)
-    if operator_resolved and operator_key != GENERIC_QC_CATEGORY and operator_resolved != resolved:
-        return "", "Vision and operator categories disagree."
-    return resolved, ""
+    if vision_category and vision_key not in _HANDOFF_OPERATIONAL_CATEGORIES:
+        return "", "Vision section is not in the SafetyCulture order."
+    return "", "No recognized SafetyCulture section."
 
 
 def group_handoff_sidecars(
     sidecars: list[dict[str, object]],
     display_categories: list[dict[str, str]] | None = None,
 ) -> dict[str, object]:
-    """Deduplicate and group one walk in selected-site display order."""
+    """Deduplicate and group one QC day in selected-site display order."""
     active_categories = display_categories or BUILTIN_FALLBACK_CATEGORIES
     category_order = _handoff_category_order(active_categories)
     category_lookup = _handoff_category_lookup(active_categories)
@@ -1444,9 +1473,7 @@ def _handoff_photo_site_options(sidecars: list[dict[str, object]]) -> list[tuple
 
 def _handoff_scope_form(
     site_id: str,
-    capture_id: str,
-    date_from: str,
-    date_to: str,
+    qc_date: str,
     *,
     site_options: list[tuple[str, str]],
     degraded_site_choices: bool,
@@ -1468,81 +1495,83 @@ def _handoff_scope_form(
     return f"""
     <form method="get" action="/qc-handoff" class="qc-handoff-scope-form">
       {site_control}
-      <label>Walk ID
-        <input name="capture_id" value="{html.escape(capture_id, quote=True)}" placeholder="Choose a walk below or paste its ID">
+      <label>QC date
+        <input type="date" name="qc_date" value="{html.escape(qc_date, quote=True)}" required>
       </label>
-      <label>From
-        <input type="date" name="date_from" value="{html.escape(date_from, quote=True)}">
-      </label>
-      <label>To
-        <input type="date" name="date_to" value="{html.escape(date_to, quote=True)}">
-      </label>
-      <button type="submit">{ "Open handoff" if capture_id else "Find walks" }</button>
+      <button type="submit"{ "" if qc_date else " formnovalidate" }>{ "Open handoff" if qc_date else "Find dates" }</button>
     </form>
     """
 
 
-def _handoff_walk_discovery(sidecars: list[dict[str, object]]) -> list[dict[str, object]]:
-    walks: dict[str, dict[str, object]] = {}
-    for sidecar in sidecars:
-        capture_id = str(sidecar.get("capture_id") or "").strip()
-        if not capture_id:
+def _handoff_date_discovery(sidecars: list[dict[str, object]]) -> list[dict[str, object]]:
+    dates: dict[str, dict[str, object]] = {}
+    seen_by_date: dict[str, set[str]] = {}
+    for index, sidecar in enumerate(sidecars):
+        local_date = _handoff_local_capture_date(sidecar)
+        if not local_date:
             continue
-        walk = walks.setdefault(capture_id, {"capture_id": capture_id, "count": 0, "captured_at": ""})
-        walk["count"] = int(walk["count"]) + 1
-        captured_at = _handoff_capture_time(sidecar)
-        if captured_at > str(walk["captured_at"]):
-            walk["captured_at"] = captured_at
-    return sorted(walks.values(), key=lambda walk: str(walk["captured_at"]), reverse=True)
+        summary = dates.setdefault(local_date, {"date": local_date, "count": 0, "capture_ids": set()})
+        identity = _handoff_sidecar_identity(sidecar, index)
+        date_seen = seen_by_date.setdefault(local_date, set())
+        if identity not in date_seen:
+            date_seen.add(identity)
+            summary["count"] = int(summary["count"]) + 1
+        capture_id = str(sidecar.get("capture_id") or "").strip()
+        if capture_id:
+            capture_ids = summary["capture_ids"]
+            if isinstance(capture_ids, set):
+                capture_ids.add(capture_id)
+    return sorted(dates.values(), key=lambda summary: str(summary["date"]), reverse=True)
 
 
-def _handoff_discovery_url(site_id: str, capture_id: str) -> str:
-    return "/qc-handoff?" + urlencode({"site_id": site_id, "capture_id": capture_id})
+def _handoff_discovery_url(site_id: str, qc_date: str) -> str:
+    return "/qc-handoff?" + urlencode({"site_id": site_id, "qc_date": qc_date})
 
 
 def _render_handoff_discovery(
-    walks: list[dict[str, object]],
+    dates: list[dict[str, object]],
     *,
     site_id: str,
     fallback: bool,
     has_more: bool,
 ) -> str:
     fallback_notice = (
-        '<p class="notice">CouchDB is unavailable. Walk choices are from the local photo cache.</p>' if fallback else ""
+        '<p class="notice">CouchDB is unavailable. Date choices are from the local photo cache.</p>' if fallback else ""
     )
     limit_notice = (
-        f'<p class="notice">Showing walks found in the first {PAGE_LIMIT} photos. Narrow the dates if needed.</p>'
+        f'<p class="notice">Date choices and counts use the first {PAGE_LIMIT} photos. More photos are available, so counts may be incomplete.</p>'
         if has_more
         else ""
     )
-    if not walks:
+    if not dates:
         return (
             f"{fallback_notice}{limit_notice}"
             '<div class="qc-handoff-empty" role="status">'
-            '<h2>No walks found</h2><p>Try a wider date range, or paste a walk ID above.</p></div>'
+            '<h2>No QC dates found</h2><p>No photos with a usable evidence capture date were found for this site.</p></div>'
         )
 
-    count = len(walks)
-    heading = f"Choose one walk ({count} found)" if count != 1 else "Choose the walk"
+    count = len(dates)
+    heading = f"Choose a QC date ({count} found)" if count != 1 else "Choose the QC date"
     items = []
-    for walk in walks:
-        capture_id = str(walk["capture_id"])
-        photo_count = int(walk["count"])
-        captured_at = str(walk["captured_at"])
-        time_text = render_relative_time(captured_at) if captured_at else "Capture time unavailable"
-        href = _handoff_discovery_url(site_id, capture_id)
+    for summary in dates:
+        qc_date = str(summary["date"])
+        photo_count = int(summary["count"])
+        capture_ids = summary["capture_ids"]
+        capture_count = len(capture_ids) if isinstance(capture_ids, set) else 0
+        href = _handoff_discovery_url(site_id, qc_date)
         items.append(
-            '<li class="qc-handoff-walk-choice">'
-            f'<a href="{html.escape(href, quote=True)}">Open {render_short_id(capture_id)}</a>'
-            f'<span>{photo_count} photo{"s" if photo_count != 1 else ""} · {time_text}</span>'
+            '<li class="qc-handoff-date-choice">'
+            f'<a href="{html.escape(href, quote=True)}">Open {html.escape(qc_date)}</a>'
+            f'<span>{photo_count} photo{"s" if photo_count != 1 else ""} · '
+            f'{capture_count} contributing capture{"s" if capture_count != 1 else ""}</span>'
             "</li>"
         )
     return (
         f"{fallback_notice}{limit_notice}"
         '<div class="qc-handoff-discovery">'
         f'<h2>{html.escape(heading)}</h2>'
-        '<p>Select one walk so photos from separate walks are never mixed.</p>'
-        f'<ul class="qc-handoff-walk-list">{"".join(items)}</ul></div>'
+        '<p>Each date opens one board containing every loaded capture from that site and QC day.</p>'
+        f'<ul class="qc-handoff-date-list">{"".join(items)}</ul></div>'
     )
 
 
@@ -1610,17 +1639,36 @@ def _render_handoff_category_section(
 def _render_handoff_board(
     ctx: object,
     sidecars: list[dict[str, object]],
-    capture_id: str,
+    site_id: str,
+    qc_date: str,
     fallback: bool,
     has_more: bool,
     display_categories: list[dict[str, str]],
 ) -> str:
     grouped = group_handoff_sidecars(sidecars, display_categories)
     total = int(grouped["total"])
+    fallback_notice = (
+        '<p class="notice">CouchDB is unavailable. This board is rendered from the local photo cache.</p>'
+        if fallback
+        else ""
+    )
+    limit_notice = (
+        f'<p class="notice">This QC day may be incomplete because the shared query returned its first {PAGE_LIMIT} photos. '
+        'Downloads include only the photos shown below.</p>'
+        if has_more
+        else ""
+    )
     if total == 0:
+        if has_more:
+            heading = "No matching photos in the loaded results"
+            detail = "More site photos exist beyond the shared page limit, so this QC day cannot be confirmed empty."
+        else:
+            heading = "No photos for this QC day"
+            detail = "Check the site and QC date, or return to date discovery."
         return (
-            '<div class="qc-handoff-empty" role="status"><h2>No photos for this walk</h2>'
-            '<p>Check the site and walk ID, or return to walk discovery.</p></div>'
+            f"{fallback_notice}{limit_notice}"
+            f'<div class="qc-handoff-empty" role="status"><h2>{heading}</h2>'
+            f'<p>{detail}</p></div>'
         )
 
     submitters = submitters_by_capture(ctx.runtime_root)
@@ -1678,27 +1726,19 @@ def _render_handoff_board(
                 )
             )
 
-    fallback_notice = (
-        '<p class="notice">CouchDB is unavailable. This board is rendered from the local photo cache.</p>'
-        if fallback
-        else ""
-    )
-    limit_notice = (
-        f'<p class="notice">This walk has more than {PAGE_LIMIT} photos; showing the first {PAGE_LIMIT}.</p>'
-        if has_more
-        else ""
-    )
+    archive_label = _safe_filename_part(f"{site_id}-{qc_date}", fallback="qc-day")
+    full_day_label = "Download visible photos" if has_more else "Download full QC day"
     return f"""
     {fallback_notice}
     {limit_notice}
     <form method="post" action="/field-photos/export" id="qc-handoff-export-form" data-photo-export-form>
-      <input type="hidden" name="capture_id" value="{html.escape(capture_id, quote=True)}">
+      <input type="hidden" name="capture_id" value="{html.escape(archive_label, quote=True)}">
       <div class="qc-handoff-toolbar">
         <div>
-          <strong>{total} photo{"s" if total != 1 else ""} in this walk</strong>
+          <strong>{total} photo{"s" if total != 1 else ""} on this QC day</strong>
           <p>Drag one ready photo into the matching SafetyCulture section. Downloads are the reliable fallback.</p>
         </div>
-        <button type="button" data-download-all-photos>Download full walk</button>
+        <button type="button" data-download-all-photos>{full_day_label}</button>
         <button type="button" data-select-all-photos>Select all</button>
         <button type="button" data-clear-photo-selection>Clear</button>
         <span class="muted" data-selected-photo-count role="status" aria-live="polite" aria-atomic="true">0 selected</span>
@@ -1714,9 +1754,7 @@ def _render_handoff_board(
 def render_qc_handoff(ctx: object) -> str:
     query = getattr(ctx, "query", {})
     site_id = first_filter_value(query, "site_id")
-    capture_id = first_filter_value(query, "capture_id")
-    date_from = first_filter_value(query, "date_from")
-    date_to = first_filter_value(query, "date_to")
+    qc_date = first_filter_value(query, "qc_date")
 
     site_options = load_site_options()
     degraded_site_choices = not site_options
@@ -1739,40 +1777,37 @@ def render_qc_handoff(ctx: object) -> str:
 
     scope_form = _handoff_scope_form(
         site_id,
-        capture_id,
-        "" if capture_id else date_from,
-        "" if capture_id else date_to,
+        qc_date,
         site_options=site_options,
         degraded_site_choices=degraded_site_choices,
     )
     content = (
-        '<div class="qc-handoff-empty" role="status"><h2>Select a site and walk</h2>'
-        '<p>Choose a site first, then find a walk. The board never combines separate walks.</p></div>'
+        '<div class="qc-handoff-empty" role="status"><h2>Select a site and QC date</h2>'
+        '<p>Choose a site first, then choose one local evidence capture date.</p></div>'
     )
     if site_id:
-        if capture_id:
-            sidecars, fallback, has_more = load_filtered_photo_sidecars(
-                ctx,
-                site_id=site_id,
-                capture_id=capture_id,
+        sidecars, fallback, has_more = load_filtered_photo_sidecars(ctx, site_id=site_id)
+        if qc_date and not _valid_handoff_date(qc_date):
+            content = (
+                '<div class="qc-handoff-empty" role="alert"><h2>Enter a valid QC date</h2>'
+                '<p>Use a calendar date in YYYY-MM-DD format.</p></div>'
             )
+        elif qc_date:
+            day_sidecars = [
+                sidecar for sidecar in sidecars if _handoff_local_capture_date(sidecar) == qc_date
+            ]
             content = _render_handoff_board(
                 ctx,
-                sidecars,
-                capture_id,
+                day_sidecars,
+                site_id,
+                qc_date,
                 fallback,
                 has_more,
                 load_site_handoff_categories(site_id),
             )
         else:
-            sidecars, fallback, has_more = load_filtered_photo_sidecars(
-                ctx,
-                site_id=site_id,
-                date_from=date_from,
-                date_to=date_to,
-            )
             content = _render_handoff_discovery(
-                _handoff_walk_discovery(sidecars),
+                _handoff_date_discovery(sidecars),
                 site_id=site_id,
                 fallback=fallback,
                 has_more=has_more,
@@ -1782,13 +1817,13 @@ def render_qc_handoff(ctx: object) -> str:
     <header class="qc-handoff-header">
       <div>
         <h1>QC Handoff</h1>
-        <p class="muted">Large, SafetyCulture-ordered photos for one QC walk at a time.</p>
+        <p class="muted">Compact, SafetyCulture-ordered photos for one site and QC day.</p>
       </div>
       <a href="/field-photos">Browse all field photos</a>
     </header>
     <section class="qc-handoff-scope">
-      <h2>Choose the QC walk</h2>
-      <p class="muted">Dates help find a walk. Once selected, the board loads the complete walk.</p>
+      <h2>Choose the QC day</h2>
+      <p class="muted">The board combines every loaded capture from the selected site and local capture date.</p>
       {site_choices_notice}
       {scope_form}
     </section>
