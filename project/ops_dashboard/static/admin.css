@@ -1040,6 +1040,34 @@ button.is-copy-failed {
 .inbox-card[data-card-id="open_site_issues"] .count { color: var(--pending); }
 .stat-badge[data-count-bucket="empty"] strong,
 .inbox-card .count[data-count-bucket="empty"] { color: var(--muted); }
+.inbox-group {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin: 10px 0;
+  background: var(--pill-bg);
+}
+.inbox-group-head { margin: 0 0 8px; font-weight: 600; overflow-wrap: anywhere; }
+.inbox-group-head .muted { font-weight: 400; display: block; font-size: .85rem; }
+.inbox-group-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.inbox-group-item {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px;
+  padding: 6px 0;
+  border-top: 1px solid var(--line);
+}
+.inbox-group-label { display: flex; gap: 8px; align-items: baseline; flex: 1 1 16rem; min-width: 0; cursor: pointer; }
+.inbox-group-label input[type="checkbox"] { flex: none; width: 18px; height: 18px; }
+.inbox-group-text { min-width: 0; overflow-wrap: anywhere; }
+.inbox-group-text .muted { display: block; font-size: .85rem; }
+.inbox-group-open { flex: none; font-size: .85rem; }
+.inbox-group-actions { margin: 10px 0 0; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.inbox-group-actions .muted { font-size: .82rem; }
+@media (max-width: 600px) {
+  .inbox-group-actions button { width: 100%; }
+}
 .disk-usage { display: grid; gap: 6px; }
 .disk-bar { height: 8px; border-radius: 999px; overflow: hidden; background: var(--line); }
 .disk-bar > span { display: block; height: 100%; background: var(--accent); }

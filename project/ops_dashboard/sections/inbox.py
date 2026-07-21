@@ -15,6 +15,7 @@ from ops_dashboard.common import (
     UNKNOWN_SUBMITTER,
     apply_pending_candidate_counts,
     candidate_capture_sort_value,
+    default_actor,
     latest_uploads,
     load_photo_vision_sidecars,
     pending_candidate_counts_by_capture,
@@ -103,6 +104,10 @@ def review_candidates(
                 "artifact_path": str(path),
                 "visit_proposed": False,
                 "job_type": str(payload.get("job_type") or ""),
+                # _rev + group_id ride along so the inbox can render the grouped
+                # approve-set form (the endpoint pairs _rev to draft_id by position).
+                "_rev": str(payload.get("_rev") or ""),
+                "group_id": str(payload.get("group_id") or ""),
             }
         )
     candidates.sort(key=lambda item: (str(item["candidate_id"]), str(item["artifact_path"])))
@@ -131,6 +136,111 @@ def candidate_inbox_row(candidate: dict[str, object], artifact_path: str = "") -
         "has_note": bool(candidate.get("source_transcript_path")),
         "visit_proposed": bool(candidate.get("visit_proposed") or False),
     }
+
+
+def candidate_group_key(candidate: dict[str, object]) -> str:
+    """Drafts split out of one capture share group_id/capture_id."""
+    return (
+        str(candidate.get("group_id") or "").strip()
+        or str(candidate.get("capture_id") or "").strip()
+        or str(candidate.get("draft_id") or candidate.get("candidate_id") or "").strip()
+    )
+
+
+def candidate_group_line(candidate: dict[str, object]) -> dict[str, object]:
+    """One checklist line inside a grouped approve-set card."""
+    row = candidate_inbox_row(candidate)
+    summary = str(candidate.get("summary") or candidate.get("source_text") or "").strip()
+    if len(summary) > 140:
+        summary = summary[:137].rstrip() + "..."
+    return {
+        "draft_id": str(candidate.get("draft_id") or candidate.get("candidate_id") or ""),
+        "_rev": str(candidate.get("_rev") or ""),
+        "job_type": str(candidate.get("job_type") or ""),
+        "summary": summary,
+        "deep_link": str(row.get("deep_link") or ""),
+    }
+
+
+def group_pending_candidates(
+    candidates: list[dict[str, object]], limit: int = 5
+) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
+    """Split pending drafts into single rows (rendered as today) and grouped cards.
+
+    Order of the incoming list is preserved; a capture takes the position of its
+    first draft. Returns (rows, groups) capped at `limit` entries combined.
+    """
+    order: list[str] = []
+    buckets: dict[str, list[dict[str, object]]] = {}
+    for candidate in candidates:
+        key = candidate_group_key(candidate)
+        if key not in buckets:
+            buckets[key] = []
+            order.append(key)
+        buckets[key].append(candidate)
+
+    rows: list[dict[str, object]] = []
+    groups: list[dict[str, object]] = []
+    entries = 0
+    for key in order:
+        if entries >= limit:
+            break
+        members = buckets[key]
+        if len(members) == 1:
+            # Regression-sensitive: a single-draft capture renders exactly as before.
+            rows.append(candidate_inbox_row(members[0]))
+        else:
+            first = members[0]
+            groups.append(
+                {
+                    "group_id": key,
+                    "capture_id": str(first.get("capture_id") or ""),
+                    "site": str(first.get("site_id") or ""),
+                    "submitter": str(first.get("submitter_name") or UNKNOWN_SUBMITTER),
+                    "age_seconds": max(
+                        age_seconds(Path(str(member.get("artifact_path") or ""))) if str(member.get("artifact_path") or "") else 0
+                        for member in members
+                    ),
+                    "draft_count": len(members),
+                    "lines": [candidate_group_line(member) for member in members],
+                }
+            )
+        entries += 1
+    return rows, groups
+
+
+def _render_group_line(line: dict[str, object]) -> str:
+    draft_id = html.escape(str(line.get("draft_id") or ""))
+    deep_link = html.escape(str(line.get("deep_link") or ""))
+    job_type = html.escape(str(line.get("job_type") or "") or "(unknown job)")
+    summary = html.escape(str(line.get("summary") or ""))
+    open_link = f'<a class="inbox-group-open" href="{deep_link}">Open</a>' if deep_link else ""
+    # draft_id + _rev are hidden inputs so both always post, in document order —
+    # /field-capture/review/approve-set pairs revs[index] to draft_ids[index].
+    return f"""<li class="inbox-group-item">
+        <input type="hidden" name="draft_id" value="{draft_id}">
+        <input type="hidden" name="_rev" value="{html.escape(str(line.get('_rev') or ''))}">
+        <label class="inbox-group-label">
+          <input type="checkbox" name="checked" value="{draft_id}" checked>
+          <span class="inbox-group-text"><strong>{job_type}</strong><span class="muted">{summary}</span></span>
+        </label>
+        {open_link}
+      </li>"""
+
+
+def render_capture_group_card(group: dict[str, object], vault_root: Path) -> str:
+    lines = group.get("lines") if isinstance(group.get("lines"), list) else []
+    items = "".join(_render_group_line(line) for line in lines if isinstance(line, dict))
+    count = int(group.get("draft_count") or len(lines))
+    site_label = resolve_site_label(group.get("site"), vault_root)
+    submitter = html.escape(str(group.get("submitter") or UNKNOWN_SUBMITTER))
+    age = render_relative_time(group.get("age_seconds"))
+    return f"""<form class="inbox-group" method="post" action="/field-capture/review/approve-set" data-group-id="{html.escape(str(group.get('group_id') or ''))}">
+      <input type="hidden" name="reviewer" value="{html.escape(default_actor())}">
+      <p class="inbox-group-head">{site_label} <span class="muted">{submitter} · {count} drafts from one capture · {age}</span></p>
+      <ul class="inbox-group-list">{items}</ul>
+      <p class="inbox-group-actions"><button type="submit">Approve set</button> <span class="muted">Unchecked drafts are denied.</span></p>
+    </form>"""
 
 
 def failed_job_rows(runtime_root: Path, limit: int = 5) -> tuple[int, list[dict[str, object]]]:
@@ -585,8 +695,9 @@ def inbox_cards(ctx: object) -> list[dict[str, object]]:
         for gap in unstaged_drafts[:5]
         if isinstance(gap, dict)
     ]
+    note_bearing_rows, note_bearing_groups = group_pending_candidates(note_bearing)
     cards = [
-        {"id": "captures_with_note", "title": "Job drafts needing review", "count": len(note_bearing), "top": [candidate_inbox_row(item) for item in note_bearing[:5]], "see_all": "/candidates?status=pending_approval", "shape": INBOX_SHAPE_CAPTURE},
+        {"id": "captures_with_note", "title": "Job drafts needing review", "count": len(note_bearing), "top": note_bearing_rows, "groups": note_bearing_groups, "see_all": "/candidates?status=pending_approval", "shape": INBOX_SHAPE_CAPTURE},
         {"id": "pending_candidates", "title": "Pending drafts without capture context", "count": len(no_note), "top": [candidate_inbox_row(item) for item in no_note[:5]], "see_all": "/candidates?status=pending_approval", "shape": INBOX_SHAPE_CAPTURE},
         {"id": "approved_missing_draft", "title": "Approved candidates missing a draft", "count": len(missing_draft), "top": missing_rows, "see_all": "/drafts", "shape": INBOX_SHAPE_CAPTURE},
         {"id": "approved_drafts_not_staged", "title": "Approved drafts not yet staged", "count": len(unstaged_drafts), "top": draft_rows, "see_all": "/drafts", "shape": INBOX_SHAPE_GAP},
@@ -664,12 +775,23 @@ def _see_all_html(card: dict[str, object], count: int) -> str:
 
 def _render_primary_card(card: dict[str, object], vault_root: Path) -> str:
     rows = card.get("top") if isinstance(card, dict) else []
-    table = render_table(rows if isinstance(rows, list) else [], inbox_columns(card.get("shape"), vault_root), empty_text="Nothing waiting")
+    rows = rows if isinstance(rows, list) else []
+    groups = card.get("groups") if isinstance(card, dict) else []
+    groups = [group for group in groups if isinstance(group, dict)] if isinstance(groups, list) else []
+    grouped_html = "".join(render_capture_group_card(group, vault_root) for group in groups)
+    # With groups present the table only carries the single-draft captures, so an
+    # empty table isn't "nothing waiting" — drop it rather than contradict the card.
+    table = (
+        render_table(rows, inbox_columns(card.get("shape"), vault_root), empty_text="Nothing waiting")
+        if rows or not groups
+        else ""
+    )
     count = int(card.get("count") or 0)
     bucket = count_bucket(count)
     return f"""<article class="inbox-card" data-card-id="{html.escape(str(card.get('id') or ''))}">
       <h2>{html.escape(str(card.get('title') or ''))}</h2>
       <p class="count" data-count-bucket="{bucket}">{html.escape(str(count))}</p>
+      {grouped_html}
       {table}
       {_see_all_html(card, count)}
     </article>"""
