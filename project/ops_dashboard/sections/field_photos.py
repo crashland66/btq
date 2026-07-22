@@ -28,6 +28,7 @@ from ops_dashboard.common import (
     first_filter_value,
     load_photo_vision_sidecars,
     photo_vision_couchdb_config as _photo_vision_couchdb_config,
+    read_json_artifact,
     render_deep_analysis_markdown,
     render_relative_time,
     render_short_id,
@@ -45,6 +46,7 @@ PAGE_LIMIT = 120
 PENDING_LIMIT = 12
 _TERMINAL_CAPTURE_STATES = frozenset({"failed", "complete", "completed"})
 _FIELD_CAPTURE_PAGE_SIZE = 5000
+FIELD_AUDIO_TRANSCRIPT_TYPE = "field_audio_transcript"
 
 
 def _build_mango_selector(
@@ -1371,6 +1373,21 @@ def _handoff_local_capture_date(sidecar: dict[str, object]) -> str:
             return ""
 
 
+def _handoff_local_capture_time(sidecar: dict[str, object]) -> str:
+    """Return the wall-clock time encoded by the evidence capture timestamp.
+
+    Same zone-preserving parse as ``_handoff_local_capture_date``: the client's own
+    offset already describes the operator's clock, so converting zones would move it.
+    """
+    value = _handoff_capture_time(sidecar).strip()
+    if not value:
+        return ""
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).strftime("%H:%M")
+    except ValueError:
+        return ""
+
+
 def _valid_handoff_date(value: str) -> bool:
     try:
         date.fromisoformat(value)
@@ -1640,6 +1657,116 @@ def _render_handoff_category_section(
     """
 
 
+def _handoff_transcript_dir(runtime_root: Path) -> Path:
+    return Path(runtime_root).expanduser() / "field_capture" / "audio_transcripts"
+
+
+def load_handoff_voice_transcripts(runtime_root: Path) -> dict[str, list[str]]:
+    """Return usable voice-note text keyed by capture id, read once per render.
+
+    Transcript artifacts are filesystem-only, and the directory is absent on any
+    machine that never ran the audio pipeline. Every failure here — no directory,
+    unreadable file, malformed JSON — degrades to "no voice notes" rather than
+    breaking the board. Artifacts that are unfinished, empty, or carry an error
+    are dropped: pipeline internals are not the operator's problem.
+    """
+    transcript_dir = _handoff_transcript_dir(runtime_root)
+    try:
+        if not transcript_dir.is_dir():
+            return {}
+        paths = sorted(transcript_dir.glob("*.json"))
+    except OSError:
+        return {}
+
+    transcripts: dict[str, list[str]] = {}
+    for path in paths:
+        # The shared reader already handles OSError and JSONDecodeError internally, so
+        # UnicodeDecodeError is the one failure that still escapes it: the transcription
+        # pipeline writes into this directory while the dashboard reads it, and a partial
+        # write can leave a file whose bytes are not valid UTF-8. Left uncaught it would
+        # take the whole route down for every site and date. Caught narrowly on purpose —
+        # a broader clause here would mask a genuine future regression in this loop.
+        try:
+            payload, _error = read_json_artifact(path)
+        except (OSError, UnicodeDecodeError):
+            continue
+        if not payload or payload.get("type") != FIELD_AUDIO_TRANSCRIPT_TYPE:
+            continue
+        if str(payload.get("status") or "").strip() != "complete" or payload.get("error"):
+            continue
+        capture_id = str(payload.get("upload_id") or "").strip()
+        text = str(payload.get("raw_text") or "").strip()
+        if not capture_id or not text:
+            continue
+        transcripts.setdefault(capture_id, []).append(text)
+    return transcripts
+
+
+def _handoff_voice_notes(
+    board_sidecars: list[dict[str, object]],
+    transcripts: dict[str, list[str]],
+    submitters: dict[str, dict[str, str]],
+) -> list[dict[str, object]]:
+    """Join transcripts onto the captures already on the board, in board order.
+
+    The join only ever reads ``board_sidecars``, so a transcript can never pull a
+    capture onto the board that the QC-filtered loader did not put there.
+    """
+    notes: list[dict[str, object]] = []
+    by_capture: dict[str, dict[str, object]] = {}
+    for sidecar in board_sidecars:
+        capture_id = str(sidecar.get("capture_id") or "").strip()
+        if not capture_id or capture_id not in transcripts:
+            continue
+        note = by_capture.get(capture_id)
+        if note is None:
+            note = {
+                "capture_id": capture_id,
+                "time": _handoff_local_capture_time(sidecar),
+                "first_name": _first_name(submitters.get(capture_id, {}).get("submitter_name", "")),
+                "texts": transcripts[capture_id],
+                "photo_count": 0,
+            }
+            by_capture[capture_id] = note
+            notes.append(note)
+        note["photo_count"] = int(note["photo_count"]) + 1
+    # One QC day reads as a chronological walk, so order the notes by capture clock
+    # rather than by which board section a capture's first photo happened to land in.
+    notes.sort(key=lambda note: (str(note["time"]), str(note["capture_id"])))
+    return notes
+
+
+def _render_handoff_voice_notes(notes: list[dict[str, object]]) -> str:
+    """Render the voice-note panel, or nothing at all — the common case is none."""
+    if not notes:
+        return ""
+    cards = []
+    for note in notes:
+        photo_count = int(note["photo_count"])
+        meta_parts = [part for part in (str(note["time"]), str(note["first_name"])) if part]
+        meta_parts.append(f'{photo_count} photo{"s" if photo_count != 1 else ""}')
+        texts = note["texts"]
+        body = "".join(
+            f'<p class="qc-handoff-voice-note-text">{html.escape(str(text))}</p>'
+            for text in (texts if isinstance(texts, list) else [])
+        )
+        cards.append(
+            '<article class="qc-handoff-voice-note">'
+            f'<p class="qc-handoff-voice-note-meta">{html.escape(" · ".join(meta_parts))}</p>'
+            f"{body}</article>"
+        )
+    count = len(notes)
+    return f"""
+    <section class="qc-handoff-voice-notes" aria-labelledby="qc-handoff-voice-notes-heading">
+      <div class="qc-handoff-voice-notes-heading">
+        <h2 id="qc-handoff-voice-notes-heading">Voice notes</h2>
+        <span class="muted">{count} capture{"s" if count != 1 else ""} with a voice note</span>
+      </div>
+      {"".join(cards)}
+    </section>
+    """
+
+
 def _render_handoff_board(
     ctx: object,
     sidecars: list[dict[str, object]],
@@ -1678,12 +1805,14 @@ def _render_handoff_board(
     submitters = submitters_by_capture(ctx.runtime_root)
     vault_root = Path(getattr(ctx.config, "vault_root", ctx.runtime_root / "vault")).expanduser()
     sections_html: list[str] = []
+    board_sidecars: list[dict[str, object]] = []
     card_index = 0
     needs = grouped["needs_sorting"]
     if isinstance(needs, list) and needs:
         cards = []
         for item in needs:
             sidecar = item["sidecar"]
+            board_sidecars.append(sidecar)
             cards.append(
                 _render_handoff_card_shell(
                     sidecar,
@@ -1711,6 +1840,7 @@ def _render_handoff_board(
             group = str(section["canonical"])
             cards = []
             for sidecar in section["sidecars"]:
+                board_sidecars.append(sidecar)
                 cards.append(
                     _render_handoff_card_shell(
                         sidecar,
@@ -1730,11 +1860,37 @@ def _render_handoff_board(
                 )
             )
 
+    # Voice notes belong to the capture, not to a SafetyCulture section, so they sit
+    # above the sections and outside the export form — they are a read aid only.
+    #
+    # The panel is optional; the photo board is the load-bearing surface. Anything that
+    # goes wrong in the voice-note chain degrades to no panel rather than costing the
+    # operator their photos, so this boundary must stay even if the chain looks safe.
+    # It is logged, not swallowed: a real bug stays visible while the board still renders.
+    try:
+        voice_notes_html = _render_handoff_voice_notes(
+            _handoff_voice_notes(
+                board_sidecars,
+                load_handoff_voice_transcripts(ctx.runtime_root),
+                submitters,
+            )
+        )
+    except Exception as exc:  # noqa: BLE001 - optional panel must never break the board
+        logger.warning(
+            "QC Handoff voice notes unavailable for site=%s qc_date=%s: %s",
+            site_id,
+            qc_date,
+            exc,
+            exc_info=True,
+        )
+        voice_notes_html = ""
+
     archive_label = _safe_filename_part(f"{site_id}-{qc_date}", fallback="qc-day")
     full_day_label = "Download visible photos" if has_more else "Download full QC day"
     return f"""
     {fallback_notice}
     {limit_notice}
+    {voice_notes_html}
     <form method="post" action="/field-photos/export" id="qc-handoff-export-form" data-photo-export-form>
       <input type="hidden" name="capture_id" value="{html.escape(archive_label, quote=True)}">
       <div class="qc-handoff-toolbar">

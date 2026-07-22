@@ -1561,6 +1561,51 @@ details.raw-json pre { margin-top: 4px; }
   color: var(--muted);
 }
 
+.qc-handoff-voice-notes {
+  padding: 16px;
+  margin-bottom: 18px;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  background: var(--panel);
+}
+
+.qc-handoff-voice-notes-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.qc-handoff-voice-notes-heading h2 {
+  margin-bottom: 0;
+}
+
+.qc-handoff-voice-note {
+  padding: 10px 12px;
+  margin-top: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-soft);
+}
+
+.qc-handoff-voice-note-meta {
+  margin: 0 0 4px;
+  color: var(--muted);
+  font-size: .85rem;
+}
+
+.qc-handoff-voice-note-text {
+  margin: 0 0 6px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+}
+
+.qc-handoff-voice-note-text:last-child {
+  margin-bottom: 0;
+}
+
 .qc-handoff-toolbar {
   position: sticky;
   z-index: 3;
