@@ -1,7 +1,17 @@
 from __future__ import annotations
 
+SUPPLY_REQUEST_CAPTURE_CATEGORY_DEFINITION = {
+    "label": "Supply Request",
+    # Capture-category namespace: deliberately distinct from the existing
+    # ``supply_request`` review_type and canonical document type.
+    "canonical": "supply_request_capture",
+}
+SUPPLY_REQUEST_CAPTURE_CATEGORY = SUPPLY_REQUEST_CAPTURE_CATEGORY_DEFINITION["canonical"]
+SUPPLY_REQUEST_CAPTURE_CATEGORY_LABEL = SUPPLY_REQUEST_CAPTURE_CATEGORY_DEFINITION["label"]
+
 BUILTIN_FALLBACK_CATEGORIES = [
     {"label": "Report an Issue", "canonical": "report_an_issue"},
+    SUPPLY_REQUEST_CAPTURE_CATEGORY_DEFINITION,
     {"label": "Entryways / Lobby / Doorways", "canonical": "Entryways / Lobby / Doorways"},
     {"label": "Windows / Glass / Sills / Ledges", "canonical": "Windows / Glass / Sills / Ledges"},
     {"label": "Hallways", "canonical": "Hallways"},

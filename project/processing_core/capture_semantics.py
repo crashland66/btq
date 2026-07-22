@@ -12,11 +12,16 @@ from event_pipeline.site_registry_data import load_brand_keywords
 from event_pipeline.couchdb_registry import CouchDBRegistryError
 from event_pipeline.extraction_terms import get_extraction_terms
 from event_pipeline.sites import resolve_site_id, resolve_site_note_path
+from field_capture.display_categories import (
+    SUPPLY_REQUEST_CAPTURE_CATEGORY,
+    SUPPLY_REQUEST_CAPTURE_CATEGORY_LABEL,
+)
 from processing_core.extracted_actions import ExtractedAction, validate_extracted_action
 from processing_core.hashing import text_sha256
 from queue_spec import (
     ALLOWED_JOB_TYPES,
     JOB_APPEND_TO_NOTE,
+    JOB_CREATE_SUPPLY_REQUEST,
     JOB_FLAG_RETENTION_RISK,
     JOB_LOG_EQUIPMENT_REQUEST,
     JOB_LOG_SITE_ISSUE,
@@ -26,6 +31,7 @@ from queue_spec import (
     JOB_SET_ENTITY_STATUS,
     JOB_TRIGGER_RECRUITING,
     JOB_UPDATE_SITE_EQUIPMENT,
+    CREATE_SUPPLY_REQUEST_ALLOWED_PAYLOAD_FIELDS,
     LOG_EQUIPMENT_REQUEST_ALLOWED_PAYLOAD_FIELDS,
     LOG_SITE_ISSUE_ALLOWED_PAYLOAD_FIELDS,
     LOG_SUPPLY_NEED_ALLOWED_PAYLOAD_FIELDS,
@@ -426,6 +432,7 @@ LocalModelSemanticEngine = LocalModelCaptureEngine
 
 def _build_semantic_prompt(capture: CaptureSemanticInput | FieldAudioTranscript) -> str:
     source = _coerce_input(capture)
+    supply_request_lane = is_supply_request_capture_category(source.area)
     allowed_job_types = sorted(
         job_type
         for job_type in ALLOWED_JOB_TYPES
@@ -444,12 +451,23 @@ def _build_semantic_prompt(capture: CaptureSemanticInput | FieldAudioTranscript)
             "log_personnel_event",
             "set_entity_status",
             "update_site_equipment",
+            *({"create_supply_request"} if supply_request_lane else set()),
         }
     )
     ctx = {
         "site_id": source.site_id, "site_label": source.site_label, "area": source.area,
         "selected_employees": source.selected_employees or [], "source_kind": source.source_kind,
     }
+    category_routing = ""
+    if supply_request_lane:
+        category_routing = (
+            "This capture is in the worker-selected Supply Request category. Unless the note begins "
+            'with an explicit operator classification such as "supply need:" or "equipment:", emit '
+            "exactly one create_supply_request action. Put every discernible requested item in "
+            'payload_fields.items as an ordered JSON list of objects shaped {"item_name":"..."}. '
+            "Preserve repeated items and spoken order. Emit no create_supply_request action when no "
+            "item is discernible.\n\n"
+        )
     return (
         "You extract reviewable ACTIONS from an operator's field-cleaning note as executable jobs.\n"
         "Return ONLY a JSON object (no prose, no markdown, no <think>): "
@@ -478,7 +496,12 @@ def _build_semantic_prompt(capture: CaptureSemanticInput | FieldAudioTranscript)
         "\"done\", \"complete\", \"finished\") and is NOT a new request or problem, emit NO action for "
         "it. If the entire note is only completion/acknowledgement reports, return "
         '{"extracted_actions": []}.\n\n'
-        "Context: " + json.dumps(ctx) + "\nNote: " + source.source_text + "\n"
+        + category_routing
+        + "Context: "
+        + json.dumps(ctx)
+        + "\nNote: "
+        + source.source_text
+        + "\n"
     )
 
 
@@ -507,7 +530,7 @@ def extracted_actions_from_model_payload(raw: object, source: CaptureSemanticInp
         if supply_equipment_action_lacks_need_signal(action, source):
             continue
         actions.append(action_with_valid_proposed_queue_job(action, source))
-    actions = supply_category_actions(actions, source)
+    actions = capture_category_actions(actions, source, model_extraction_available=True)
     return actions
 
 
@@ -620,13 +643,20 @@ def action_with_valid_proposed_queue_job(action: ExtractedAction, source: Captur
 
 
 def proposed_queue_job_for_action(action: ExtractedAction, source: CaptureSemanticInput) -> dict[str, object] | None:
+    job_type = action.job_type.strip()
+    supply_request_lane_job = (
+        job_type == JOB_CREATE_SUPPLY_REQUEST
+        and is_supply_request_capture_category(source.area)
+    )
+    if job_type == JOB_CREATE_SUPPLY_REQUEST and not supply_request_lane_job:
+        return None
+
     if isinstance(action.proposed_queue_job, dict):
         proposed = dict(action.proposed_queue_job)
         if validate_job(proposed):
             return proposed
 
-    job_type = action.job_type.strip()
-    if job_type not in OPERATOR_PROPOSED_JOB_TYPES:
+    if job_type not in OPERATOR_PROPOSED_JOB_TYPES and not supply_request_lane_job:
         return None
 
     payload_fields = normalized_payload_fields(action.payload_fields)
@@ -642,6 +672,8 @@ def proposed_queue_job_for_action(action: ExtractedAction, source: CaptureSemant
         payload = set_entity_status_payload(action, source, payload_fields)
     elif job_type == JOB_LOG_SITE_ISSUE:
         payload = log_site_issue_payload(action, source, payload_fields)
+    elif job_type == JOB_CREATE_SUPPLY_REQUEST:
+        payload = create_supply_request_payload(action, source, payload_fields)
     elif job_type == JOB_LOG_SUPPLY_NEED:
         payload = log_supply_need_payload(action, source, payload_fields)
     elif job_type == JOB_LOG_EQUIPMENT_REQUEST:
@@ -871,6 +903,32 @@ def log_supply_need_payload(action: ExtractedAction, source: CaptureSemanticInpu
     return payload
 
 
+def create_supply_request_payload(
+    action: ExtractedAction,
+    source: CaptureSemanticInput,
+    payload_fields: dict[str, object],
+) -> dict[str, object]:
+    """Build a capture-bound request without trusting model-provided identity fields."""
+    payload: dict[str, object] = {}
+    if source.site_id.strip():
+        payload["site_id"] = source.site_id.strip()
+    if source.submitter_person_id.strip():
+        payload["requested_by"] = source.submitter_person_id.strip()
+    if source.captured_at.strip():
+        payload["observed_at"] = source.captured_at.strip()
+
+    items = supply_request_items_from_payload_fields(payload_fields)
+    if items:
+        payload["items"] = items
+    if source.source_text.strip():
+        payload["notes"] = source.source_text.strip()
+    if source.source_kind.strip():
+        payload["source"] = source.source_kind.strip()
+    if source.capture_id.strip():
+        payload["related_capture_ids"] = [source.capture_id.strip()]
+    return {key: value for key, value in payload.items() if key in CREATE_SUPPLY_REQUEST_ALLOWED_PAYLOAD_FIELDS}
+
+
 def log_equipment_request_payload(action: ExtractedAction, source: CaptureSemanticInput, payload_fields: dict[str, object]) -> dict[str, object]:
     payload = {key: value for key, value in payload_fields.items() if key in LOG_EQUIPMENT_REQUEST_ALLOWED_PAYLOAD_FIELDS}
     site_id = resolved_site_id_for_action(action, source, payload_fields)
@@ -1007,6 +1065,269 @@ def date_from_timestamp(value: str) -> str:
     if re.match(r"^\d{4}-\d{2}-\d{2}", text):
         return text[:10]
     return ""
+
+
+def capture_category_actions(
+    actions: list[ExtractedAction],
+    source: CaptureSemanticInput,
+    *,
+    model_extraction_available: bool = False,
+) -> list[ExtractedAction]:
+    if is_supply_request_capture_category(source.area):
+        return supply_request_category_actions(
+            actions,
+            source,
+            model_extraction_available=model_extraction_available,
+        )
+    return supply_category_actions(actions, source)
+
+
+def is_supply_request_capture_category(area: str) -> bool:
+    # Deliberately do not use _norm here: it turns ``supply_request`` into the
+    # label-shaped ``supply request`` and would collide with the review type.
+    value = collapse_whitespace(area).casefold()
+    return value in {
+        SUPPLY_REQUEST_CAPTURE_CATEGORY.casefold(),
+        SUPPLY_REQUEST_CAPTURE_CATEGORY_LABEL.casefold(),
+    }
+
+
+def supply_request_category_actions(
+    actions: list[ExtractedAction],
+    source: CaptureSemanticInput,
+    *,
+    model_extraction_available: bool = False,
+) -> list[ExtractedAction]:
+    explicit = explicit_operator_classification_action(source)
+    if explicit is not None:
+        return [explicit]
+
+    # The transcript remains authoritative: deterministic items come directly
+    # from it, and model items must occur in it. A richer supported model parse
+    # may recover items the deterministic parser missed, but never invent them.
+    transcript_items = supply_request_items_from_text(source.source_text)
+    model_items = supply_request_items_supported_by_text(
+        supply_request_items_from_actions(actions),
+        source.source_text,
+    )
+    items = model_items if len(model_items) > len(transcript_items) else transcript_items
+    if not items:
+        return []
+
+    item_count_disagreement = (
+        model_extraction_available
+        and len(model_items) != len(transcript_items)
+    )
+    summary = f"Supply request with {len(items)} line item{'s' if len(items) != 1 else ''}."
+    rationale = "Worker selected the dedicated Supply Request capture category."
+    if item_count_disagreement:
+        summary += " Verify all line items; extraction sources disagreed on the item count."
+        rationale += (
+            f" Transcript parsing found {len(transcript_items)} item(s), while the model found "
+            f"{len(model_items)} transcript-supported item(s); the richer supported list is shown."
+        )
+
+    raw_action = {
+        "action_key": "create_supply_request",
+        "candidate_type": "field_capture_supply_request",
+        "job_type": JOB_CREATE_SUPPLY_REQUEST,
+        "target_type": "site",
+        "target_label": source.site_label or source.site_id,
+        "summary": summary,
+        "rationale": rationale,
+        "confidence": "high",
+        "source_excerpt": source.source_text,
+        "evidence_terms": ["supply request", source.area.strip()],
+        "payload_fields": {"items": items},
+    }
+    try:
+        action = validate_extracted_action(_normalized_action_payload(raw_action, source))
+    except (TypeError, ValueError):
+        return []
+    return [action_with_valid_proposed_queue_job(action, source)]
+
+
+def explicit_operator_classification_action(source: CaptureSemanticInput) -> ExtractedAction | None:
+    parsed = parse_operator_classification_token(source.source_text)
+    if parsed is None:
+        return None
+    job_type, item_text = parsed
+    if not discernible_supply_request_item_name(item_text):
+        return None
+    item_field = "item_name" if job_type == JOB_LOG_SUPPLY_NEED else "equipment_name"
+    label = "Supply need" if job_type == JOB_LOG_SUPPLY_NEED else "Equipment request"
+    raw_action = {
+        "action_key": job_type,
+        "candidate_type": "field_capture_follow_up",
+        "job_type": job_type,
+        "target_type": "site",
+        "target_label": source.site_label or source.site_id,
+        "summary": f"{label}: {item_text}.",
+        "rationale": "Explicit operator classification overrides category inference.",
+        "confidence": "high",
+        "source_excerpt": source.source_text,
+        "evidence_terms": ["operator classification"],
+        "payload_fields": {item_field: item_text},
+    }
+    try:
+        action = validate_extracted_action(_normalized_action_payload(raw_action, source))
+    except (TypeError, ValueError):
+        return None
+    return action_with_valid_proposed_queue_job(action, source)
+
+
+def supply_request_items_from_actions(actions: list[ExtractedAction]) -> list[dict[str, str]]:
+    items: list[dict[str, str]] = []
+    for action in actions:
+        items.extend(supply_request_items_from_payload_fields(normalized_payload_fields(action.payload_fields)))
+    return items
+
+
+def supply_request_items_from_payload_fields(payload_fields: dict[str, object]) -> list[dict[str, str]]:
+    items: list[dict[str, str]] = []
+    raw_items = payload_fields.get("items")
+    if isinstance(raw_items, list):
+        for raw_item in raw_items:
+            if not isinstance(raw_item, dict):
+                continue
+            item_name = str(raw_item.get("item_name") or "").strip()
+            if discernible_supply_request_item_name(item_name):
+                items.append({"item_name": item_name})
+        return items
+    item_text = payload_text(
+        payload_fields,
+        "item_name",
+        "supply_item",
+        "supply_items",
+        "item",
+        "equipment_name",
+    )
+    return [{"item_name": item_name} for item_name in split_supply_request_item_names(item_text)]
+
+
+def supply_request_items_supported_by_text(
+    items: list[dict[str, str]],
+    source_text: str,
+) -> list[dict[str, str]]:
+    haystack = _norm(source_text)
+    if not haystack:
+        return []
+    supported: list[tuple[int, int, dict[str, str]]] = []
+    occurrence_counts: dict[str, int] = {}
+    for item_index, item in enumerate(items):
+        item_name = str(item.get("item_name") or "").strip()
+        needle = _norm(item_name)
+        if not needle:
+            continue
+        occurrence_counts[needle] = occurrence_counts.get(needle, 0) + 1
+        occurrence_number = occurrence_counts[needle]
+        start = -1
+        for _ in range(occurrence_number):
+            start = haystack.find(needle, start + 1)
+            if start < 0:
+                break
+        if start >= 0:
+            supported.append((start, item_index, {"item_name": item_name}))
+    supported.sort(key=lambda entry: (entry[0], entry[1]))
+    return [item for _, _, item in supported]
+
+
+def supply_request_items_from_text(text: str) -> list[dict[str, str]]:
+    normalized = collapse_whitespace(text)
+    if not normalized or re.search(
+        r"\b(?:no supplies? needed|do not need|don't need|nothing (?:is )?needed|all (?:supplies? )?(?:are )?stocked)\b",
+        normalized,
+        flags=re.IGNORECASE,
+    ):
+        return []
+    has_list_shape = bool(re.search(r"[,;\n]|\s+\b(?:and|also|plus)\b\s+", text, flags=re.IGNORECASE))
+    if not need_signal_present(normalized) and not has_list_shape and not _matched_supply_equipment_terms(normalized):
+        return []
+    return [
+        {"item_name": item_name}
+        for item_name in split_supply_request_item_names(text)
+    ]
+
+
+def split_supply_request_item_names(text: str) -> list[str]:
+    if not text.strip():
+        return []
+    fragments = re.split(
+        r"\s*(?:,|;|\n|[.!?]+(?=\s|$))\s*|\s+\b(?:and|also|plus)\b\s+",
+        text,
+        flags=re.IGNORECASE,
+    )
+    items: list[str] = []
+    for fragment in fragments:
+        item = clean_supply_request_item_fragment(fragment)
+        if discernible_supply_request_item_name(item):
+            items.append(item)
+    return items
+
+
+def clean_supply_request_item_fragment(text: str) -> str:
+    """Clean one already-split request item without single-item truncation."""
+    cleaned = collapse_whitespace(text).strip(" ,.;:!?")
+    if not cleaned:
+        return ""
+    cleaned = re.sub(
+        r"^(?:(?:and|or|also|plus|then|next)\s+)+",
+        "",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+    cleaned = re.sub(r"^(?:please\s+)+", "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(
+        r"^(?:we(?:'re| are)?|i(?:'m| am)?|you(?:'re| are)?|they(?:'re| are)?)\s+",
+        "",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+    cleaned = re.sub(
+        r"^(?:need(?: more)?|needs(?: more)?|needed|(?:are|is)\s+(?:low on|running low on|out of)|"
+        r"low on|running low on|out of|restock|reorder|order|bring|send)\s+",
+        "",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+    cleaned = re.sub(
+        r"^(?:(?:a|an|the|some|a new|an new|new)\s+)+",
+        "",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+    cleaned = re.sub(
+        r"\s+\b(?:are|is)\s+(?:low|out|running low|needed)\b.*$",
+        "",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+    cleaned = re.sub(
+        r"\s+\b(?:because|so that|so|please|thanks|thank you)\b.*$",
+        "",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+    return collapse_whitespace(cleaned).strip(" ,.;:!?")
+
+
+def discernible_supply_request_item_name(text: str) -> bool:
+    normalized = _norm(text).strip()
+    if not normalized or not re.search(r"[a-z0-9]", normalized):
+        return False
+    return normalized not in {
+        "supply",
+        "supplies",
+        "item",
+        "items",
+        "thing",
+        "things",
+        "stuff",
+        "products",
+        "something",
+        "anything",
+        "nothing",
+    }
 
 
 def supply_category_actions(actions: list[ExtractedAction], source: CaptureSemanticInput) -> list[ExtractedAction]:
@@ -1455,6 +1776,8 @@ def _normalized_target_type(value: object) -> str:
 def _rule_extracted_actions(source: CaptureSemanticInput, cleaned: str, issue_type: str, actions: list[str]) -> list[ExtractedAction]:
     if is_unclear_or_test_audio(cleaned) or note_is_completion_report(cleaned) or not cleaned.strip():
         return []
+    if is_supply_request_capture_category(source.area):
+        return supply_request_category_actions([], source)
     lowered = cleaned.lower()
     raw_actions: list[dict[str, object]] = []
     if source.source_kind == "voice_memo":
