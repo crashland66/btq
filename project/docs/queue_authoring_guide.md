@@ -1400,6 +1400,81 @@ Do not use when:
 }
 ```
 
+## 11a. `create_supply_request`
+
+Use when one reviewed request contains one or more consumable supply lines that
+must remain together as a single request. This job is distinct from
+`log_supply_need`, which records one independently tracked need, and from
+`supply_order`, which represents a parsed receipt.
+
+Do not use for durable equipment, prices, budgets, cost estimates, or vendor
+order data.
+
+### Required payload fields
+
+- `site_id`: string
+- `requested_by`: employee/person string
+- `items`: non-empty list; every item requires a non-blank `item_name`
+- `observed_at`: ISO 8601 datetime string
+
+Each item may also carry `quantity` as a number or free-text string, `unit`,
+and `note`. Item order is preserved and duplicate-looking lines are not
+deduplicated.
+
+`observed_at` is **required here even though it is optional on
+`log_supply_need`**, and it is deliberately part of the identity seed. Without
+it, two unrelated requests carrying the same item list at the same site — filed
+months apart — derive the SAME record id, and the later write silently destroys
+the earlier submission's `related_capture_ids` and `notes`. Supplying the real
+observation time is what keeps distinct requests distinct.
+
+### Optional payload fields
+
+- `notes`: string
+- `related_capture_ids`: list of non-empty strings
+- `source`: string such as `field_capture_audio`
+- `request_id`: string; explicit identity override, used verbatim as the id
+  seed. Mirrors `supply_id` on `log_supply_need`. Use it when two genuinely
+  separate requests would otherwise collide, or when a caller needs to own the
+  record id. Supplying the same `request_id` twice is treated as the same
+  request.
+
+### Runtime behavior notes
+
+- writes one canonical `supply_request` document containing every submitted
+  item
+- defaults `status` to `open`
+- derives a deterministic `supply_request_id` from the normalized site,
+  requester, observed time, and ordered item list — or from `request_id`
+  verbatim when supplied
+- the id is deterministic and is **never** salted with wall-clock time; doing so
+  would break replay idempotency, and the test suite actively forbids it
+- reprocessing the same job does not duplicate the record or append duplicate
+  items
+- resubmission preserves prior `btq_job_ids`, so provenance accumulates and an
+  earlier job's replay marker survives
+
+### Valid example
+
+```json
+{
+  "job_id": "2026-07-22T13-15-00Z__public-supply-request",
+  "job_type": "create_supply_request",
+  "payload": {
+    "site_id": "public-site-001",
+    "requested_by": "Public Worker",
+    "items": [
+      {"item_name": "Paper products", "quantity": "2 cases"},
+      {"item_name": "Hand soap", "quantity": 4, "unit": "containers"}
+    ],
+    "observed_at": "2026-07-22T09:15:00-04:00",
+    "notes": "Restock request.",
+    "related_capture_ids": ["capture-public-001"],
+    "source": "field_capture_audio"
+  }
+}
+```
+
 ## 12. `log_equipment_request`
 
 Use when:

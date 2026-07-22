@@ -9,7 +9,7 @@ CANONICAL_ENTITY_TYPES: frozenset[str] = frozenset({
     "account", "location", "employee", "visit", "visit_gap", "opportunity",
     "shift_report", "shift_report_note", "day_record", "journal", "unknown_capture", "personnel_event",
     "availability_constraint",
-    "prospect", "site_issue", "supply_need", "monthly_summary",
+    "prospect", "site_issue", "supply_need", "supply_request", "monthly_summary",
     "equipment_request", "supply_order", "plan", "inventory", "note", "operator",
 })
 

@@ -19,6 +19,7 @@ def test_canonical_entity_types_includes_all_known_vault_types() -> None:
         "personnel_event",
         "site_issue",
         "supply_need",
+        "supply_request",
         "monthly_summary",
         "equipment_request",
         "supply_order",

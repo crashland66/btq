@@ -5,7 +5,7 @@ from pathlib import Path
 
 from queue_spec import (
     JOB_ADD_PERSON, JOB_APPEND_TO_NOTE, JOB_ASSIGN_EMPLOYEE_SITE, JOB_CLOSE_RECRUITING, JOB_FLAG_ACCESS_CONSTRAINT,
-    JOB_FLAG_RETENTION_RISK, JOB_LOG_AVAILABILITY_CONSTRAINT, JOB_LOG_EQUIPMENT_REQUEST, JOB_LOG_PERSONNEL_EVENT, JOB_LOG_SITE_ISSUE,
+    JOB_FLAG_RETENTION_RISK, JOB_CREATE_SUPPLY_REQUEST, JOB_LOG_AVAILABILITY_CONSTRAINT, JOB_LOG_EQUIPMENT_REQUEST, JOB_LOG_PERSONNEL_EVENT, JOB_LOG_SITE_ISSUE,
     JOB_LOG_SUPPLY_NEED, JOB_MARK_EQUIPMENT_APPROVED, JOB_MARK_EQUIPMENT_DENIED,
     JOB_MARK_EQUIPMENT_NO_ACTION_NEEDED, JOB_MARK_EQUIPMENT_ORDERED, JOB_MARK_EQUIPMENT_PROVIDED,
     JOB_MARK_ISSUE_MONITORING, JOB_MARK_ISSUE_OPEN, JOB_MARK_ISSUE_RESOLVED,
@@ -17,7 +17,7 @@ from queue_spec import (
     JOB_SET_CONTACT, JOB_SET_EMPLOYEE_CONTACT, JOB_SET_EMPLOYEE_ID, JOB_SET_ENTITY_STATUS, JOB_SET_SITE_HOURS, JOB_SET_SITE_URL, JOB_TRIGGER_RECRUITING, JOB_UPDATE_SITE_EQUIPMENT, JOB_VISIT_CREATE,
     JOB_VOICE_MEMO_NOTE,
 )
-from queue_processor.handlers import contacts, deep_analysis, employee_updates, misc, people, site_flags_notes, site_hours, site_urls, supplies_equipment, supplies_equipment_transitions, unknowns, visits
+from queue_processor.handlers import contacts, deep_analysis, employee_updates, misc, people, site_flags_notes, site_hours, site_urls, supplies_equipment, supplies_equipment_transitions, supply_requests, unknowns, visits
 from queue_processor.handlers._shared import QueueJob, QueueProcessorError, RunContext
 
 JobHandler = Callable[[Path, QueueJob, RunContext, Path], None]
@@ -47,6 +47,7 @@ JOB_HANDLERS: dict[str, JobHandler] = {
     JOB_DEEP_ANALYSIS: deep_analysis.process_deep_analysis_job,
     JOB_LOG_SITE_ISSUE: site_flags_notes.process_log_site_issue_job,
     JOB_LOG_SUPPLY_NEED: supplies_equipment.process_log_supply_need_job,
+    JOB_CREATE_SUPPLY_REQUEST: supply_requests.process_create_supply_request_job,
     JOB_LOG_EQUIPMENT_REQUEST: supplies_equipment.process_log_equipment_request_job,
     JOB_LOG_PERSONNEL_EVENT: people.process_log_personnel_event_job,
     JOB_LOG_AVAILABILITY_CONSTRAINT: people.process_log_availability_constraint_job,

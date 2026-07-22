@@ -27,6 +27,7 @@ EXPECTED_HANDLER_NAMES = {
     qp.JOB_PHOTO_CAPTURE: "process_photo_capture_job",
     qp.JOB_LOG_SITE_ISSUE: "process_log_site_issue_job",
     qp.JOB_LOG_SUPPLY_NEED: "process_log_supply_need_job",
+    qp.JOB_CREATE_SUPPLY_REQUEST: "process_create_supply_request_job",
     qp.JOB_LOG_EQUIPMENT_REQUEST: "process_log_equipment_request_job",
     qp.JOB_LOG_PERSONNEL_EVENT: "process_log_personnel_event_job",
     qp.JOB_SET_ENTITY_STATUS: "process_set_entity_status_job",
@@ -89,6 +90,7 @@ def test_handlers_importable_from_handlers_package() -> None:
             "process_log_equipment_request_job",
             "process_update_site_equipment_job",
         ],
+        "supply_requests": ["process_create_supply_request_job"],
         "supplies_equipment_transitions": [
             "process_mark_supply_ordered_job",
             "process_mark_supply_delivered_job",

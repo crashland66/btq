@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from config import require_directories
-from queue_processor.handlers import contacts, misc, people, site_flags_notes, site_hours, site_urls, supplies_equipment, supplies_equipment_transitions, unknowns, visits
+from queue_processor.handlers import contacts, misc, people, site_flags_notes, site_hours, site_urls, supplies_equipment, supplies_equipment_transitions, supply_requests, unknowns, visits
 from queue_processor.handlers import _shared
 from queue_processor.processed_index import ProcessedJobIdLookup, append_record, build_record, load_processed_job_id_lookup, processed_job_id_exists as indexed_processed_job_id_exists
 from queue_processor.manifest import record_processed_mutation
@@ -18,7 +18,7 @@ from queue_processor.registry import JOB_HANDLERS, JobHandler, _handler_for_job_
 from queue_spec import (
     validate_job,
     JOB_ADD_PERSON, JOB_APPEND_TO_NOTE, JOB_ASSIGN_EMPLOYEE_SITE, JOB_CLOSE_RECRUITING, JOB_FLAG_ACCESS_CONSTRAINT, JOB_FLAG_RETENTION_RISK,
-    JOB_LOG_EQUIPMENT_REQUEST, JOB_LOG_PERSONNEL_EVENT, JOB_LOG_SITE_ISSUE, JOB_LOG_SUPPLY_NEED,
+    JOB_CREATE_SUPPLY_REQUEST, JOB_LOG_EQUIPMENT_REQUEST, JOB_LOG_PERSONNEL_EVENT, JOB_LOG_SITE_ISSUE, JOB_LOG_SUPPLY_NEED,
     JOB_MARK_EQUIPMENT_APPROVED, JOB_MARK_EQUIPMENT_DENIED, JOB_MARK_EQUIPMENT_NO_ACTION_NEEDED,
     JOB_MARK_EQUIPMENT_ORDERED, JOB_MARK_EQUIPMENT_PROVIDED, JOB_MARK_SUPPLY_DELIVERED,
     JOB_MARK_ISSUE_MONITORING, JOB_MARK_ISSUE_OPEN, JOB_MARK_ISSUE_RESOLVED,
@@ -80,6 +80,7 @@ process_log_personnel_event_job = people.process_log_personnel_event_job
 process_set_entity_status_job = people.process_set_entity_status_job
 process_set_site_url_job = site_urls.process_set_site_url_job
 process_log_supply_need_job = supplies_equipment.process_log_supply_need_job
+process_create_supply_request_job = supply_requests.process_create_supply_request_job
 process_log_equipment_request_job = supplies_equipment.process_log_equipment_request_job
 process_update_site_equipment_job = supplies_equipment.process_update_site_equipment_job
 _process_mark_supply_job = supplies_equipment_transitions._process_mark_supply_job
@@ -383,6 +384,8 @@ def target_path_hint(job: QueueJob, context: RunContext) -> str:
             return _canonical_location_hint(payload["site_id"])
         if job.job_type == JOB_LOG_SUPPLY_NEED:
             return _canonical_location_hint(payload["site_id"])
+        if job.job_type == JOB_CREATE_SUPPLY_REQUEST:
+            return f"supply_request_{supply_requests.supply_request_id(payload)}"
         if job.job_type == JOB_LOG_EQUIPMENT_REQUEST:
             return _canonical_location_hint(payload["site_id"])
         if job.job_type == JOB_LOG_PERSONNEL_EVENT:

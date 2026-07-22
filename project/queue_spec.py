@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+import math
 import os
 import re
 from zoneinfo import ZoneInfo
@@ -68,6 +69,7 @@ JOB_PROMOTE_PROSPECT = "promote_prospect"
 JOB_RETARGET_CAPTURE = "retarget_capture"
 JOB_LOG_SITE_ISSUE = "log_site_issue"
 JOB_LOG_SUPPLY_NEED = "log_supply_need"
+JOB_CREATE_SUPPLY_REQUEST = "create_supply_request"
 JOB_LOG_EQUIPMENT_REQUEST = "log_equipment_request"
 JOB_LOG_PERSONNEL_EVENT = "log_personnel_event"
 JOB_LOG_AVAILABILITY_CONSTRAINT = "log_availability_constraint"
@@ -172,6 +174,7 @@ ALLOWED_JOB_TYPES = {
     JOB_RETARGET_CAPTURE,
     JOB_LOG_SITE_ISSUE,
     JOB_LOG_SUPPLY_NEED,
+    JOB_CREATE_SUPPLY_REQUEST,
     JOB_LOG_EQUIPMENT_REQUEST,
     JOB_LOG_PERSONNEL_EVENT,
     JOB_LOG_AVAILABILITY_CONSTRAINT,
@@ -208,6 +211,7 @@ SITE_ROUTABILITY_JOB_TYPES = {
     JOB_PROMOTE_PROSPECT,
     JOB_LOG_SITE_ISSUE,
     JOB_LOG_SUPPLY_NEED,
+    JOB_CREATE_SUPPLY_REQUEST,
     JOB_LOG_EQUIPMENT_REQUEST,
     JOB_UPDATE_SITE_EQUIPMENT,
     JOB_SET_SITE_URL,
@@ -240,6 +244,7 @@ JOB_SCHEMAS = {
     JOB_RETARGET_CAPTURE: ["capture_id", "new_target_type", "new_target_id", "actor"],
     JOB_LOG_SITE_ISSUE: ["site_id", "title", "reported_by", "client_notified", "resolution_trigger"],
     JOB_LOG_SUPPLY_NEED: ["site_id", "item_name", "requested_by"],
+    JOB_CREATE_SUPPLY_REQUEST: ["site_id", "requested_by", "items", "observed_at"],
     JOB_LOG_EQUIPMENT_REQUEST: ["site_id", "equipment_name", "requested_by"],
     JOB_LOG_PERSONNEL_EVENT: ["employee", "event_type", "summary", "occurred_at", "reported_by"],
     JOB_LOG_AVAILABILITY_CONSTRAINT: ["employee", "constraint_type", "date", "reported_by", "source_text"],
@@ -370,6 +375,17 @@ LOG_SUPPLY_NEED_ALLOWED_PAYLOAD_FIELDS = {
     "stocked_by",
     "stocked_note",
 }
+CREATE_SUPPLY_REQUEST_ALLOWED_PAYLOAD_FIELDS = {
+    "site_id",
+    "requested_by",
+    "items",
+    "observed_at",
+    "request_id",
+    "notes",
+    "related_capture_ids",
+    "source",
+}
+SUPPLY_REQUEST_ITEM_FIELDS = {"item_name", "quantity", "unit", "note"}
 LOG_EQUIPMENT_REQUEST_ALLOWED_PAYLOAD_FIELDS = {
     "site_id",
     "equipment_name",
@@ -949,6 +965,55 @@ def _validate_log_supply_need_payload(payload: dict) -> bool:
     return all(_is_non_empty_string_list(payload.get(field)) for field in ("related_capture_ids", "related_candidate_ids", "related_media", "source_artifacts"))
 
 
+def _validate_create_supply_request_payload(payload: dict) -> bool:
+    if set(payload) - CREATE_SUPPLY_REQUEST_ALLOWED_PAYLOAD_FIELDS:
+        return False
+    if not _is_non_empty_string(payload.get("site_id")):
+        return False
+    if not _is_non_empty_string(payload.get("requested_by")):
+        return False
+    if not _is_non_empty_string(payload.get("observed_at")):
+        return False
+
+    request_id = payload.get("request_id")
+    if request_id is not None and not _is_non_empty_string(request_id):
+        return False
+
+    items = payload.get("items")
+    if not isinstance(items, list) or not items:
+        return False
+    for item in items:
+        if not isinstance(item, dict) or set(item) - SUPPLY_REQUEST_ITEM_FIELDS:
+            return False
+        if not _is_non_empty_string(item.get("item_name")):
+            return False
+        quantity = item.get("quantity")
+        if quantity is not None and not (
+            (
+                isinstance(quantity, (int, float))
+                and not isinstance(quantity, bool)
+                and math.isfinite(quantity)
+            )
+            or _is_non_empty_string(quantity)
+        ):
+            return False
+        for field in ("unit", "note"):
+            value = item.get(field)
+            if value is not None and not isinstance(value, str):
+                return False
+
+    observed_at = payload["observed_at"]
+    try:
+        datetime.fromisoformat(observed_at.strip().replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    for field in ("notes", "source"):
+        value = payload.get(field)
+        if value is not None and not isinstance(value, str):
+            return False
+    return _is_non_empty_string_list(payload.get("related_capture_ids"))
+
+
 def _validate_log_equipment_request_payload(payload: dict) -> bool:
     if set(payload) - LOG_EQUIPMENT_REQUEST_ALLOWED_PAYLOAD_FIELDS:
         return False
@@ -1484,6 +1549,9 @@ def validate_job(job: dict) -> bool:
             return False
     if job_type == JOB_LOG_SUPPLY_NEED:
         if not _validate_log_supply_need_payload(payload):
+            return False
+    if job_type == JOB_CREATE_SUPPLY_REQUEST:
+        if not _validate_create_supply_request_payload(payload):
             return False
     if job_type == JOB_LOG_EQUIPMENT_REQUEST:
         if not _validate_log_equipment_request_payload(payload):

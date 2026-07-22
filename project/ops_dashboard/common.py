@@ -58,6 +58,7 @@ KNOWN_JOB_SUMMARY_TYPES = {
     "retarget_capture",
     "log_site_issue",
     "log_supply_need",
+    "create_supply_request",
     "log_equipment_request",
     "log_personnel_event",
     "log_availability_constraint",
@@ -1369,6 +1370,12 @@ def render_job_summary(job_type: object, payload: object) -> str:
         item = html.escape(_clean_display_part(body.get("item_name")))
         site = _site_summary(body)
         return _summary_with_suffix("Log supply need", f"{site}: {item}" if site and item else site or item)
+    if job_type_text == "create_supply_request":
+        site = _site_summary(body)
+        items = body.get("items")
+        count = len(items) if isinstance(items, list) else 0
+        count_text = f"{count} item" if count == 1 else f"{count} items"
+        return _summary_with_suffix("Create supply request", f"{site}: {count_text}" if site else count_text)
     if job_type_text == "log_equipment_request":
         equipment = html.escape(_clean_display_part(body.get("equipment_name")))
         site = _site_summary(body)

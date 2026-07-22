@@ -1,8 +1,8 @@
 """CouchDB canonical-write coverage inventory.
 
 Report:
-- canonical writers: 42 (41 queue job types plus photo_vision)
-- configured CouchDB-path covered: 42
+- canonical writers: 43 (42 queue job types plus photo_vision)
+- configured CouchDB-path covered: 43
 - known uncovered: 0
 
 To close a future gap, add a real configured-path test for the writer, then
@@ -25,6 +25,7 @@ CANONICAL_WRITERS: frozenset[str] = frozenset(
         "append_to_note",
         "assign_employee_site",
         "close_recruiting",
+        "create_supply_request",
         "edit_record_fields",
         "flag_access_constraint",
         "flag_retention_risk",
@@ -92,6 +93,9 @@ COUCHDB_PATH_TESTS: dict[str, list[str]] = {
     ],
     "close_recruiting": [
         "project/tests/test_queue_processor_couchdb_write.py::test_close_recruiting_filled_updates_site_and_employee_canonical_content",
+    ],
+    "create_supply_request": [
+        "project/tests/test_create_supply_request_job.py::test_valid_multi_item_request_writes_one_canonical_record",
     ],
     "edit_record_fields": [
         "project/tests/test_queue_processor_couchdb_write.py::test_edit_record_fields_applies_only_allowlisted_fields_and_site_name",
