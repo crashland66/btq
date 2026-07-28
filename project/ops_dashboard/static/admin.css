@@ -523,6 +523,16 @@ button.is-copy-failed {
   overflow: visible;
 }
 .quick-facts > section:last-child { margin-bottom: 0; }
+
+/* Group heading with an inline edit glyph (employee quick facts). */
+.facts-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0 0 12px;
+}
+.facts-head h3 { margin: 0; }
+.facts-head .icon-btn { font-size: .85rem; }
 .contacts-panel {
   overflow: visible;
 }
