@@ -9,7 +9,8 @@ from urllib.parse import quote
 from urllib import parse as urlparse, request as urlrequest
 
 from event_pipeline import couchdb_config
-from ops_dashboard.common import HtmlFragment, first_query_value, humanize_key, record_section, render_count_badge, render_relative_time, render_short_id
+from ops_dashboard.common import HtmlFragment, field_rows, first_query_value, humanize_key, render_count_badge, render_relative_time, render_short_id
+from queue_spec import ENTITY_STATUSES
 from ops_dashboard.layout import html_page
 import ops_dashboard.sections.entity_edit as entity_edit
 import ops_dashboard.sections.site_detail as site_detail
@@ -35,6 +36,9 @@ _EMPLOYEE_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("Identity", ("first", "last", "preferred_name", "person_id", "status", "phone", "email")),
     ("Assignment", ("job", "additional_jobs", "sites", "role")),
 )
+
+_STATUS_CHOICES: tuple[str, ...] = tuple(sorted(ENTITY_STATUSES))
+_EDITABLE_SECTIONS = frozenset({"identity", "assignment"})
 
 _EMPLOYEE_SUPPRESSED = frozenset({
     "_id", "_rev", "type", "operator", "vault_path", "content", "name", "site_ids",
@@ -321,7 +325,49 @@ def _quick_fact_value(value: object) -> str:
     return html.escape(str(value))
 
 
-def _quick_facts(doc: dict[str, Any], person_id: str, primary_site_id: str, assigned_site_ids: list[str], site_names: dict[str, str]) -> str:
+def _facts_head(title: str, slug: str, *, editing: bool) -> str:
+    glyph = ""
+    if not editing:
+        escaped_slug = html.escape(slug, quote=True)
+        glyph = (
+            f'<a class="icon-btn" href="?edit={escaped_slug}" '
+            f'title="Edit {escaped_slug}" aria-label="Edit {escaped_slug}">&#9998;</a>'
+        )
+    return f'<div class="facts-head"><h3>{html.escape(title)}</h3>{glyph}</div>'
+
+
+def _facts_edit_form(title: str, slug: str, doc: dict[str, Any], keys: tuple[str, ...], employee_id: str) -> str:
+    eid = html.escape(employee_id, quote=True)
+    rev = html.escape(str(doc.get("_rev", "")), quote=True)
+    controls = entity_edit.render_field_controls(
+        doc,
+        keys,
+        select_fields={"status": _STATUS_CHOICES},
+    )
+    return (
+        "<section>"
+        f"{_facts_head(title, slug, editing=True)}"
+        f'<form method="post" action="/employees/{eid}/save-section" class="admin-form entity-edit-form">'
+        f'<input type="hidden" name="_rev" value="{rev}">'
+        f'<input type="hidden" name="_entity_id" value="{eid}">'
+        f'<input type="hidden" name="_section" value="{html.escape(slug, quote=True)}">'
+        f"{controls}"
+        '<button type="submit">Save</button>'
+        '<a class="button" href="?">Cancel</a>'
+        "</form></section>"
+    )
+
+
+def _quick_facts(
+    doc: dict[str, Any],
+    person_id: str,
+    primary_site_id: str,
+    assigned_site_ids: list[str],
+    site_names: dict[str, str],
+    *,
+    edit_section: str = "",
+    employee_id: str = "",
+) -> str:
     phone = _clean(doc.get("phone"))
     email = _clean(doc.get("email"))
     contact_parts = []
@@ -342,34 +388,27 @@ def _quick_facts(doc: dict[str, Any], person_id: str, primary_site_id: str, assi
         "primary_site": HtmlFragment(_site_link(primary_site_id, site_names)) if primary_site_id else "",
         "assigned_sites": str(len(assigned_site_ids)) if assigned_site_ids else "",
     }
-    sections = "".join(
-        part
-        for part in (
-            record_section(
-                "Identity",
-                identity,
-                ("role", "status", "eHub ID", "Phone / Email", "First seen / tenure", "Person ID"),
-                value_formatter=_quick_fact_value,
-                dl_class="fields summary-fields",
-            ),
-            record_section(
-                "Assignment",
-                assignment,
-                ("primary_site", "assigned_sites"),
-                value_formatter=_quick_fact_value,
-                dl_class="fields summary-fields",
-            ),
-        )
-        if part
-    )
+    display_groups: dict[str, tuple[dict[str, object], tuple[str, ...]]] = {
+        "identity": (identity, ("role", "status", "eHub ID", "Phone / Email", "First seen / tenure", "Person ID")),
+        "assignment": (assignment, ("primary_site", "assigned_sites")),
+    }
+    groups: list[str] = []
+    for title, keys in _EMPLOYEE_GROUPS:
+        slug = title.lower()
+        if edit_section == slug:
+            groups.append(_facts_edit_form(title, slug, doc, keys, employee_id))
+            continue
+        mapping, order = display_groups[slug]
+        rows = field_rows(mapping, order, value_formatter=_quick_fact_value)
+        body = f'<dl class="fields summary-fields">{rows}</dl>' if rows else '<p class="zero-state">&mdash;</p>'
+        groups.append(f"<section>{_facts_head(title, slug, editing=False)}{body}</section>")
     sections = (
-        sections.replace("<dt>Ehub Id</dt>", "<dt>eHub ID</dt>")
+        "".join(groups)
+        .replace("<dt>Ehub Id</dt>", "<dt>eHub ID</dt>")
         .replace("<dt>Person Id</dt>", "<dt>Person ID</dt>")
         .replace("<dt>Primary Site</dt>", "<dt>Primary site</dt>")
         .replace("<dt>Assigned Sites</dt>", "<dt>Assigned sites</dt>")
     )
-    if not sections:
-        sections = '<p class="zero-state">No quick facts yet.</p>'
     return f'<section class="quick-facts"><h2>Quick facts</h2>{sections}</section>'
 
 
@@ -546,8 +585,7 @@ def render(ctx: object, employee_id: str) -> str:
         all_employees_btn = '<a class="button" href="/employees">All employees</a>'
         admin_links = (
             '<section><h3>Admin links</h3>'
-            f'<p class="actions"><a class="button" href="?edit=identity">Edit identity</a>'
-            f'<a class="button" href="?edit=assignment">Edit assignment</a>{vault_btn}</p>'
+            f'<p class="actions">{vault_btn}</p>'
             "</section>"
         )
         if primary_site_name:
@@ -584,26 +622,17 @@ def render(ctx: object, employee_id: str) -> str:
                 open_flags=open_flags,
             )
         )
-        sections.append(_quick_facts(doc, person_id_raw, primary_site, assigned_site_ids, site_names))
-        if edit_section in {"identity", "assignment"}:
-            editable_sections = {
-                "Identity": "identity",
-                "Assignment": "assignment",
-            }
-            edit_sections = []
-            for title, keys in _EMPLOYEE_GROUPS:
-                slug = editable_sections[title]
-                edit_sections.append(
-                    entity_edit.render_editable_section(
-                        title,
-                        doc,
-                        keys,
-                        edit_active=(edit_section == slug),
-                        save_action=f"/employees/{html.escape(employee_id, quote=True)}/save-section",
-                        entity_id=employee_id,
-                    )
-                )
-            sections.append(f"<section><h2>Edit employee</h2>{''.join(edit_sections)}</section>")
+        sections.append(
+            _quick_facts(
+                doc,
+                person_id_raw,
+                primary_site,
+                assigned_site_ids,
+                site_names,
+                edit_section=edit_section if edit_section in _EDITABLE_SECTIONS else "",
+                employee_id=employee_id,
+            )
+        )
         sections.append(_activity_section(events, captures, data_flags, site_names))
         sections.append(_assigned_sites_section(assigned_site_ids, site_names))
         sections.append(_availability_section(employee_id, doc))
@@ -667,6 +696,21 @@ def handle_save_section(ctx: object, employee_id: str, body: bytes):
     existing = _load_vault_doc(f"employee_{employee_id}")
     if not existing or existing.get("type") != "employee":
         return ctx.redirect(f"/employees/{quote(employee_id)}?error=not_found")
+
+    if section == "identity":
+        status_value = _clean(form_flat.get("status"))
+        # The stored value stays valid even when it is outside the standard
+        # vocabulary, so an unrelated identity edit never gets rejected.
+        allowed_statuses = set(ENTITY_STATUSES) | {_clean(existing.get("status"))}
+        if status_value and status_value not in allowed_statuses:
+            return 400, "text/plain; charset=utf-8", b"Invalid status", {}
+
+    if section == "assignment":
+        for key in ("additional_jobs", "sites"):
+            value = form_flat.get(key)
+            if isinstance(value, str) and "," in value:
+                parts = [part.strip() for part in value.split(",") if part.strip()]
+                form_flat[key] = parts if parts else ""
 
     updated = entity_edit.apply_section_update(existing, form_flat, allowed_keys)
 

@@ -19,6 +19,58 @@ def _escaped(value: object) -> str:
     return html.escape(str(value), quote=True)
 
 
+def form_value(value: object) -> str:
+    """Normalise a stored doc value for a form control.
+
+    Lists join with ", " — frontmatter_list splits comma strings back into
+    lists on the read side, so the round-trip preserves multi-value fields.
+    """
+    if value is None:
+        return ""
+    if isinstance(value, (list, tuple)):
+        return ", ".join(str(item).strip() for item in value if str(item).strip())
+    return str(value)
+
+
+def render_field_controls(
+    doc: dict,
+    keys: tuple[str, ...],
+    *,
+    long_text_keys: tuple[str, ...] = (),
+    select_fields: dict[str, tuple[str, ...]] | None = None,
+) -> str:
+    controls: list[str] = []
+    long_text = frozenset(long_text_keys)
+    selects = select_fields or {}
+    for key in keys:
+        value = form_value(doc.get(key, ""))
+        escaped_key = _escaped(key)
+        escaped_label = _escaped(humanize(key))
+        escaped_value = _escaped(value)
+        if key in selects:
+            choices = list(selects[key])
+            if value and value not in choices:
+                # A stored value outside the standard vocabulary stays selectable
+                # so a save never silently rewrites it.
+                choices.append(value)
+            options = [] if value else ['<option value="" selected>&mdash;</option>']
+            options.extend(
+                f'<option value="{_escaped(choice)}"{" selected" if choice == value else ""}>{_escaped(choice)}</option>'
+                for choice in choices
+            )
+            control = f'<select name="{escaped_key}">{"".join(options)}</select>'
+        elif key in long_text:
+            control = f'<textarea name="{escaped_key}">{escaped_value}</textarea>'
+        else:
+            control = f'<input type="text" name="{escaped_key}" value="{escaped_value}">'
+        controls.append(
+            f'    <label class="field-row"><span class="field-row-label">{escaped_label}</span>\n'
+            f"      {control}\n"
+            "    </label>"
+        )
+    return "\n".join(controls)
+
+
 def render_editable_section(
     title: str,
     doc: dict,
@@ -42,26 +94,7 @@ def render_editable_section(
             "</section>"
         )
 
-    controls: list[str] = []
-    long_text = frozenset(long_text_keys)
-    for key in keys:
-        value = doc.get(key, "")
-        escaped_key = _escaped(key)
-        escaped_label = _escaped(humanize(key))
-        escaped_value = _escaped(value)
-        if key in long_text:
-            controls.append(
-                f'    <label class="field-row"><span class="field-row-label">{escaped_label}</span>\n'
-                f'      <textarea name="{escaped_key}">{escaped_value}</textarea>\n'
-                "    </label>"
-            )
-        else:
-            controls.append(
-                f'    <label class="field-row"><span class="field-row-label">{escaped_label}</span>\n'
-                f'      <input type="text" name="{escaped_key}" value="{escaped_value}">\n'
-                "    </label>"
-            )
-    rendered_controls = "\n".join(controls)
+    rendered_controls = render_field_controls(doc, keys, long_text_keys=long_text_keys)
     return (
         "<section>\n"
         f"  <h3>{escaped_title}</h3>\n"
