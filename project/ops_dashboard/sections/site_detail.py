@@ -23,6 +23,11 @@ from btq_vault.facility_hours import (
     normalize_facility_hours,
     unknown_facility_hours,
 )
+from btq_vault.operational_calendar import (
+    OperationalCalendarError,
+    normalize_calendar_id,
+    normalize_operational_calendar,
+)
 from btq_vault.contacts import (
     ACCOUNT_ESCALATION_ROLE,
     CONTACT_ROLES,
@@ -997,6 +1002,338 @@ def _write_site_hours_job(runtime_root: Path, payload: dict[str, object]) -> Pat
     return queue_path
 
 
+def _operational_calendar_date_range(start_date: str, end_date: str) -> str:
+    escaped_start = html.escape(start_date)
+    if start_date == end_date:
+        return escaped_start
+    return f"{escaped_start} through {html.escape(end_date)}"
+
+
+def _operational_calendar_status(value: object) -> str:
+    return _humanize_url_value(value)
+
+
+def _operational_calendar_event_item(event: dict[str, Any]) -> str:
+    service_impact = str(event["bt_service_impact"])
+    if service_impact == "confirm":
+        service_html = (
+            '<span class="pill warning">Service impact needs confirmation.</span>'
+        )
+    else:
+        service_html = (
+            f'<span class="pill">{html.escape(_operational_calendar_status(service_impact))}</span>'
+        )
+    dismissal_time = str(event.get("dismissal_time") or "").strip()
+    dismissal_html = (
+        f'<p class="subline">Dismissal time: {html.escape(dismissal_time)}</p>'
+        if dismissal_time
+        else ""
+    )
+    note = str(event.get("note") or "").strip()
+    note_html = f'<p class="subline">{html.escape(note)}</p>' if note else ""
+    date_range = _operational_calendar_date_range(
+        str(event["start_date"]),
+        str(event["end_date"]),
+    )
+    return (
+        "<li>"
+        f"<p><strong>{date_range} &mdash; {html.escape(str(event['label']))}</strong></p>"
+        '<p aria-label="Operational states">'
+        f'<strong>Student:</strong> <span class="pill">{html.escape(_operational_calendar_status(event["student_status"]))}</span>'
+        f'<strong>Facility:</strong> <span class="pill">{html.escape(_operational_calendar_status(event["facility_status"]))}</span>'
+        f"<strong>B&amp;T service:</strong> {service_html}"
+        "</p>"
+        f"{dismissal_html}{note_html}"
+        "</li>"
+    )
+
+
+def _operational_calendar_events(calendar: dict[str, Any]) -> str:
+    today = date.today().isoformat()
+    events = list(calendar["events"])
+    current_or_upcoming = sorted(
+        (event for event in events if str(event["end_date"]) >= today),
+        key=lambda event: (
+            0 if str(event["start_date"]) <= today <= str(event["end_date"]) else 1,
+            str(event["start_date"]),
+            str(event["end_date"]),
+            str(event["event_id"]),
+        ),
+    )
+    past = sorted(
+        (event for event in events if str(event["end_date"]) < today),
+        key=lambda event: (
+            str(event["start_date"]),
+            str(event["end_date"]),
+            str(event["event_id"]),
+        ),
+    )
+    if current_or_upcoming:
+        upcoming_html = (
+            "<h4>Current and upcoming events</h4>"
+            "<ul>"
+            + "".join(
+                _operational_calendar_event_item(event)
+                for event in current_or_upcoming
+            )
+            + "</ul>"
+        )
+    else:
+        upcoming_html = (
+            '<h4>Current and upcoming events</h4>'
+            '<p class="zero-state">No current or upcoming events recorded.</p>'
+        )
+    past_html = ""
+    if past:
+        past_html = (
+            "<details>"
+            f"<summary>Past events ({len(past)})</summary>"
+            "<ul>"
+            + "".join(_operational_calendar_event_item(event) for event in past)
+            + "</ul>"
+            "</details>"
+        )
+    return upcoming_html + past_html
+
+
+def _operational_calendar_json_for_form(calendar: dict[str, Any]) -> str:
+    return _space_structural_empty_json_arrays(
+        json.dumps(calendar, indent=2, sort_keys=True)
+    )
+
+
+def _new_operational_calendar_json_for_form() -> str:
+    return _operational_calendar_json_for_form(
+        {
+            "schema_version": 1,
+            "calendar_id": "",
+            "label": "",
+            "timezone": "America/New_York",
+            "status": "reference",
+            "valid_from": "",
+            "valid_through": "",
+            "last_verified_at": "",
+            "last_verified_by": "",
+            "source": {
+                "kind": "",
+                "title": "",
+                "retrieved_at": "",
+                "page_url": "",
+            },
+            "events": [],
+        }
+    )
+
+
+def _operational_calendar_upsert_form(
+    site_id: str,
+    calendar: dict[str, Any] | None = None,
+) -> str:
+    escaped_site = html.escape(site_id, quote=True)
+    calendar_id = str((calendar or {}).get("calendar_id") or "")
+    escaped_calendar_id = html.escape(calendar_id, quote=True)
+    readonly = " readonly" if calendar is not None else ""
+    form_json = (
+        _operational_calendar_json_for_form(calendar)
+        if calendar is not None
+        else _new_operational_calendar_json_for_form()
+    )
+    return (
+        f'<form method="post" action="/sites/{escaped_site}/operational-calendar">'
+        '<input type="hidden" name="action" value="upsert">'
+        f'<input type="hidden" name="actor" value="{html.escape(default_actor(), quote=True)}">'
+        "<label>Stable calendar_id"
+        f'<input name="calendar_id" value="{escaped_calendar_id}" pattern="[a-z0-9]+(?:[-_][a-z0-9]+)*"{readonly} required>'
+        "</label>"
+        "<label>Structured operational calendar JSON"
+        f'<textarea name="calendar_json" spellcheck="false" required>{html.escape(form_json)}</textarea>'
+        "</label>"
+        "<button type=\"submit\">Queue calendar upsert</button>"
+        "</form>"
+    )
+
+
+def _operational_calendar_edit_controls(
+    site_id: str,
+    calendar: dict[str, Any],
+) -> str:
+    escaped_site = html.escape(site_id, quote=True)
+    calendar_id = str(calendar["calendar_id"])
+    escaped_calendar_id = html.escape(calendar_id, quote=True)
+    return (
+        '<details class="facility-hours-edit">'
+        "<summary>Edit operational calendar</summary>"
+        f"{_operational_calendar_upsert_form(site_id, calendar)}"
+        f'<form method="post" action="/sites/{escaped_site}/operational-calendar">'
+        '<input type="hidden" name="action" value="remove">'
+        f'<input type="hidden" name="calendar_id" value="{escaped_calendar_id}">'
+        f'<input type="hidden" name="actor" value="{html.escape(default_actor(), quote=True)}">'
+        "<label>"
+        '<input type="checkbox" name="confirm" value="1" required> '
+        f"I confirm removal of {html.escape(calendar_id)}."
+        "</label>"
+        '<button class="reject" type="submit">Queue calendar removal</button>'
+        "</form>"
+        "</details>"
+    )
+
+
+def _operational_calendar_card(site_id: str, calendar: dict[str, Any]) -> str:
+    status = str(calendar["status"])
+    status_class = (
+        re.sub(r"[^a-z0-9_-]+", "_", status.lower()).strip("_") or "reference"
+    )
+    source = calendar["source"]
+    source_url = str(source.get("page_url") or source.get("document_url"))
+    verified_by = html.escape(str(calendar["last_verified_by"]))
+    note = str(calendar.get("note") or "").strip()
+    note_html = f'<p class="subline">{html.escape(note)}</p>' if note else ""
+    return (
+        "<article>"
+        '<div class="section-heading-row">'
+        f"<h3>{html.escape(str(calendar['label']))}</h3>"
+        f'<span class="pill status-{html.escape(status_class, quote=True)}">{html.escape(_operational_calendar_status(status))}</span>'
+        "</div>"
+        '<p class="subline">'
+        "<strong>Inclusive coverage:</strong> "
+        f"{_operational_calendar_date_range(str(calendar['valid_from']), str(calendar['valid_through']))}"
+        "</p>"
+        '<p class="subline">'
+        "<strong>Last verification:</strong> "
+        f"{html.escape(str(calendar['last_verified_at']))} by {verified_by}"
+        "</p>"
+        '<p class="subline">'
+        "<strong>Official source:</strong> "
+        f'<a href="{html.escape(source_url, quote=True)}" target="_blank" rel="noreferrer noopener">{html.escape(str(source["title"]))}</a>'
+        " (provenance only; not automatically monitored)"
+        "</p>"
+        f"{note_html}"
+        f"{_operational_calendar_events(calendar)}"
+        f"{_operational_calendar_edit_controls(site_id, calendar)}"
+        "</article>"
+    )
+
+
+def _operational_calendars_for_render(
+    doc: dict[str, Any],
+) -> tuple[list[dict[str, Any]], int]:
+    if "operational_calendars" not in doc:
+        return [], 0
+    raw_calendars = doc.get("operational_calendars")
+    if not isinstance(raw_calendars, list):
+        return [], 1
+    calendars: list[dict[str, Any]] = []
+    malformed_count = 0
+    calendar_ids: set[str] = set()
+    for raw_calendar in raw_calendars:
+        try:
+            calendar = normalize_operational_calendar(raw_calendar)
+        except OperationalCalendarError:
+            malformed_count += 1
+            continue
+        calendar_id = str(calendar["calendar_id"])
+        if calendar_id in calendar_ids:
+            malformed_count += 1
+            continue
+        calendar_ids.add(calendar_id)
+        calendars.append(calendar)
+    return calendars, malformed_count
+
+
+def _operational_calendar_section(doc: dict[str, Any], site_id: str) -> str:
+    calendars, malformed_count = _operational_calendars_for_render(doc)
+    if malformed_count:
+        noun = "entry" if malformed_count == 1 else "entries"
+        warning = (
+            '<section class="notice" role="alert">'
+            "<p><strong>Operational calendar warning.</strong> "
+            f"{malformed_count} malformed stored {noun} could not be displayed.</p>"
+            "</section>"
+        )
+    else:
+        warning = ""
+    cards = "".join(
+        _operational_calendar_card(site_id, calendar) for calendar in calendars
+    )
+    if not calendars:
+        cards = (
+            '<p class="zero-state">No operational calendars are recorded for this site.</p>'
+        )
+    add_form = (
+        '<details class="facility-hours-edit">'
+        "<summary>Add operational calendar</summary>"
+        f"{_operational_calendar_upsert_form(site_id)}"
+        "</details>"
+    )
+    return (
+        '<section class="facility-hours">'
+        "<h2>Operational calendar</h2>"
+        "<p class=\"subline\">Student schedules, facility status, and B&amp;T service impact are independent operational facts.</p>"
+        f"{warning}{cards}{add_form}"
+        "</section>"
+    )
+
+
+def _site_operational_calendar_job_payload(
+    form: dict[str, list[str]],
+    site_id: str,
+) -> dict[str, object]:
+    action = first_query_value(form, "action").strip()
+    if action not in {"upsert", "remove"}:
+        raise OperationalCalendarError(
+            "operational calendar action must be upsert or remove"
+        )
+    calendar_id = normalize_calendar_id(
+        first_query_value(form, "calendar_id").strip()
+    )
+    payload: dict[str, object] = {
+        "site_id": site_id,
+        "action": action,
+        "calendar_id": calendar_id,
+        "actor": first_query_value(form, "actor").strip() or default_actor(),
+        "source": "ops_dashboard_site_detail",
+    }
+    if action == "upsert":
+        raw_json = (
+            first_query_value(form, "calendar_json").strip()
+            or first_query_value(form, "operational_calendar_json").strip()
+        )
+        parsed = json.loads(raw_json)
+        calendar = normalize_operational_calendar(parsed)
+        if calendar["calendar_id"] != calendar_id:
+            raise OperationalCalendarError(
+                "calendar_id must match the structured calendar JSON"
+            )
+        payload["calendar"] = calendar
+    return payload
+
+
+def _write_site_operational_calendar_job(
+    runtime_root: Path,
+    payload: dict[str, object],
+) -> Path:
+    from queue_spec import JOB_SET_SITE_OPERATIONAL_CALENDAR, validate_job
+
+    suffix = str(uuid.uuid4())
+    job = {
+        "job_id": f"set-site-operational-calendar-{suffix}",
+        "job_type": JOB_SET_SITE_OPERATIONAL_CALENDAR,
+        "payload": payload,
+    }
+    if not validate_job(job):
+        raise ValueError("invalid set_site_operational_calendar payload")
+    queue_dir = runtime_root.expanduser().resolve(strict=False) / "queue"
+    queue_dir.mkdir(parents=True, exist_ok=True)
+    queue_path = queue_dir / f"set-site-operational-calendar-{suffix}.json"
+    temp_path = queue_path.with_name(f".{queue_path.name}.tmp")
+    temp_path.write_text(
+        json.dumps(job, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    temp_path.replace(queue_path)
+    return queue_path
+
+
 def _contact_job_payload(
     form: dict[str, list[str]],
     site_id: str,
@@ -1702,6 +2039,75 @@ def handle_site_hours_post(ctx: object, site_id: str, body: bytes):
     return _redirect(f"/sites/{quote(site_id)}?message=facility_hours_queued")
 
 
+def handle_site_operational_calendar_post(ctx: object, site_id: str, body: bytes):
+    from urllib.parse import parse_qs, quote
+
+    form = parse_qs(
+        body.decode("utf-8", errors="replace"),
+        keep_blank_values=True,
+    )
+    root = Path(getattr(ctx, "runtime_root", Path("."))).expanduser().resolve(
+        strict=False
+    )
+    action = first_query_value(form, "action").strip()
+    calendar_id = first_query_value(form, "calendar_id").strip()
+    audit_payload = {
+        "action": action,
+        "calendar_id": calendar_id,
+    }
+    route = f"/sites/{site_id}/operational-calendar"
+
+    def _redirect(location: str) -> tuple:
+        return (
+            303,
+            "text/html; charset=utf-8",
+            f'<a href="{html.escape(location)}">Return</a>'.encode(),
+            {"Location": location},
+        )
+
+    if action == "remove" and first_query_value(form, "confirm") != "1":
+        if hasattr(ctx, "audit"):
+            ctx.audit(route, audit_payload, "failed: confirm_required")
+        return _redirect(
+            f"/sites/{quote(site_id)}"
+            f"?error={quote('Confirm calendar removal before continuing.')}"
+        )
+
+    try:
+        payload = _site_operational_calendar_job_payload(form, site_id)
+        queue_path = _write_site_operational_calendar_job(root, payload)
+    except (
+        json.JSONDecodeError,
+        OperationalCalendarError,
+        ValueError,
+        OSError,
+    ) as exc:
+        if hasattr(ctx, "audit"):
+            ctx.audit(
+                route,
+                audit_payload,
+                f"failed: {type(exc).__name__}",
+            )
+        return _redirect(
+            f"/sites/{quote(site_id)}?error={quote(str(exc))}"
+        )
+
+    if hasattr(ctx, "audit"):
+        ctx.audit(
+            route,
+            audit_payload,
+            f"success: staged queue_path={queue_path}",
+        )
+    success_message = (
+        "Operational calendar removal queued."
+        if action == "remove"
+        else "Operational calendar update queued."
+    )
+    return _redirect(
+        f"/sites/{quote(site_id)}?message={quote(success_message)}"
+    )
+
+
 def handle_contacts_post(ctx: object, site_id: str, body: bytes, *, target_type: str = "site"):
     from urllib.parse import parse_qs, quote
 
@@ -1793,6 +2199,9 @@ def render(ctx: object, site_id: str) -> str:
                 "</p></header>"
             )
         ]
+        flash_renderer = getattr(ctx, "flash", None)
+        if callable(flash_renderer):
+            sections.append(flash_renderer(getattr(ctx, "query", {})))
         contact_error = first_query_value(getattr(ctx, "query", {}), "contact_error").strip()
         if contact_error:
             sections.append(_contact_error_notice(contact_error))
@@ -1826,6 +2235,7 @@ def render(ctx: object, site_id: str) -> str:
         )
         sections.append(_reference_links_section(doc, site_id))
         sections.append(_facility_hours_section(doc, site_id))
+        sections.append(_operational_calendar_section(doc, site_id))
         if edit_section == "about":
             escaped_id = html.escape(site_id, quote=True)
             rev = html.escape(str(doc.get("_rev", "")), quote=True)
