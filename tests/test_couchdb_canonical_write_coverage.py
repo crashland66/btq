@@ -61,6 +61,7 @@ CANONICAL_WRITERS: frozenset[str] = frozenset(
         "set_employee_id",
         "set_entity_status",
         "set_site_hours",
+        "set_site_operational_calendar",
         "set_site_url",
         "shift_report_note",
         "trigger_recruiting",
@@ -204,6 +205,9 @@ COUCHDB_PATH_TESTS: dict[str, list[str]] = {
     ],
     "set_site_hours": [
         "project/tests/test_set_site_hours_job.py::test_set_via_job_populates_valid_structure",
+    ],
+    "set_site_operational_calendar": [
+        "project/tests/test_site_operational_calendar_job.py::test_upsert_replaces_only_matching_calendar_and_preserves_raw_siblings_and_location",
     ],
     "shift_report_note": [
         "project/tests/test_shift_report_note_job_412a.py::test_handler_routes_through_apply_canonical_rmw",

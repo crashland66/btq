@@ -19,6 +19,11 @@ from btq_vault.facility_hours import (
     FacilityHoursError,
     normalize_facility_hours,
 )
+from btq_vault.operational_calendar import (
+    OperationalCalendarError,
+    normalize_calendar_id,
+    normalize_operational_calendar,
+)
 from config import get_config
 
 
@@ -77,6 +82,7 @@ JOB_SET_ENTITY_STATUS = "set_entity_status"
 JOB_UPDATE_SITE_EQUIPMENT = "update_site_equipment"
 JOB_SET_SITE_URL = "set_site_url"
 JOB_SET_SITE_HOURS = "set_site_hours"
+JOB_SET_SITE_OPERATIONAL_CALENDAR = "set_site_operational_calendar"
 JOB_SET_CONTACT = "set_contact"
 JOB_MARK_SUPPLY_ORDERED = "mark_supply_ordered"
 JOB_MARK_SUPPLY_DELIVERED = "mark_supply_delivered"
@@ -182,6 +188,7 @@ ALLOWED_JOB_TYPES = {
     JOB_UPDATE_SITE_EQUIPMENT,
     JOB_SET_SITE_URL,
     JOB_SET_SITE_HOURS,
+    JOB_SET_SITE_OPERATIONAL_CALENDAR,
     JOB_SET_CONTACT,
     JOB_MARK_SUPPLY_ORDERED,
     JOB_MARK_SUPPLY_DELIVERED,
@@ -216,6 +223,7 @@ SITE_ROUTABILITY_JOB_TYPES = {
     JOB_UPDATE_SITE_EQUIPMENT,
     JOB_SET_SITE_URL,
     JOB_SET_SITE_HOURS,
+    JOB_SET_SITE_OPERATIONAL_CALENDAR,
 }
 
 
@@ -252,6 +260,7 @@ JOB_SCHEMAS = {
     JOB_UPDATE_SITE_EQUIPMENT: ["equipment", "inspection_date", "inspected_by"],
     JOB_SET_SITE_URL: ["site_id", "action", "url", "actor"],
     JOB_SET_SITE_HOURS: ["site_id", "actor"],
+    JOB_SET_SITE_OPERATIONAL_CALENDAR: ["site_id", "action", "calendar_id", "actor"],
     JOB_SET_CONTACT: ["action", "target", "actor", "contact"],
     JOB_MARK_SUPPLY_ORDERED: ["supply_id", "actor"],
     JOB_MARK_SUPPLY_DELIVERED: ["supply_id", "actor"],
@@ -484,6 +493,14 @@ SET_SITE_HOURS_ALLOWED_PAYLOAD_FIELDS = {
     "site_id",
     "action",
     "facility_hours",
+    "actor",
+    "source",
+}
+SET_SITE_OPERATIONAL_CALENDAR_ALLOWED_PAYLOAD_FIELDS = {
+    "site_id",
+    "action",
+    "calendar_id",
+    "calendar",
     "actor",
     "source",
 }
@@ -1213,6 +1230,33 @@ def _validate_set_site_hours_payload(payload: dict) -> bool:
     return True
 
 
+def _validate_set_site_operational_calendar_payload(payload: dict) -> bool:
+    if set(payload) - SET_SITE_OPERATIONAL_CALENDAR_ALLOWED_PAYLOAD_FIELDS:
+        return False
+    for field in ("site_id", "action", "calendar_id", "actor"):
+        if not _is_non_empty_string(payload.get(field)):
+            return False
+    try:
+        calendar_id = normalize_calendar_id(payload["calendar_id"])
+    except OperationalCalendarError:
+        return False
+    action = payload["action"].strip()
+    if action not in {"upsert", "remove"}:
+        return False
+    source = payload.get("source")
+    if source is not None and not isinstance(source, str):
+        return False
+    if action == "remove":
+        return "calendar" not in payload
+    if not isinstance(payload.get("calendar"), dict):
+        return False
+    try:
+        calendar = normalize_operational_calendar(payload["calendar"])
+    except OperationalCalendarError:
+        return False
+    return calendar["calendar_id"] == calendar_id
+
+
 def _validate_set_contact_payload(payload: dict) -> bool:
     if set(payload) - SET_CONTACT_ALLOWED_PAYLOAD_FIELDS:
         return False
@@ -1573,6 +1617,9 @@ def validate_job(job: dict) -> bool:
             return False
     if job_type == JOB_SET_SITE_HOURS:
         if not _validate_set_site_hours_payload(payload):
+            return False
+    if job_type == JOB_SET_SITE_OPERATIONAL_CALENDAR:
+        if not _validate_set_site_operational_calendar_payload(payload):
             return False
     if job_type == JOB_SET_CONTACT:
         if not _validate_set_contact_payload(payload):

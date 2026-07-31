@@ -67,6 +67,7 @@ KNOWN_JOB_SUMMARY_TYPES = {
     "set_employee_id",
     "set_contact",
     "set_site_hours",
+    "set_site_operational_calendar",
     "set_site_url",
     "update_site_equipment",
     "mark_supply_ordered",
@@ -1418,6 +1419,12 @@ def render_job_summary(job_type: object, payload: object) -> str:
             status = html.escape(_clean_display_part(hours.get("status")))
         suffix = _join_summary_parts(site, action, status)
         return _summary_with_suffix("Set facility hours", suffix)
+    if job_type_text == "set_site_operational_calendar":
+        action = html.escape(_clean_display_part(body.get("action")))
+        site = _site_summary(body)
+        calendar_id = html.escape(_clean_display_part(body.get("calendar_id")))
+        suffix = _join_summary_parts(site, action, calendar_id)
+        return _summary_with_suffix("Set operational calendar", suffix)
     if job_type_text == "set_contact":
         action = html.escape(_clean_display_part(body.get("action") or "upsert"))
         target = body.get("target")

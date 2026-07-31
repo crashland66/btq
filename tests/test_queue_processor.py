@@ -825,6 +825,12 @@ def _drift_guard_sample_payloads() -> dict[str, dict]:
             },
         },
         qp.JOB_SET_SITE_HOURS: {"site_id": "7050"},
+        qp.JOB_SET_SITE_OPERATIONAL_CALENDAR: {
+            "site_id": "7050",
+            "action": "remove",
+            "calendar_id": "sandbox-calendar",
+            "actor": "Greg",
+        },
         qp.JOB_SET_SITE_URL: {"site_id": "7050"},
         qp.JOB_UPDATE_SITE_EQUIPMENT: {"site_id": "7050"},
         qp.JOB_MARK_SUPPLY_ORDERED: {"supply_id": "s1"},

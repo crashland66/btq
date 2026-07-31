@@ -189,6 +189,50 @@ URL changes are canonical queue mutations via `set_site_url`; dashboard controls
 stage that job and never write the `location` document directly. Stored URLs do
 not update hours, addresses, access notes, or any other operational field.
 
+Location records may also carry `operational_calendars`, an optional list of
+strict calendars keyed by stable `calendar_id`. Missing
+`operational_calendars` is equivalent to an empty list. A
+`set_site_operational_calendar` queue job upserts one matching entry in place,
+appends a new ID, or removes one ID through canonical CouchDB read-modify-write;
+it does not rewrite unrelated calendars or location fields. Expired calendars
+remain stored as history, and readers determine whether a calendar is stale.
+
+Each calendar has:
+
+- `schema_version`: integer `1`
+- `calendar_id`, `label`, and installed IANA `timezone`
+- `status`: `verified`, `reference`, or `stale`
+- strict `valid_from` and `valid_through` `YYYY-MM-DD` coverage dates
+- required strict timezone-aware ISO `last_verified_at` and nonblank
+  `last_verified_by` provenance
+- `source`: strict `kind` and `title`, a strict timezone-aware ISO
+  `retrieved_at` no later than `last_verified_at`, plus at least one absolute
+  HTTP(S) `page_url` or `document_url`; URLs cannot contain credentials or
+  fragments
+- `events`: a list of unique stable `event_id` entries within the coverage
+  dates
+- optional `note` for source ambiguity or undated source information
+
+Calendar events carry strict `start_date` and `end_date`, a label, and these
+independent enum fields:
+
+- `kind`: `first_student_day`, `final_student_day`, `no_student_day`,
+  `school_break`, `teacher_in_service`, `early_dismissal`,
+  `holiday_dismissal`, `snow_makeup_reserved`,
+  `flexible_instruction_reserved`, or `informational`
+- `student_status`: `in_session`, `no_students`, `early_dismissal`, or
+  `unknown`
+- `facility_status`: `open`, `closed`, or `unknown`
+- `bt_service_impact`: `normal`, `no_service`, `modified`, `confirm`, or
+  `unknown`
+
+An event may also carry strict local `dismissal_time` (`HH:MM`) and a text
+`note`. Student schedule, facility status, and B&T service impact are separate
+facts: `no_students` must never be interpreted as `no_service`. Source URLs are
+provenance, not a promise of scraping, refresh, or automatic monitoring.
+`facility_hours`, service schedules, billing fields, and location prose remain
+separate contracts and are not changed by operational-calendar jobs.
+
 ## Site Routing And The Registry
 
 Runtime site routing is registry-driven, separate from the entity store.

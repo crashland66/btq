@@ -1780,7 +1780,159 @@ Do not use when:
 }
 ```
 
-## 13c. `set_contact`
+## 13c. `set_site_operational_calendar`
+
+Use when an operator needs to upsert or remove one named academic/client
+operational calendar on an existing canonical site. This contract is separate
+from `facility_hours`, B&T service schedules, billing notes, and location prose.
+
+### Required payload fields
+
+- `site_id`: canonical site name, alias, or site ID string
+- `action`: exactly `upsert` or `remove`
+- `calendar_id`: lowercase stable slug using letters, digits, hyphens, or
+  underscores
+- `actor`: nonblank operator/person string
+
+### Optional payload fields
+
+- `source`: string queue-authoring provenance
+- `calendar`: required for `upsert` and forbidden for `remove`
+
+The payload rejects all other keys. For `upsert`, the normalized
+`calendar.calendar_id` must equal the payload `calendar_id`.
+
+### Complete calendar shape
+
+A calendar rejects unknown keys and requires:
+
+- `schema_version`: integer `1` exactly (a boolean is not accepted)
+- `calendar_id`, `label`, `timezone`, `status`, `valid_from`,
+  `valid_through`, `last_verified_at`, `last_verified_by`, `source`, and
+  `events`
+- `timezone`: an installed IANA timezone such as `America/New_York`
+- `status`: `verified`, `reference`, or `stale`
+- `valid_from` and `valid_through`: strict real `YYYY-MM-DD` dates, with
+  `valid_through` on or after `valid_from`
+- `last_verified_at`: a strict real timezone-aware ISO datetime
+- optional `note`: source ambiguity or undated source information preserved as
+  text, without converting it into an operational fact
+
+`source` is a strict object with nonblank `kind` and `title`, a strict real
+timezone-aware ISO `retrieved_at` datetime, and at least one of `page_url` or
+`document_url`. `retrieved_at` may not be after `last_verified_at`. Source URLs
+must be absolute HTTP(S), may not contain credentials or fragments, and are
+provenance only: storing one does not promise scraping, refreshes, or automatic
+monitoring.
+
+Each `events` entry rejects unknown keys and requires:
+
+- `event_id`: a unique lowercase stable slug within the calendar
+- `start_date`, `end_date`: strict real `YYYY-MM-DD`, ordered and fully inside
+  the calendar coverage dates
+- `kind`: one of `first_student_day`, `final_student_day`, `no_student_day`,
+  `school_break`, `teacher_in_service`, `early_dismissal`,
+  `holiday_dismissal`, `snow_makeup_reserved`,
+  `flexible_instruction_reserved`, or `informational`
+- `label`
+- `student_status`: `in_session`, `no_students`, `early_dismissal`, or
+  `unknown`
+- `facility_status`: `open`, `closed`, or `unknown`
+- `bt_service_impact`: `normal`, `no_service`, `modified`, `confirm`, or
+  `unknown`
+- optional `dismissal_time`: strict local 24-hour `HH:MM`
+- optional `note`: text
+
+Student schedule, facility status, and B&T service impact are independent
+facts. In particular, `student_status: "no_students"` never implies
+`bt_service_impact: "no_service"`; authors must record each fact from evidence
+or use `unknown`/`confirm`. Expired historical calendars remain stored unless
+an explicit `remove` job targets them.
+
+### Runtime behavior notes
+
+- resolves `site_id` through the site registry and mutates
+  `location_<site_id>` through canonical CouchDB read-modify-write
+- `upsert` replaces the matching `calendar_id` in place or appends a new
+  calendar; unrelated entries and location fields are preserved
+- `remove` drops only the matching `calendar_id`
+- reprocessing the same job is idempotent via the `btq_job_ids` marker
+- dry-run reports the resolved target and performs no canonical read or write
+
+### Valid upsert example
+
+```json
+{
+  "job_id": "2026-07-30T14-00-00Z__demo-operational-calendar",
+  "job_type": "set_site_operational_calendar",
+  "payload": {
+    "site_id": "demo-site-01",
+    "action": "upsert",
+    "calendar_id": "demo-2026-2027",
+    "actor": "Demo Operator",
+    "source": "manual_review",
+    "calendar": {
+      "schema_version": 1,
+      "calendar_id": "demo-2026-2027",
+      "label": "Demo 2026-2027 operational calendar",
+      "timezone": "America/New_York",
+      "status": "verified",
+      "valid_from": "2026-08-01",
+      "valid_through": "2027-06-30",
+      "last_verified_at": "2026-07-30T13:45:00-04:00",
+      "last_verified_by": "Demo Operator",
+      "source": {
+        "kind": "client_document",
+        "title": "Public-safe synthetic calendar",
+        "retrieved_at": "2026-07-30T13:30:00-04:00",
+        "document_url": "https://example.com/demo-calendar.pdf"
+      },
+      "events": [
+        {
+          "event_id": "first-student-day",
+          "start_date": "2026-08-24",
+          "end_date": "2026-08-24",
+          "kind": "first_student_day",
+          "label": "First student day",
+          "student_status": "in_session",
+          "facility_status": "open",
+          "bt_service_impact": "normal"
+        },
+        {
+          "event_id": "autumn-in-service",
+          "start_date": "2026-10-12",
+          "end_date": "2026-10-12",
+          "kind": "teacher_in_service",
+          "label": "Teacher in-service day",
+          "student_status": "no_students",
+          "facility_status": "unknown",
+          "bt_service_impact": "confirm",
+          "note": "Student status does not determine service impact."
+        }
+      ],
+      "note": "Synthetic authoring example only."
+    }
+  }
+}
+```
+
+### Valid remove example
+
+```json
+{
+  "job_id": "2027-07-01T12-00-00Z__remove-demo-operational-calendar",
+  "job_type": "set_site_operational_calendar",
+  "payload": {
+    "site_id": "demo-site-01",
+    "action": "remove",
+    "calendar_id": "demo-2026-2027",
+    "actor": "Demo Operator",
+    "source": "manual_review"
+  }
+}
+```
+
+## 13d. `set_contact`
 
 Use when:
 

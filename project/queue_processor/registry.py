@@ -14,10 +14,10 @@ from queue_spec import (
     JOB_MARK_SUPPLY_STOCKED, JOB_PARSE_SUPPLY_EMAIL, JOB_PERSONAL_JOURNAL_ENTRY, JOB_PHOTO_CAPTURE,
     JOB_DEEP_ANALYSIS,
     JOB_PROMOTE_PROSPECT, JOB_RECORD_DAY_RECORD, JOB_RECORD_SHIFT_REPORT, JOB_SHIFT_REPORT_NOTE, JOB_RECORD_UNKNOWN_CAPTURE, JOB_RECLASSIFY_UNKNOWN, JOB_REMOVE_FROM_SCHEDULE, JOB_RETARGET_CAPTURE,
-    JOB_SET_CONTACT, JOB_SET_EMPLOYEE_CONTACT, JOB_SET_EMPLOYEE_ID, JOB_SET_ENTITY_STATUS, JOB_SET_SITE_HOURS, JOB_SET_SITE_URL, JOB_TRIGGER_RECRUITING, JOB_UPDATE_SITE_EQUIPMENT, JOB_VISIT_CREATE,
+    JOB_SET_CONTACT, JOB_SET_EMPLOYEE_CONTACT, JOB_SET_EMPLOYEE_ID, JOB_SET_ENTITY_STATUS, JOB_SET_SITE_HOURS, JOB_SET_SITE_OPERATIONAL_CALENDAR, JOB_SET_SITE_URL, JOB_TRIGGER_RECRUITING, JOB_UPDATE_SITE_EQUIPMENT, JOB_VISIT_CREATE,
     JOB_VOICE_MEMO_NOTE,
 )
-from queue_processor.handlers import contacts, deep_analysis, employee_updates, misc, people, site_flags_notes, site_hours, site_urls, supplies_equipment, supplies_equipment_transitions, supply_requests, unknowns, visits
+from queue_processor.handlers import contacts, deep_analysis, employee_updates, misc, people, site_flags_notes, site_hours, site_operational_calendar, site_urls, supplies_equipment, supplies_equipment_transitions, supply_requests, unknowns, visits
 from queue_processor.handlers._shared import QueueJob, QueueProcessorError, RunContext
 
 JobHandler = Callable[[Path, QueueJob, RunContext, Path], None]
@@ -55,6 +55,7 @@ JOB_HANDLERS: dict[str, JobHandler] = {
     JOB_UPDATE_SITE_EQUIPMENT: supplies_equipment.process_update_site_equipment_job,
     JOB_SET_SITE_URL: site_urls.process_set_site_url_job,
     JOB_SET_SITE_HOURS: site_hours.process_set_site_hours_job,
+    JOB_SET_SITE_OPERATIONAL_CALENDAR: site_operational_calendar.process_set_site_operational_calendar_job,
     JOB_SET_CONTACT: contacts.process_set_contact_job,
     JOB_MARK_SUPPLY_ORDERED: supplies_equipment_transitions.process_mark_supply_ordered_job,
     JOB_MARK_SUPPLY_DELIVERED: supplies_equipment_transitions.process_mark_supply_delivered_job,

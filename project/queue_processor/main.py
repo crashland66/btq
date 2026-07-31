@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from config import require_directories
-from queue_processor.handlers import contacts, misc, people, site_flags_notes, site_hours, site_urls, supplies_equipment, supplies_equipment_transitions, supply_requests, unknowns, visits
+from queue_processor.handlers import contacts, misc, people, site_flags_notes, site_hours, site_operational_calendar, site_urls, supplies_equipment, supplies_equipment_transitions, supply_requests, unknowns, visits
 from queue_processor.handlers import _shared
 from queue_processor.processed_index import ProcessedJobIdLookup, append_record, build_record, load_processed_job_id_lookup, processed_job_id_exists as indexed_processed_job_id_exists
 from queue_processor.manifest import record_processed_mutation
@@ -28,7 +28,7 @@ from queue_spec import (
     JOB_PARSE_SUPPLY_EMAIL, JOB_PERSONAL_JOURNAL_ENTRY, JOB_PHOTO_CAPTURE, JOB_PROMOTE_PROSPECT,
     JOB_RECORD_DAY_RECORD, JOB_RECORD_SHIFT_REPORT, JOB_RECORD_UNKNOWN_CAPTURE, JOB_RECLASSIFY_UNKNOWN,
     JOB_REMOVE_FROM_SCHEDULE, JOB_RETARGET_CAPTURE, JOB_SET_EMPLOYEE_CONTACT, JOB_SET_EMPLOYEE_ID, JOB_SHIFT_REPORT_NOTE, JOB_TRIGGER_RECRUITING,
-    JOB_SET_CONTACT, JOB_SET_ENTITY_STATUS, JOB_SET_SITE_HOURS, JOB_SET_SITE_URL, JOB_UPDATE_SITE_EQUIPMENT, JOB_VISIT_CREATE, JOB_VOICE_MEMO_NOTE,
+    JOB_SET_CONTACT, JOB_SET_ENTITY_STATUS, JOB_SET_SITE_HOURS, JOB_SET_SITE_OPERATIONAL_CALENDAR, JOB_SET_SITE_URL, JOB_UPDATE_SITE_EQUIPMENT, JOB_VISIT_CREATE, JOB_VOICE_MEMO_NOTE,
 )
 
 _NON_QUEUE_JOB_TYPES = frozenset[str]()
@@ -71,6 +71,7 @@ process_visit_create_job = visits.process_visit_create_job
 process_photo_capture_job = visits.process_photo_capture_job
 process_set_contact_job = contacts.process_set_contact_job
 process_set_site_hours_job = site_hours.process_set_site_hours_job
+process_set_site_operational_calendar_job = site_operational_calendar.process_set_site_operational_calendar_job
 process_add_person_job = people.process_add_person_job
 process_assign_employee_site_job = people.process_assign_employee_site_job
 process_trigger_recruiting_job = people.process_trigger_recruiting_job
@@ -401,7 +402,7 @@ def target_path_hint(job: QueueJob, context: RunContext) -> str:
             return _canonical_location_hint(payload.get("site_id") or payload["site"])
         if job.job_type == JOB_SET_SITE_URL:
             return _canonical_location_hint(payload["site_id"])
-        if job.job_type == JOB_SET_SITE_HOURS:
+        if job.job_type in {JOB_SET_SITE_HOURS, JOB_SET_SITE_OPERATIONAL_CALENDAR}:
             return _canonical_location_hint(payload["site_id"])
         if job.job_type == JOB_SET_CONTACT:
             target = payload.get("target")
