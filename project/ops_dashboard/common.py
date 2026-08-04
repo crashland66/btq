@@ -64,6 +64,7 @@ KNOWN_JOB_SUMMARY_TYPES = {
     "log_availability_constraint",
     "set_entity_status",
     "set_employee_contact",
+    "set_employee_home_address",
     "set_employee_id",
     "set_contact",
     "set_site_hours",
@@ -1302,6 +1303,12 @@ def render_job_summary(job_type: object, payload: object) -> str:
         changed = ", ".join(field for field in ("phone", "email") if field in contact)
         suffix = _join_summary_parts(person, f"({changed})" if changed else "")
         return _summary_with_suffix("Update contact for", suffix)
+    if job_type_text == "set_employee_home_address":
+        # Sensitive PII: the summary names the person and the operation only —
+        # never any part of the address itself.
+        person = html.escape(_clean_display_part(body.get("person")))
+        verb = "Clear home address for" if _clean_display_part(body.get("action")) == "clear" else "Update home address for"
+        return _summary_with_suffix(verb, person)
     if job_type_text == "trigger_recruiting":
         suffix = _join_summary_parts(_site_summary(body), f"({html.escape(_clean_display_part(body.get('priority')))})" if _clean_display_part(body.get("priority")) else "")
         return _summary_with_suffix("Trigger recruiting at", suffix)
@@ -1625,6 +1632,39 @@ def write_edit_record_fields_job(
     queue_dir = runtime_root.expanduser().resolve(strict=False) / "queue"
     queue_dir.mkdir(parents=True, exist_ok=True)
     queue_path = queue_dir / f"edit-record-fields-{suffix}.json"
+    temp_path = queue_path.with_name(f".{queue_path.name}.tmp")
+    temp_path.write_text(json.dumps(job, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    temp_path.replace(queue_path)
+    return queue_path
+
+
+def write_set_employee_home_address_job(
+    runtime_root: Path,
+    *,
+    person: str,
+    actor: str,
+    home_address: dict[str, str] | None = None,
+    action: str = "set",
+    source: str = "ops_dashboard",
+) -> Path:
+    from queue_spec import JOB_SET_EMPLOYEE_HOME_ADDRESS, validate_job
+
+    suffix = str(uuid.uuid4())
+    payload: dict[str, object] = {"person": person, "actor": actor, "source": source}
+    if action == "clear":
+        payload["action"] = "clear"
+    else:
+        payload["home_address"] = dict(home_address or {})
+    job = {
+        "job_id": f"set-employee-home-address-{suffix}",
+        "job_type": JOB_SET_EMPLOYEE_HOME_ADDRESS,
+        "payload": payload,
+    }
+    if not validate_job(job):
+        raise ValueError("invalid set_employee_home_address payload")
+    queue_dir = runtime_root.expanduser().resolve(strict=False) / "queue"
+    queue_dir.mkdir(parents=True, exist_ok=True)
+    queue_path = queue_dir / f"set-employee-home-address-{suffix}.json"
     temp_path = queue_path.with_name(f".{queue_path.name}.tmp")
     temp_path.write_text(json.dumps(job, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     temp_path.replace(queue_path)
