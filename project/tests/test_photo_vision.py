@@ -181,7 +181,8 @@ def test_mlx_text_client_uses_vlm_text_only_generation(monkeypatch: pytest.Monke
 
     def stream_generate(*args: object, **kwargs: object) -> list[Chunk]:
         calls["stream_generate"] = (args, kwargs)
-        return [Chunk('{"issue_type"'), Chunk(':"other"}'), Chunk(" ignored")]
+        # Chunks CONTINUE the prefilled "{" (text-only + JSON prefill contract).
+        return [Chunk('"issue_type"'), Chunk(':"other"}'), Chunk(" ignored")]
 
     def apply_chat_template(*args: object, **kwargs: object) -> str:
         calls["template"] = (args, kwargs)
@@ -207,12 +208,11 @@ def test_mlx_text_client_uses_vlm_text_only_generation(monkeypatch: pytest.Monke
     assert calls["load"] == ("mlx-community/test-vlm", False)
     template_args, template_kwargs = calls["template"]
     assert template_args[0] is processor_obj
-    assert template_kwargs["num_images"] == 1
+    assert template_kwargs["num_images"] == 0
     generate_args, generate_kwargs = calls["stream_generate"]
-    assert generate_args[:3] == (model_obj, processor_obj, "formatted text prompt")
-    assert isinstance(generate_args[3], list)
-    assert len(generate_args[3]) == 1
-    assert Path(generate_args[3][0]).exists()
+    assert generate_args[:3] == (model_obj, processor_obj, "formatted text prompt{")
+    # Text-only: no placeholder image travels with the request anymore.
+    assert generate_args[3] == []
     assert generate_kwargs["max_tokens"] == 123
 
 

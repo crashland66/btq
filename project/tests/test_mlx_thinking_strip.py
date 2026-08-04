@@ -14,6 +14,7 @@ is ever loaded.
 
 from __future__ import annotations
 
+import json
 import sys
 import types
 from pathlib import Path
@@ -122,16 +123,46 @@ def test_generate_json_ignores_json_quoted_inside_thinking(monkeypatch: pytest.M
 
 
 def test_generate_json_still_early_exits_for_immediate_answers(monkeypatch: pytest.MonkeyPatch) -> None:
-    # Non-thinking models (Qwen2.5) answer with bare JSON immediately; the
+    # Non-thinking models answer by continuing the prefilled "{" directly; the
     # early exit must survive so streams don't always run to max_tokens.
     client = _text_client(monkeypatch)
     consumed: list[str] = []
-    client._stream_generate = _stream_of([REAL_ANSWER, "TRAILING-NEVER-CONSUMED"], consumed)
+    continuation = '"item_name": "paper towels", "quantity": 2}'
+    client._stream_generate = _stream_of([continuation, "TRAILING-NEVER-CONSUMED"], consumed)
 
     result = client.generate_json("prompt")
 
     assert result == {"item_name": "paper towels", "quantity": 2}
-    assert consumed == [REAL_ANSWER]
+    assert consumed == [continuation]
+
+
+def test_text_generation_is_text_only_with_json_prefill(monkeypatch: pytest.MonkeyPatch) -> None:
+    # MUTATION GUARD: no placeholder image (thinking models burned their token
+    # budget reasoning about the blank image) and the prompt ends with the
+    # prefilled "{" so generation starts inside the JSON object.
+    client = _text_client(monkeypatch)
+    recorded: dict[str, object] = {}
+
+    def spy(*args: object, **kwargs: object):
+        recorded["args"] = args
+        yield _Chunk('"issue_type": "other"}')
+
+    client._stream_generate = spy
+    result = client.generate_json("prompt")
+
+    assert result == {"issue_type": "other"}
+    args = recorded["args"]
+    assert str(args[2]).endswith("{")  # prefilled opening brace
+    assert args[3] == []  # no images
+
+
+def test_extract_json_takes_first_complete_object_over_trailing_junk() -> None:
+    # MUTATION GUARD for the "Extra data" class: thinking models repeat the
+    # JSON or append commentary; the first complete object must win.
+    from vision_backends import extract_json_from_model_output
+
+    raw = '{"a": 1} and also, for clarity: {"a": 999}'
+    assert json.loads(extract_json_from_model_output(raw)) == {"a": 1}
 
 
 def test_generate_json_strips_thinking_from_single_chunk(monkeypatch: pytest.MonkeyPatch) -> None:

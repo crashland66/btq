@@ -55,10 +55,6 @@ def strip_model_thinking(text: str) -> str:
 
 
 _TAILSCALE_CGNAT_NETWORK = ipaddress.ip_network("100.64.0.0/10")
-_MLX_TEXT_PLACEHOLDER_IMAGE = Path("/tmp/btq_mlx_text_placeholder.png")
-_MLX_TEXT_PLACEHOLDER_PNG_B64 = (
-    "iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAIAAAD8GO2jAAAAJklEQVR42u3NMQ0AAAwDoPo33arYsQQMkB6LQCAQCAQCgUAg+BIMi1X0ptsIcT0AAAAASUVORK5CYII="
-)
 
 logger = logging.getLogger(__name__)
 
@@ -289,8 +285,17 @@ def extract_json_from_model_output(raw: str) -> str:
     m = _JSON_BLOCK_RE.search(raw)
     if m:
         return m.group(1).strip()
-    # Find the first { … } span as a fallback
     start = raw.find("{")
+    if start != -1:
+        # First COMPLETE object wins: thinking-family models repeat the JSON
+        # or append commentary, and a naive first-{ to last-} slice spans the
+        # junk ("Extra data" parse failures).
+        try:
+            _value, end = json.JSONDecoder().raw_decode(raw[start:])
+            return raw[start:start + end]
+        except json.JSONDecodeError:
+            pass
+    # Find the first { … } span as a fallback
     end = raw.rfind("}")
     if start != -1 and end > start:
         return raw[start:end + 1]
@@ -422,16 +427,21 @@ class MlxTextClient:
         raise RuntimeError("mlx-vlm text retry loop exited without a result")
 
     def _generate_response(self, prompt: str) -> str:
-        image_path = mlx_text_placeholder_image_path()
+        # Text-only with the opening brace prefilled. mlx-vlm >= 0.6.0 runs VL
+        # models without an image, which retires the blank-placeholder-image
+        # hack — thinking-family models (Qwen3.5) burned their entire token
+        # budget reasoning about why the image was blank. Prefilling "{" pins
+        # generation inside the JSON object instead of a prose preamble
+        # (measured ~50s -> ~3s per capture on the M4).
         formatted = self._apply_chat_template(
-            self._processor, self._config, prompt, num_images=1
+            self._processor, self._config, prompt, num_images=0
         )
-        text = ""
+        text = "{"
         for response in self._stream_generate(
             self._model,
             self._processor,
-            formatted,
-            [str(image_path)],
+            f"{formatted}{{",
+            [],
             max_tokens=self.max_tokens,
             temperature=self.temperature,
         ):
@@ -484,13 +494,6 @@ def _resize_image_for_mlx(image_path: Path) -> tuple[Path, bool]:
             tmp_path.unlink(missing_ok=True)
             raise
     return tmp_path, True
-
-
-def mlx_text_placeholder_image_path() -> Path:
-    image_bytes = base64.b64decode(_MLX_TEXT_PLACEHOLDER_PNG_B64)
-    if not _MLX_TEXT_PLACEHOLDER_IMAGE.exists() or _MLX_TEXT_PLACEHOLDER_IMAGE.read_bytes() != image_bytes:
-        _MLX_TEXT_PLACEHOLDER_IMAGE.write_bytes(image_bytes)
-    return _MLX_TEXT_PLACEHOLDER_IMAGE
 
 
 def validate_local_ollama_url(ollama_url: str) -> None:
