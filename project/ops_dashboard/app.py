@@ -21,7 +21,7 @@ from media_store import LocalFilesystemStore, get_media_store
 from ops_dashboard.common import SectionContext
 from ops_dashboard.layout import html_page
 from ops_dashboard.post_routes import dispatch_post_route
-from ops_dashboard.sections import admin, audio, batch_images, candidates, captures, clients, drafts, employee_detail, employees, equipment, failed, field_photos, health, health_pipeline, help as help_section, home, inbox, issues, photos, prospect_detail, records, site_detail, site_orders, sites, supplies, swipe, system, tokens, workers
+from ops_dashboard.sections import admin, audio, batch_images, candidates, captures, clients, coverage, drafts, employee_detail, employees, equipment, failed, field_photos, health, health_pipeline, help as help_section, home, inbox, issues, photos, prospect_detail, records, site_detail, site_orders, sites, supplies, swipe, system, tokens, workers
 from shared_pwa.assets import serve_static_asset
 
 # Cap concurrent request workers. stdlib ThreadingHTTPServer spawns an
@@ -176,6 +176,10 @@ def route_response_with_headers(method: str, path: str, runtime_root: Path, body
         return serve_media_response(route_path.removeprefix("/media/"), runtime_root)
     if route_path == "/runtime-file":
         return failed.handle_runtime_file(ctx)
+    if route_path.startswith("/sites/") and route_path.endswith("/coverage") and route_path not in SECTION_ROUTES:
+        site_id = route_path.removeprefix("/sites/").removesuffix("/coverage").strip("/")
+        if site_id and "/" not in site_id:
+            return (HTTPStatus.OK, "text/html; charset=utf-8", coverage.render(ctx, site_id).encode("utf-8"), {})
     if route_path.startswith("/sites/") and route_path not in SECTION_ROUTES:
         site_id = route_path.removeprefix("/sites/").rstrip("/")
         if site_id and "/" not in site_id:
