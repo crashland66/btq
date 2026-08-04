@@ -185,7 +185,7 @@ def test_text_client_honors_env_max_tokens(monkeypatch: pytest.MonkeyPatch) -> N
 def _vision_client(responses: list[str]) -> object:
     client = vision_backends.MlxVisionClient.__new__(vision_backends.MlxVisionClient)
     client.max_tokens = 512
-    client._generate_response = lambda _prompt, _image: responses.pop(0)
+    client._generate_response = lambda _prompt, _image, **_kwargs: responses.pop(0)
     return client
 
 

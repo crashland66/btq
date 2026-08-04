@@ -179,17 +179,20 @@ def default_vision_describe_factory(
 
 
 # MLX client cache: model loads once per process and is reused across cycles.
-_MLX_CLIENT_CACHE: dict[str, photo_vision.MlxVisionClient] = {}
+# Keyed by (model, strategy) so a BTQ_VISION_STRATEGY change never reuses a
+# client built for the other strategy.
+_MLX_CLIENT_CACHE: dict[tuple[str, str], object] = {}
 
 
 def mlx_vision_describe_factory(
     model: str,
     ollama_url: str,  # unused — MLX runs locally on-device
     timeout_seconds: float,  # unused — MLX inference is synchronous
-) -> photo_vision.MlxVisionClient:
-    if model not in _MLX_CLIENT_CACHE:
-        _MLX_CLIENT_CACHE[model] = photo_vision.MlxVisionClient(model=model)
-    return _MLX_CLIENT_CACHE[model]
+) -> object:
+    key = (model, photo_vision.vision_strategy())
+    if key not in _MLX_CLIENT_CACHE:
+        _MLX_CLIENT_CACHE[key] = photo_vision.build_mlx_vision_client(model)
+    return _MLX_CLIENT_CACHE[key]
 
 
 class IsolatedMlxVisionDescribe:
