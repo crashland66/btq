@@ -16,7 +16,7 @@ from config import get_config
 from event_pipeline.couchdb_registry import CouchDBRegistryError
 from field_capture.defect_taxonomies import defect_taxonomy_prompt_block
 from field_capture.display_categories import QC_CAPTURE_CATEGORY
-from field_capture.photo_vision_categories import derive_vision_category_fields
+from field_capture.photo_vision_categories import default_qc_categories, derive_vision_category_fields
 from field_capture.site_viewer import UnsafeMediaPath, resolve_media_path, upload_id_for_path
 from processing_core.artifacts import read_json_object, resolve_within_root, write_json_object
 from processing_core.hashing import file_sha256
@@ -600,6 +600,161 @@ def prompt_for(asset: FieldPhotoAsset, qc_category: object | None = None) -> str
     )
 
 
+def _site_context_block(asset: FieldPhotoAsset) -> str:
+    site_context = site_vision_context_for(asset.site_id)
+    if site_context:
+        return (
+            "Facility context (background only — describe what is in THIS image. "
+            "Do not invent details from the context):\n"
+            f"  facility: {site_context.site_context_name}\n"
+            f"  facility_type: {site_context.facility_type}\n"
+            f"  context: {site_context.context}\n"
+        )
+    return "No site-specific background context is available. Do not invent site details.\n"
+
+
+def rich_description_prompt_for(asset: FieldPhotoAsset, qc_category: object | None = None) -> str:
+    """Pass 1 of the two-pass strategy: free prose, no JSON constraint.
+
+    Rich description is where attentive models earn their keep; the structured
+    judgment happens afterwards in classification_prompt_for with this prose
+    as evidence.
+    """
+    category_line = ""
+    category = str(qc_category or "").strip()
+    if category:
+        category_line = f"The worker filed this photo under the category: {category}.\n"
+    return (
+        "You are writing a rich, operator-grade description of one field-capture photo "
+        "for a cleaning-operations archive.\n"
+        "\n"
+        f"{_site_context_block(asset)}"
+        f"{category_line}"
+        "\n"
+        "Write 4-8 sentences of concrete prose. Name the room type and every clearly "
+        "identifiable fixture or object by its common noun (paper towel dispenser, urinal, "
+        "partition, tile floor, desk, monitor, cabinet, etc.). Describe the surfaces and "
+        "their condition plainly — clean, dirty, streaked, dusty, worn, wet, cluttered — "
+        "and anything a cleaning operator would want to act on. This is an INTERNAL "
+        "operations review: be candid, do not soften or hedge.\n"
+        "\n"
+        "Hard rules:\n"
+        "  - Describe only what is visible. Do not invent objects, scenes, or hidden facts.\n"
+        "  - Privacy: do not identify any specific person — no names, and no identifying "
+        "descriptions of individuals.\n"
+        "  - If the image is a phone screenshot or app UI rather than a photo of a physical "
+        "space, say so and describe the visible screen content including any error text.\n"
+        "\n"
+        "Output the description only — plain prose, no headings, no lists, no JSON."
+    )
+
+
+def classification_prompt_for(
+    asset: FieldPhotoAsset,
+    qc_category: object | None,
+    rich_description: str,
+) -> str:
+    """Pass 2 of the two-pass strategy: the structured judgment, with the
+    pass-1 prose in context as the model's own articulated evidence."""
+    taxonomy_block = ""
+    if vision_lane_for(qc_category) == VISION_LANE_QC:
+        taxonomy_block = defect_taxonomy_prompt_block(qc_category)
+    category_labels = [
+        str(entry.get("label") or entry.get("canonical") or "").strip()
+        for entry in default_qc_categories()
+    ]
+    category_list = "; ".join(label for label in category_labels if label)
+    return (
+        "You are classifying a single field-capture photo for an operations review pipeline. "
+        "You already wrote this operator-grade description from the same photo:\n"
+        "\n"
+        f"---\n{rich_description.strip()}\n---\n"
+        "\n"
+        "Use the description and the image together. Return strict JSON with exactly these keys:\n"
+        "  area_guess (string): the area this photo shows. If one of these QC categories fits, "
+        f"use its EXACT label: {category_list}. Otherwise use a specific room-type word "
+        "(stairwell, supply_closet, janitor_closet, exterior, other). Judge from the image and "
+        "description alone.\n"
+        "  visible_objects (array of strings): each entry one common noun naming one identified "
+        "object; list each distinct object once.\n"
+        "  possible_conditions (array of strings): observable facts about state and condition.\n"
+        "  possible_issues (array of strings): concrete visible exceptions a reviewer might act on; "
+        "empty array if none.\n"
+        "  confidence (number 0.0-1.0): lower when the image is unclear, blurry, or ambiguous.\n"
+        "  needs_human_review (boolean): true if ambiguous, contains people, or partly obscured.\n"
+        "  warnings (array of strings): empty, or short flags about the image itself.\n"
+        "  quality_flags (optional, array of strings): zero or more from: blurry, motion_blur, "
+        "out_of_frame, partly_obscured, too_dark, too_bright, glare, low_resolution, "
+        "contains_people, unanalyzable.\n"
+        "\n"
+        f"{taxonomy_block}"
+        "Hard rules:\n"
+        "  - Judge only what is visible. Be candid about condition; this is an internal review.\n"
+        "  - Privacy: flag people only via contains_people / needs_human_review — never identify anyone.\n"
+        "  - If the image is a phone screenshot or app UI, set area_guess to \"other\", include "
+        f"\"unanalyzable\" in quality_flags, set needs_human_review to true, include "
+        f"\"{SCREENSHOT_OR_APP_UI_WARNING}\" in warnings, and set possible_issues to [].\n"
+        "\n"
+        f"{_site_context_block(asset)}"
+        "\n"
+        "Do not repeat the description. Output ONLY the JSON object."
+    )
+
+
+class TwoPassMlxVisionClient:
+    """Rich prose description first, structured classification second — one
+    loaded model, two generations per photo.
+
+    Pass 1 lets the model describe freely (its strength, especially for
+    thinking-family models); pass 2 makes the structured judgment with that
+    prose as evidence, JSON-prefilled so reasoning never eats the budget.
+    The merged result is a standard VisionDescription: downstream consumers
+    see the same shape with a much richer description field.
+    """
+
+    provider = "mlx"
+
+    def __init__(self, model: str, max_tokens: int | None = None) -> None:
+        self._client = vision_backends.MlxVisionClient(model, max_tokens)
+        self.model = self._client.model
+        self.model_path = self._client.model_path
+        self.max_tokens = self._client.max_tokens
+        self.engine_name = f"{self._client.engine_name}:two-pass"
+
+    def __call__(self, asset: FieldPhotoAsset) -> VisionDescription:
+        return self.describe_for_qc_category(asset, asset.qc_category)
+
+    def describe_for_qc_category(self, asset: FieldPhotoAsset, qc_category: object) -> VisionDescription:
+        prose = self._client.generate_text(
+            asset.image_path, rich_description_prompt_for(asset, qc_category)
+        )
+        parsed = self._client.describe(
+            asset.image_path,
+            classification_prompt_for(asset, qc_category, prose),
+            json_prefill=True,
+        )
+        parsed["description"] = prose
+        return normalize_vision_description(parsed)
+
+
+VISION_STRATEGY_SINGLE = "single"
+VISION_STRATEGY_TWO_PASS = "two_pass"
+
+
+def vision_strategy() -> str:
+    raw = os.environ.get("BTQ_VISION_STRATEGY", "").strip().lower()
+    return VISION_STRATEGY_TWO_PASS if raw == VISION_STRATEGY_TWO_PASS else VISION_STRATEGY_SINGLE
+
+
+def build_mlx_vision_client(model: str, max_tokens: int | None = None) -> "MlxVisionClient | TwoPassMlxVisionClient":
+    """The one construction point for production MLX vision clients: the
+    BTQ_VISION_STRATEGY env var picks single-pass (default, today's behavior)
+    or the two-pass rich-description strategy."""
+    if vision_strategy() == VISION_STRATEGY_TWO_PASS:
+        return TwoPassMlxVisionClient(model, max_tokens)
+    return MlxVisionClient(model, max_tokens)
+
+
 class OllamaVisionClient:
     provider = "ollama"
 
@@ -978,7 +1133,7 @@ def run(argv: list[str] | None = None) -> int:
     upload_dir = (args.upload_dir or default_upload_dir(runtime_root)).expanduser()
     photo_vision_dir = (args.photo_vision_dir or default_photo_vision_dir(runtime_root)).expanduser()
     if args.backend == "mlx":
-        client: OllamaVisionClient | MlxVisionClient = MlxVisionClient(model=args.model)
+        client: OllamaVisionClient | MlxVisionClient | TwoPassMlxVisionClient = build_mlx_vision_client(args.model)
     else:
         client = OllamaVisionClient(model=args.model, ollama_url=args.ollama_url, timeout_seconds=args.timeout_seconds)
     counts = process_photo_assets(

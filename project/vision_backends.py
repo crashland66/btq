@@ -331,11 +331,11 @@ class MlxVisionClient:
         self._generate = mlx_generate
         logger.info("mlx: model loaded")
 
-    def describe(self, image_path: Path, prompt: str) -> dict:
+    def describe(self, image_path: Path, prompt: str, *, json_prefill: bool = False) -> dict:
         inference_path, was_resized = _resize_image_for_mlx(image_path)
         try:
             for attempt in range(1, _MAX_VISION_JSON_ATTEMPTS + 1):
-                raw = self._generate_response(prompt, str(inference_path))
+                raw = self._generate_response(prompt, str(inference_path), json_prefill=json_prefill)
                 candidate = extract_json_from_model_output(strip_model_thinking(raw))
                 try:
                     parsed = json.loads(candidate)
@@ -365,10 +365,15 @@ class MlxVisionClient:
             if was_resized:
                 inference_path.unlink(missing_ok=True)
 
-    def _generate_response(self, prompt: str, image_path: str) -> str:
+    def _generate_response(self, prompt: str, image_path: str, *, json_prefill: bool = False) -> str:
         formatted = self._apply_chat_template(
             self._processor, self._config, prompt, num_images=1
         )
+        if json_prefill:
+            # Pin generation inside the JSON object — thinking-family models
+            # otherwise reason about the image past their whole token budget
+            # before emitting any JSON (same trick as the text client).
+            formatted = f"{formatted}{{"
         result = self._generate(
             self._model,
             self._processor,
@@ -378,7 +383,8 @@ class MlxVisionClient:
             verbose=False,
         )
         # mlx-vlm >=0.6.0 returns a GenerationResult, not a str; older returns str.
-        return getattr(result, "text", result)
+        text = getattr(result, "text", result)
+        return f"{{{text}" if json_prefill else text
 
 
 class MlxTextClient:
