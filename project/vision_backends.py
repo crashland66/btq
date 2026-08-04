@@ -28,6 +28,32 @@ MAX_MLX_IMAGE_LONG_EDGE = 1280
 LOCAL_OLLAMA_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 _MAX_VISION_JSON_ATTEMPTS = 3
 _JSON_BLOCK_RE = re.compile(r"```(?:json)?\s*([\s\S]*?)```", re.IGNORECASE)
+_THINK_END_TAG = "</think>"
+
+
+def mlx_max_tokens(explicit: int | None = None) -> int:
+    """Token budget for MLX generation. BTQ_MLX_MAX_TOKENS overrides the
+    default — thinking-family models (Qwen3.x) spend part of the budget on
+    reasoning, so they need headroom the classic 512 doesn't leave."""
+    if explicit is not None:
+        return explicit
+    raw = os.environ.get("BTQ_MLX_MAX_TOKENS", "").strip()
+    return int(raw) if raw else DEFAULT_MLX_MAX_TOKENS
+
+
+def strip_model_thinking(text: str) -> str:
+    """Drop a leading reasoning block from thinking-family model output.
+
+    Qwen3.x emits reasoning terminated by </think> before the answer (the
+    opening tag is often part of the generation prompt and never appears in
+    the output). Everything before the LAST closing tag is reasoning; only
+    what follows may reach JSON parsing or be stored as prose.
+    """
+    if _THINK_END_TAG in text:
+        return text.rsplit(_THINK_END_TAG, 1)[1]
+    return text
+
+
 _TAILSCALE_CGNAT_NETWORK = ipaddress.ip_network("100.64.0.0/10")
 _MLX_TEXT_PLACEHOLDER_IMAGE = Path("/tmp/btq_mlx_text_placeholder.png")
 _MLX_TEXT_PLACEHOLDER_PNG_B64 = (
@@ -280,7 +306,7 @@ class MlxVisionClient:
 
     provider = "mlx"
 
-    def __init__(self, model: str, max_tokens: int = DEFAULT_MLX_MAX_TOKENS) -> None:
+    def __init__(self, model: str, max_tokens: int | None = None) -> None:
         try:
             from mlx_vlm import load, generate as mlx_generate  # noqa: F401
             from mlx_vlm.prompt_utils import apply_chat_template  # noqa: F401
@@ -291,7 +317,7 @@ class MlxVisionClient:
             ) from exc
         self.model = model
         self.model_path = model
-        self.max_tokens = max_tokens
+        self.max_tokens = mlx_max_tokens(max_tokens)
         self.engine_name = f"mlx:{model}"
         logger.info("mlx: loading model %s", model)
         self._model, self._processor = load(model, use_fast=False)
@@ -305,7 +331,7 @@ class MlxVisionClient:
         try:
             for attempt in range(1, _MAX_VISION_JSON_ATTEMPTS + 1):
                 raw = self._generate_response(prompt, str(inference_path))
-                candidate = extract_json_from_model_output(raw)
+                candidate = extract_json_from_model_output(strip_model_thinking(raw))
                 try:
                     parsed = json.loads(candidate)
                 except json.JSONDecodeError as exc:
@@ -329,7 +355,7 @@ class MlxVisionClient:
     def generate_text(self, image_path: Path, prompt: str) -> str:
         inference_path, was_resized = _resize_image_for_mlx(image_path)
         try:
-            return self._generate_response(prompt, str(inference_path))
+            return strip_model_thinking(self._generate_response(prompt, str(inference_path))).strip()
         finally:
             if was_resized:
                 inference_path.unlink(missing_ok=True)
@@ -355,7 +381,7 @@ class MlxTextClient:
 
     provider = "mlx"
 
-    def __init__(self, model: str = DEFAULT_MLX_MODEL, max_tokens: int = DEFAULT_MLX_MAX_TOKENS) -> None:
+    def __init__(self, model: str = DEFAULT_MLX_MODEL, max_tokens: int | None = None) -> None:
         try:
             from mlx_vlm import load, stream_generate  # noqa: F401
             from mlx_vlm.prompt_utils import apply_chat_template  # noqa: F401
@@ -365,7 +391,7 @@ class MlxTextClient:
                 "mlx-vlm is not installed; run: pip install 'bt-pipeline[vision-mlx]'"
             ) from exc
         self.model = model
-        self.max_tokens = max_tokens
+        self.max_tokens = mlx_max_tokens(max_tokens)
         self.temperature = _semantic_text_temperature()
         logger.info("mlx-vlm text: loading model %s", model)
         self._model, self._processor = load(model, use_fast=False)
@@ -377,7 +403,7 @@ class MlxTextClient:
     def generate_json(self, prompt: str) -> dict:
         for attempt in range(1, _MAX_VISION_JSON_ATTEMPTS + 1):
             raw = self._generate_response(prompt)
-            candidate = extract_json_from_model_output(raw)
+            candidate = extract_json_from_model_output(strip_model_thinking(raw))
             try:
                 parsed = json.loads(candidate)
             except json.JSONDecodeError as exc:
@@ -410,7 +436,15 @@ class MlxTextClient:
             temperature=self.temperature,
         ):
             text += getattr(response, "text", str(response))
-            candidate = extract_json_from_model_output(text)
+            # A thinking model's reasoning can quote complete JSON before the
+            # real answer; only early-exit once the think block has closed, or
+            # when the output opened directly with the answer (non-thinking
+            # models emitting bare/fenced JSON). Anything else streams on and
+            # falls through to generate_json's full-text parse.
+            thinking_closed = _THINK_END_TAG in text
+            if not (thinking_closed or text.lstrip().startswith(("{", "```"))):
+                continue
+            candidate = extract_json_from_model_output(strip_model_thinking(text))
             try:
                 json.loads(candidate)
             except json.JSONDecodeError:
@@ -497,7 +531,7 @@ def build_vision_client(
     model: str | None = None,
     ollama_url: str = DEFAULT_OLLAMA_URL,
     timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
-    max_tokens: int = DEFAULT_MLX_MAX_TOKENS,
+    max_tokens: int | None = None,
 ) -> MlxVisionClient | OllamaVisionClient:
     if backend == "mlx":
         return MlxVisionClient(model or DEFAULT_MLX_MODEL, max_tokens=max_tokens)

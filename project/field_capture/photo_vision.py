@@ -628,7 +628,7 @@ class MlxVisionClient:
 
     provider = "mlx"
 
-    def __init__(self, model: str, max_tokens: int = DEFAULT_MLX_MAX_TOKENS) -> None:
+    def __init__(self, model: str, max_tokens: int | None = None) -> None:
         self._client = vision_backends.MlxVisionClient(model, max_tokens)
         self.model = self._client.model
         self.model_path = self._client.model_path
