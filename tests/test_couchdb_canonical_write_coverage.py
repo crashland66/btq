@@ -58,6 +58,7 @@ CANONICAL_WRITERS: frozenset[str] = frozenset(
         "remove_from_schedule",
         "set_contact",
         "set_employee_contact",
+        "set_employee_home_address",
         "set_employee_id",
         "set_entity_status",
         "set_site_hours",
@@ -196,6 +197,9 @@ COUCHDB_PATH_TESTS: dict[str, list[str]] = {
     ],
     "set_employee_contact": [
         "project/tests/test_set_employee_contact_job.py::test_set_employee_contact_updates_only_contact_and_audit_fields",
+    ],
+    "set_employee_home_address": [
+        "project/tests/test_set_employee_home_address_job.py::test_set_home_address_adds_address_and_preserves_unrelated_fields",
     ],
     "set_entity_status": [
         "project/tests/test_queue_processor_couchdb_write.py::test_set_entity_status_site_sets_active_and_removes_legacy_status",

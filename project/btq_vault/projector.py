@@ -44,7 +44,9 @@ BROWSE_TYPES: list[str] = [
 
 # Fields never shown on entity detail pages: revision metadata and the
 # always-identical operator id add noise without informing the reader.
-SUPPRESSED_DETAIL_FIELDS: set[str] = {"_rev", "operator"}
+# Employee home addresses are sensitive PII: they live only on the
+# authorized operator surface, never in static projections.
+SUPPRESSED_DETAIL_FIELDS: set[str] = {"_rev", "operator", "home_address", "home_address_source"}
 
 # Preferred ordering for the scalar "Summary" grid on entity detail pages.
 # Any field not listed here follows in alphabetical order.

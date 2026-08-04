@@ -417,6 +417,16 @@ def append_to_markdown_section(existing_text: str, section_heading: str, content
     if existing_text.endswith("\n"):
         return f"{existing_text}\n{section_heading}\n{content_block}"
     return f"{existing_text}\n\n{section_heading}\n{content_block}"
+def normalized_home_address(value: object) -> dict[str, str]:
+    """Strip a validated home_address for canonical storage, dropping empty
+    optional fields so docs never carry null address noise."""
+    if not isinstance(value, dict):
+        return {}
+    return {
+        field: str(item).strip()
+        for field, item in value.items()
+        if item is not None and str(item).strip()
+    }
 def write_log_line(log_path: Path, line: str) -> None:
     with log_path.open("a", encoding="utf-8") as log_file:
         log_file.write(f"{line}\n")
