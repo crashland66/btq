@@ -480,7 +480,7 @@ def test_mlx_generate_text_returns_raw_text_no_json(tmp_path, monkeypatch):
 
     seen: dict[str, object] = {}
 
-    def fake_generate_response(prompt, image_path):
+    def fake_generate_response(prompt, image_path, **_kwargs):
         seen["prompt"] = prompt
         seen["image_path"] = image_path
         return prose
@@ -511,7 +511,7 @@ def test_mlx_generate_text_does_not_clean_unresized_original(tmp_path, monkeypat
 
     img = _png_file(tmp_path)
     client = vision_backends.MlxVisionClient.__new__(vision_backends.MlxVisionClient)
-    monkeypatch.setattr(client, "_generate_response", lambda prompt, image_path: "prose")
+    monkeypatch.setattr(client, "_generate_response", lambda prompt, image_path, **_kw: "prose")
     monkeypatch.setattr(vision_backends, "_resize_image_for_mlx", lambda path: (path, False))
 
     result = client.generate_text(img, "p")

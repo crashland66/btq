@@ -357,23 +357,38 @@ class MlxVisionClient:
                 inference_path.unlink(missing_ok=True)
         raise RuntimeError("mlx vision retry loop exited without a result")
 
-    def generate_text(self, image_path: Path, prompt: str) -> str:
+    def generate_text(self, image_path: Path, prompt: str, *, response_prefix: str = "") -> str:
+        """Free-prose generation. A response_prefix (e.g. "This photo shows")
+        is prefilled onto the assistant turn so thinking-family models continue
+        the sentence instead of planning out loud; it is returned as part of
+        the text."""
         inference_path, was_resized = _resize_image_for_mlx(image_path)
         try:
-            return strip_model_thinking(self._generate_response(prompt, str(inference_path))).strip()
+            raw = self._generate_response(
+                prompt, str(inference_path), response_prefix=response_prefix
+            )
+            return strip_model_thinking(raw).strip()
         finally:
             if was_resized:
                 inference_path.unlink(missing_ok=True)
 
-    def _generate_response(self, prompt: str, image_path: str, *, json_prefill: bool = False) -> str:
+    def _generate_response(
+        self,
+        prompt: str,
+        image_path: str,
+        *,
+        json_prefill: bool = False,
+        response_prefix: str = "",
+    ) -> str:
         formatted = self._apply_chat_template(
             self._processor, self._config, prompt, num_images=1
         )
-        if json_prefill:
-            # Pin generation inside the JSON object — thinking-family models
-            # otherwise reason about the image past their whole token budget
-            # before emitting any JSON (same trick as the text client).
-            formatted = f"{formatted}{{"
+        # Response prefix forcing: pin generation inside the answer —
+        # thinking-family models otherwise reason about the image past their
+        # whole token budget before answering (same trick as the text client).
+        prefix = "{" if json_prefill else response_prefix
+        if prefix:
+            formatted = f"{formatted}{prefix}"
         result = self._generate(
             self._model,
             self._processor,
@@ -384,7 +399,7 @@ class MlxVisionClient:
         )
         # mlx-vlm >=0.6.0 returns a GenerationResult, not a str; older returns str.
         text = getattr(result, "text", result)
-        return f"{{{text}" if json_prefill else text
+        return f"{prefix}{text}" if prefix else text
 
 
 class MlxTextClient:

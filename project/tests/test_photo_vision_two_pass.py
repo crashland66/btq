@@ -125,8 +125,9 @@ class _FakeInnerClient:
         self.engine_name = "mlx:fake-model"
         self.describe_calls: list[dict] = []
 
-    def generate_text(self, image_path: Path, prompt: str) -> str:
+    def generate_text(self, image_path: Path, prompt: str, *, response_prefix: str = "") -> str:
         self.prose_prompt = prompt
+        self.prose_response_prefix = response_prefix
         return "Rich prose: a dusty industrial restroom with two urinals and a streaked mirror."
 
     def describe(self, image_path: Path, prompt: str, *, json_prefill: bool = False) -> dict:
@@ -167,6 +168,9 @@ def test_two_pass_merges_prose_into_description(
     assert len(fake.describe_calls) == 1
     assert "Rich prose: a dusty industrial restroom" in fake.describe_calls[0]["prompt"]
     assert fake.describe_calls[0]["json_prefill"] is True
+    # MUTATION GUARD: the prose pass runs with the response prefix so a
+    # thinking model describes instead of planning out loud.
+    assert fake.prose_response_prefix == "This photo shows"
 
 
 def test_two_pass_result_is_standard_shape(industrial_context, monkeypatch: pytest.MonkeyPatch) -> None:

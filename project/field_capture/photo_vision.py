@@ -724,9 +724,15 @@ class TwoPassMlxVisionClient:
     def __call__(self, asset: FieldPhotoAsset) -> VisionDescription:
         return self.describe_for_qc_category(asset, asset.qc_category)
 
+    # Prefilled opening of the prose pass: thinking-family models continue
+    # this sentence with the actual description instead of planning out loud.
+    PROSE_RESPONSE_PREFIX = "This photo shows"
+
     def describe_for_qc_category(self, asset: FieldPhotoAsset, qc_category: object) -> VisionDescription:
         prose = self._client.generate_text(
-            asset.image_path, rich_description_prompt_for(asset, qc_category)
+            asset.image_path,
+            rich_description_prompt_for(asset, qc_category),
+            response_prefix=self.PROSE_RESPONSE_PREFIX,
         )
         parsed = self._client.describe(
             asset.image_path,
