@@ -60,6 +60,7 @@ JOB_ADD_PERSON = "add_person"
 JOB_ASSIGN_EMPLOYEE_SITE = "assign_employee_site"
 JOB_SET_EMPLOYEE_ID = "set_employee_id"
 JOB_SET_EMPLOYEE_CONTACT = "set_employee_contact"
+JOB_SET_EMPLOYEE_HOME_ADDRESS = "set_employee_home_address"
 JOB_RECORD_SHIFT_REPORT = "record_shift_report"
 JOB_SHIFT_REPORT_NOTE = "shift_report_note"
 JOB_RECORD_DAY_RECORD = "record_day_record"
@@ -166,6 +167,7 @@ ALLOWED_JOB_TYPES = {
     JOB_ASSIGN_EMPLOYEE_SITE,
     JOB_SET_EMPLOYEE_ID,
     JOB_SET_EMPLOYEE_CONTACT,
+    JOB_SET_EMPLOYEE_HOME_ADDRESS,
     JOB_RECORD_SHIFT_REPORT,
     JOB_SHIFT_REPORT_NOTE,
     JOB_RECORD_DAY_RECORD,
@@ -238,6 +240,7 @@ JOB_SCHEMAS = {
     JOB_ASSIGN_EMPLOYEE_SITE: ["employee_id", "site_id", "actor"],
     JOB_SET_EMPLOYEE_ID: ["person", "employee_id"],
     JOB_SET_EMPLOYEE_CONTACT: ["person", "actor", "contact"],
+    JOB_SET_EMPLOYEE_HOME_ADDRESS: ["person", "actor"],
     JOB_RECORD_SHIFT_REPORT: ["date", "content"],
     JOB_SHIFT_REPORT_NOTE: ["date", "content", "actor", "capture_id", "photo_asset_id"],
     JOB_RECORD_DAY_RECORD: ["date", "content"],
@@ -293,6 +296,7 @@ ADD_PERSON_ALLOWED_PAYLOAD_FIELDS = {
     "additional_jobs",
     "assignments",
     "contact",
+    "home_address",
     "metadata",
 }
 ADD_PERSON_ASSIGNMENT_FIELDS = {"job", "account", "location", "shift"}
@@ -316,6 +320,14 @@ SET_EMPLOYEE_ID_ALLOWED_PAYLOAD_FIELDS = {
 }
 SET_EMPLOYEE_CONTACT_ALLOWED_PAYLOAD_FIELDS = {"person", "actor", "contact", "source"}
 SET_EMPLOYEE_CONTACT_FIELDS = {"phone", "email"}
+SET_EMPLOYEE_HOME_ADDRESS_ALLOWED_PAYLOAD_FIELDS = {"person", "actor", "action", "home_address", "source"}
+SET_EMPLOYEE_HOME_ADDRESS_ACTIONS = {"set", "clear"}
+HOME_ADDRESS_FIELDS = {"line1", "line2", "city", "state", "postal_code", "country"}
+HOME_ADDRESS_REQUIRED_FIELDS = ("line1", "city", "state", "postal_code")
+# US-format check applies only when country is absent or US — the operation is
+# PA-based, but a non-US country field opts out rather than failing validation.
+HOME_ADDRESS_US_POSTAL_RE = re.compile(r"^\d{5}(?:-?\d{4})?$")
+HOME_ADDRESS_US_COUNTRIES = {"US", "USA"}
 RECORD_SHIFT_REPORT_ALLOWED_PAYLOAD_FIELDS = {"date", "content", "prepared_by", "source"}
 SHIFT_REPORT_NOTE_ALLOWED_PAYLOAD_FIELDS = {
     "date",
@@ -788,6 +800,10 @@ def _validate_add_person_payload(payload: dict) -> bool:
             if value is not None and not isinstance(value, str):
                 return False
 
+    home_address = payload.get("home_address")
+    if home_address is not None and not _validate_home_address(home_address):
+        return False
+
     metadata = payload.get("metadata")
     if metadata is not None:
         if not isinstance(metadata, dict) or set(metadata) - ADD_PERSON_METADATA_FIELDS:
@@ -838,6 +854,48 @@ def _validate_set_employee_id_payload(payload: dict) -> bool:
         if source is not None and not _is_non_empty_string(source):
             return False
     return True
+
+
+def _validate_home_address(value: object) -> bool:
+    """A structured employee home address: known keys only, required core
+    fields non-empty; line2/country may be absent or null but never empty."""
+    if not isinstance(value, dict):
+        return False
+    if set(value) - HOME_ADDRESS_FIELDS:
+        return False
+    for field in HOME_ADDRESS_REQUIRED_FIELDS:
+        if not _is_non_empty_string(value.get(field)):
+            return False
+    for field in ("line2", "country"):
+        optional = value.get(field)
+        if optional is not None and not _is_non_empty_string(optional):
+            return False
+    country = str(value.get("country") or "").strip().upper()
+    if not country or country in HOME_ADDRESS_US_COUNTRIES:
+        if HOME_ADDRESS_US_POSTAL_RE.match(str(value["postal_code"]).strip()) is None:
+            return False
+    if _contains_payload_path(value):
+        return False
+    return True
+
+
+def _validate_set_employee_home_address_payload(payload: dict) -> bool:
+    if set(payload) - SET_EMPLOYEE_HOME_ADDRESS_ALLOWED_PAYLOAD_FIELDS:
+        return False
+    for field in ("person", "actor"):
+        if not _is_non_empty_string(payload.get(field)):
+            return False
+    source = payload.get("source")
+    if source is not None and not _is_non_empty_string(source):
+        return False
+    action = payload.get("action", "set")
+    if action not in SET_EMPLOYEE_HOME_ADDRESS_ACTIONS:
+        return False
+    home_address = payload.get("home_address")
+    if action == "clear":
+        # An intentional clear must not also carry an address.
+        return home_address is None
+    return _validate_home_address(home_address)
 
 
 def _validate_set_employee_contact_payload(payload: dict) -> bool:
@@ -1507,6 +1565,9 @@ def validate_job(job: dict) -> bool:
             return False
     if job_type == JOB_SET_EMPLOYEE_CONTACT:
         if not _validate_set_employee_contact_payload(payload):
+            return False
+    if job_type == JOB_SET_EMPLOYEE_HOME_ADDRESS:
+        if not _validate_set_employee_home_address_payload(payload):
             return False
     if job_type == JOB_RECORD_SHIFT_REPORT:
         if not _validate_record_shift_report_payload(payload):

@@ -481,6 +481,81 @@ def _assigned_sites_section(site_ids: list[str], site_names: dict[str, str]) -> 
     return f"<section><h2>Assigned sites</h2><p>{chips}</p></section>"
 
 
+_HOME_ADDRESS_FORM_FIELDS: tuple[tuple[str, str], ...] = (
+    ("line1", "Street"),
+    ("line2", "Street 2"),
+    ("city", "City"),
+    ("state", "State"),
+    ("postal_code", "Postal code"),
+    ("country", "Country"),
+)
+
+
+def _format_home_address(address: dict[str, Any]) -> str:
+    line1 = html.escape(_clean(address.get("line1")))
+    line2 = html.escape(_clean(address.get("line2")))
+    city = html.escape(_clean(address.get("city")))
+    state = html.escape(_clean(address.get("state")))
+    postal = html.escape(_clean(address.get("postal_code")))
+    country = _clean(address.get("country"))
+    locality = " ".join(part for part in (f"{city}," if city else "", state, postal) if part)
+    lines = [line1, line2, locality]
+    if country and country.upper() not in {"US", "USA"}:
+        lines.append(html.escape(country))
+    return "<br>".join(line for line in lines if line)
+
+
+def _home_address_section(doc: dict[str, Any], employee_id: str, *, edit_active: bool, notice: str = "") -> str:
+    eid = html.escape(employee_id, quote=True)
+    sensitive = '<span class="pill warning">Sensitive</span>'
+    notice_html = ""
+    if notice == "staged":
+        notice_html = '<p class="muted">Change staged &mdash; the queue applies it within a few seconds. Reload to see it.</p>'
+    elif notice == "invalid":
+        notice_html = '<p class="muted">That address was rejected &mdash; street, city, state, and a valid postal code are required.</p>'
+    elif notice == "queue_unavailable":
+        notice_html = '<p class="muted">Could not stage the change &mdash; the queue directory is unavailable. Check the runtime configuration.</p>'
+
+    address = doc.get("home_address") if isinstance(doc.get("home_address"), dict) else {}
+    if not edit_active:
+        head = _facts_head("Home address", "home_address", editing=False)
+        head = head.replace("</h3>", f"</h3>{sensitive}", 1)
+        body = f"<p>{_format_home_address(address)}</p>" if address else '<p class="zero-state">No home address recorded.</p>'
+        footer = '<p class="subline">Operator-only. Never shown on worker surfaces, projections, or reports.</p>'
+        return f"<section>{head}{notice_html}{body}{footer}</section>"
+
+    head = _facts_head("Home address", "home_address", editing=True)
+    head = head.replace("</h3>", f"</h3>{sensitive}", 1)
+    controls = "".join(
+        (
+            '<label class="field-row">'
+            f'<span class="field-row-label">{html.escape(label)}</span>'
+            f'<input type="text" name="{html.escape(field, quote=True)}" '
+            f'value="{html.escape(_clean(address.get(field)), quote=True)}">'
+            "</label>"
+        )
+        for field, label in _HOME_ADDRESS_FORM_FIELDS
+    )
+    set_form = (
+        f'<form method="post" action="/employees/{eid}/home-address" class="admin-form entity-edit-form">'
+        '<input type="hidden" name="_action" value="set">'
+        f"{controls}"
+        '<button type="submit">Save</button>'
+        '<a class="button" href="?">Cancel</a>'
+        "</form>"
+    )
+    clear_form = ""
+    if address:
+        clear_form = (
+            f'<form method="post" action="/employees/{eid}/home-address">'
+            '<input type="hidden" name="_action" value="clear">'
+            '<button type="submit">Clear address</button>'
+            "</form>"
+        )
+    note = '<p class="subline">Saves through the validated queue job, not a direct write.</p>'
+    return f"<section>{head}{notice_html}{set_form}{clear_form}{note}</section>"
+
+
 def _availability_section(employee_id: str, doc: dict[str, Any] | None = None) -> str:
     if doc is None:
         doc = _load_vault_doc(f"employee_{employee_id}")
@@ -633,6 +708,23 @@ def render(ctx: object, employee_id: str) -> str:
                 employee_id=employee_id,
             )
         )
+        staged = first_query_value(getattr(ctx, "query", {}), "staged")
+        error = first_query_value(getattr(ctx, "query", {}), "error")
+        home_address_notice = ""
+        if staged == "home_address":
+            home_address_notice = "staged"
+        elif error == "invalid_address":
+            home_address_notice = "invalid"
+        elif error == "queue_unavailable":
+            home_address_notice = "queue_unavailable"
+        sections.append(
+            _home_address_section(
+                doc,
+                employee_id,
+                edit_active=(edit_section == "home_address"),
+                notice=home_address_notice,
+            )
+        )
         sections.append(_activity_section(events, captures, data_flags, site_names))
         sections.append(_assigned_sites_section(assigned_site_ids, site_names))
         sections.append(_availability_section(employee_id, doc))
@@ -671,6 +763,64 @@ def render(ctx: object, employee_id: str) -> str:
             f'<p class="muted">{html.escape(str(exc))}</p></header>'
         )
         return html_page("Error — BTQ", body, active_section="employee_detail")
+
+
+def handle_home_address_post(ctx: object, employee_id: str, body: bytes):
+    """Stage a set_employee_home_address queue job from the operator surface.
+
+    The address mutates only through the validated queue path — never a direct
+    CouchDB write — and the audit entry never contains the address itself.
+    """
+    from urllib.parse import parse_qs, quote
+    from ops_dashboard.common import default_actor, first_query_value, write_set_employee_home_address_job
+
+    form = parse_qs(body.decode("utf-8", errors="replace"), keep_blank_values=True)
+    action = first_query_value(form, "_action").strip() or "set"
+
+    doc = _load_vault_doc(f"employee_{employee_id}")
+    if not isinstance(doc, dict) or doc.get("type") != "employee":
+        return ctx.redirect(f"/employees/{quote(employee_id)}?error=not_found")
+    person = _clean(doc.get("person_id")) or employee_id
+
+    if action == "clear":
+        job_kwargs: dict[str, object] = {"action": "clear"}
+    else:
+        home_address = {
+            field: first_query_value(form, field).strip()
+            for field, _label in _HOME_ADDRESS_FORM_FIELDS
+        }
+        job_kwargs = {"home_address": {k: v for k, v in home_address.items() if v}}
+
+    try:
+        queue_path = write_set_employee_home_address_job(
+            ctx.runtime_root,
+            person=person,
+            actor=default_actor(),
+            **job_kwargs,
+        )
+    except ValueError:
+        ctx.audit(
+            f"/employees/{employee_id}/home-address",
+            {"action": action},
+            "failed: invalid address",
+        )
+        return ctx.redirect(f"/employees/{quote(employee_id)}?edit=home_address&error=invalid_address")
+    except OSError as exc:
+        # Queue dir unwritable (e.g. misconfigured runtime root): fail as a
+        # redirect, not a 500 — and keep the address out of the audit line.
+        ctx.audit(
+            f"/employees/{employee_id}/home-address",
+            {"action": action},
+            f"failed: queue write {exc.__class__.__name__}",
+        )
+        return ctx.redirect(f"/employees/{quote(employee_id)}?edit=home_address&error=queue_unavailable")
+
+    ctx.audit(
+        f"/employees/{employee_id}/home-address",
+        {"action": action},
+        f"success: staged {queue_path.name}",
+    )
+    return ctx.redirect(f"/employees/{quote(employee_id)}?staged=home_address")
 
 
 def handle_save_section(ctx: object, employee_id: str, body: bytes):

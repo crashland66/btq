@@ -869,6 +869,16 @@ def _drift_guard_sample_payloads() -> dict[str, dict]:
             "actor": "Sandbox Operator",
             "contact": {"phone": "202-555-0100"},
         },
+        qp.JOB_SET_EMPLOYEE_HOME_ADDRESS: {
+            "person": "Sandbox, Sandy",
+            "actor": "Sandbox Operator",
+            "home_address": {
+                "line1": "123 Example Street",
+                "city": "Exampletown",
+                "state": "PA",
+                "postal_code": "15900",
+            },
+        },
         qp.JOB_SHIFT_REPORT_NOTE: {
             "date": "2026-04-21",
             "content": "note body",

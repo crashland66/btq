@@ -71,6 +71,68 @@ def process_set_employee_contact_job(job_path: Path, job: QueueJob, context: Run
     _shared.write_log_line(context.log_path, f"job_id={job.job_id} action=set-employee-contact status=success error=")
 
 
+def process_set_employee_home_address_job(job_path: Path, job: QueueJob, context: RunContext, processed_dir: Path) -> None:
+    payload = job.payload
+    person = str(payload["person"]).strip()
+    actor = str(payload["actor"]).strip()
+    action = str(payload.get("action") or "set").strip()
+    address = _shared.normalized_home_address(payload.get("home_address")) if action == "set" else None
+    source = str(payload.get("source") or "").strip()
+    processed_destination = processed_dir / job_path.name
+    if not context.dry_run and processed_destination.exists():
+        raise _shared.QueueProcessorError(f"Destination already exists: {processed_destination}")
+
+    store = _shared._vault_store()
+    target = resolve_employee_target(store, person)
+    # Evidence snapshots are the audit trail and carry the full doc; log lines
+    # and printed output must never contain the address itself.
+    evidence_text = f"employee home address {'cleared' if action == 'clear' else 'updated'} on {target.doc_id}"
+    print(f"Job {job.job_id}: validated")
+    print(f"Job {job.job_id}: target {target.doc_id}")
+    if context.dry_run:
+        if store.get_optional(target.doc_id) is None:
+            raise _shared.QueueJobError(f"No canonical employee found for {person}")
+        print(f"Job {job.job_id}: would {'clear' if action == 'clear' else 'update'} employee home address")
+        _shared.write_log_line(context.log_path, f"job_id={job.job_id} action=set-employee-home-address status=success error=")
+        return
+
+    def transform(state: CanonicalEntityState) -> CanonicalMutation:
+        outgoing = dict(state.doc or {})
+        if action == "clear":
+            outgoing.pop("home_address", None)
+            outgoing.pop("home_address_source", None)
+        else:
+            outgoing["home_address"] = address
+            if source:
+                outgoing["home_address_source"] = source
+        outgoing["updated_at"] = datetime.now(timezone.utc).isoformat()
+        outgoing["edited_by"] = actor
+        return CanonicalMutation(doc=outgoing, evidence_text=evidence_text)
+
+    try:
+        canonical_doc = apply_canonical_rmw(store, target, job.job_id, transform)
+    except _shared.QueueProcessorError:
+        raise
+    except Exception as exc:
+        raise _shared.QueueJobError(
+            "canonical couchdb write failed "
+            f"job_type={job.job_type} job_id={job.job_id} entity_id={target.doc_id}: {exc}"
+        ) from exc
+
+    if canonical_doc is None:
+        print(f"Job {job.job_id}: job_id marker already present — skipping")
+        moved_path = _shared.move_job_file(job_path, processed_dir)
+        print(f"Job {job.job_id}: moved queue file to {moved_path}")
+        _shared.write_log_line(context.log_path, f"job_id={job.job_id} action=skip status=success reason=job-id-marker-present")
+        return
+
+    _shared.write_mutation_evidence(context, job, canonical_doc, evidence_text)
+    moved_path = _shared.move_job_file(job_path, processed_dir)
+    print(f"Job {job.job_id}: updated {target.doc_id}")
+    print(f"Job {job.job_id}: moved queue file to {moved_path}")
+    _shared.write_log_line(context.log_path, f"job_id={job.job_id} action=set-employee-home-address status=success error=")
+
+
 def _ensure_employee_id_available_for_target(store, employee_id: str, target_doc_id: str, job: QueueJob) -> None:
     try:
         docs = store.find_employee_docs()

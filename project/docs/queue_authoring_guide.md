@@ -454,6 +454,59 @@ ID through canonical read-modify-write.
 }
 ```
 
+## 2b-1. `set_employee_home_address`
+
+Use when an existing employee's home address must be added, corrected, or
+intentionally removed. The employee must resolve uniquely by person ID,
+employee ID, or current display name. Home addresses are sensitive employee
+PII: they exist for operator decision support (e.g. finding potential
+short-notice coverage near a site) and never appear on worker-facing surfaces,
+static projections, or in log lines.
+
+Required payload fields:
+
+- `person`: non-empty resolver string
+- `actor`: non-empty audit label
+
+Optional payload fields:
+
+- `action`: `set` (default) or `clear`; `clear` removes the stored address and
+  must not also carry a `home_address`
+- `home_address`: required when action is `set` — an object containing only:
+  - `line1`: non-empty string (required)
+  - `line2`: non-empty string or `null`
+  - `city`: non-empty string (required)
+  - `state`: non-empty string (required)
+  - `postal_code`: non-empty string (required; US format `#####` or
+    `#####-####` unless `country` is non-US)
+  - `country`: non-empty string or `null` (defaults to US semantics)
+- `source`: non-empty provenance label, stored as `home_address_source`
+
+Unknown address keys, free-form strings, nested structures, and partial
+addresses fail validation. Only operator-confirmed or authoritative HR/eHub
+addresses may be authored — never infer an address from other data.
+
+The writer changes only the address and audit fields, preserves all identity,
+contact, and assignment data, records `updated_at` and `edited_by`, and appends
+the queue job ID through canonical read-modify-write; replays are no-ops.
+
+```json
+{
+  "job_type": "set_employee_home_address",
+  "payload": {
+    "person": "9001",
+    "actor": "Sandbox Operator",
+    "home_address": {
+      "line1": "123 Example Street",
+      "city": "Exampletown",
+      "state": "PA",
+      "postal_code": "15900"
+    },
+    "source": "operator_confirmed"
+  }
+}
+```
+
 ## 2c. `assign_employee_site`
 
 Use when:
