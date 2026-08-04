@@ -48,7 +48,18 @@ def run(model: str, strategy: str, out_path: Path, limit: int) -> int:
     if not assets:
         print("no usable QC photo assets found in intake")
         return 1
-    print(f"model={model} strategy={strategy} corpus={len(assets)} photos")
+
+    # Crash-tolerant resume: rows append as they complete, and a relaunch
+    # skips photos already recorded — an OOM (production vision children
+    # share the 16GB M4) costs one retry, not the whole run.
+    done_ids: set[str] = set()
+    if out_path.exists():
+        done_ids = set(_load_rows(out_path))
+        assets = [asset for asset in assets if asset.photo_asset_id not in done_ids]
+    print(f"model={model} strategy={strategy} corpus={len(assets)} photos ({len(done_ids)} already done)")
+    if not assets:
+        print("nothing left to do")
+        return 0
 
     t_load = time.time()
     if strategy == photo_vision.VISION_STRATEGY_TWO_PASS:
@@ -101,14 +112,13 @@ def run(model: str, strategy: str, out_path: Path, limit: int) -> int:
                 }
             )
         rows.append(row)
-        status = error or f"{row.get('category_agreement')} ({latency}s)"
-        print(f"[{index}/{len(assets)}] {asset.photo_asset_id[:24]} {status}")
-
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    with out_path.open("w", encoding="utf-8") as handle:
-        for row in rows:
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        with out_path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(row, sort_keys=True) + "\n")
-    print(f"wrote {len(rows)} rows -> {out_path}")
+        status = error or f"{row.get('category_agreement')} ({latency}s)"
+        print(f"[{index}/{len(assets)}] {asset.photo_asset_id[:24]} {status}", flush=True)
+
+    print(f"wrote {len(rows) + len(done_ids)} rows -> {out_path}")
     return 0
 
 
