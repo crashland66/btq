@@ -57,8 +57,18 @@ def run(model: str, strategy: str, out_path: Path, limit: int) -> int:
         client = photo_vision.MlxVisionClient(model)
     print(f"loaded in {round(time.time() - t_load, 1)}s")
 
+    try:
+        import mlx.core as mx
+    except ImportError:  # pragma: no cover - harness runs on Apple Silicon only
+        mx = None
+
     rows: list[dict[str, object]] = []
     for index, asset in enumerate(assets, start=1):
+        # Metal cache grows across image inferences; clearing between photos
+        # keeps the 16GB M4 out of OOM territory when anything else loads a
+        # model mid-run.
+        if mx is not None:
+            getattr(mx, "clear_cache", lambda: None)()
         t0 = time.time()
         error = None
         description = None
