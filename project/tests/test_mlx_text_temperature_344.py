@@ -81,9 +81,9 @@ def _spy_stream_generate(recorded: dict[str, object]):
     def spy(*args: object, **kwargs: object):
         recorded["args"] = args
         recorded["kwargs"] = kwargs
-        # A single chunk whose .text is a complete, valid JSON object so the
-        # generate loop terminates and returns successfully.
-        yield _Chunk('{"issue_type": "other"}')
+        # A single chunk continuing the prefilled "{" into a complete, valid
+        # JSON object so the generate loop terminates and returns successfully.
+        yield _Chunk('"issue_type": "other"}')
 
     return spy
 
