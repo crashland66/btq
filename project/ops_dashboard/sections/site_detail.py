@@ -2196,6 +2196,7 @@ def render(ctx: object, site_id: str) -> str:
                 '<p class="actions site-header-actions">'
                 f'<a class="button" href="/sites?site_id={escaped_id}">Admin metadata</a>'
                 f'<a class="button" href="/field-photos?site_id={escaped_id}">Field Photos</a>'
+                f'<a class="button" href="/sites/{escaped_id}/coverage">Potential coverage</a>'
                 "</p></header>"
             )
         ]

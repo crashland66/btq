@@ -524,6 +524,16 @@ button.is-copy-failed {
 }
 .quick-facts > section:last-child { margin-bottom: 0; }
 
+/* Potential-coverage lookup: the proximity-is-not-availability warning
+   must read as a caution, in both themes, before any candidate rows. */
+.coverage-warning {
+  border-left: 4px solid var(--danger);
+  background: var(--reject-bg);
+  padding: 10px 14px;
+  margin: 0 0 16px;
+}
+.coverage-warning p { margin: 0; }
+
 /* Group heading with an inline edit glyph (employee quick facts). */
 .facts-head {
   display: flex;
