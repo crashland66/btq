@@ -720,7 +720,9 @@ def classification_prompt_for(
         "Use the description and the image together. Return strict JSON with exactly these keys:\n"
         "  summary (string): ONE sentence, at most 35 words, for a dashboard caption. Lead with the "
         "overall condition verdict, then the location (name the facility naturally when context "
-        "provides it), then the key fixtures. Plain prose — no lists, no markdown.\n"
+        "provides it), then the key fixtures. Plain prose — no lists, no markdown. Style example: "
+        '"A clean, well-maintained restroom at the Maple Grove facility with a white vanity, '
+        'chrome faucet, and tiled floor."\n'
         "  area_guess (string): the area this photo shows. If one of these QC categories fits, "
         f"use its EXACT label: {category_list}. Otherwise use a specific room-type word "
         "(stairwell, supply_closet, janitor_closet, exterior, other). Judge from the image and "
