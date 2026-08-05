@@ -879,6 +879,15 @@ def _drift_guard_sample_payloads() -> dict[str, dict]:
                 "postal_code": "15900",
             },
         },
+        qp.JOB_SET_EMPLOYEE_UNIFORM: {
+            "person": "Sandbox, Sandy",
+            "actor": "Sandbox Operator",
+            "uniform": {
+                "status": "needs_shirts",
+                "shirt_count": 0,
+                "shirt_size": "L",
+            },
+        },
         qp.JOB_SHIFT_REPORT_NOTE: {
             "date": "2026-04-21",
             "content": "note body",
@@ -960,6 +969,12 @@ def test_target_path_hint_new_branches_mirror_canonical_doc_ids(tmp_path: Path) 
     # set_employee_id -> canonical employee hint for `person`
     assert hint_for(qp.JOB_SET_EMPLOYEE_ID) == qp.target_path_hint(
         qp.QueueJob("emp", qp.JOB_REMOVE_FROM_SCHEDULE, {"employee": "Pearson, David"}, {}, {}),
+        context,
+    )
+
+    # set_employee_uniform -> canonical employee hint for `person`
+    assert hint_for(qp.JOB_SET_EMPLOYEE_UNIFORM) == qp.target_path_hint(
+        qp.QueueJob("emp", qp.JOB_REMOVE_FROM_SCHEDULE, {"employee": "Sandbox, Sandy"}, {}, {}),
         context,
     )
 
