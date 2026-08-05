@@ -70,6 +70,49 @@ def test_employees_render_status_filter_active(monkeypatch: pytest.MonkeyPatch) 
     assert "Baker, Bob" not in body
 
 
+def test_employees_render_active_roster_communication_controls(monkeypatch: pytest.MonkeyPatch) -> None:
+    docs = [
+        _employee_doc("alice", first="Alice", last="Able", job="705", phone="8145550101", email="ALICE@example.com"),
+        _employee_doc("bob", first="Bob", last="Baker", job="1337", phone="814-555-0102", email="bob@example.com"),
+        _employee_doc("inactive", status="inactive", job="705", phone="8145550199", email="inactive@example.com"),
+        _employee_doc("sandbox-user", job="SANDBOX", phone="8145550188", email="sandbox@example.com"),
+        _employee_doc("stoltz_gregory", first="Gregory", last="Stoltz", job="699", phone="8145550177", email="greg@example.com"),
+        _employee_doc("other-operator", operator="op_someone_else", job="699", phone="8145550166", email="other@example.com"),
+    ]
+    monkeypatch.setattr(employees, "load_employees", lambda: docs)
+
+    body = employees.render(_ctx())
+    panel = employees._communication_panel(docs)
+
+    assert "Active employee communications" in body
+    assert "Canonical roster: 2 active assigned employees · 2 emails · 2 phone numbers." in body
+    assert "Copy BCC emails" in body
+    assert "Draft BCC email" in body
+    assert "Copy phone list" in body
+    assert "alice@example.com" in panel
+    assert "bob@example.com" in panel
+    assert "inactive@example.com" not in panel
+    assert "sandbox@example.com" not in panel
+    assert "greg@example.com" not in panel
+    assert "other@example.com" not in panel
+
+
+def test_employees_communication_panel_surfaces_missing_contact_details(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        employees,
+        "load_employees",
+        lambda: [
+            _employee_doc("alice", first="Alice", last="Able", job="705", phone="", email=""),
+        ],
+    )
+
+    body = employees.render(_ctx())
+
+    assert "Canonical roster: 1 active assigned employee · 0 emails · 0 phone numbers." in body
+    assert "Missing email: Able, Alice." in body
+    assert "Missing phone: Able, Alice." in body
+
+
 def test_employees_render_name_contains_filter(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         employees,

@@ -4,6 +4,7 @@ import html
 from typing import Any
 from urllib.parse import quote
 
+from btq_vault.entity_types import current_operator_id
 from btq_vault.projector import DDOC, query_view
 from ops_dashboard.common import first_query_value, render_table
 from ops_dashboard.layout import html_page
@@ -75,6 +76,75 @@ def _status_pill(value: object, _row: dict[str, object]) -> str:
     return f'<span class="pill {pill_class}">{html.escape(label)}</span>'
 
 
+def _active_assigned_employees(docs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Return Greg's real active roster, excluding operator and sandbox records."""
+    excluded_ids = {"employee_stoltz_gregory", "employee_sandbox-user"}
+    operator_id = current_operator_id()
+    return [
+        doc
+        for doc in docs
+        if _string(doc.get("status")).lower() == "active"
+        and _string(doc.get("job"))
+        and _string(doc.get("job")).upper() != "SANDBOX"
+        and _string(doc.get("_id")) not in excluded_ids
+        and (not _string(doc.get("operator")) or _string(doc.get("operator")) == operator_id)
+    ]
+
+
+def _contact_value(doc: dict[str, Any], field: str) -> str:
+    value = doc.get(field)
+    if isinstance(value, str):
+        return value.strip()
+    return ""
+
+
+def _communication_panel(docs: list[dict[str, Any]]) -> str:
+    roster = _active_assigned_employees(docs)
+    emails = sorted({_contact_value(doc, "email").lower() for doc in roster if "@" in _contact_value(doc, "email")})
+    phones = sorted({"".join(ch for ch in _contact_value(doc, "phone") if ch.isdigit()) for doc in roster})
+    phones = [phone for phone in phones if len(phone) >= 10]
+    missing_email = [_display_name(doc) for doc in roster if "@" not in _contact_value(doc, "email")]
+    missing_phone = [
+        _display_name(doc)
+        for doc in roster
+        if len("".join(ch for ch in _contact_value(doc, "phone") if ch.isdigit())) < 10
+    ]
+
+    email_list = ", ".join(emails)
+    phone_list = ", ".join(phones)
+    email_button = (
+        f'<button type="button" data-copy-value="{html.escape(email_list, quote=True)}">Copy BCC emails</button>'
+        if email_list
+        else '<button type="button" disabled>Copy BCC emails</button>'
+    )
+    phone_button = (
+        f'<button type="button" data-copy-value="{html.escape(phone_list, quote=True)}">Copy phone list</button>'
+        if phone_list
+        else '<button type="button" disabled>Copy phone list</button>'
+    )
+    draft_link = (
+        f'<a class="button" href="mailto:?bcc={quote(email_list, safe="@,.")}">Draft BCC email</a>'
+        if email_list
+        else ""
+    )
+
+    gaps: list[str] = []
+    if missing_email:
+        gaps.append(f'Missing email: {html.escape(", ".join(missing_email))}.')
+    if missing_phone:
+        gaps.append(f'Missing phone: {html.escape(", ".join(missing_phone))}.')
+    gap_html = f'<p class="notice">{" ".join(gaps)}</p>' if gaps else '<p class="muted">Every active assigned employee has both a phone number and email address.</p>'
+    employee_label = "employee" if len(roster) == 1 else "employees"
+    return f"""
+      <section>
+        <h2>Active employee communications</h2>
+        <p class="muted">Canonical roster: {len(roster)} active assigned {employee_label} · {len(emails)} emails · {len(phones)} phone numbers. Use BCC so employees do not see one another's addresses.</p>
+        <p>{email_button} {draft_link} {phone_button}</p>
+        {gap_html}
+      </section>
+    """
+
+
 def render(ctx: object = None) -> str:
     query = getattr(ctx, "query", {}) or {}
     try:
@@ -84,6 +154,7 @@ def render(ctx: object = None) -> str:
         docs = []
         error_html = f'<section class="error"><p>{html.escape(str(exc))}</p></section>'
 
+    communication_html = _communication_panel(docs) if not error_html else ""
     status_filter = first_query_value(query, "status") or "all"
     name_filter = first_query_value(query, "name_contains").strip().lower()
     primary_site_filter = first_query_value(query, "primary_site_contains").strip().lower()
@@ -129,5 +200,5 @@ def render(ctx: object = None) -> str:
         <button>Apply</button>
       </form>
     """
-    body = f'<header><h1>Employees</h1><p class="muted">Browse employee records from the operational vault.</p><p><a class="button" href="/clients">Clients / Devices</a></p></header>{error_html}<div class="content-with-rail"><aside class="filter-rail"><section><h2>Filters</h2>{filter_html}</section></aside><section><h2>All employees</h2>{table}</section></div>'
+    body = f'<header><h1>Employees</h1><p class="muted">Browse employee records from the operational vault.</p><p><a class="button" href="/clients">Clients / Devices</a></p></header>{error_html}{communication_html}<div class="content-with-rail"><aside class="filter-rail"><section><h2>Filters</h2>{filter_html}</section></aside><section><h2>All employees</h2>{table}</section></div>'
     return html_page("Employees", body, active_section="employees")
