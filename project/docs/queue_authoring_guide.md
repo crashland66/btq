@@ -454,7 +454,47 @@ ID through canonical read-modify-write.
 }
 ```
 
-## 2b-1. `set_employee_home_address`
+## 2b-1. `set_employee_uniform`
+
+Use when an employee confirms their B&T shirt inventory and whether they need
+additional shirts. The employee must resolve uniquely by person ID, employee
+ID, or current display name.
+
+Required payload fields:
+
+- `person`: non-empty resolver string
+- `actor`: non-empty audit label
+- `uniform`: object containing:
+  - `status`: `unknown`, `adequate`, or `needs_shirts`
+  - `shirt_count`: integer from 0 through 99; required for `adequate` and
+    `needs_shirts`
+  - `shirt_size`: non-empty string up to 32 characters; required for
+    `needs_shirts`
+
+Optional payload fields:
+
+- `source`: non-empty provenance label
+
+The writer replaces the employee's uniform snapshot, records uniform-specific
+and canonical audit timestamps, and preserves all identity and assignment data.
+
+```json
+{
+  "job_type": "set_employee_uniform",
+  "payload": {
+    "person": "9001",
+    "actor": "Greg",
+    "uniform": {
+      "status": "needs_shirts",
+      "shirt_count": 1,
+      "shirt_size": "2XL"
+    },
+    "source": "employee_reply"
+  }
+}
+```
+
+## 2b-2. `set_employee_home_address`
 
 Use when an existing employee's home address must be added, corrected, or
 intentionally removed. The employee must resolve uniquely by person ID,

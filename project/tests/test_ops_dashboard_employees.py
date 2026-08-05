@@ -113,6 +113,46 @@ def test_employees_communication_panel_surfaces_missing_contact_details(monkeypa
     assert "Missing phone: Able, Alice." in body
 
 
+def test_employees_render_uniform_summary_column_and_filter(monkeypatch: pytest.MonkeyPatch) -> None:
+    docs = [
+        _employee_doc(
+            "alice",
+            first="Alice",
+            last="Able",
+            job="705",
+            uniform_status="adequate",
+            uniform_shirt_count=3,
+            uniform_shirt_size="L",
+        ),
+        _employee_doc(
+            "bob",
+            first="Bob",
+            last="Baker",
+            job="1337",
+            uniform_status="needs_shirts",
+            uniform_shirt_count=1,
+            uniform_shirt_size="2XL",
+        ),
+        _employee_doc("carol", first="Carol", last="Clark", job="241"),
+    ]
+    monkeypatch.setattr(employees, "load_employees", lambda: docs)
+
+    body = employees.render(_ctx())
+
+    assert "Uniforms: 1 ready · 1 need shirts · 1 awaiting response." in body
+    assert "3 shirts" in body
+    assert "size L" in body
+    assert "Needs shirts" in body
+    assert "size 2XL" in body
+    assert "Awaiting response" in body
+
+    filtered = employees.render(_ctx({"uniform_status": ["needs_shirts"]}))
+    filtered_table = filtered[filtered.index("<h2>All employees") :]
+    assert "Baker, Bob" in filtered_table
+    assert "Able, Alice" not in filtered_table
+    assert "Clark, Carol" not in filtered_table
+
+
 def test_employees_render_name_contains_filter(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         employees,

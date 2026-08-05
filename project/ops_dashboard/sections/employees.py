@@ -76,6 +76,26 @@ def _status_pill(value: object, _row: dict[str, object]) -> str:
     return f'<span class="pill {pill_class}">{html.escape(label)}</span>'
 
 
+def _uniform_status(doc: dict[str, Any]) -> str:
+    status = _string(doc.get("uniform_status")).lower()
+    return status if status in {"adequate", "needs_shirts"} else "unknown"
+
+
+def _uniform_cell(value: object, row: dict[str, object]) -> str:
+    status = _string(value) or "unknown"
+    labels = {"adequate": "Ready", "needs_shirts": "Needs shirts", "unknown": "Awaiting response"}
+    pill_class = "success" if status == "adequate" else "warning"
+    details: list[str] = []
+    count = row.get("uniform_shirt_count")
+    if isinstance(count, int) and not isinstance(count, bool):
+        details.append(f'{count} shirt{"s" if count != 1 else ""}')
+    size = _string(row.get("uniform_shirt_size"))
+    if size:
+        details.append(f"size {html.escape(size)}")
+    detail_html = f' <span class="muted">{" · ".join(details)}</span>' if details else ""
+    return f'<span class="pill {pill_class}">{html.escape(labels.get(status, status.title()))}</span>{detail_html}'
+
+
 def _active_assigned_employees(docs: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Return Greg's real active roster, excluding operator and sandbox records."""
     excluded_ids = {"employee_stoltz_gregory", "employee_sandbox-user"}
@@ -109,6 +129,10 @@ def _communication_panel(docs: list[dict[str, Any]]) -> str:
         for doc in roster
         if len("".join(ch for ch in _contact_value(doc, "phone") if ch.isdigit())) < 10
     ]
+    uniform_counts = {
+        status: sum(1 for doc in roster if _uniform_status(doc) == status)
+        for status in ("adequate", "needs_shirts", "unknown")
+    }
 
     email_list = ", ".join(emails)
     phone_list = ", ".join(phones)
@@ -139,6 +163,7 @@ def _communication_panel(docs: list[dict[str, Any]]) -> str:
       <section>
         <h2>Active employee communications</h2>
         <p class="muted">Canonical roster: {len(roster)} active assigned {employee_label} · {len(emails)} emails · {len(phones)} phone numbers. Use BCC so employees do not see one another's addresses.</p>
+        <p class="muted">Uniforms: {uniform_counts['adequate']} ready · {uniform_counts['needs_shirts']} need shirts · {uniform_counts['unknown']} awaiting response.</p>
         <p>{email_button} {draft_link} {phone_button}</p>
         {gap_html}
       </section>
@@ -156,6 +181,7 @@ def render(ctx: object = None) -> str:
 
     communication_html = _communication_panel(docs) if not error_html else ""
     status_filter = first_query_value(query, "status") or "all"
+    uniform_status_filter = first_query_value(query, "uniform_status") or "all"
     name_filter = first_query_value(query, "name_contains").strip().lower()
     primary_site_filter = first_query_value(query, "primary_site_contains").strip().lower()
 
@@ -163,6 +189,8 @@ def render(ctx: object = None) -> str:
         docs = [doc for doc in docs if _string(doc.get("status")).lower() == "active"]
     elif status_filter == "inactive":
         docs = [doc for doc in docs if _string(doc.get("status")).lower() != "active"]
+    if uniform_status_filter in {"adequate", "needs_shirts", "unknown"}:
+        docs = [doc for doc in docs if _uniform_status(doc) == uniform_status_filter]
     if name_filter:
         docs = [doc for doc in docs if name_filter in _display_name(doc).lower()]
     if primary_site_filter:
@@ -174,6 +202,9 @@ def render(ctx: object = None) -> str:
             "name": _display_name(doc),
             "primary_site": _string(doc.get("job")),
             "status": _string(doc.get("status")),
+            "uniform_status": _uniform_status(doc),
+            "uniform_shirt_count": doc.get("uniform_shirt_count"),
+            "uniform_shirt_size": _string(doc.get("uniform_shirt_size")),
             "phone": _string(doc.get("phone")),
             "email": _string(doc.get("email")),
         }
@@ -185,6 +216,7 @@ def render(ctx: object = None) -> str:
             {"key": "name", "label": "Name", "format": _employee_name_link},
             {"key": "primary_site", "label": "Primary Site", "format": _primary_site_link},
             {"key": "status", "label": "Status", "format": _status_pill, "nowrap": True},
+            {"key": "uniform_status", "label": "Uniform", "format": _uniform_cell},
             {"key": "phone", "label": "Phone", "priority": 2},
             {"key": "email", "label": "Email", "priority": 3},
         ],
@@ -195,6 +227,14 @@ def render(ctx: object = None) -> str:
         <label><input type="radio" name="status" value="all" {'checked' if status_filter == 'all' else ''}> All</label>
         <label><input type="radio" name="status" value="active" {'checked' if status_filter == 'active' else ''}> Active</label>
         <label><input type="radio" name="status" value="inactive" {'checked' if status_filter == 'inactive' else ''}> Inactive</label>
+        <label>Uniform status
+          <select name="uniform_status">
+            <option value="all" {'selected' if uniform_status_filter == 'all' else ''}>All</option>
+            <option value="unknown" {'selected' if uniform_status_filter == 'unknown' else ''}>Awaiting response</option>
+            <option value="needs_shirts" {'selected' if uniform_status_filter == 'needs_shirts' else ''}>Needs shirts</option>
+            <option value="adequate" {'selected' if uniform_status_filter == 'adequate' else ''}>Ready</option>
+          </select>
+        </label>
         <label>Name contains <input name="name_contains" value="{html.escape(first_query_value(query, 'name_contains'))}"></label>
         <label>Primary site contains <input name="primary_site_contains" value="{html.escape(first_query_value(query, 'primary_site_contains'))}"></label>
         <button>Apply</button>

@@ -61,6 +61,7 @@ JOB_ASSIGN_EMPLOYEE_SITE = "assign_employee_site"
 JOB_SET_EMPLOYEE_ID = "set_employee_id"
 JOB_SET_EMPLOYEE_CONTACT = "set_employee_contact"
 JOB_SET_EMPLOYEE_HOME_ADDRESS = "set_employee_home_address"
+JOB_SET_EMPLOYEE_UNIFORM = "set_employee_uniform"
 JOB_RECORD_SHIFT_REPORT = "record_shift_report"
 JOB_SHIFT_REPORT_NOTE = "shift_report_note"
 JOB_RECORD_DAY_RECORD = "record_day_record"
@@ -168,6 +169,7 @@ ALLOWED_JOB_TYPES = {
     JOB_SET_EMPLOYEE_ID,
     JOB_SET_EMPLOYEE_CONTACT,
     JOB_SET_EMPLOYEE_HOME_ADDRESS,
+    JOB_SET_EMPLOYEE_UNIFORM,
     JOB_RECORD_SHIFT_REPORT,
     JOB_SHIFT_REPORT_NOTE,
     JOB_RECORD_DAY_RECORD,
@@ -241,6 +243,7 @@ JOB_SCHEMAS = {
     JOB_SET_EMPLOYEE_ID: ["person", "employee_id"],
     JOB_SET_EMPLOYEE_CONTACT: ["person", "actor", "contact"],
     JOB_SET_EMPLOYEE_HOME_ADDRESS: ["person", "actor"],
+    JOB_SET_EMPLOYEE_UNIFORM: ["person", "actor", "uniform"],
     JOB_RECORD_SHIFT_REPORT: ["date", "content"],
     JOB_SHIFT_REPORT_NOTE: ["date", "content", "actor", "capture_id", "photo_asset_id"],
     JOB_RECORD_DAY_RECORD: ["date", "content"],
@@ -322,6 +325,9 @@ SET_EMPLOYEE_CONTACT_ALLOWED_PAYLOAD_FIELDS = {"person", "actor", "contact", "so
 SET_EMPLOYEE_CONTACT_FIELDS = {"phone", "email"}
 SET_EMPLOYEE_HOME_ADDRESS_ALLOWED_PAYLOAD_FIELDS = {"person", "actor", "action", "home_address", "source"}
 SET_EMPLOYEE_HOME_ADDRESS_ACTIONS = {"set", "clear"}
+SET_EMPLOYEE_UNIFORM_ALLOWED_PAYLOAD_FIELDS = {"person", "actor", "uniform", "source"}
+SET_EMPLOYEE_UNIFORM_FIELDS = {"status", "shirt_count", "shirt_size"}
+EMPLOYEE_UNIFORM_STATUSES = {"unknown", "adequate", "needs_shirts"}
 HOME_ADDRESS_FIELDS = {"line1", "line2", "city", "state", "postal_code", "country"}
 HOME_ADDRESS_REQUIRED_FIELDS = ("line1", "city", "state", "postal_code")
 # US-format check applies only when country is absent or US — the operation is
@@ -913,6 +919,41 @@ def _validate_set_employee_contact_payload(payload: dict) -> bool:
     for value in contact.values():
         if value is not None and not _is_non_empty_string(value):
             return False
+    return True
+
+
+def _validate_set_employee_uniform_payload(payload: dict) -> bool:
+    if set(payload) - SET_EMPLOYEE_UNIFORM_ALLOWED_PAYLOAD_FIELDS:
+        return False
+    for field in ("person", "actor"):
+        if not _is_non_empty_string(payload.get(field)):
+            return False
+    source = payload.get("source")
+    if source is not None and not _is_non_empty_string(source):
+        return False
+    uniform = payload.get("uniform")
+    if not isinstance(uniform, dict) or set(uniform) - SET_EMPLOYEE_UNIFORM_FIELDS:
+        return False
+    status = uniform.get("status")
+    if status not in EMPLOYEE_UNIFORM_STATUSES:
+        return False
+    shirt_count = uniform.get("shirt_count")
+    if shirt_count is not None and (
+        isinstance(shirt_count, bool)
+        or not isinstance(shirt_count, int)
+        or not 0 <= shirt_count <= 99
+    ):
+        return False
+    shirt_size = uniform.get("shirt_size")
+    if shirt_size is not None and (
+        not _is_non_empty_string(shirt_size)
+        or len(str(shirt_size).strip()) > 32
+    ):
+        return False
+    if status in {"adequate", "needs_shirts"} and shirt_count is None:
+        return False
+    if status == "needs_shirts" and not _is_non_empty_string(shirt_size):
+        return False
     return True
 
 
@@ -1568,6 +1609,9 @@ def validate_job(job: dict) -> bool:
             return False
     if job_type == JOB_SET_EMPLOYEE_HOME_ADDRESS:
         if not _validate_set_employee_home_address_payload(payload):
+            return False
+    if job_type == JOB_SET_EMPLOYEE_UNIFORM:
+        if not _validate_set_employee_uniform_payload(payload):
             return False
     if job_type == JOB_RECORD_SHIFT_REPORT:
         if not _validate_record_shift_report_payload(payload):

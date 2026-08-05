@@ -14,7 +14,7 @@ from queue_spec import (
     JOB_MARK_SUPPLY_STOCKED, JOB_PARSE_SUPPLY_EMAIL, JOB_PERSONAL_JOURNAL_ENTRY, JOB_PHOTO_CAPTURE,
     JOB_DEEP_ANALYSIS,
     JOB_PROMOTE_PROSPECT, JOB_RECORD_DAY_RECORD, JOB_RECORD_SHIFT_REPORT, JOB_SHIFT_REPORT_NOTE, JOB_RECORD_UNKNOWN_CAPTURE, JOB_RECLASSIFY_UNKNOWN, JOB_REMOVE_FROM_SCHEDULE, JOB_RETARGET_CAPTURE,
-    JOB_SET_CONTACT, JOB_SET_EMPLOYEE_CONTACT, JOB_SET_EMPLOYEE_HOME_ADDRESS, JOB_SET_EMPLOYEE_ID, JOB_SET_ENTITY_STATUS, JOB_SET_SITE_HOURS, JOB_SET_SITE_OPERATIONAL_CALENDAR, JOB_SET_SITE_URL, JOB_TRIGGER_RECRUITING, JOB_UPDATE_SITE_EQUIPMENT, JOB_VISIT_CREATE,
+    JOB_SET_CONTACT, JOB_SET_EMPLOYEE_CONTACT, JOB_SET_EMPLOYEE_HOME_ADDRESS, JOB_SET_EMPLOYEE_ID, JOB_SET_EMPLOYEE_UNIFORM, JOB_SET_ENTITY_STATUS, JOB_SET_SITE_HOURS, JOB_SET_SITE_OPERATIONAL_CALENDAR, JOB_SET_SITE_URL, JOB_TRIGGER_RECRUITING, JOB_UPDATE_SITE_EQUIPMENT, JOB_VISIT_CREATE,
     JOB_VOICE_MEMO_NOTE,
 )
 from queue_processor.handlers import contacts, deep_analysis, employee_updates, misc, people, site_flags_notes, site_hours, site_operational_calendar, site_urls, supplies_equipment, supplies_equipment_transitions, supply_requests, unknowns, visits
@@ -29,6 +29,7 @@ JOB_HANDLERS: dict[str, JobHandler] = {
     JOB_SET_EMPLOYEE_ID: employee_updates.process_set_employee_id_job,
     JOB_SET_EMPLOYEE_CONTACT: employee_updates.process_set_employee_contact_job,
     JOB_SET_EMPLOYEE_HOME_ADDRESS: employee_updates.process_set_employee_home_address_job,
+    JOB_SET_EMPLOYEE_UNIFORM: employee_updates.process_set_employee_uniform_job,
     JOB_RECORD_SHIFT_REPORT: misc.process_record_shift_report_job,
     JOB_SHIFT_REPORT_NOTE: misc.process_shift_report_note_job,
     JOB_RECORD_DAY_RECORD: misc.process_record_day_record_job,

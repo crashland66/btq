@@ -481,6 +481,70 @@ def _assigned_sites_section(site_ids: list[str], site_names: dict[str, str]) -> 
     return f"<section><h2>Assigned sites</h2><p>{chips}</p></section>"
 
 
+_UNIFORM_STATUS_OPTIONS: tuple[tuple[str, str], ...] = (
+    ("unknown", "Awaiting response"),
+    ("adequate", "Has enough shirts"),
+    ("needs_shirts", "Needs shirts"),
+)
+
+
+def _uniform_status_label(value: object) -> str:
+    status = _clean(value) or "unknown"
+    return dict(_UNIFORM_STATUS_OPTIONS).get(status, humanize_key(status))
+
+
+def _uniform_section(doc: dict[str, Any], employee_id: str, *, edit_active: bool, notice: str = "") -> str:
+    eid = html.escape(employee_id, quote=True)
+    status = _clean(doc.get("uniform_status")) or "unknown"
+    shirt_count = doc.get("uniform_shirt_count")
+    if isinstance(shirt_count, bool) or not isinstance(shirt_count, int):
+        shirt_count = None
+    shirt_size = _clean(doc.get("uniform_shirt_size"))
+    updated_at = _clean(doc.get("uniform_updated_at"))
+    notice_html = ""
+    if notice == "staged":
+        notice_html = '<p class="muted">Uniform status staged &mdash; the queue applies it within a few seconds. Reload to see it.</p>'
+    elif notice == "invalid":
+        notice_html = '<p class="muted">Uniform status was rejected. Shirt count is required for a completed response, and size is required when shirts are needed.</p>'
+    elif notice == "queue_unavailable":
+        notice_html = '<p class="muted">Could not stage the uniform change &mdash; the queue directory is unavailable.</p>'
+
+    if not edit_active:
+        head = _facts_head("Uniform", "uniform", editing=False)
+        pill_class = "warning" if status in {"unknown", "needs_shirts"} else "success"
+        rows = [
+            f'<dt>Status</dt><dd><span class="pill {pill_class}">{html.escape(_uniform_status_label(status))}</span></dd>',
+            f'<dt>B&amp;T T-shirts</dt><dd>{shirt_count if shirt_count is not None else "&mdash;"}</dd>',
+            f'<dt>Required size</dt><dd>{html.escape(shirt_size) if shirt_size else "&mdash;"}</dd>',
+        ]
+        if updated_at:
+            rows.append(f'<dt>Last updated</dt><dd>{render_relative_time(updated_at)}</dd>')
+        body = f'<dl class="fields summary-fields">{"".join(rows)}</dl>'
+        return f"<section>{head}{notice_html}{body}</section>"
+
+    head = _facts_head("Uniform", "uniform", editing=True)
+    options = "".join(
+        f'<option value="{value}" {"selected" if status == value else ""}>{html.escape(label)}</option>'
+        for value, label in _UNIFORM_STATUS_OPTIONS
+    )
+    count_value = str(shirt_count) if shirt_count is not None else ""
+    form = (
+        f'<form method="post" action="/employees/{eid}/uniform" class="admin-form entity-edit-form">'
+        '<label class="field-row"><span class="field-row-label">Uniform status</span>'
+        f'<select name="status">{options}</select></label>'
+        '<label class="field-row"><span class="field-row-label">Current B&amp;T T-shirts</span>'
+        f'<input type="number" name="shirt_count" min="0" max="99" value="{count_value}"></label>'
+        '<label class="field-row"><span class="field-row-label">Required shirt size</span>'
+        f'<input type="text" name="shirt_size" maxlength="32" placeholder="e.g. L or 2XL" value="{html.escape(shirt_size, quote=True)}"></label>'
+        '<p class="subline">Count is required after an employee responds. Size is required when shirts are needed.</p>'
+        '<button type="submit">Save uniform status</button>'
+        '<a class="button" href="?">Cancel</a>'
+        '</form>'
+        '<p class="subline">Saves through the validated queue job, not a direct write.</p>'
+    )
+    return f"<section>{head}{notice_html}{form}</section>"
+
+
 _HOME_ADDRESS_FORM_FIELDS: tuple[tuple[str, str], ...] = (
     ("line1", "Street"),
     ("line2", "Street 2"),
@@ -710,6 +774,21 @@ def render(ctx: object, employee_id: str) -> str:
         )
         staged = first_query_value(getattr(ctx, "query", {}), "staged")
         error = first_query_value(getattr(ctx, "query", {}), "error")
+        uniform_notice = ""
+        if staged == "uniform":
+            uniform_notice = "staged"
+        elif error == "invalid_uniform":
+            uniform_notice = "invalid"
+        elif error == "queue_unavailable" and edit_section == "uniform":
+            uniform_notice = "queue_unavailable"
+        sections.append(
+            _uniform_section(
+                doc,
+                employee_id,
+                edit_active=(edit_section == "uniform"),
+                notice=uniform_notice,
+            )
+        )
         home_address_notice = ""
         if staged == "home_address":
             home_address_notice = "staged"
@@ -763,6 +842,59 @@ def render(ctx: object, employee_id: str) -> str:
             f'<p class="muted">{html.escape(str(exc))}</p></header>'
         )
         return html_page("Error — BTQ", body, active_section="employee_detail")
+
+
+def handle_uniform_post(ctx: object, employee_id: str, body: bytes):
+    """Stage a validated uniform-status update for one canonical employee."""
+    from urllib.parse import parse_qs, quote
+    from ops_dashboard.common import default_actor, first_query_value, write_set_employee_uniform_job
+
+    form = parse_qs(body.decode("utf-8", errors="replace"), keep_blank_values=True)
+    status = first_query_value(form, "status").strip()
+    shirt_count_text = first_query_value(form, "shirt_count").strip()
+    shirt_size = first_query_value(form, "shirt_size").strip()
+    uniform: dict[str, object] = {"status": status}
+    if shirt_count_text:
+        try:
+            uniform["shirt_count"] = int(shirt_count_text)
+        except ValueError:
+            return ctx.redirect(f"/employees/{quote(employee_id)}?edit=uniform&error=invalid_uniform")
+    if shirt_size:
+        uniform["shirt_size"] = shirt_size
+
+    doc = _load_vault_doc(f"employee_{employee_id}")
+    if not isinstance(doc, dict) or doc.get("type") != "employee":
+        return ctx.redirect(f"/employees/{quote(employee_id)}?error=not_found")
+    person = _clean(doc.get("person_id")) or employee_id
+
+    try:
+        queue_path = write_set_employee_uniform_job(
+            ctx.runtime_root,
+            person=person,
+            actor=default_actor(),
+            uniform=uniform,
+        )
+    except ValueError:
+        ctx.audit(
+            f"/employees/{employee_id}/uniform",
+            {"status": status},
+            "failed: invalid uniform status",
+        )
+        return ctx.redirect(f"/employees/{quote(employee_id)}?edit=uniform&error=invalid_uniform")
+    except OSError as exc:
+        ctx.audit(
+            f"/employees/{employee_id}/uniform",
+            {"status": status},
+            f"failed: queue write {exc.__class__.__name__}",
+        )
+        return ctx.redirect(f"/employees/{quote(employee_id)}?edit=uniform&error=queue_unavailable")
+
+    ctx.audit(
+        f"/employees/{employee_id}/uniform",
+        {"status": status},
+        f"success: staged {queue_path.name}",
+    )
+    return ctx.redirect(f"/employees/{quote(employee_id)}?staged=uniform")
 
 
 def handle_home_address_post(ctx: object, employee_id: str, body: bytes):
