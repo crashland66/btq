@@ -645,8 +645,36 @@ def rich_description_prompt_for(asset: FieldPhotoAsset, qc_category: object | No
         "  - If the image is a phone screenshot or app UI rather than a photo of a physical "
         "space, say so and describe the visible screen content including any error text.\n"
         "\n"
-        "Output the description only — plain prose, no headings, no lists, no JSON."
+        "Output the description only — plain prose, no headings, no lists, no JSON. "
+        "Write the finished description in one go: never plan, number steps, draft, "
+        "critique your own writing, or mention these instructions."
     )
+
+
+# Planning-leak detection: generation is not bit-deterministic on Metal even
+# at temperature 0, so a thinking model occasionally emits its work-through
+# ("1. **Identify the main object:** ... *Draft:* ...") as the description.
+# Plain candid prose never contains markdown bold, numbered work-steps, or
+# drafting vocabulary — any of these means the plan leaked.
+_PLANNING_LEAK_MARKERS = ("**", "*Draft", "Final check", "Self-Correction", "operator-grade")
+_NUMBERED_STEP_RE = re.compile(r"(?m)^\s*\d+\.\s")
+
+
+def prose_planning_leak(text: str) -> bool:
+    return any(marker in text for marker in _PLANNING_LEAK_MARKERS) or bool(_NUMBERED_STEP_RE.search(text))
+
+
+def sanitize_leaked_prose(text: str) -> str:
+    """Best-effort salvage when a retry also leaked: keep only the plain
+    prose lines and drop the visible planning scaffolding."""
+    kept = [
+        line
+        for line in text.splitlines()
+        if line.strip()
+        and not any(marker in line for marker in _PLANNING_LEAK_MARKERS)
+        and not _NUMBERED_STEP_RE.match(line)
+    ]
+    return " ".join(" ".join(kept).split())
 
 
 def classification_prompt_for(
@@ -729,17 +757,31 @@ class TwoPassMlxVisionClient:
     PROSE_RESPONSE_PREFIX = "This photo shows"
 
     def describe_for_qc_category(self, asset: FieldPhotoAsset, qc_category: object) -> VisionDescription:
+        prompt = rich_description_prompt_for(asset, qc_category)
         prose = self._client.generate_text(
-            asset.image_path,
-            rich_description_prompt_for(asset, qc_category),
-            response_prefix=self.PROSE_RESPONSE_PREFIX,
+            asset.image_path, prompt, response_prefix=self.PROSE_RESPONSE_PREFIX
         )
+        sanitized = False
+        if prose_planning_leak(prose):
+            # Stochastic leak: a fresh generation is usually clean. One retry,
+            # then salvage rather than archive the model's work-through.
+            prose = self._client.generate_text(
+                asset.image_path, prompt, response_prefix=self.PROSE_RESPONSE_PREFIX
+            )
+            if prose_planning_leak(prose):
+                prose = sanitize_leaked_prose(prose)
+                sanitized = True
         parsed = self._client.describe(
             asset.image_path,
             classification_prompt_for(asset, qc_category, prose),
             json_prefill=True,
         )
         parsed["description"] = prose
+        if sanitized:
+            warnings = normalize_string_list(parsed.get("warnings"))
+            warnings.append("description sanitized: model emitted planning text twice")
+            parsed["warnings"] = warnings
+            parsed["needs_human_review"] = True
         return normalize_vision_description(parsed)
 
 

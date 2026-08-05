@@ -182,6 +182,101 @@ def test_two_pass_result_is_standard_shape(industrial_context, monkeypatch: pyte
 
 
 # ---------------------------------------------------------------------------
+# Planning-leak detection, retry, and salvage
+# ---------------------------------------------------------------------------
+
+# Condensed from a real production leak (Liberty Wire trash-can photo,
+# 2026-07-28): the model's numbered work-through arrived as the description.
+LEAKED_PROSE = (
+    "This photo shows a corner of a restroom. 1. **Identify the main object:** "
+    "A grey, rectangular trash can with a lid. 2. **Identify the lid:** open. "
+    "*Draft:* This image shows a corner of a restroom containing a grey trash "
+    "receptacle. *Final check:* 4-8 sentences? Yes."
+)
+CLEAN_PROSE = (
+    "This photo shows a restroom corner with a grey pedal-operated trash "
+    "receptacle, its lid open and a black liner sitting loose inside. The "
+    "vanity cabinet to the left is clean, and the wood-look floor shows no debris."
+)
+
+
+def test_planning_leak_detector() -> None:
+    assert photo_vision.prose_planning_leak(LEAKED_PROSE)
+    assert photo_vision.prose_planning_leak("1. Identify the object\n2. Draft it")
+    assert not photo_vision.prose_planning_leak(CLEAN_PROSE)
+
+
+def test_sanitize_leaked_prose_keeps_only_prose_lines() -> None:
+    text = "**Plan:** describe the bin\nThe trash receptacle is empty and clean.\n1. check floor\nThe floor shows no debris."
+    cleaned = photo_vision.sanitize_leaked_prose(text)
+    assert "The trash receptacle is empty and clean." in cleaned
+    assert "The floor shows no debris." in cleaned
+    assert "**" not in cleaned
+    assert "1." not in cleaned
+
+
+class _LeakySequenceClient(_FakeInnerClient):
+    def __init__(self, prose_sequence: list[str]) -> None:
+        super().__init__()
+        self._prose_sequence = list(prose_sequence)
+        self.prose_calls = 0
+
+    def generate_text(self, image_path: Path, prompt: str, *, response_prefix: str = "") -> str:
+        self.prose_calls += 1
+        return self._prose_sequence.pop(0)
+
+
+def test_leaked_prose_retries_once_and_uses_clean_result(
+    industrial_context, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # MUTATION GUARD: one leak -> one retry -> clean result, no review flag.
+    client, _ = _two_pass_with_fake(monkeypatch)
+    fake = _LeakySequenceClient([LEAKED_PROSE, CLEAN_PROSE])
+    client._client = fake
+
+    description = client(_asset())
+
+    assert fake.prose_calls == 2
+    assert description.description == CLEAN_PROSE
+    assert not description.needs_human_review
+    assert not any("sanitized" in w for w in description.warnings)
+
+
+def test_double_leak_sanitizes_and_flags_for_review(
+    industrial_context, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client, _ = _two_pass_with_fake(monkeypatch)
+    fake = _LeakySequenceClient([LEAKED_PROSE, LEAKED_PROSE])
+    client._client = fake
+
+    description = client(_asset())
+
+    assert fake.prose_calls == 2
+    assert "**" not in description.description
+    assert "*Draft:*" not in description.description
+    assert description.needs_human_review
+    assert any("sanitized" in w for w in description.warnings)
+
+
+def test_clean_prose_generates_exactly_once(
+    industrial_context, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client, _ = _two_pass_with_fake(monkeypatch)
+    fake = _LeakySequenceClient([CLEAN_PROSE])
+    client._client = fake
+
+    description = client(_asset())
+
+    assert fake.prose_calls == 1
+    assert description.description == CLEAN_PROSE
+
+
+def test_rich_prompt_forbids_planning_out_loud(industrial_context) -> None:
+    prompt = rich_description_prompt_for(_asset(), "Restrooms")
+    assert "never plan, number steps, draft" in prompt
+
+
+# ---------------------------------------------------------------------------
 # Strategy selection
 # ---------------------------------------------------------------------------
 
