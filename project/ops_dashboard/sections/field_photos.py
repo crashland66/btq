@@ -185,6 +185,7 @@ def _query_terminal_capture_ids(config: object) -> set[str] | None:
 def _search_text(sidecar: dict[str, object]) -> str:
     parts = [
         str(sidecar.get("description") or ""),
+        str(sidecar.get("summary") or ""),
         str(sidecar.get("qc_category") or ""),
         str(sidecar.get("vision_category") or ""),
         str(sidecar.get("category_agreement") or ""),
@@ -533,7 +534,19 @@ def _render_card(
             inner += f"<p style='margin:0 0 4px'>{meta_line}</p>"
         if sub_line:
             inner += f'<p class="muted" style="margin:0 0 6px;font-size:.85rem">{sub_line}</p>'
-        if description:
+        summary = str(sidecar.get("summary") or "").strip()
+        if summary:
+            # Summary-first caption; the full rich description stays one
+            # click away instead of dominating the card.
+            inner += f'<p style="margin:0 0 6px;font-size:.9rem;line-height:1.45">{html.escape(summary)}</p>'
+            if description and description.strip() != summary:
+                inner += (
+                    '<details class="detail-block" style="margin:0 0 6px">'
+                    "<summary>Full description</summary>"
+                    f'<p style="margin:6px 0 0;font-size:.85rem;line-height:1.5">{html.escape(description)}</p>'
+                    "</details>"
+                )
+        elif description:
             inner += f'<p style="margin:0 0 6px;font-size:.9rem;line-height:1.45">{html.escape(description)}</p>'
         if pills_html:
             inner += f'<div style="margin-top:4px">{pills_html}</div>'

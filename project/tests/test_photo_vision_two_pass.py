@@ -277,6 +277,116 @@ def test_rich_prompt_forbids_planning_out_loud(industrial_context) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Dashboard summary: classify-pass field, guarded, stored, displayed
+# ---------------------------------------------------------------------------
+
+RICH_DESCRIPTION = (
+    "This photo shows a bathroom vanity with a speckled countertop. The sink "
+    "basin is clean and the chrome faucet shows no corrosion. The floor tiles "
+    "look generally clean with minor grout wear."
+)
+
+
+def test_classification_prompt_asks_for_summary(industrial_context, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(photo_vision, "default_qc_categories", lambda: [{"canonical": "Restrooms", "label": "Restrooms"}])
+    prompt = classification_prompt_for(_asset(), "Restrooms", RICH_DESCRIPTION)
+    assert "summary (string): ONE sentence" in prompt
+    assert "condition verdict" in prompt
+
+
+def test_guarded_summary_accepts_good_and_falls_back_on_bad() -> None:
+    good = "A clean, well-maintained vanity at the Hoganas facility with sink, faucet, and mirror."
+    assert photo_vision.guarded_summary(good, RICH_DESCRIPTION) == good
+    # Missing, overlong, and planning-leak summaries all fall back to the
+    # description's first sentence.
+    first_sentence = "This photo shows a bathroom vanity with a speckled countertop."
+    assert photo_vision.guarded_summary("", RICH_DESCRIPTION) == first_sentence
+    assert photo_vision.guarded_summary("word " * 60, RICH_DESCRIPTION) == first_sentence
+    assert photo_vision.guarded_summary("1. **Identify:** the vanity", RICH_DESCRIPTION) == first_sentence
+    assert photo_vision.guarded_summary("", "") == ""
+
+
+def test_two_pass_carries_guarded_summary(industrial_context, monkeypatch: pytest.MonkeyPatch) -> None:
+    # MUTATION GUARD: the classify pass's summary survives into the
+    # VisionDescription and the completed payload.
+    client, fake = _two_pass_with_fake(monkeypatch)
+
+    original_describe = fake.describe
+
+    def describe_with_summary(image_path: Path, prompt: str, *, json_prefill: bool = False) -> dict:
+        parsed = original_describe(image_path, prompt, json_prefill=json_prefill)
+        parsed["summary"] = "A clean industrial restroom with two urinals and a streaked mirror."
+        return parsed
+
+    fake.describe = describe_with_summary
+    description = client(_asset())
+
+    assert description.summary == "A clean industrial restroom with two urinals and a streaked mirror."
+    payload = photo_vision.completed_payload(
+        _asset(),
+        source_image_hash="hash",
+        model_name="m",
+        provider="mlx",
+        description=description,
+    )
+    assert payload["summary"] == description.summary
+    assert payload["description"].startswith("Rich prose:")
+
+
+def test_two_pass_leaky_summary_falls_back_to_first_sentence(
+    industrial_context, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client, fake = _two_pass_with_fake(monkeypatch)
+    original_describe = fake.describe
+
+    def describe_with_bad_summary(image_path: Path, prompt: str, *, json_prefill: bool = False) -> dict:
+        parsed = original_describe(image_path, prompt, json_prefill=json_prefill)
+        parsed["summary"] = "1. **Plan the caption:** mention the urinals"
+        return parsed
+
+    fake.describe = describe_with_bad_summary
+    description = client(_asset())
+
+    assert description.summary == "Rich prose: a dusty industrial restroom with two urinals and a streaked mirror."
+
+
+def _card_sidecar(**overrides: object) -> dict:
+    sidecar: dict = {
+        "photo_asset_id": "fcp_test",
+        "capture_id": "cap-1",
+        "site_id": "7050",
+        "description": RICH_DESCRIPTION,
+        "summary": "A clean, well-maintained vanity with sink, faucet, and mirror.",
+        "qc_category": "qc",
+        "area_guess": "restroom",
+    }
+    sidecar.update(overrides)
+    return sidecar
+
+
+def test_photo_card_shows_summary_with_details_expander(tmp_path: Path) -> None:
+    from ops_dashboard.sections import field_photos
+
+    # MUTATION GUARD: summary is the caption; the full description sits behind
+    # a details expander instead of dominating the card.
+    html_out = field_photos.render_photo_card(_card_sidecar(), {}, tmp_path)
+    assert "A clean, well-maintained vanity with sink, faucet, and mirror." in html_out
+    assert "<summary>Full description</summary>" in html_out
+    assert "minor grout wear" in html_out  # full text present, inside the expander
+    summary_pos = html_out.index("well-maintained vanity")
+    details_pos = html_out.index("<details")
+    assert summary_pos < details_pos
+
+
+def test_photo_card_without_summary_falls_back_to_description(tmp_path: Path) -> None:
+    from ops_dashboard.sections import field_photos
+
+    html_out = field_photos.render_photo_card(_card_sidecar(summary=""), {}, tmp_path)
+    assert "minor grout wear" in html_out
+    assert "<summary>Full description</summary>" not in html_out
+
+
+# ---------------------------------------------------------------------------
 # Strategy selection
 # ---------------------------------------------------------------------------
 

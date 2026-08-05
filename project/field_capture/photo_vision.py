@@ -107,6 +107,7 @@ class VisionDescription:
     needs_human_review: bool
     warnings: list[str]
     quality_flags: list[str] = field(default_factory=list)
+    summary: str = ""
 
 
 @dataclass(frozen=True)
@@ -364,19 +365,21 @@ def dedupe_preserving_order(values: list[str]) -> list[str]:
 
 def sanitize_vision_description(description: VisionDescription) -> VisionDescription:
     text_description, changed_description = sanitize_judgment_language(description.description)
+    summary_text, changed_summary = sanitize_judgment_language(description.summary)
     area_guess, changed_area = sanitize_judgment_language(description.area_guess)
     visible_objects, changed_objects = sanitize_string_list(description.visible_objects)
     visible_objects = dedupe_preserving_order(visible_objects)
     possible_conditions, changed_conditions = sanitize_string_list(description.possible_conditions)
     possible_issues, changed_issues = sanitize_string_list(description.possible_issues)
     warnings, changed_warnings = sanitize_string_list(description.warnings)
-    changed = any((changed_description, changed_area, changed_objects, changed_conditions, changed_issues, changed_warnings))
+    changed = any((changed_description, changed_summary, changed_area, changed_objects, changed_conditions, changed_issues, changed_warnings))
     if ADVISORY_WARNING not in warnings:
         warnings.append(ADVISORY_WARNING)
     if changed and JUDGMENT_LANGUAGE_REMOVED_WARNING not in warnings:
         warnings.append(JUDGMENT_LANGUAGE_REMOVED_WARNING)
     return VisionDescription(
         description=text_description,
+        summary=summary_text,
         area_guess=area_guess,
         visible_objects=visible_objects,
         possible_conditions=possible_conditions,
@@ -420,6 +423,7 @@ def normalize_vision_description(payload: dict[str, object]) -> VisionDescriptio
         needs_human_review = True
     return sanitize_vision_description(VisionDescription(
         description=str(payload.get("description") or "").strip(),
+        summary=str(payload.get("summary") or "").strip(),
         area_guess=area_guess,
         visible_objects=normalize_string_list(payload.get("visible_objects")),
         possible_conditions=normalize_string_list(payload.get("possible_conditions")),
@@ -677,6 +681,21 @@ def sanitize_leaked_prose(text: str) -> str:
     return " ".join(" ".join(kept).split())
 
 
+_SUMMARY_MAX_WORDS = 45
+_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s")
+
+
+def guarded_summary(summary: object, description: str) -> str:
+    """The model's dashboard summary, or the description's first sentence
+    when the summary is missing, overlong, or leaked planning text — a model
+    quirk must never reach the dashboard unsupervised."""
+    text = " ".join(str(summary or "").split())
+    if text and len(text.split()) <= _SUMMARY_MAX_WORDS and not prose_planning_leak(text):
+        return text
+    stripped = description.strip()
+    return _SENTENCE_SPLIT_RE.split(stripped)[0] if stripped else ""
+
+
 def classification_prompt_for(
     asset: FieldPhotoAsset,
     qc_category: object | None,
@@ -699,6 +718,9 @@ def classification_prompt_for(
         f"---\n{rich_description.strip()}\n---\n"
         "\n"
         "Use the description and the image together. Return strict JSON with exactly these keys:\n"
+        "  summary (string): ONE sentence, at most 35 words, for a dashboard caption. Lead with the "
+        "overall condition verdict, then the location (name the facility naturally when context "
+        "provides it), then the key fixtures. Plain prose — no lists, no markdown.\n"
         "  area_guess (string): the area this photo shows. If one of these QC categories fits, "
         f"use its EXACT label: {category_list}. Otherwise use a specific room-type word "
         "(stairwell, supply_closet, janitor_closet, exterior, other). Judge from the image and "
@@ -777,6 +799,7 @@ class TwoPassMlxVisionClient:
             json_prefill=True,
         )
         parsed["description"] = prose
+        parsed["summary"] = guarded_summary(parsed.get("summary"), prose)
         if sanitized:
             warnings = normalize_string_list(parsed.get("warnings"))
             warnings.append("description sanitized: model emitted planning text twice")
@@ -882,6 +905,7 @@ def completed_payload(
     payload: dict[str, object] = base_payload(asset, source_image_hash=source_image_hash, model_name=model_name, provider=provider) | {
         "status": STATUS_COMPLETED,
         "description": safe_description.description,
+        "summary": safe_description.summary,
         "area_guess": safe_description.area_guess,
         "visible_objects": safe_description.visible_objects,
         "possible_conditions": safe_description.possible_conditions,
