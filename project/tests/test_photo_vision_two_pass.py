@@ -473,3 +473,29 @@ def test_vision_describe_without_prefill_is_unchanged(tmp_path: Path, monkeypatc
 
     assert not str(recorded["formatted"]).endswith("{")
     assert parsed == {"area_guess": "hallway"}
+
+
+# ---------------------------------------------------------------------------
+# Site-name fallback when no curated vision context exists
+# ---------------------------------------------------------------------------
+
+def test_site_context_falls_back_to_canonical_name(monkeypatch: pytest.MonkeyPatch) -> None:
+    # MUTATION GUARD: a site without a curated vision context still gets its
+    # name into vision prompts ("at the Liberty Wire facility").
+    class _Registry:
+        def get_vision_context(self, _site_id: str):
+            return None
+
+        def resolve_canonical(self, _site_id: str) -> str:
+            return "Liberty Wire"
+
+    from event_pipeline import sites as sites_module
+
+    monkeypatch.setattr(sites_module, "_get_registry", lambda: _Registry())
+    context = photo_vision.site_vision_context_for("1337")
+    assert context is not None
+    assert context.site_context_name == "Liberty Wire"
+
+    monkeypatch.setattr(photo_vision, "site_vision_context_for", lambda _s: context)
+    prompt = rich_description_prompt_for(_asset(site_id="1337"), "qc")
+    assert "Liberty Wire" in prompt

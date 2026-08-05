@@ -263,10 +263,21 @@ def site_vision_context_for(site_id: str) -> SiteVisionContext | None:
         logger.warning("CouchDB site vision context unavailable; site_id=%s error=%s", normalized, exc)
         return None
     if not isinstance(context, dict):
+        context = {}
+    label = str(context.get("label") or "")
+    if not label:
+        # Sites without a curated vision context still deserve their name in
+        # prompts ("at the Liberty Wire facility"), so fall back to the
+        # registry's canonical site name.
+        try:
+            label = str(registry.resolve_canonical(normalized) or "")
+        except CouchDBRegistryError:
+            label = ""
+    if not context and not label:
         return None
     return SiteVisionContext(
         site_context_id=str(context.get("context_id") or normalized),
-        site_context_name=str(context.get("label") or ""),
+        site_context_name=label,
         facility_type=str(context.get("environment") or ""),
         context=str(context.get("summary") or ""),
     )
