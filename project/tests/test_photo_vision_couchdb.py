@@ -330,3 +330,19 @@ PHOTO_VISION_MANGO_INDEXES = [
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_build_document_carries_summary_and_indexes_it() -> None:
+    # MUTATION GUARD: the dashboard reads the CouchDB mirror — a summary that
+    # exists only in the runtime sidecar never reaches the cards.
+    from field_capture.photo_vision_couchdb import build_photo_vision_document
+
+    doc = build_photo_vision_document(
+        {
+            "photo_asset_id": "fcp_x",
+            "description": "Full rich description of the restroom.",
+            "summary": "A clean restroom at the Liberty Wire facility.",
+        }
+    )
+    assert doc["summary"] == "A clean restroom at the Liberty Wire facility."
+    assert "liberty wire" in doc["search_text"]
