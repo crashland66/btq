@@ -239,20 +239,9 @@ def _in_memory_filter(
 
 
 def _load_site_options() -> list[tuple[str, str]]:
-    try:
-        from ops_dashboard.site_service import canonical_name, load_sites, site_id_from_doc
-        result = []
-        for doc in load_sites():
-            sid = site_id_from_doc(doc)
-            if not sid:
-                continue
-            name = canonical_name(doc)
-            result.append((sid, f"{sid} — {name}" if name else sid))
-        return sorted(result, key=lambda t: t[0])
-    except Exception as exc:
-        logger.warning("could not load site options: %s", exc)
-        return []
+    from ops_dashboard.common import site_selector_options
 
+    return site_selector_options()
 
 def _load_sidecar_field_options(cdb_config: object, field_name: str) -> list[str]:
     if cdb_config is None:

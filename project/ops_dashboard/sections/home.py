@@ -964,14 +964,13 @@ def _render_help_popup() -> str:
 
 
 def _render_voice_card(site_records: dict, employee_records: list[dict[str, str]] | None = None) -> str:
-    sorted_sites = sorted(
-        site_records.values(),
-        key=lambda r: (r.account.lower(), r.name.lower()),
-    )
+    from ops_dashboard.common import format_site_options
+
+    # Home already curates the active site set; the shared formatter keeps
+    # labels and ordering identical to every other site selector.
     options = '<option value="">— none —</option>\n'
-    for rec in sorted_sites:
-        label = _esc(f"{rec.name} ({rec.account})" if rec.account else rec.name)
-        options += f'<option value="{_esc(rec.site_id)}">{label}</option>\n'
+    for site_id, label in format_site_options((rec.site_id, rec.name) for rec in site_records.values()):
+        options += f'<option value="{_esc(site_id)}">{_esc(label)}</option>\n'
     employee_options = ""
     for employee in employee_records or []:
         employee_id = _esc(str(employee.get("id") or ""))

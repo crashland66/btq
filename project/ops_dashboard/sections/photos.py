@@ -271,23 +271,9 @@ def _load_area_options(cdb_config: object) -> list[str]:
 
 
 def _load_site_options() -> list[tuple[str, str]]:
-    """Return sorted list of (site_id, label) from btq_sites. Empty on failure."""
-    try:
-        from ops_dashboard.site_service import canonical_name, load_sites, site_id_from_doc
-        docs = load_sites()
-        result = []
-        for doc in docs:
-            sid = site_id_from_doc(doc)
-            if not sid:
-                continue
-            name = canonical_name(doc)
-            label = f"{sid} — {name}" if name else sid
-            result.append((sid, label))
-        return sorted(result, key=lambda t: t[0])
-    except Exception as exc:
-        logger.warning("could not load site options: %s", exc)
-        return []
+    from ops_dashboard.common import site_selector_options
 
+    return site_selector_options()
 
 def _in_memory_filter(
     sidecars: list[dict[str, object]],

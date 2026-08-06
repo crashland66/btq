@@ -102,10 +102,9 @@ def render(ctx: object = None) -> str:
 
 
 def load_sites() -> list[dict[str, str]]:
-    return [
-        {"site_id": site["site_id"], "label": f"{site['canonical']} ({site['site_id']})"}
-        for site in CouchDBSiteRegistry().list_sites()
-    ]
+    from ops_dashboard.common import site_selector_options
+
+    return [{"site_id": site_id, "label": label} for site_id, label in site_selector_options()]
 
 
 def load_categories(site_id: str) -> list[dict[str, str]]:
@@ -125,31 +124,9 @@ def load_categories(site_id: str) -> list[dict[str, str]]:
 
 
 def load_people() -> list[dict[str, str]]:
-    cfg = couchdb_config.from_env()
-    db = couchdb_config.people_database()
-    url = f"{cfg.base_url.rstrip('/')}/{url_parse.quote(db, safe='')}/_find"
-    payload = {
-        "selector": {"synced_from_vault": True, "status": "active"},
-        "fields": ["_id", "person_id", "first", "last", "preferred_name", "name", "status", "synced_from_vault"],
-        "limit": 1000,
-    }
-    headers = {"Accept": "application/json", "Content-Type": "application/json"}
-    headers.update(cfg.auth_header())
-    req = url_request.Request(url, data=json.dumps(payload).encode("utf-8"), headers=headers, method="POST")
-    with url_request.urlopen(req, timeout=cfg.timeout) as response:
-        data = json.loads(response.read().decode("utf-8"))
-    people: list[dict[str, str]] = []
-    for doc in data.get("docs", []):
-        if not isinstance(doc, dict):
-            continue
-        person_id = str(doc.get("person_id") or doc.get("_id") or "").strip()
-        if not person_id:
-            continue
-        first = str(doc.get("preferred_name") or doc.get("first") or "").strip()
-        last = str(doc.get("last") or "").strip()
-        name = str(doc.get("name") or "").strip() or f"{first} {last}".strip() or person_id
-        people.append({"person_id": person_id, "label": f"{name} ({person_id})"})
-    return sorted(people, key=lambda item: item["label"].lower())
+    from ops_dashboard.common import employee_selector_options
+
+    return [{"person_id": person_id, "label": label} for person_id, label in employee_selector_options()]
 
 
 def handle_batch_upload_post(ctx: object, body: bytes, content_type: str = "") -> tuple:

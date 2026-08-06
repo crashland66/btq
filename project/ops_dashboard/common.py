@@ -11,7 +11,7 @@ import threading
 import time
 import uuid
 from collections import Counter
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib import request as urllib_request
@@ -1806,19 +1806,113 @@ def write_shift_report_note_job(
     return queue_path
 
 
+def site_selector_options() -> list[tuple[str, str]]:
+    """THE site selector, for every site <select> on the dashboard.
+
+    One source (the CouchDB site registry's active sites — the same list the
+    capture app resolves against, falling back to the static SITES table when
+    the registry is unreachable), one label ("Name (id)"), one order (by name,
+    case-insensitive). Sections must build site dropdowns from this instead of
+    rolling their own — seven independent builders once drifted into three
+    sources, three label formats, and four sort orders.
+    """
+    rows: list[dict[str, str]] = []
+    try:
+        rows = CouchDBSiteRegistry().list_sites()
+    except Exception:  # noqa: BLE001 - registry outage falls back to the static table.
+        rows = []
+    if not rows:
+        rows = [
+            {"site_id": str(site.get("site_id") or ""), "canonical": str(site.get("canonical") or site.get("name") or "")}
+            for site in SITES
+        ]
+    return format_site_options(
+        (str(row.get("site_id") or ""), str(row.get("canonical") or "")) for row in rows
+    )
+
+
+def format_site_options(pairs: Iterable[tuple[str, str]]) -> list[tuple[str, str]]:
+    """THE site option formatting: "Name (id)" labels, name-sorted, deduped.
+
+    Sections whose context already curates the site set (e.g. home's active
+    site records) format through this so labels and ordering never drift."""
+    seen: set[str] = set()
+    options: list[tuple[str, str]] = []
+    for site_id, name in pairs:
+        site_id = str(site_id or "").strip()
+        if not site_id or site_id in seen:
+            continue
+        seen.add(site_id)
+        label = str(name or "").strip() or site_id
+        options.append((site_id, f"{label} ({site_id})"))
+    return sorted(options, key=lambda option: option[1].casefold())
+
+
+def _selector_couch_find(database: str, selector: dict[str, object]) -> list[dict[str, object]]:
+    """Small Mango query used by the selector helpers; module-level so tests
+    can substitute fixtures without network plumbing."""
+    import json as _json
+    from urllib import parse as _parse, request as _request
+
+    cfg = couchdb_config.from_env()
+    url = f"{cfg.base_url.rstrip('/')}/{_parse.quote(database, safe='')}/_find"
+    payload = _json.dumps({"selector": selector, "limit": 1000}).encode("utf-8")
+    headers = {"Accept": "application/json", "Content-Type": "application/json"}
+    headers.update(cfg.auth_header())
+    req = _request.Request(url, data=payload, headers=headers, method="POST")
+    with _request.urlopen(req, timeout=cfg.timeout) as response:
+        return [doc for doc in _json.loads(response.read().decode("utf-8")).get("docs", []) if isinstance(doc, dict)]
+
+
+def employee_selector_options() -> list[tuple[str, str]]:
+    """THE active-employee selector for user pickers.
+
+    Values stay in the btq_people mirror's person_id convention (what capture
+    attribution uses), but the canonical vault decides who is active: the
+    mirror's status field has gone stale on some status-change paths, so any
+    mirror-"active" person whose vault record is inactive is knocked out by
+    normalized-name match. Labeled "Name (person_id)", sorted by name.
+    """
+    def _person_label(doc: dict[str, object]) -> str:
+        first = str(doc.get("preferred_name") or doc.get("first") or "").strip()
+        last = str(doc.get("last") or "").strip()
+        return str(doc.get("name") or "").strip() or f"{first} {last}".strip()
+
+    def _name_key(value: str) -> str:
+        return re.sub(r"[^a-z0-9]+", " ", value.lower()).strip()
+
+    try:
+        mirror = _selector_couch_find(couchdb_config.people_database(), {"synced_from_vault": True, "status": "active"})
+    except Exception:  # noqa: BLE001 - people db outage renders an empty picker, not a 500.
+        return []
+    try:
+        vault_inactive_names = {
+            _name_key(_person_label(doc))
+            for doc in _selector_couch_find(couchdb_config.vault_database(), {"type": "employee"})
+            if str(doc.get("status") or "").strip().lower() != "active"
+        }
+    except Exception:  # noqa: BLE001 - vault outage degrades to mirror-only filtering.
+        vault_inactive_names = set()
+
+    options: list[tuple[str, str]] = []
+    for doc in mirror:
+        person_id = str(doc.get("person_id") or doc.get("_id") or "").strip()
+        label = _person_label(doc) or person_id
+        if not person_id:
+            continue
+        if _name_key(label) and _name_key(label) in vault_inactive_names:
+            continue
+        options.append((person_id, f"{label} ({person_id})"))
+    return sorted(options, key=lambda option: option[1].casefold())
+
+
 def render_site_id_options(current_site_id: str) -> str:
     current = str(current_site_id or "").strip()
     options = ['<option value="">Select site</option>']
-    rows = sorted(
-        (site for site in SITES if str(site.get("site_id") or "").strip()),
-        key=lambda site: (str(site.get("canonical") or site.get("name") or ""), str(site.get("site_id") or "")),
-    )
-    for site in rows:
-        site_id = str(site.get("site_id") or "").strip()
-        name = str(site.get("name") or site.get("canonical") or site_id)
+    for site_id, label in site_selector_options():
         selected = " selected" if site_id == current else ""
         options.append(
-            f'<option value="{html.escape(site_id, quote=True)}"{selected}>{html.escape(name)} ({html.escape(site_id)})</option>'
+            f'<option value="{html.escape(site_id, quote=True)}"{selected}>{html.escape(label)}</option>'
         )
     return "\n".join(options)
 

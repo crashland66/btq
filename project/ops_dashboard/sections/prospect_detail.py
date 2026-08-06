@@ -107,14 +107,13 @@ def _photos_section(ctx: object, prospect_id: str) -> str:
 
 
 def _site_options() -> tuple[list[tuple[str, str]], bool]:
+    from ops_dashboard.common import site_selector_options
+
     try:
-        registry = CouchDBSiteRegistry()
-        rows = registry._get_alias_rows()  # noqa: SLF001 - registry has no public list-sites API.
-        by_site_id = {row.site_id: row.canonical for row in rows if row.site_id}
-        return sorted(by_site_id.items(), key=lambda item: item[0]), True
+        options = site_selector_options()
+        return options, bool(options)
     except Exception:
         return [], False
-
 
 def _site_display_name(site_id: str, options: list[tuple[str, str]] | None = None) -> str:
     normalized = site_id.removeprefix("location_")
