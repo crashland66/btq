@@ -413,7 +413,7 @@ class TestApprovedDoubleExecutionGate:
         ]
         assert all(not r.get("materialized") for r in materialized), results
 
-    def test_pending_draft_is_NOT_excluded_baseline(self, live_db, tmp_path):
+    def test_pending_draft_is_NOT_excluded_baseline(self, live_db, tmp_path, enqueue_capture):
         """Sanity baseline so the gate above is meaningful: a genuinely
         approved-but-UNmaterialized draft IS selected + materialized. Proves the
         watcher would have re-run the migrated draft if it lacked the timestamp."""
@@ -460,8 +460,11 @@ class TestApprovedDoubleExecutionGate:
             config=cfg, db=db, runtime_root=tmp_path,
             logger=logging.getLogger("test_338_baseline"), dry_run=False,
         )
-        queue_files = list((tmp_path / "queue").glob("*.json"))
-        assert any("live-approved-1" in f.name for f in queue_files), queue_files
+        # The watcher enqueues via the unified CouchDB transport with a
+        # deterministic per-draft doc id (queue_doc_id_for_draft_job embeds the
+        # draft_id), so inspect the captured enqueues instead of queue files.
+        staged_ids = [str(e["job"].get("job_id", "")) for e in enqueue_capture]
+        assert any("live-approved-1" in job_id for job_id in staged_ids), staged_ids
 
 
 # --------------------------------------------------------------------------- #

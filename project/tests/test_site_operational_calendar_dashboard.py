@@ -410,6 +410,7 @@ def test_operational_calendar_and_facility_hours_post_routes_remain_distinct(
 def test_upsert_normalizes_validates_and_atomically_stages_one_queue_job(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
+    enqueue_capture: list[dict],
 ) -> None:
     monkeypatch.setattr(site_detail, "_load_location", _fail_if_called)
     monkeypatch.setattr(site_detail.sites, "request_json", _fail_if_called)
@@ -453,14 +454,14 @@ def test_upsert_normalizes_validates_and_atomically_stages_one_queue_job(
         "?message=Operational%20calendar%20update%20queued."
     )
     assert b"Operational%20calendar%20update%20queued." in response_body
-    files = _queue_files(ctx)
-    assert len(files) == 1
-    assert files[0].name.startswith("set-site-operational-calendar-")
-    assert not files[0].name.startswith(".")
-    job = json.loads(files[0].read_text(encoding="utf-8"))
+    [entry] = enqueue_capture
+    job = entry["job"]
+    assert str(job["job_id"]).startswith("set-site-operational-calendar-")
     assert validate_job(job) is True
     assert job["job_type"] == "set_site_operational_calendar"
     assert set(job) == {"job_id", "job_type", "payload"}
+    # Transport invariant: no queue files are written — CouchDB is the only path.
+    assert _queue_files(ctx) == []
     payload = job["payload"]
     assert payload == {
         "site_id": SITE_ID,
@@ -486,12 +487,12 @@ def test_upsert_normalizes_validates_and_atomically_stages_one_queue_job(
             ],
         },
     }
-    assert list((ctx.runtime_root / "queue").glob(".*.tmp")) == []
 
 
 def test_confirmed_remove_stages_no_calendar_body(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
+    enqueue_capture: list[dict],
 ) -> None:
     monkeypatch.setattr(site_detail, "_load_location", _fail_if_called)
     monkeypatch.setattr(site_detail.sites, "request_json", _fail_if_called)
@@ -514,9 +515,8 @@ def test_confirmed_remove_stages_no_calendar_body(
         f"/sites/{SITE_ID}"
         "?message=Operational%20calendar%20removal%20queued."
     )
-    files = _queue_files(ctx)
-    assert len(files) == 1
-    job = json.loads(files[0].read_text(encoding="utf-8"))
+    [entry] = enqueue_capture
+    job = entry["job"]
     assert validate_job(job) is True
     assert job["payload"] == {
         "site_id": SITE_ID,
@@ -525,6 +525,7 @@ def test_confirmed_remove_stages_no_calendar_body(
         "actor": ACTOR,
         "source": "ops_dashboard_site_detail",
     }
+    assert _queue_files(ctx) == []
     assert "calendar" not in job["payload"]
 
 

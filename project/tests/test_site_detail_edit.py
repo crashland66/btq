@@ -363,6 +363,7 @@ def test_facility_hours_form_json_preserves_literal_empty_array_note_text() -> N
 def test_site_url_post_enqueues_job(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
+    enqueue_capture: list[dict],
     body: dict[str, str],
     expected: dict[str, str],
 ) -> None:
@@ -377,18 +378,23 @@ def test_site_url_post_enqueues_job(
 
     assert status == 303
     assert headers["Location"] == "/sites/7050?message=url_queued"
-    queue_files = list((ctx.runtime_root / "queue").glob("set-site-url-*.json"))
-    assert len(queue_files) == 1
-    job = json.loads(queue_files[0].read_text(encoding="utf-8"))
+    assert len(enqueue_capture) == 1
+    job = enqueue_capture[0]["job"]
+    assert job["job_id"].startswith("set-site-url-")
     assert job["job_type"] == "set_site_url"
     payload = job["payload"]
     assert payload["site_id"] == "7050"
     for key, value in expected.items():
         assert payload[key] == value
     assert payload["source"] == "ops_dashboard_site_detail"
+    assert any("queue_doc=" in result for _route, _payload, result in ctx.audit_entries)
+    # Unified transport: nothing lands in the runtime file queue.
+    assert not (ctx.runtime_root / "queue").exists()
 
 
-def test_site_hours_post_enqueues_job(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_site_hours_post_enqueues_job(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, enqueue_capture: list[dict]
+) -> None:
     monkeypatch.setattr(site_detail.sites, "request_json", lambda *args, **kwargs: pytest.fail("must not direct-write CouchDB"))
     ctx = DummyContext(tmp_path)
     body = {
@@ -423,9 +429,9 @@ def test_site_hours_post_enqueues_job(monkeypatch: pytest.MonkeyPatch, tmp_path:
 
     assert status == 303
     assert headers["Location"] == "/sites/7050?message=facility_hours_queued"
-    queue_files = list((ctx.runtime_root / "queue").glob("set-site-hours-*.json"))
-    assert len(queue_files) == 1
-    job = json.loads(queue_files[0].read_text(encoding="utf-8"))
+    assert len(enqueue_capture) == 1
+    job = enqueue_capture[0]["job"]
+    assert job["job_id"].startswith("set-site-hours-")
     assert job["job_type"] == "set_site_hours"
     payload = job["payload"]
     assert payload["site_id"] == "7050"
@@ -433,6 +439,9 @@ def test_site_hours_post_enqueues_job(monkeypatch: pytest.MonkeyPatch, tmp_path:
     assert payload["facility_hours"]["status"] == "verified"
     assert payload["facility_hours"]["weekly"]["fri"] == [{"open": "08:30", "close": "15:00"}]
     assert payload["source"] == "ops_dashboard_site_detail"
+    assert any("queue_doc=" in result for _route, _payload, result in ctx.audit_entries)
+    # Unified transport: nothing lands in the runtime file queue.
+    assert not (ctx.runtime_root / "queue").exists()
 
 
 @pytest.mark.parametrize(
@@ -529,6 +538,7 @@ def test_site_hours_post_enqueues_job(monkeypatch: pytest.MonkeyPatch, tmp_path:
 def test_contacts_post_enqueues_set_contact_job(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
+    enqueue_capture: list[dict],
     target_type: str,
     body: dict[str, str],
     expected_target: dict[str, str],
@@ -549,9 +559,9 @@ def test_contacts_post_enqueues_set_contact_job(
 
     assert status == 303
     assert headers["Location"] == "/sites/7050?message=contact_queued"
-    queue_files = list((ctx.runtime_root / "queue").glob("set-contact-*.json"))
-    assert len(queue_files) == 1
-    job = json.loads(queue_files[0].read_text(encoding="utf-8"))
+    assert len(enqueue_capture) == 1
+    job = enqueue_capture[0]["job"]
+    assert job["job_id"].startswith("set-contact-")
     assert job["job_type"] == "set_contact"
     assert validate_job(job) is True
     payload = job["payload"]
@@ -564,10 +574,13 @@ def test_contacts_post_enqueues_set_contact_job(
         assert payload["source"] == "ops_dashboard_site_detail"
     else:
         assert payload["contact"] == {"id": expected_id}
+    assert any("queue_doc=" in result for _route, _payload, result in ctx.audit_entries)
+    # Unified transport: nothing lands in the runtime file queue.
+    assert not (ctx.runtime_root / "queue").exists()
 
 
 def test_contacts_post_invalid_input_rerenders_without_queue(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, enqueue_capture: list[dict]
 ) -> None:
     monkeypatch.setattr(site_detail, "_load_location", lambda site_id: _minimal_location(account="Acme"))
     monkeypatch.setattr(site_detail, "_load_account_doc_for_location", lambda doc: {"_id": "account_acme", "type": "account"})
@@ -592,7 +605,7 @@ def test_contacts_post_invalid_input_rerenders_without_queue(
 
     assert status == 200
     assert b"Contact update was not queued" in response_body
-    assert list((ctx.runtime_root / "queue").glob("set-contact-*.json")) == []
+    assert enqueue_capture == []
 
 
 def test_post_save_section_updates_only_contact_fields(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

@@ -799,7 +799,6 @@ def run_cycle(
             issue_logger = logger.getChild("issue_routing")
             counts = issue_routing.route_field_reported_issues(
                 audio_transcription.default_intake_dir(runtime_resolved),
-                runtime_resolved / "queue",
                 runtime_root=runtime_resolved,
                 logger=issue_logger,
                 limit=issue_routing_limit,

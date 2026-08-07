@@ -582,7 +582,6 @@ def test_run_cycle_runs_issue_routing_pass(monkeypatch: pytest.MonkeyPatch, tmp_
 
     def fake_route_field_reported_issues(
         intake_dir: Path,
-        queue_dir: Path,
         *,
         runtime_root: Path,
         logger: logging.Logger,
@@ -591,7 +590,6 @@ def test_run_cycle_runs_issue_routing_pass(monkeypatch: pytest.MonkeyPatch, tmp_
         calls.append(
             {
                 "intake_dir": intake_dir,
-                "queue_dir": queue_dir,
                 "runtime_root": runtime_root,
                 "logger": logger,
                 "limit": limit,
@@ -608,7 +606,6 @@ def test_run_cycle_runs_issue_routing_pass(monkeypatch: pytest.MonkeyPatch, tmp_
 
     assert len(calls) == 1
     assert calls[0]["intake_dir"] == runtime_root / "field_capture" / "intake"
-    assert calls[0]["queue_dir"] == runtime_root / "queue"
     assert calls[0]["runtime_root"] == runtime_root.resolve(strict=False)
     assert calls[0]["limit"] == 7
     step = next(step for step in cycle["steps"] if step["step"] == "route_field_reported_issues")

@@ -201,13 +201,29 @@ def stage_draft(
         )
 
     queue_path = stage_queue_path(queue_dir, draft_id, computed_job_id)
-    queue_path.parent.mkdir(parents=True, exist_ok=True)
-    write_json_object(queue_path, job)
+    # Author the job as a btq_queue CouchDB doc (the unified transport).
+    # The doc id is the deterministic queue filename stem, so re-staging the
+    # same draft is an idempotent 409 no-op on CouchDB.
+    from event_pipeline import btq_client
+
+    enqueue_job = dict(job)
+    enqueue_job["job_id"] = queue_path.stem
+    enqueue_result = btq_client.enqueue(enqueue_job, created_by="draft_staging")
+    if enqueue_result.get("duplicate"):
+        return staging_result_payload(
+            draft=draft,
+            draft_artifact_path=draft_artifact_path,
+            status=STAGING_STATUS_SKIPPED,
+            reason="already enqueued in the CouchDB queue",
+            queue_path=queue_path,
+            job=job,
+            computed_job_id=computed_job_id,
+        )
     return staging_result_payload(
         draft=draft,
         draft_artifact_path=draft_artifact_path,
         status=STAGING_STATUS_STAGED,
-        reason="staged approved draft into runtime queue",
+        reason="staged approved draft into the CouchDB queue",
         queue_path=queue_path,
         job=job,
         computed_job_id=computed_job_id,

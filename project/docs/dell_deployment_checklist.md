@@ -399,9 +399,12 @@ Then fail back to the Mac watchers:
 
 ```bash
 cd /Users/operator/btq
-./scripts/install-queue-launch-agent
 ./scripts/install-whisper-launch-agent
 ```
+
+(The file-queue launch agent is retired — the CouchDB queue watcher is the
+sole queue processor; install it from
+`project/field_capture/launchagents/com.btq.couchdb-queue-watcher.plist`.)
 
 Because the Mac remains the replication peer in the Stage E topology, this is a
 real fallback path. After failback, run:

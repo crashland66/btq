@@ -952,8 +952,7 @@ def handle_analyze_deeper_post(ctx: object, body: bytes) -> tuple:
         return _fail("missing_prompt")
 
     try:
-        queue_path = write_deep_analysis_job(
-            root,
+        queue_doc_id = write_deep_analysis_job(
             capture_id=capture_id,
             photo_asset_id=photo_asset_id,
             actor=actor,
@@ -964,7 +963,7 @@ def handle_analyze_deeper_post(ctx: object, body: bytes) -> tuple:
         _audit_append(f"failed: {exc}")
         return _redirect(_redirect_target("error", str(exc)))
 
-    _audit_append(f"success: staged deep_analysis capture_id={capture_id} photo_asset_id={photo_asset_id} queue_path={queue_path}")
+    _audit_append(f"success: staged deep_analysis capture_id={capture_id} photo_asset_id={photo_asset_id} queue_doc={queue_doc_id}")
     return _redirect(_redirect_target("message", "deep_analysis_queued"))
 
 
@@ -1007,8 +1006,7 @@ def handle_send_to_shift_report(ctx: object, body: bytes) -> tuple:
         return _fail("missing_field")
 
     try:
-        queue_path = write_shift_report_note_job(
-            root / "queue",
+        queue_doc_id = write_shift_report_note_job(
             date=date,
             content=content,
             actor=actor,
@@ -1022,7 +1020,7 @@ def handle_send_to_shift_report(ctx: object, body: bytes) -> tuple:
         _audit_append(f"failed: {exc}")
         return _redirect(_redirect_target("error", str(exc)))
 
-    _audit_append(f"success: staged shift_report_note capture_id={capture_id} photo_asset_id={photo_asset_id} queue_path={queue_path}")
+    _audit_append(f"success: staged shift_report_note capture_id={capture_id} photo_asset_id={photo_asset_id} queue_doc={queue_doc_id}")
     return _redirect(_redirect_target("message", "shift_report_note_queued"))
 
 

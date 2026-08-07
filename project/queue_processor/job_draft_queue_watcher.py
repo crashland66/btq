@@ -81,33 +81,31 @@ def build_queue_job_from_draft(doc: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def queue_path_for_draft_job(job: dict[str, Any], draft_id: str, runtime_root: Path) -> Path:
-    return runtime_root / "queue" / f"{job['job_type']}.{_safe_doc_id(draft_id)}.json"
+def queue_doc_id_for_draft_job(job: dict[str, Any], draft_id: str) -> str:
+    return f"{job['job_type']}.{_safe_doc_id(draft_id)}"
 
 
-def materialize_draft_job(doc: dict[str, Any], runtime_root: Path, *, dry_run: bool = False) -> Path:
+def materialize_draft_job(doc: dict[str, Any], runtime_root: Path, *, dry_run: bool = False) -> str:
+    """Author the approved draft as a btq_queue CouchDB doc (unified transport).
+
+    The doc id is deterministic per draft, so re-materializing the same
+    draft is an idempotent 409 no-op on CouchDB. Returns the queue doc id.
+    """
     draft_id = str(doc.get("draft_id") or "").strip()
     if not draft_id:
         raise CouchDBJobDraftWriterError("approved job_draft is missing draft_id")
     job = build_queue_job_from_draft(doc)
     if not validate_job(job):
         raise ValueError(f"invalid queue job for draft_id={draft_id}")
-    destination = queue_path_for_draft_job(job, draft_id, runtime_root)
-    if destination.exists():
-        raise FileExistsError(str(destination))
+    queue_doc_id = queue_doc_id_for_draft_job(job, draft_id)
     if dry_run:
-        return destination
-    queue_dir = runtime_root / "queue"
-    queue_dir.mkdir(parents=True, exist_ok=True)
-    temp_path = destination.with_name(f".{destination.name}.tmp")
-    try:
-        temp_path.write_text(json.dumps(job, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-        os.replace(temp_path, destination)
-    except Exception:
-        with contextlib.suppress(OSError):
-            temp_path.unlink()
-        raise
-    return destination
+        return queue_doc_id
+    from event_pipeline import btq_client
+
+    enqueue_job = dict(job)
+    enqueue_job["job_id"] = queue_doc_id
+    btq_client.enqueue(enqueue_job, created_by="job_draft_queue_watcher")
+    return queue_doc_id
 
 
 def mark_job_draft_queue_materialize_error(
@@ -197,10 +195,7 @@ def process_one(
         }
     try:
         try:
-            queue_path = materialize_draft_job(doc, runtime_root, dry_run=dry_run)
-        except FileExistsError as exc:
-            queue_path = Path(str(exc))
-            logger.info("job_draft queue job already materialized draft_id=%s path=%s", draft_id, queue_path)
+            queue_doc_id = materialize_draft_job(doc, runtime_root, dry_run=dry_run)
         except ValueError as exc:
             logger.exception("job_draft queue validation failed draft_id=%s", draft_id)
             if not dry_run:
@@ -240,7 +235,7 @@ def process_one(
                 "materialized": False,
                 "error": "",
                 "dry_run": True,
-                "queue_path": str(queue_path),
+                "queue_doc_id": queue_doc_id,
             }
 
         materialized_at = utc_now_iso()
@@ -261,7 +256,7 @@ def process_one(
                     "materialized": False,
                     "error": "",
                     "skipped": "already materialized after conflict",
-                    "queue_path": str(queue_path),
+                    "queue_doc_id": queue_doc_id,
                 }
             raise
     except Exception as exc:  # noqa: BLE001 - fail soft per draft.
@@ -272,7 +267,7 @@ def process_one(
         "ok": True,
         "materialized": True,
         "error": "",
-        "queue_path": str(queue_path),
+        "queue_doc_id": queue_doc_id,
         "new_rev": str(updated.get("_rev") or ""),
         "queue_materialized_at": materialized_at,
     }

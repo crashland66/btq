@@ -262,11 +262,7 @@ def handle_publish_sc_post(
             archive_inspection(old_audit_id, token, http_client=http_client)
         audit_id = submit_prefill_payload(payload, token, http_client=http_client)
         published_at = now()
-        root = getattr(ctx, "runtime_root", None)
-        if root is None:
-            raise ValueError("Missing dashboard runtime root.")
         write_edit_record_fields_job(
-            root,
             record_type=SHIFT_REPORT_TYPE,
             record_id=doc_id,
             fields={"sc_audit_id": audit_id, "sc_published_at": published_at},

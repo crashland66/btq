@@ -9,13 +9,17 @@
 #
 # Pro daemons restarted:
 #   com.btq.couchdb-field-capture-watcher
-#   com.btq.couchdb-queue-watcher
+#   com.btq.couchdb-queue-watcher   (sole queue processor since the 2026-08-07
+#                                    file-queue retirement — it materializes
+#                                    btq_queue docs AND runs the processing pass)
 #   com.btq.field-capture-pipeline-watcher
 #   com.btq.ops-dashboard
-#   com.btq.queue-watch
 #   com.btq.whisper-watch
 #   com.btq.cowork-drop-watch  (skipped until first installed on the Pro)
 #   com.btq.cowork-read-watch  (skipped until first installed on the Pro)
+#
+# com.btq.queue-watch is retired: unload + archive its plist per the
+# queue-unification cutover runbook. It must NOT be restarted here.
 #
 # Usage:
 #   btq-deploy-pro [git-ref]   # ref defaults to current branch
@@ -41,7 +45,6 @@ for d in com.btq.couchdb-field-capture-watcher \\
          com.btq.couchdb-queue-watcher \\
          com.btq.field-capture-pipeline-watcher \\
          com.btq.ops-dashboard \\
-         com.btq.queue-watch \\
          com.btq.whisper-watch \\
          com.btq.cowork-drop-watch \\
          com.btq.cowork-read-watch; do

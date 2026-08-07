@@ -132,14 +132,191 @@ def test_materialize_queue_job_raises_on_duplicate(tmp_path: Path) -> None:
         couchdb_queue_watcher.materialize_queue_job(doc, tmp_path, logger())
 
 
-def test_materialize_queue_job_treats_file_exists_as_ok(tmp_path: Path) -> None:
+def _drain_stub(calls: list[dict[str, Any]] | None = None, report: dict[str, Any] | None = None):
+    def drain(runtime_root: Path, active_logger: logging.Logger, *, skip_unknowns: bool = True) -> dict[str, Any] | None:
+        if calls is not None:
+            calls.append({"runtime_root": runtime_root, "skip_unknowns": skip_unknowns})
+        return report
+
+    return drain
+
+
+def test_process_one_materialize_only_treats_file_exists_as_ok(tmp_path: Path) -> None:
     doc = queue_doc()
     couchdb_queue_watcher.materialize_queue_job(doc, tmp_path, logger())
 
-    result = couchdb_queue_watcher.process_one(doc=doc, runtime_root=tmp_path, logger=logger())
+    result = couchdb_queue_watcher.process_one(
+        doc=doc, runtime_root=tmp_path, logger=logger(), materialize_only=True
+    )
 
     assert result["ok"] is True
     assert result["doc_id"] == "abc123"
+
+
+def test_process_one_runs_drain_and_reports_processed_outcome(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    calls: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        couchdb_queue_watcher,
+        "_materialized_job_outcome",
+        lambda runtime_root, destination, payload: (couchdb_queue_watcher.OUTCOME_PROCESSED, "index"),
+    )
+
+    result = couchdb_queue_watcher.process_one(
+        doc=queue_doc(), runtime_root=tmp_path, logger=logger(), drain=_drain_stub(calls)
+    )
+
+    assert result["ok"] is True
+    assert result["outcome"] == couchdb_queue_watcher.OUTCOME_PROCESSED
+    assert calls and calls[0]["skip_unknowns"] is True
+
+
+def test_process_one_already_materialized_still_drains_to_outcome(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    doc = queue_doc()
+    couchdb_queue_watcher.materialize_queue_job(doc, tmp_path, logger())
+    calls: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        couchdb_queue_watcher,
+        "_materialized_job_outcome",
+        lambda runtime_root, destination, payload: (couchdb_queue_watcher.OUTCOME_PROCESSED, "index"),
+    )
+
+    result = couchdb_queue_watcher.process_one(
+        doc=doc, runtime_root=tmp_path, logger=logger(), drain=_drain_stub(calls)
+    )
+
+    assert result["ok"] is True
+    assert calls
+
+
+def test_process_one_reports_failed_outcome_as_not_ok(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(
+        couchdb_queue_watcher,
+        "_materialized_job_outcome",
+        lambda runtime_root, destination, payload: (
+            couchdb_queue_watcher.OUTCOME_FAILED,
+            str(tmp_path / "failed" / "job.json"),
+        ),
+    )
+
+    result = couchdb_queue_watcher.process_one(
+        doc=queue_doc(), runtime_root=tmp_path, logger=logger(), drain=_drain_stub()
+    )
+
+    assert result["ok"] is False
+    assert result["outcome"] == couchdb_queue_watcher.OUTCOME_FAILED
+    assert "failed processing" in result["error"]
+
+
+def test_process_one_reports_undrained_job_as_not_ok(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(couchdb_queue_watcher, "DRAIN_ATTEMPT_BACKOFF_SECONDS", (0.0, 0.0))
+    monkeypatch.setattr(
+        couchdb_queue_watcher,
+        "_materialized_job_outcome",
+        lambda runtime_root, destination, payload: (couchdb_queue_watcher.OUTCOME_PENDING, "still queued"),
+    )
+    calls: list[dict[str, Any]] = []
+
+    result = couchdb_queue_watcher.process_one(
+        doc=queue_doc(), runtime_root=tmp_path, logger=logger(), drain=_drain_stub(calls)
+    )
+
+    assert result["ok"] is False
+    assert result["outcome"] == couchdb_queue_watcher.OUTCOME_PENDING
+    assert "not drained" in result["error"]
+    assert len(calls) == 2
+
+
+def test_materialized_job_outcome_processed_via_index(tmp_path: Path) -> None:
+    from queue_processor.handlers import _shared
+    from queue_processor.processed_index import append_record, build_record
+
+    payload = {
+        "job_type": "append_to_note",
+        "payload": {"path": "Journal/2026-08-07.md", "destination": "journal", "content": "note"},
+    }
+    destination = tmp_path / "queue" / "job.json"
+    destination.parent.mkdir(parents=True)
+    job_id = _shared.compute_job_id(payload)
+    record = build_record(
+        computed_job_id=job_id,
+        job_type="append_to_note",
+        target_path="note_journal_2026-08-07",
+        source_queue_file=destination,
+        capture_id=None,
+        run_id="test-run",
+    )
+    append_record(tmp_path / "processed_index.jsonl", record)
+
+    outcome, source = couchdb_queue_watcher._materialized_job_outcome(tmp_path, destination, payload)
+
+    assert outcome == couchdb_queue_watcher.OUTCOME_PROCESSED
+
+
+def test_materialized_job_outcome_pending_when_still_queued(tmp_path: Path) -> None:
+    payload = {
+        "job_type": "append_to_note",
+        "payload": {"path": "Journal/2026-08-07.md", "destination": "journal", "content": "note"},
+    }
+    destination = tmp_path / "queue" / "job.json"
+    destination.parent.mkdir(parents=True)
+    destination.write_text("{}", encoding="utf-8")
+
+    outcome, _detail = couchdb_queue_watcher._materialized_job_outcome(tmp_path, destination, payload)
+
+    assert outcome == couchdb_queue_watcher.OUTCOME_PENDING
+
+
+def test_materialized_job_outcome_failed_when_in_failed_dir(tmp_path: Path) -> None:
+    payload = {
+        "job_type": "append_to_note",
+        "payload": {"path": "Journal/2026-08-07.md", "destination": "journal", "content": "note"},
+    }
+    destination = tmp_path / "queue" / "job.json"
+    failed_dir = tmp_path / "failed"
+    failed_dir.mkdir(parents=True)
+    (failed_dir / "job.json").write_text("{}", encoding="utf-8")
+
+    outcome, detail = couchdb_queue_watcher._materialized_job_outcome(tmp_path, destination, payload)
+
+    assert outcome == couchdb_queue_watcher.OUTCOME_FAILED
+    assert detail == str(failed_dir / "job.json")
+
+
+def test_run_processing_pass_returns_none_on_processor_error(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    import queue_processor.main as queue_main
+
+    def raise_lock_refused(**_kwargs: Any) -> dict[str, Any]:
+        raise queue_main.QueueProcessorError("lock refused")
+
+    monkeypatch.setattr(queue_main, "process_all", raise_lock_refused)
+
+    assert couchdb_queue_watcher.run_processing_pass(tmp_path, logger()) is None
+
+
+def test_run_maintenance_drain_runs_followup_pass_for_reclassify_jobs(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    calls: list[bool] = []
+
+    def fake_pass(runtime_root: Path, active_logger: logging.Logger, *, skip_unknowns: bool = True) -> dict[str, Any]:
+        calls.append(skip_unknowns)
+        return {"unknown_reclassification_jobs_created": 2 if not skip_unknowns else 0}
+
+    monkeypatch.setattr(couchdb_queue_watcher, "run_processing_pass", fake_pass)
+
+    couchdb_queue_watcher.run_maintenance_drain(tmp_path, logger())
+
+    assert calls == [False, True]
 
 
 def test_materialize_queue_job_sanitizes_doc_id_in_filename(tmp_path: Path) -> None:
@@ -286,12 +463,13 @@ def test_stale_sweep_tolerates_and_logs_reset_conflict(caplog: pytest.LogCapture
     assert "queue stale processing reset conflict doc_id=conflict" in caplog.text
 
 
-def test_run_listener_invokes_stale_sweep_on_startup(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_run_listener_invokes_stale_sweep_and_drain_on_startup(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     listener = FakeListener([])
-    calls: list[int] = []
+    sweeps: list[int] = []
+    drains: list[dict[str, Any]] = []
 
     def fake_sweep_stale_processing_docs(**kwargs: Any) -> int:
-        calls.append(int(kwargs["ttl_seconds"]))
+        sweeps.append(int(kwargs["ttl_seconds"]))
         return 0
 
     monkeypatch.setattr(couchdb_queue_watcher, "sweep_stale_processing_docs", fake_sweep_stale_processing_docs)
@@ -303,13 +481,24 @@ def test_run_listener_invokes_stale_sweep_on_startup(monkeypatch: pytest.MonkeyP
         json_output=False,
         logger=logger(),
         stale_processing_ttl_seconds=123,
+        drain=_drain_stub(drains),
     )
 
-    assert calls == [123]
+    assert sweeps == [123]
+    # Startup drain runs with the unknowns pass enabled — this is what
+    # drains in-flight file-queue jobs at cutover.
+    assert drains and drains[0]["skip_unknowns"] is False
 
 
-def test_run_listener_marks_complete_on_successful_materialization(tmp_path: Path) -> None:
+def test_run_listener_marks_complete_on_processed_outcome(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     listener = FakeListener([queue_doc()])
+    monkeypatch.setattr(
+        couchdb_queue_watcher,
+        "_materialized_job_outcome",
+        lambda runtime_root, destination, payload: (couchdb_queue_watcher.OUTCOME_PROCESSED, "index"),
+    )
 
     couchdb_queue_watcher.run_listener(
         listener=listener,  # type: ignore[arg-type]
@@ -317,11 +506,37 @@ def test_run_listener_marks_complete_on_successful_materialization(tmp_path: Pat
         dry_run=False,
         json_output=False,
         logger=logger(),
+        drain=_drain_stub(),
     )
 
     assert listener.processing == ["abc123"]
     assert listener.completed == ["abc123"]
     assert listener.failed == []
+
+
+def test_run_listener_marks_failed_on_failed_outcome(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    listener = FakeListener([queue_doc()])
+    monkeypatch.setattr(
+        couchdb_queue_watcher,
+        "_materialized_job_outcome",
+        lambda runtime_root, destination, payload: (couchdb_queue_watcher.OUTCOME_FAILED, "failed/job.json"),
+    )
+
+    couchdb_queue_watcher.run_listener(
+        listener=listener,  # type: ignore[arg-type]
+        runtime_root=tmp_path,
+        dry_run=False,
+        json_output=False,
+        logger=logger(),
+        drain=_drain_stub(),
+    )
+
+    assert listener.completed == []
+    assert len(listener.failed) == 1
+    assert listener.failed[0][0] == "abc123"
+    assert "failed processing" in listener.failed[0][1]
 
 
 def test_run_listener_marks_failed_on_os_error(monkeypatch, tmp_path: Path) -> None:
@@ -338,19 +553,27 @@ def test_run_listener_marks_failed_on_os_error(monkeypatch, tmp_path: Path) -> N
         dry_run=False,
         json_output=False,
         logger=logger(),
+        drain=_drain_stub(),
     )
 
     assert listener.completed == []
     assert listener.failed == [("abc123", "disk full")]
 
 
-def test_run_listener_skips_state_update_on_file_exists_error(monkeypatch, tmp_path: Path) -> None:
+def test_run_listener_drains_through_to_outcome_on_file_exists_error(monkeypatch, tmp_path: Path) -> None:
+    # Regression shape: a doc whose queue file already exists must NOT be
+    # acked complete without the processing pass confirming the outcome.
     listener = FakeListener([queue_doc()])
 
     def raise_file_exists(*_args: Any, **_kwargs: Any) -> Path:
-        raise FileExistsError("already staged")
+        raise FileExistsError(str(tmp_path / "queue" / "already-staged.json"))
 
     monkeypatch.setattr(couchdb_queue_watcher, "materialize_queue_job", raise_file_exists)
+    monkeypatch.setattr(
+        couchdb_queue_watcher,
+        "_materialized_job_outcome",
+        lambda runtime_root, destination, payload: (couchdb_queue_watcher.OUTCOME_PROCESSED, "index"),
+    )
 
     couchdb_queue_watcher.run_listener(
         listener=listener,  # type: ignore[arg-type]
@@ -358,6 +581,7 @@ def test_run_listener_skips_state_update_on_file_exists_error(monkeypatch, tmp_p
         dry_run=False,
         json_output=False,
         logger=logger(),
+        drain=_drain_stub(),
     )
 
     assert listener.completed == ["abc123"]
@@ -386,3 +610,61 @@ def test_run_exits_on_bad_credentials(monkeypatch: pytest.MonkeyPatch, tmp_path:
 
     assert excinfo.value.code == 2
     assert listener_created is False
+
+
+def test_doc_processes_exactly_once_through_the_real_chain(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The unification gate: a btq_queue doc materializes into the spool, the
+    REAL durable processor applies it to canonical state, the doc outcome is
+    `processed` — and a redelivery of the same doc dedupes instead of writing
+    canonical state twice."""
+    import queue_processor.main as queue_main
+    from queue_processor.handlers import _shared
+    from tests.test_queue_processor_couchdb_write import RecordingRmwVaultStore
+
+    store = RecordingRmwVaultStore()
+    monkeypatch.setattr(_shared, "_VAULT_STORE", store)
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    monkeypatch.setattr(queue_main, "DEFAULT_PROJECT_ROOT", project_root)
+
+    doc = {
+        "_id": "2026-08-07T00-00-00Z__shift-note__e2e",
+        "_rev": "1-a",
+        "btq_state": "pending",
+        "created_at": "2026-08-07T00:00:00+00:00",
+        "created_by": "test",
+        "job_id": "2026-08-07T00-00-00Z__shift-note__e2e",
+        "job_type": "shift_report_note",
+        "idempotency_key": "shift-report-note:e2e",
+        "payload": {
+            "date": "2026-08-07",
+            "content": "End-to-end unification gate note.",
+            "actor": "verifier",
+            "capture_id": "cap-e2e",
+            "photo_asset_id": "photo-e2e",
+        },
+    }
+
+    first = couchdb_queue_watcher.process_one(doc=dict(doc), runtime_root=tmp_path, logger=logger())
+
+    assert first["ok"] is True, first
+    assert first["outcome"] == couchdb_queue_watcher.OUTCOME_PROCESSED
+    writes_after_first = len(store.update_doc_calls)
+    assert writes_after_first >= 1
+    [note_doc] = [d for d in store.docs if d.get("type") == "shift_report_note"]
+    assert note_doc["content"] == "End-to-end unification gate note."
+    # Spool drained: the job file was archived out of queue/.
+    assert list((tmp_path / "queue").glob("*.json")) == []
+    assert list((tmp_path / "processed").glob("*.json"))
+    assert (tmp_path / "processed_index.jsonl").exists()
+
+    # Redelivery of the same doc (e.g. stale-processing reset, changes-feed
+    # replay) must dedupe: outcome still processed, canonical state untouched.
+    second = couchdb_queue_watcher.process_one(doc=dict(doc), runtime_root=tmp_path, logger=logger())
+
+    assert second["ok"] is True, second
+    assert second["outcome"] == couchdb_queue_watcher.OUTCOME_PROCESSED
+    assert len(store.update_doc_calls) == writes_after_first
+    assert len([d for d in store.docs if d.get("type") == "shift_report_note"]) == 1

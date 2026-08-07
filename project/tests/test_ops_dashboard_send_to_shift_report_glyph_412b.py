@@ -245,9 +245,13 @@ def _ctx(runtime_root: Path):
     return SimpleNamespace(runtime_root=runtime_root)
 
 
-def _queue_files(runtime_root: Path) -> list[Path]:
-    qdir = runtime_root / "queue"
-    return list(qdir.glob("shift-report-note-*.json")) if qdir.exists() else []
+def _staged_jobs(enqueue_capture: list[dict]) -> list[dict]:
+    """Shift-report-note jobs authored through the unified CouchDB enqueue boundary."""
+    return [
+        entry["job"]
+        for entry in enqueue_capture
+        if str(entry["job"].get("job_id", "")).startswith("shift-report-note-")
+    ]
 
 
 def _fields_from_detail_form(entry: dict, record: dict) -> dict:
@@ -257,17 +261,19 @@ def _fields_from_detail_form(entry: dict, record: dict) -> dict:
     return dict(form["hidden"])  # parser already unescaped char refs -> browser-submitted values
 
 
-def test_detail_field_set_stages_exactly_one_job(tmp_path):
+def test_detail_field_set_stages_exactly_one_job(tmp_path, enqueue_capture):
     entry = _entry()
     record = _record()
     fields = _fields_from_detail_form(entry, record)
     ctx = _ctx(tmp_path)
     body = urllib.parse.urlencode(fields).encode()
     status, _c, _b, headers = captures.handle_send_to_shift_report(ctx, body)
-    files = _queue_files(tmp_path)
-    assert len(files) == 1, "detail form field set must stage exactly one shift_report_note job"
-    job = json.loads(files[0].read_text())
+    jobs = _staged_jobs(enqueue_capture)
+    assert len(jobs) == 1, "detail form field set must stage exactly one shift_report_note job"
+    job = jobs[0]
+    assert job["job_id"].startswith("shift-report-note-")
     assert job["job_type"] == "shift_report_note"
+    assert not (tmp_path / "queue").exists()
     assert validate_job(job) is True
     payload = job["payload"]
     assert payload["content"] == entry["result"]
@@ -281,15 +287,15 @@ def test_detail_field_set_stages_exactly_one_job(tmp_path):
     assert "message=shift_report_note_queued" in headers["Location"]
 
 
-def test_detail_field_set_with_xss_result_stages_and_preserves_content(tmp_path):
+def test_detail_field_set_with_xss_result_stages_and_preserves_content(tmp_path, enqueue_capture):
     payload_text = '<script>alert("x")</script> & done'
     fields = _fields_from_detail_form(_entry(result=payload_text), _record())
     ctx = _ctx(tmp_path)
     body = urllib.parse.urlencode(fields).encode()
     status, _c, _b, headers = captures.handle_send_to_shift_report(ctx, body)
-    files = _queue_files(tmp_path)
-    assert len(files) == 1
-    job = json.loads(files[0].read_text())
+    jobs = _staged_jobs(enqueue_capture)
+    assert len(jobs) == 1
+    job = jobs[0]
     # content survived the escape -> submit -> parse round-trip intact
     assert job["payload"]["content"] == payload_text
     assert int(status) == 303

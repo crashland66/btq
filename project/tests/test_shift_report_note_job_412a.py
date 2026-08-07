@@ -18,6 +18,7 @@ from typing import Any
 
 import pytest
 
+from event_pipeline import btq_client
 from queue_processor.handlers import _shared as shared
 from queue_processor.handlers import misc
 from queue_processor.main import QueueJob, QueueJobError, RunContext
@@ -323,19 +324,29 @@ def test_render_job_summary_without_prompt_label() -> None:
 # Contract 5: write_shift_report_note_job staging helper
 # --------------------------------------------------------------------------- #
 
-def test_write_job_validates(tmp_path: Path) -> None:
-    path = write_shift_report_note_job(
-        tmp_path,
+@pytest.fixture()
+def enqueued(monkeypatch: pytest.MonkeyPatch) -> list[dict]:
+    """Capture jobs authored through the CouchDB enqueue boundary."""
+    captured: list[dict] = []
+
+    def fake_enqueue(job: dict, created_by: str = "greg", **_kwargs) -> dict:
+        captured.append(job)
+        return {"ok": True, "id": job.get("job_id") or "queue-doc"}
+
+    monkeypatch.setattr(btq_client, "enqueue", fake_enqueue)
+    return captured
+
+
+def test_write_job_validates(enqueued: list[dict]) -> None:
+    doc_id = write_shift_report_note_job(
         date="2026-06-12",
         content=CONTENT,
         actor="Greg",
         capture_id="cap-1",
         photo_asset_id="photo-1",
     )
-    assert path.exists()
-    assert path.parent == tmp_path
-    assert path.name.startswith("shift-report-note-") and path.suffix == ".json"
-    job = json.loads(path.read_text())
+    assert doc_id.startswith("shift-report-note-")
+    [job] = enqueued
     assert job["job_type"] == "shift_report_note"
     assert validate_job(job) is True
     payload = job["payload"]
@@ -348,9 +359,8 @@ def test_write_job_validates(tmp_path: Path) -> None:
     assert job["idempotency_key"].startswith("shift-report-note:")
 
 
-def test_write_job_includes_optional_fields(tmp_path: Path) -> None:
-    path = write_shift_report_note_job(
-        tmp_path,
+def test_write_job_includes_optional_fields(enqueued: list[dict]) -> None:
+    write_shift_report_note_job(
         date="2026-06-12",
         content=CONTENT,
         actor="Greg",
@@ -360,7 +370,7 @@ def test_write_job_includes_optional_fields(tmp_path: Path) -> None:
         prompt_id="damage_hazard",
         prompt_label="Damage / hazard",
     )
-    job = json.loads(path.read_text())
+    [job] = enqueued
     assert validate_job(job) is True
     payload = job["payload"]
     assert payload["site_id"] == "7050"
@@ -368,12 +378,10 @@ def test_write_job_includes_optional_fields(tmp_path: Path) -> None:
     assert payload["prompt_label"] == "Damage / hazard"
 
 
-def test_write_job_idempotency_key_content_aware(tmp_path: Path) -> None:
-    p1 = write_shift_report_note_job(tmp_path, date="2026-06-12", content="A", actor="g", capture_id="c", photo_asset_id="p")
-    p2 = write_shift_report_note_job(tmp_path, date="2026-06-12", content="B", actor="g", capture_id="c", photo_asset_id="p")
-    p3 = write_shift_report_note_job(tmp_path, date="2026-06-12", content="A", actor="g", capture_id="c", photo_asset_id="p")
-    k1 = json.loads(p1.read_text())["idempotency_key"]
-    k2 = json.loads(p2.read_text())["idempotency_key"]
-    k3 = json.loads(p3.read_text())["idempotency_key"]
+def test_write_job_idempotency_key_content_aware(enqueued: list[dict]) -> None:
+    write_shift_report_note_job(date="2026-06-12", content="A", actor="g", capture_id="c", photo_asset_id="p")
+    write_shift_report_note_job(date="2026-06-12", content="B", actor="g", capture_id="c", photo_asset_id="p")
+    write_shift_report_note_job(date="2026-06-12", content="A", actor="g", capture_id="c", photo_asset_id="p")
+    k1, k2, k3 = (job["idempotency_key"] for job in enqueued)
     assert k1 != k2  # distinct content -> distinct key
     assert k1 == k3  # same content/capture -> same key (dedupe)

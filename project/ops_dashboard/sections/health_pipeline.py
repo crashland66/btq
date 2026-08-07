@@ -14,11 +14,12 @@ from ops_dashboard.common import render_table
 from ops_dashboard.layout import html_page
 
 
+# com.btq.queue-watch retired 2026-08-07: the CouchDB queue watcher now runs
+# the processing pass itself (queue transport unified on btq_queue docs).
 WATCHER_LABELS = (
     "com.btq.couchdb-field-capture-watcher",
     "com.btq.couchdb-queue-watcher",
     "com.btq.field-capture-pipeline-watcher",
-    "com.btq.queue-watch",
 )
 
 HEALTHY_REPLICATOR_STATES = {"running", "completed"}

@@ -128,3 +128,32 @@ def _block_real_couchdb(request: pytest.FixtureRequest, monkeypatch: pytest.Monk
         return _real_urlopen(url, *args, **kwargs)
 
     monkeypatch.setattr(_urlreq, "urlopen", _guard)
+
+
+@pytest.fixture()
+def enqueue_capture(monkeypatch: pytest.MonkeyPatch) -> list[dict]:
+    """Capture jobs authored through the unified CouchDB enqueue boundary.
+
+    Since the file-queue retirement, every authoring path writes btq_queue
+    docs via event_pipeline.btq_client.enqueue. Tests asserting "a job was
+    staged" use this fixture and inspect the captured jobs instead of
+    globbing runtime queue files.
+    """
+    from event_pipeline import btq_client
+
+    captured: list[dict] = []
+    seen_ids: set[str] = set()
+
+    def fake_enqueue(job: dict, created_by: str = "greg", **_kwargs) -> dict:
+        job_id = str(job.get("job_id") or "")
+        # Mirror CouchDB's 409-on-existing-_id: a repeated deterministic id is
+        # an idempotent duplicate, exactly like the real transport.
+        if job_id and job_id in seen_ids:
+            return {"ok": True, "duplicate": True, "id": job_id, "status": 409}
+        if job_id:
+            seen_ids.add(job_id)
+        captured.append({"job": job, "created_by": created_by})
+        return {"ok": True, "id": job_id or "queue-doc"}
+
+    monkeypatch.setattr(btq_client, "enqueue", fake_enqueue)
+    return captured

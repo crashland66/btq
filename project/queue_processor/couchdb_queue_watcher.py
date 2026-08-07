@@ -5,9 +5,11 @@ import contextlib
 import json
 import logging
 import os
+import threading
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from urllib import error as urlerror
 
 from config import get_config
@@ -169,23 +171,123 @@ def materialize_queue_job(doc: dict[str, Any], runtime_root: Path, logger: loggi
     return destination
 
 
+_PROCESS_PASS_LOCK = threading.Lock()
+DRAIN_ATTEMPT_BACKOFF_SECONDS = (2.0, 5.0, 10.0)
+
+OUTCOME_PROCESSED = "processed"
+OUTCOME_FAILED = "failed"
+OUTCOME_PENDING = "pending"
+
+
+def run_processing_pass(
+    runtime_root: Path,
+    logger: logging.Logger,
+    *,
+    skip_unknowns: bool = True,
+) -> dict[str, Any] | None:
+    """Drain the runtime queue spool with the durable file processor.
+
+    The queue/ directory is the unified daemon's internal spool, not a
+    cross-process transport: docs are materialized into it and processed
+    by the same daemon in this pass. Returns the process_all report, or
+    None when the pass could not run (e.g. the processor lock is held by
+    a concurrent drain — the caller retries).
+    """
+    from queue_processor.main import DEFAULT_PROJECT_ROOT, QueueProcessorError, process_all
+
+    with _PROCESS_PASS_LOCK:
+        try:
+            return process_all(
+                project_root=DEFAULT_PROJECT_ROOT,
+                runtime_root=runtime_root,
+                dry_run=False,
+                skip_unknowns=skip_unknowns,
+            )
+        except QueueProcessorError as exc:
+            logger.warning("queue processing pass failed error=%s", exc)
+            return None
+        except Exception:  # noqa: BLE001 - a broken pass must surface as failed docs, not a dead daemon.
+            logger.exception("queue processing pass crashed")
+            return None
+
+
+def _materialized_job_outcome(
+    runtime_root: Path,
+    destination: Path,
+    payload: dict[str, Any],
+) -> tuple[str, str]:
+    from queue_processor.handlers import _shared
+    from queue_processor.processed_index import processed_job_id_exists
+    from queue_spec import validate_job
+
+    if validate_job(payload):
+        job_id = _shared.compute_job_id(payload)
+        exists, source = processed_job_id_exists(runtime_root, runtime_root / "processed", job_id)
+        if exists:
+            return OUTCOME_PROCESSED, source
+    if destination.exists():
+        return OUTCOME_PENDING, str(destination)
+    failed_path = runtime_root / "failed" / destination.name
+    if failed_path.exists():
+        return OUTCOME_FAILED, str(failed_path)
+    # Not processed, not queued, not in failed/ under its original name —
+    # the revision-rename path can archive under a digest-suffixed name.
+    matches = sorted((runtime_root / "failed").glob(f"{destination.stem}*{destination.suffix}"))
+    if matches:
+        return OUTCOME_FAILED, str(matches[0])
+    return OUTCOME_FAILED, "job file left the queue without a processed-index record"
+
+
 def process_one(
     *,
     doc: dict[str, Any],
     runtime_root: Path,
     logger: logging.Logger,
     dry_run: bool = False,
+    materialize_only: bool = False,
+    drain: Callable[..., dict[str, Any] | None] | None = None,
 ) -> dict[str, Any]:
     doc_id = str(doc.get("_id") or "")
     try:
         path = materialize_queue_job(doc, runtime_root, logger, dry_run=dry_run)
     except FileExistsError as exc:
-        logger.info("queue job already materialized doc_id=%s path=%s", doc_id, exc)
-        return {"doc_id": doc_id, "ok": True, "path": str(exc), "error": ""}
+        # Already materialized but possibly not yet processed — fall through
+        # to the processing pass so the doc state reflects the real outcome.
+        path = Path(str(exc))
+        logger.info("queue job already materialized doc_id=%s path=%s", doc_id, path)
     except OSError as exc:
         logger.exception("CouchDB queue materialization failed doc_id=%s", doc_id)
         return {"doc_id": doc_id, "ok": False, "error": str(exc)}
-    return {"doc_id": doc_id, "ok": True, "path": str(path), "error": ""}
+    if dry_run or materialize_only:
+        return {"doc_id": doc_id, "ok": True, "path": str(path), "error": ""}
+
+    payload = {key: value for key, value in doc.items() if key not in COUCHDB_METADATA_KEYS}
+    active_drain = drain if drain is not None else run_processing_pass
+    outcome, detail = OUTCOME_PENDING, str(path)
+    for attempt, delay_seconds in enumerate(DRAIN_ATTEMPT_BACKOFF_SECONDS, start=1):
+        active_drain(runtime_root, logger, skip_unknowns=True)
+        outcome, detail = _materialized_job_outcome(runtime_root, path, payload)
+        if outcome == OUTCOME_PROCESSED:
+            return {"doc_id": doc_id, "ok": True, "path": str(path), "outcome": outcome, "error": ""}
+        if outcome == OUTCOME_FAILED:
+            logger.warning("queue job failed processing doc_id=%s detail=%s", doc_id, detail)
+            return {
+                "doc_id": doc_id,
+                "ok": False,
+                "path": str(path),
+                "outcome": outcome,
+                "error": f"queue job failed processing: {detail}",
+            }
+        if attempt < len(DRAIN_ATTEMPT_BACKOFF_SECONDS):
+            time.sleep(delay_seconds)
+    logger.warning("queue job not drained doc_id=%s path=%s", doc_id, path)
+    return {
+        "doc_id": doc_id,
+        "ok": False,
+        "path": str(path),
+        "outcome": outcome,
+        "error": f"queue job not drained after {len(DRAIN_ATTEMPT_BACKOFF_SECONDS)} processing passes: {detail}",
+    }
 
 
 def sweep_stale_processing_docs(
@@ -258,6 +360,43 @@ def _build_stale_processing_sweep_task(
     return sweep_task
 
 
+def run_maintenance_drain(runtime_root: Path, active_logger: logging.Logger) -> None:
+    """Periodic/startup drain of the queue spool, including the unknowns pass.
+
+    This is what retires com.btq.queue-watch: at startup it drains any jobs
+    left in queue/ (in-flight file-queue jobs at cutover, reclassify jobs
+    authored by the unknowns pass), and periodically it runs the unknowns
+    reclassification fan-out that the file watcher used to run every pass.
+    """
+    report = run_processing_pass(runtime_root, active_logger, skip_unknowns=False)
+    if report and int(report.get("unknown_reclassification_jobs_created") or 0) > 0:
+        # Reclassification authored fresh jobs into the spool; drain them now
+        # instead of waiting for the next doc arrival or periodic tick.
+        run_processing_pass(runtime_root, active_logger, skip_unknowns=True)
+
+
+def _build_maintenance_task(
+    *,
+    database: str,
+    state_field: str,
+    ttl_seconds: int,
+    runtime_root: Path,
+    limit: int = DEFAULT_STALE_PROCESSING_SWEEP_LIMIT,
+) -> Any:
+    sweep_task = _build_stale_processing_sweep_task(
+        database=database,
+        state_field=state_field,
+        ttl_seconds=ttl_seconds,
+        limit=limit,
+    )
+
+    def maintenance_task(active_logger: logging.Logger) -> None:
+        sweep_task(active_logger)
+        run_maintenance_drain(runtime_root, active_logger)
+
+    return maintenance_task
+
+
 def run_listener(
     *,
     listener: CouchDBChangesListener,
@@ -266,9 +405,28 @@ def run_listener(
     json_output: bool,
     logger: logging.Logger,
     stale_processing_ttl_seconds: int = DEFAULT_STALE_PROCESSING_TTL_SECONDS,
+    materialize_only: bool = False,
+    drain: Callable[..., dict[str, Any] | None] | None = None,
 ) -> None:
     def process_doc(doc: dict[str, Any], active_logger: logging.Logger) -> dict[str, Any]:
-        return process_one(doc=doc, runtime_root=runtime_root, dry_run=dry_run, logger=active_logger)
+        return process_one(
+            doc=doc,
+            runtime_root=runtime_root,
+            dry_run=dry_run,
+            logger=active_logger,
+            materialize_only=materialize_only,
+            drain=drain,
+        )
+
+    def _startup_task(active_logger: logging.Logger) -> None:
+        sweep_stale_processing_docs(
+            listener=listener,
+            ttl_seconds=stale_processing_ttl_seconds,
+            logger=active_logger,
+        )
+        if not materialize_only:
+            active_drain = drain if drain is not None else run_processing_pass
+            active_drain(runtime_root, active_logger, skip_unknowns=False)
 
     run_change_worker(
         database=DEFAULT_DATABASE,
@@ -304,13 +462,7 @@ def run_listener(
         mark_processing_backoff_seconds=MARK_PROCESSING_BACKOFF_SECONDS,
         listener=listener,
         logger=logger,
-        startup_task=None
-        if dry_run
-        else lambda active_logger: sweep_stale_processing_docs(
-            listener=listener,
-            ttl_seconds=stale_processing_ttl_seconds,
-            logger=active_logger,
-        ),
+        startup_task=None if dry_run else _startup_task,
     )
 
 
@@ -324,6 +476,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--once", action="store_true")
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--log-path", type=Path)
+    parser.add_argument(
+        "--materialize-only",
+        action="store_true",
+        help="Legacy behavior: materialize docs into queue/ without running the processing pass.",
+    )
     parser.add_argument(
         "--stale-processing-ttl-seconds",
         type=int,
@@ -342,15 +499,29 @@ def run(argv: list[str] | None = None) -> int:
     runtime_root = args.runtime_root.expanduser().resolve(strict=False)
 
     def process_doc(doc: dict[str, Any], active_logger: logging.Logger) -> dict[str, Any]:
-        return process_one(doc=doc, runtime_root=runtime_root, dry_run=args.dry_run, logger=active_logger)
-
-    stale_sweep_task = None
-    if not args.dry_run:
-        stale_sweep_task = _build_stale_processing_sweep_task(
-            database=args.database,
-            state_field=args.state_field,
-            ttl_seconds=args.stale_processing_ttl_seconds,
+        return process_one(
+            doc=doc,
+            runtime_root=runtime_root,
+            dry_run=args.dry_run,
+            logger=active_logger,
+            materialize_only=args.materialize_only,
         )
+
+    maintenance_task = None
+    if not args.dry_run:
+        if args.materialize_only:
+            maintenance_task = _build_stale_processing_sweep_task(
+                database=args.database,
+                state_field=args.state_field,
+                ttl_seconds=args.stale_processing_ttl_seconds,
+            )
+        else:
+            maintenance_task = _build_maintenance_task(
+                database=args.database,
+                state_field=args.state_field,
+                ttl_seconds=args.stale_processing_ttl_seconds,
+                runtime_root=runtime_root,
+            )
 
     return run_change_worker(
         database=args.database,
@@ -399,8 +570,8 @@ def run(argv: list[str] | None = None) -> int:
             "Using tunneled CouchDB URL for queue watcher: %s",
             tunnel_url,
         ),
-        startup_task=stale_sweep_task,
-        periodic_task=stale_sweep_task,
+        startup_task=maintenance_task,
+        periodic_task=maintenance_task,
         periodic_interval_seconds=args.stale_processing_sweep_interval_seconds,
     )
 

@@ -1585,8 +1585,19 @@ def render_issue_list(issues: list[object], empty_text: str) -> str:
     return "".join(items)
 
 
+def enqueue_queue_job(job: dict[str, object], *, created_by: str = "ops_dashboard") -> str:
+    """Author a queue job as a btq_queue CouchDB doc (the unified transport).
+
+    Every dashboard-authored job goes through here; the CouchDB queue
+    watcher materializes and processes it. Returns the queue doc id.
+    """
+    from event_pipeline import btq_client
+
+    result = btq_client.enqueue(job, created_by=created_by)
+    return str(result.get("id") or job.get("job_id") or "")
+
+
 def write_mark_job(
-    runtime_root: Path,
     *,
     job_type: str,
     payload_id_key: str,
@@ -1594,7 +1605,7 @@ def write_mark_job(
     actor: str,
     note: str = "",
     extra_payload: dict[str, object] | None = None,
-) -> Path:
+) -> str:
     suffix = str(uuid.uuid4())
     job = {
         "job_id": f"mark-{job_type}-{suffix}",
@@ -1608,23 +1619,16 @@ def write_mark_job(
         job["payload"].update(extra_payload)
     if note:
         job["payload"]["note"] = note
-    queue_dir = runtime_root.expanduser().resolve(strict=False) / "queue"
-    queue_dir.mkdir(parents=True, exist_ok=True)
-    queue_path = queue_dir / f"mark-{job_type}-{suffix}.json"
-    temp_path = queue_path.with_name(f".{queue_path.name}.tmp")
-    temp_path.write_text(json.dumps(job, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    temp_path.replace(queue_path)
-    return queue_path
+    return enqueue_queue_job(job)
 
 
 def write_edit_record_fields_job(
-    runtime_root: Path,
     *,
     record_type: str,
     record_id: str,
     fields: dict[str, object],
     actor: str,
-) -> Path:
+) -> str:
     suffix = str(uuid.uuid4())
     job = {
         "job_id": f"edit-record-fields-{suffix}",
@@ -1636,24 +1640,17 @@ def write_edit_record_fields_job(
             "actor": actor,
         },
     }
-    queue_dir = runtime_root.expanduser().resolve(strict=False) / "queue"
-    queue_dir.mkdir(parents=True, exist_ok=True)
-    queue_path = queue_dir / f"edit-record-fields-{suffix}.json"
-    temp_path = queue_path.with_name(f".{queue_path.name}.tmp")
-    temp_path.write_text(json.dumps(job, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    temp_path.replace(queue_path)
-    return queue_path
+    return enqueue_queue_job(job)
 
 
 def write_set_employee_home_address_job(
-    runtime_root: Path,
     *,
     person: str,
     actor: str,
     home_address: dict[str, str] | None = None,
     action: str = "set",
     source: str = "ops_dashboard",
-) -> Path:
+) -> str:
     from queue_spec import JOB_SET_EMPLOYEE_HOME_ADDRESS, validate_job
 
     suffix = str(uuid.uuid4())
@@ -1669,23 +1666,16 @@ def write_set_employee_home_address_job(
     }
     if not validate_job(job):
         raise ValueError("invalid set_employee_home_address payload")
-    queue_dir = runtime_root.expanduser().resolve(strict=False) / "queue"
-    queue_dir.mkdir(parents=True, exist_ok=True)
-    queue_path = queue_dir / f"set-employee-home-address-{suffix}.json"
-    temp_path = queue_path.with_name(f".{queue_path.name}.tmp")
-    temp_path.write_text(json.dumps(job, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    temp_path.replace(queue_path)
-    return queue_path
+    return enqueue_queue_job(job)
 
 
 def write_set_employee_uniform_job(
-    runtime_root: Path,
     *,
     person: str,
     actor: str,
     uniform: dict[str, object],
     source: str = "ops_dashboard_employee_detail",
-) -> Path:
+) -> str:
     from queue_spec import JOB_SET_EMPLOYEE_UNIFORM, validate_job
 
     suffix = str(uuid.uuid4())
@@ -1701,24 +1691,17 @@ def write_set_employee_uniform_job(
     }
     if not validate_job(job):
         raise ValueError("invalid set_employee_uniform payload")
-    queue_dir = runtime_root.expanduser().resolve(strict=False) / "queue"
-    queue_dir.mkdir(parents=True, exist_ok=True)
-    queue_path = queue_dir / f"set-employee-uniform-{suffix}.json"
-    temp_path = queue_path.with_name(f".{queue_path.name}.tmp")
-    temp_path.write_text(json.dumps(job, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    temp_path.replace(queue_path)
-    return queue_path
+    return enqueue_queue_job(job)
 
 
 def write_deep_analysis_job(
-    runtime_root: Path,
     *,
     capture_id: str,
     photo_asset_id: str,
     actor: str,
     preset_id: str | None = None,
     custom_prompt: str | None = None,
-) -> Path:
+) -> str:
     from queue_spec import JOB_DEEP_ANALYSIS, validate_job
 
     suffix = str(uuid.uuid4())
@@ -1738,17 +1721,10 @@ def write_deep_analysis_job(
     }
     if not validate_job(job):
         raise ValueError("invalid deep_analysis payload")
-    queue_dir = runtime_root.expanduser().resolve(strict=False) / "queue"
-    queue_dir.mkdir(parents=True, exist_ok=True)
-    queue_path = queue_dir / f"deep-analysis-{suffix}.json"
-    temp_path = queue_path.with_name(f".{queue_path.name}.tmp")
-    temp_path.write_text(json.dumps(job, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    temp_path.replace(queue_path)
-    return queue_path
+    return enqueue_queue_job(job)
 
 
 def write_shift_report_note_job(
-    queue_dir: Path,
     *,
     date: str,
     content: str,
@@ -1758,7 +1734,7 @@ def write_shift_report_note_job(
     site_id: str = "",
     prompt_id: str = "",
     prompt_label: str = "",
-) -> Path:
+) -> str:
     from queue_spec import JOB_SHIFT_REPORT_NOTE, validate_job
 
     suffix = str(uuid.uuid4())
@@ -1797,13 +1773,7 @@ def write_shift_report_note_job(
     }
     if not validate_job(job):
         raise ValueError("invalid shift_report_note payload")
-    queue_dir = queue_dir.expanduser().resolve(strict=False)
-    queue_dir.mkdir(parents=True, exist_ok=True)
-    queue_path = queue_dir / f"shift-report-note-{suffix}.json"
-    temp_path = queue_path.with_name(f".{queue_path.name}.tmp")
-    temp_path.write_text(json.dumps(job, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    temp_path.replace(queue_path)
-    return queue_path
+    return enqueue_queue_job(job)
 
 
 def site_selector_options() -> list[tuple[str, str]]:
@@ -2503,8 +2473,7 @@ def handle_mark_transition_post(
         return _redirect(f"{redirect_path}?error=missing_field")
 
     try:
-        queue_path = write_mark_job(
-            root,
+        queue_doc_id = write_mark_job(
             job_type=job_type,
             payload_id_key=payload_id_key or id_field,
             entity_id=entity_id,
@@ -2518,7 +2487,7 @@ def handle_mark_transition_post(
             return _redirect(_list_redirect_location(redirect_path, form, error=str(exc)))
         return _redirect(f"{redirect_path}?{id_field}={quote(entity_id)}&error={quote(str(exc))}")
 
-    _audit_append(f"success: staged {id_field}={entity_id} queue_path={queue_path}")
+    _audit_append(f"success: staged {id_field}={entity_id} queue_doc={queue_doc_id}")
     if return_to_list:
         return _redirect(_list_redirect_location(redirect_path, form, message="staged"))
     return _redirect(f"{redirect_path}?{id_field}={quote(entity_id)}&message=staged")
@@ -2573,8 +2542,7 @@ def handle_edit_record_fields_post(
         return _redirect(f"{redirect_path}?{id_field}={quote(record_id)}&error=invalid_payload")
 
     try:
-        queue_path = write_edit_record_fields_job(
-            root,
+        queue_doc_id = write_edit_record_fields_job(
             record_type=record_type,
             record_id=record_id,
             fields=edit_fields,
@@ -2584,5 +2552,5 @@ def handle_edit_record_fields_post(
         _audit_append(f"failed: {exc}")
         return _redirect(f"{redirect_path}?{id_field}={quote(record_id)}&error={quote(str(exc))}")
 
-    _audit_append(f"success: staged {id_field}={record_id} queue_path={queue_path}")
+    _audit_append(f"success: staged {id_field}={record_id} queue_doc={queue_doc_id}")
     return _redirect(f"{redirect_path}?{id_field}={quote(record_id)}&message=staged")

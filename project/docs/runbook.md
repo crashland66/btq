@@ -52,8 +52,10 @@ This single pass currently does all of the following:
 4. normalizes domain language
 5. extracts and validates events
 6. writes local queue jobs
-7. stages those jobs into the runtime queue
-8. leaves runtime queue draining to `queue_processor.watch`
+7. authors those jobs as `btq_queue` CouchDB docs (the unified queue transport)
+8. leaves queue draining to the CouchDB queue watcher (`btq watch-couchdb-queue`),
+   which materializes each doc into the runtime spool and runs the processing
+   pass itself
 9. archives the source audio under `<runtime_root>/completed/audio`
 
 ### Run watchers
@@ -64,25 +66,26 @@ Foreground transcription watcher:
 ./scripts/whisper-watch
 ```
 
-Foreground queue watcher:
+Foreground CouchDB queue watcher (the sole queue processor since the
+2026-08-07 file-queue retirement — materializes `btq_queue` docs into the
+runtime spool and processes them in the same daemon):
 
 ```bash
-./scripts/queue-watch
+./scripts/btq watch-couchdb-queue --json
 ```
 
-Queue watcher behavior:
-
-- stages any configured `BTpipeline/outbox/*.json` files into the runtime queue before each pass
-- processes any configured `working_dir/nightly-digest-YYYY-MM-DD.trigger` files before each pass
-- processes jobs already present in the runtime queue
-- covers pipeline outbox jobs, nightly digest triggers, and locally staged runtime queue jobs
+The old file-queue watcher (`com.btq.queue-watch` / `queue_processor.watch`)
+is retired. `./scripts/queue-watch` remains only as a manual/emergency drain
+of the runtime spool (`--once`); nothing should install it as a daemon.
 
 Install macOS `launchd` services:
 
 ```bash
 ./scripts/install-whisper-launch-agent
-./scripts/install-queue-launch-agent
 ```
+
+The CouchDB queue watcher installs from the repo-owned template
+`project/field_capture/launchagents/com.btq.couchdb-queue-watcher.plist`.
 
 The queue and Whisper installers write and load their service definitions. The
 field-capture pipeline watcher uses a repo-owned template that must be copied

@@ -328,21 +328,23 @@ def test_voice_memo_status_candidate_without_target_fails_draft_mapping() -> Non
     assert "missing target" in error
 
 
-def test_drafts_stage_post_writes_one_queue_file_for_one_draft(tmp_path: Path) -> None:
+def test_drafts_stage_post_writes_one_queue_file_for_one_draft(tmp_path: Path, enqueue_capture: list[dict]) -> None:
     runtime_root = tmp_path / "runtime"
     write_draft(runtime_root, "ajd_stage")
     write_draft(runtime_root, "ajd_skip")
 
     status, _content_type, _body, headers = route_response_with_headers("POST", "/drafts/stage", runtime_root, b"draft_id=ajd_stage&confirm_dryrun=1")
 
-    queue_files = sorted((runtime_root / "queue").glob("*.json"))
     assert status == HTTPStatus.SEE_OTHER
     assert headers["Location"] == "/drafts?draft_id=ajd_stage&message=staged"
-    assert len(queue_files) == 1
-    assert json.loads(queue_files[0].read_text(encoding="utf-8"))["metadata"]["draft_id"] == "ajd_stage"
+    [entry] = enqueue_capture
+    assert entry["created_by"] == "draft_staging"
+    assert entry["job"]["job_id"].startswith("ajd_stage__")
+    assert entry["job"]["metadata"]["draft_id"] == "ajd_stage"
+    assert not (runtime_root / "queue").exists()
 
 
-def test_drafts_stage_post_refuses_without_confirm_dryrun(tmp_path: Path) -> None:
+def test_drafts_stage_post_refuses_without_confirm_dryrun(tmp_path: Path, enqueue_capture: list[dict]) -> None:
     runtime_root = tmp_path / "runtime"
     write_draft(runtime_root, "ajd_gate")
 
@@ -350,10 +352,11 @@ def test_drafts_stage_post_refuses_without_confirm_dryrun(tmp_path: Path) -> Non
 
     assert status == HTTPStatus.SEE_OTHER
     assert parse_qs(urlsplit(headers["Location"]).query)["error"] == ["confirm_required"]
+    assert enqueue_capture == []
     assert not (runtime_root / "queue").exists()
 
 
-def test_drafts_post_audits_with_draft_id_and_queue_path(tmp_path: Path) -> None:
+def test_drafts_post_audits_with_draft_id_and_queue_path(tmp_path: Path, enqueue_capture: list[dict]) -> None:
     runtime_root = tmp_path / "runtime"
     write_draft(runtime_root, "ajd_audit")
 

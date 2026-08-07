@@ -129,7 +129,7 @@ def test_post_retarget_rejects_read_only_role(tmp_path: Path, monkeypatch: pytes
     assert body["error"] == "role_not_allowed"
 
 
-def test_post_retarget_returns_202_and_writes_queue_job(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_post_retarget_returns_202_and_writes_queue_job(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, enqueue_capture: list[dict]) -> None:
     server, token, runtime = build_server(tmp_path, monkeypatch)
     patch_capture(monkeypatch, capture_doc())
 
@@ -137,11 +137,13 @@ def test_post_retarget_returns_202_and_writes_queue_job(tmp_path: Path, monkeypa
 
     assert status == HTTPStatus.ACCEPTED
     assert body["status"] == "queued"
-    jobs = list((runtime / "queue").glob("*.json"))
-    assert len(jobs) == 1
-    job = json.loads(jobs[0].read_text(encoding="utf-8"))
+    [entry] = enqueue_capture
+    assert entry["created_by"] == "field_capture_server"
+    job = entry["job"]
     assert job["job_type"] == "retarget_capture"
+    assert job["job_id"].endswith("retarget-capture-cap-1")
     assert job["payload"]["capture_id"] == "cap-1"
+    assert not (runtime / "queue").exists()
 
 
 def test_post_retarget_returns_409_when_stage_acted_on(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

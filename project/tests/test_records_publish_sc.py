@@ -66,10 +66,6 @@ def _doc(**over):
     return base
 
 
-def _queue_jobs(tmp_path):
-    return sorted((tmp_path / "queue").glob("*.json"))
-
-
 # ---- UI rendering ----
 
 def test_unpublished_shift_report_shows_confirm_guarded_publish_form():
@@ -95,7 +91,7 @@ def test_day_record_shows_no_publish_ui():
 
 # ---- publish handler ----
 
-def test_publish_happy_path_submits_and_stages_field_write(tmp_path):
+def test_publish_happy_path_submits_and_stages_field_write(tmp_path, enqueue_capture):
     client = FakeClient()
     status, _ct, _body, headers = records.handle_publish_sc_post(
         _ctx(tmp_path), "rid", doc=_doc(), http_client=client,
@@ -104,14 +100,18 @@ def test_publish_happy_path_submits_and_stages_field_write(tmp_path):
     assert status == HTTPStatus.SEE_OTHER
     assert "sc_audit_id=audit_NEW" in headers["Location"]
     assert client.calls == [("POST", "https://api.safetyculture.io/audits")]  # no archive on first publish
-    jobs = _queue_jobs(tmp_path)
-    assert len(jobs) == 1
-    payload = json.loads(jobs[0].read_text())["payload"]
+    assert len(enqueue_capture) == 1
+    job = enqueue_capture[0]["job"]
+    assert job["job_id"].startswith("edit-record-fields-")
+    assert job["job_type"] == "edit_record_fields"
+    payload = job["payload"]
     assert payload["record_type"] == "shift_report"
     assert payload["fields"] == {"sc_audit_id": "audit_NEW", "sc_published_at": "2026-06-27T00:00:00Z"}
+    # Unified transport: nothing lands in the runtime file queue.
+    assert not (tmp_path / "queue").exists()
 
 
-def test_republish_archives_prior_draft_before_creating_new(tmp_path):
+def test_republish_archives_prior_draft_before_creating_new(tmp_path, enqueue_capture):
     client = FakeClient()
     records.handle_publish_sc_post(
         _ctx(tmp_path), "rid", doc=_doc(sc_audit_id="audit_OLD"), http_client=client,
@@ -122,7 +122,7 @@ def test_republish_archives_prior_draft_before_creating_new(tmp_path):
     assert "audit_OLD" in client.calls[0][1]
 
 
-def test_ops_manager_detail_never_reaches_safetyculture(tmp_path):
+def test_ops_manager_detail_never_reaches_safetyculture(tmp_path, enqueue_capture):
     captured = {}
 
     class Recorder(FakeClient):
@@ -137,7 +137,7 @@ def test_ops_manager_detail_never_reaches_safetyculture(tmp_path):
     assert "must not be published" not in json.dumps(captured["payload"])
 
 
-def test_submit_failure_writes_no_job_and_does_not_500(tmp_path):
+def test_submit_failure_writes_no_job_and_does_not_500(tmp_path, enqueue_capture):
     client = FakeClient(post_status=400, post_body={"error": "bad"})
     status, _ct, _body, headers = records.handle_publish_sc_post(
         _ctx(tmp_path), "rid", doc=_doc(), http_client=client,
@@ -145,10 +145,10 @@ def test_submit_failure_writes_no_job_and_does_not_500(tmp_path):
     )
     assert status == HTTPStatus.SEE_OTHER
     assert "sc_error=" in headers["Location"]
-    assert _queue_jobs(tmp_path) == []
+    assert enqueue_capture == []
 
 
-def test_non_operator_record_is_not_published(tmp_path):
+def test_non_operator_record_is_not_published(tmp_path, enqueue_capture):
     client = FakeClient()
     status, _ct, _body, headers = records.handle_publish_sc_post(
         _ctx(tmp_path), "rid", doc=_doc(operator="someone_else"), http_client=client,
@@ -157,14 +157,14 @@ def test_non_operator_record_is_not_published(tmp_path):
     assert status == HTTPStatus.SEE_OTHER
     assert "sc_error=" in headers["Location"]
     assert client.calls == []
-    assert _queue_jobs(tmp_path) == []
+    assert enqueue_capture == []
 
 
-def test_wrong_record_type_is_not_published(tmp_path):
+def test_wrong_record_type_is_not_published(tmp_path, enqueue_capture):
     client = FakeClient()
     records.handle_publish_sc_post(
         _ctx(tmp_path), "rid", doc=_doc(type=records.DAY_RECORD_TYPE), http_client=client,
         token_loader=lambda: pytest.fail("token loaded for day_record"), now=lambda: "z",
     )
     assert client.calls == []
-    assert _queue_jobs(tmp_path) == []
+    assert enqueue_capture == []

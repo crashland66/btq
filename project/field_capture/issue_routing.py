@@ -57,7 +57,6 @@ def _related_media(photos: object) -> list[str]:
 
 def route_field_reported_issues(
     intake_dir: Path,
-    queue_dir: Path,
     *,
     runtime_root: Path,
     logger: logging.Logger,
@@ -66,7 +65,6 @@ def route_field_reported_issues(
     """Walk intake captures with qc_category=report_an_issue."""
     counts = {"discovered": 0, "routed": 0, "skipped": 0, "failed": 0}
     intake_dir = intake_dir.expanduser().resolve(strict=False)
-    queue_dir = queue_dir.expanduser().resolve(strict=False)
     runtime_root = runtime_root.expanduser().resolve(strict=False)
 
     routed_this_cycle = 0
@@ -136,17 +134,16 @@ def route_field_reported_issues(
                 "job_type": "log_site_issue",
                 "payload": payload,
             }
-            queue_path = queue_dir / f"log-site-issue-{capture_id}-{suffix}.json"
-            temp_path = queue_path.with_name(f".{queue_path.name}.tmp")
-            queue_dir.mkdir(parents=True, exist_ok=True)
-            temp_path.write_text(json.dumps(job, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-            temp_path.replace(queue_path)
+            from event_pipeline import btq_client
+
+            enqueue_result = btq_client.enqueue(job, created_by="issue_routing")
+            queue_doc_id = str(enqueue_result.get("id") or job["job_id"])
 
             routed_marker.write_text(
                 json.dumps(
                     {
                         "routed_at": _utc_now_iso(),
-                        "queue_path": str(queue_path),
+                        "queue_doc": queue_doc_id,
                         "job_id": job["job_id"],
                     },
                     indent=2,

@@ -273,12 +273,21 @@ def handle_promote_post(ctx: object, body: bytes, *, prospect_id: str) -> tuple:
             "actor": actor,
         },
     }
-    queue_dir = runtime_root / "queue"
-    queue_dir.mkdir(parents=True, exist_ok=True)
-    queue_path = queue_dir / f"promote-prospect-{suffix}.json"
-    temp_path = queue_path.with_name(f".{queue_path.name}.tmp")
-    temp_path.write_text(json.dumps(job, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    temp_path.replace(queue_path)
+    from ops_dashboard.common import enqueue_queue_job
+
+    try:
+        queue_doc_id = enqueue_queue_job(job)
+    except Exception as exc:  # noqa: BLE001 - CouchDB enqueue unavailable: redirect, not 500.
+        audit.append_audit(
+            runtime_root,
+            {
+                "route": f"/prospects/{prospect_id}/promote",
+                "actor": actor,
+                "payload": {"prospect_id": prospect_id, "site_id": site_id},
+                "result_summary": f"failed: {exc}",
+            },
+        )
+        return _redirect(f"/prospects/{prospect_id}?error=queue_unavailable")
 
     audit.append_audit(
         runtime_root,
@@ -286,7 +295,7 @@ def handle_promote_post(ctx: object, body: bytes, *, prospect_id: str) -> tuple:
             "route": f"/prospects/{prospect_id}/promote",
             "actor": actor,
             "payload": {"prospect_id": prospect_id, "site_id": site_id},
-            "result_summary": f"staged queue_path={queue_path}",
+            "result_summary": f"staged queue_doc={queue_doc_id}",
         },
     )
 

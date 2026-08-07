@@ -637,7 +637,9 @@ def operator_action(job_type: str) -> dict[str, object]:
     return base
 
 
-def stage_single_structured_action(tmp_path: Path, raw_action: dict[str, object]) -> dict[str, object]:
+def stage_single_structured_action(
+    tmp_path: Path, raw_action: dict[str, object], enqueue_capture: list[dict]
+) -> dict[str, object]:
     runtime_root = tmp_path / "runtime"
     semantic_dir = runtime_root / "field_capture" / "semantics"
     candidate_dir = runtime_root / "reviews" / "action_candidates" / "field_capture"
@@ -689,17 +691,21 @@ def stage_single_structured_action(tmp_path: Path, raw_action: dict[str, object]
         "completed": 1,
         "failed": 0,
     }
-    [queue_path] = sorted((runtime_root / "queue").glob("*.json"))
-    queue_job = json.loads(queue_path.read_text(encoding="utf-8"))
+    [entry] = enqueue_capture[-1:]
+    queue_job = entry["job"]
     assert validate_job(queue_job)
     assert queue_job["job_type"] == proposed["job_type"]
     assert queue_job["payload"] == proposed["payload"]
+    # Transport invariant: no queue files are written — CouchDB is the only path.
+    assert not (runtime_root / "queue").exists()
     return {"candidate": candidate, "queue_job": queue_job}
 
 
-def test_operator_structured_actions_stage_valid_queue_jobs_end_to_end(tmp_path: Path, couchdb_review) -> None:
+def test_operator_structured_actions_stage_valid_queue_jobs_end_to_end(
+    tmp_path: Path, couchdb_review, enqueue_capture: list[dict]
+) -> None:
     for job_type in ("log_personnel_event", "flag_retention_risk", "trigger_recruiting", "remove_from_schedule"):
-        result = stage_single_structured_action(tmp_path / job_type, operator_action(job_type))
+        result = stage_single_structured_action(tmp_path / job_type, operator_action(job_type), enqueue_capture)
         assert result["queue_job"]["job_type"] == job_type
 
 

@@ -549,7 +549,7 @@ def test_queue_filename_for_is_deterministic() -> None:
     assert queue_filename_for("ajd_test", "abc1234567890abcdef") == "ajd_test__abc1234567890abc.json"
 
 
-def test_stage_approved_drafts_validates_and_writes_queue_plus_status(tmp_path: Path) -> None:
+def test_stage_approved_drafts_validates_and_writes_queue_plus_status(tmp_path: Path, enqueue_capture: list[dict]) -> None:
     runtime_root = tmp_path / "runtime"
     draft_dir = runtime_root / "reviews" / "approved_job_drafts" / "field_capture"
     status_dir = runtime_root / "reviews" / "staging" / "field_capture"
@@ -570,15 +570,16 @@ def test_stage_approved_drafts_validates_and_writes_queue_plus_status(tmp_path: 
     counts = stage_approved_drafts(draft_dir, runtime_root=runtime_root, status_dir=status_dir)
 
     assert counts == {"discovered": 1, "skipped": 0, "completed": 1, "failed": 0}
-    [queue_path] = sorted((runtime_root / "queue").glob("*.json"))
-    job = read_json_object(queue_path)
-    assert job["payload"] == draft["proposed_payload"]
-    assert job["metadata"]["draft_id"] == draft["draft_id"]
+    [entry] = enqueue_capture
+    enqueued = entry["job"]
+    assert enqueued["payload"] == draft["proposed_payload"]
+    assert enqueued["metadata"]["draft_id"] == draft["draft_id"]
+    # Transport invariant: no queue files are written — CouchDB is the only path.
+    assert not (runtime_root / "queue").exists()
     [status_path] = sorted(status_dir.glob("*.json"))
     status = read_json_object(status_path)
     assert status["status"] == "staged"
-    assert status["queue_path"] == str(queue_path)
-    assert status["job"] == job
+    assert status["job"]["payload"] == draft["proposed_payload"]
 
 
 def test_stage_approved_drafts_rejects_invalid_job_without_queue_file(tmp_path: Path) -> None:

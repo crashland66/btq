@@ -1104,63 +1104,49 @@ def emit_missed_capture_job(
     return job_path
 
 
-def stage_queue_jobs(runtime_root: Path, job_paths: list[Path]) -> list[Path]:
-    queue_dir = runtime_root / "queue"
-    temp_dir = runtime_root / "temp" / "queue-stage"
-    queue_dir.mkdir(parents=True, exist_ok=True)
-    temp_dir.mkdir(parents=True, exist_ok=True)
+def stage_queue_jobs(job_paths: list[Path]) -> list[str]:
+    """Author each emitted job artifact as a btq_queue CouchDB doc.
+
+    The doc `_id` is the artifact's filename stem (job_personal_*,
+    job_missed_*, job_<event_id>), so re-running the pipeline over the same
+    audio is an idempotent 409 no-op on CouchDB — the same dedupe the old
+    file-staging destination-exists check provided. The local queue_jobs/
+    artifacts stay on disk as the audit copy.
+    """
+    from event_pipeline import btq_client
+
     logger = logging.getLogger("transcription_pipeline")
-    staged_paths: list[Path] = []
+    staged_ids: list[str] = []
     for job_path in job_paths:
-        destination = queue_dir / job_path.name
-        if destination.exists():
-            logger.info("queue job already staged; skipping source=%s destination=%s", job_path, destination)
-            continue
-        lock_path = temp_dir / f"{job_path.name}.lock"
         try:
-            lock_fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-        except FileExistsError:
-            logger.info("queue job staging already in progress; skipping source=%s destination=%s", job_path, destination)
+            job = json.loads(job_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            logger.exception("queue job artifact unreadable source=%s", job_path)
             continue
-        os.close(lock_fd)
-        temp_path: Path | None = None
+        if not isinstance(job, dict):
+            logger.error("queue job artifact is not an object source=%s", job_path)
+            continue
+        job.setdefault("job_id", job_path.stem)
         try:
-            fd, temp_path_str = tempfile.mkstemp(prefix=f".{job_path.name}.", suffix=".tmp", dir=temp_dir)
-            temp_path = Path(temp_path_str)
-            with os.fdopen(fd, "wb") as temp_file, job_path.open("rb") as source_file:
-                while chunk := source_file.read(1024 * 1024):
-                    temp_file.write(chunk)
-                temp_file.flush()
-                os.fsync(temp_file.fileno())
-            if destination.exists():
-                logger.info("queue job already staged; skipping source=%s destination=%s", job_path, destination)
-                temp_path.unlink()
-                continue
-            os.replace(temp_path, destination)
-        except Exception:
-            try:
-                if temp_path is not None and temp_path.exists():
-                    temp_path.unlink()
-            except OSError:
-                pass
-            raise
-        finally:
-            try:
-                if lock_path.exists():
-                    lock_path.unlink()
-            except OSError:
-                pass
-        staged_paths.append(destination)
-    return staged_paths
+            result = btq_client.enqueue(job, created_by="transcription_pipeline")
+        except Exception:  # noqa: BLE001 - one bad artifact must not stop the batch.
+            logger.exception("queue job enqueue failed source=%s", job_path)
+            continue
+        if result.get("duplicate"):
+            logger.info(
+                "queue job already enqueued; skipping source=%s doc_id=%s",
+                job_path,
+                result.get("id"),
+            )
+            continue
+        staged_ids.append(str(result.get("id") or job["job_id"]))
+    return staged_ids
 
 
 def process_btq_queue_jobs(local_root: Path, job_paths: list[Path]) -> int:
     if not job_paths:
         return 0
-    config = get_config()
-    runtime_root = config.local_runtime_dir if local_root == config.local_root else local_root / "runtime"
-    staged_paths = stage_queue_jobs(runtime_root, job_paths)
-    return len(staged_paths)
+    return len(stage_queue_jobs(job_paths))
 
 
 class WhisperTranscriber:

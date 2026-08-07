@@ -18,7 +18,6 @@ Sandbox-only fixture identity. No live CouchDB.
 
 from __future__ import annotations
 
-import json
 import urllib.parse
 from pathlib import Path
 from types import SimpleNamespace
@@ -211,9 +210,13 @@ def _post(ctx, fields: dict) -> tuple:
     return captures.handle_analyze_deeper_post(ctx, body)
 
 
-def _queue_files(runtime_root: Path) -> list[Path]:
-    qdir = runtime_root / "queue"
-    return list(qdir.glob("deep-analysis-*.json")) if qdir.exists() else []
+def _staged_jobs(enqueue_capture: list[dict]) -> list[dict]:
+    """Deep-analysis jobs authored through the unified CouchDB enqueue boundary."""
+    return [
+        entry["job"]
+        for entry in enqueue_capture
+        if str(entry["job"].get("job_id", "")).startswith("deep-analysis-")
+    ]
 
 
 def _base_valid(**over) -> dict:
@@ -229,18 +232,19 @@ def _base_valid(**over) -> dict:
     return fields
 
 
-def test_return_to_safe_local_path_honored(tmp_path):
+def test_return_to_safe_local_path_honored(tmp_path, enqueue_capture):
     ctx = _ctx(tmp_path)
     status, _c, _b, headers = _post(ctx, _base_valid(return_to="/field-photos"))
     assert int(status) == 303
     loc = headers["Location"]
     assert loc.startswith("/field-photos")
     assert "message=deep_analysis_queued" in loc
-    # exactly one job staged
-    assert len(_queue_files(tmp_path)) == 1
+    # exactly one job staged (via the unified CouchDB enqueue, not a queue file)
+    assert len(_staged_jobs(enqueue_capture)) == 1
+    assert not (tmp_path / "queue").exists()
 
 
-def test_return_to_with_query_string_honored(tmp_path):
+def test_return_to_with_query_string_honored(tmp_path, enqueue_capture):
     ctx = _ctx(tmp_path)
     status, _c, _b, headers = _post(ctx, _base_valid(return_to="/field-photos?site_id=7050"))
     loc = headers["Location"]
@@ -261,7 +265,7 @@ def test_return_to_with_query_string_honored(tmp_path):
         "////evil.com",
     ],
 )
-def test_return_to_open_redirect_rejected_falls_back_to_default(tmp_path, evil):
+def test_return_to_open_redirect_rejected_falls_back_to_default(tmp_path, evil, enqueue_capture):
     ctx = _ctx(tmp_path)
     status, _c, _b, headers = _post(ctx, _base_valid(return_to=evil))
     loc = headers["Location"]
@@ -274,10 +278,10 @@ def test_return_to_open_redirect_rejected_falls_back_to_default(tmp_path, evil):
     assert loc.startswith("/captures?capture_id=cap-9")
     assert "message=deep_analysis_queued" in loc
     # job still staged (validation only changes redirect target, not behaviour)
-    assert len(_queue_files(tmp_path)) == 1
+    assert len(_staged_jobs(enqueue_capture)) == 1
 
 
-def test_return_to_absent_uses_capture_detail_default(tmp_path):
+def test_return_to_absent_uses_capture_detail_default(tmp_path, enqueue_capture):
     ctx = _ctx(tmp_path)
     status, _c, _b, headers = _post(ctx, _base_valid())  # no return_to
     loc = headers["Location"]
@@ -285,7 +289,7 @@ def test_return_to_absent_uses_capture_detail_default(tmp_path):
     assert "message=deep_analysis_queued" in loc
 
 
-def test_invalid_submission_errors_without_staging_even_with_return_to(tmp_path):
+def test_invalid_submission_errors_without_staging_even_with_return_to(tmp_path, enqueue_capture):
     ctx = _ctx(tmp_path)
     # missing confirm → reject
     status, _c, _b, headers = _post(
@@ -301,10 +305,10 @@ def test_invalid_submission_errors_without_staging_even_with_return_to(tmp_path)
     assert int(status) == 303
     assert "error=" in headers["Location"]
     assert "message=deep_analysis_queued" not in headers["Location"]
-    assert _queue_files(tmp_path) == []
+    assert enqueue_capture == []
 
 
-def test_error_redirect_honors_safe_return_to(tmp_path):
+def test_error_redirect_honors_safe_return_to(tmp_path, enqueue_capture):
     """An invalid submission with a safe return_to should error back to /field-photos."""
     ctx = _ctx(tmp_path)
     status, _c, _b, headers = _post(
@@ -321,10 +325,10 @@ def test_error_redirect_honors_safe_return_to(tmp_path):
     loc = headers["Location"]
     assert loc.startswith("/field-photos")
     assert "error=" in loc
-    assert _queue_files(tmp_path) == []
+    assert enqueue_capture == []
 
 
-def test_valid_custom_submission_stages_one_job_with_return_to(tmp_path):
+def test_valid_custom_submission_stages_one_job_with_return_to(tmp_path, enqueue_capture):
     ctx = _ctx(tmp_path)
     status, _c, _b, headers = _post(
         ctx,
@@ -338,10 +342,13 @@ def test_valid_custom_submission_stages_one_job_with_return_to(tmp_path):
             "return_to": "/field-photos",
         },
     )
-    files = _queue_files(tmp_path)
-    assert len(files) == 1
-    job = json.loads(files[0].read_text())
+    jobs = _staged_jobs(enqueue_capture)
+    assert len(jobs) == 1
+    job = jobs[0]
+    assert job["job_id"].startswith("deep-analysis-")
+    assert job["job_type"] == "deep_analysis"
     assert validate_job(job) is True
     assert job["payload"]["custom_prompt"] == "Count the chairs"
+    assert not (tmp_path / "queue").exists()
     assert headers["Location"].startswith("/field-photos")
     assert "message=deep_analysis_queued" in headers["Location"]

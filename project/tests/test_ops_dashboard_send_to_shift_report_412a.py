@@ -2,10 +2,11 @@
 
 Covers captures.handle_send_to_shift_report:
   * valid POST (confirm=1 + content + actor + capture_id + photo_asset_id)
-    -> exactly one shift-report-note queue file (passes validate_job), audit
-    appended with success, 303 + success message
+    -> exactly one shift-report-note job enqueued via the unified CouchDB
+    transport (passes validate_job), audit appended with success, 303 +
+    success message
   * each invalid POST (no confirm / no content / no actor / no capture_id /
-    no photo_asset_id) -> 0 files, 303 + error
+    no photo_asset_id) -> nothing enqueued, 303 + error
   * safe return_to honored; open-redirect (https://evil.com, //evil) rejected
   * post-route dispatch maps /captures/send-to-shift-report to the handler
 
@@ -35,11 +36,13 @@ def _post(ctx, fields: dict) -> tuple:
     return captures.handle_send_to_shift_report(ctx, body)
 
 
-def _queue_files(runtime_root: Path) -> list[Path]:
-    qdir = runtime_root / "queue"
-    if not qdir.exists():
-        return []
-    return [p for p in qdir.glob("shift-report-note-*.json")]
+def _staged_jobs(enqueue_capture: list[dict]) -> list[dict]:
+    """Shift-report-note jobs authored through the unified CouchDB enqueue boundary."""
+    return [
+        entry["job"]
+        for entry in enqueue_capture
+        if str(entry["job"].get("job_id", "")).startswith("shift-report-note-")
+    ]
 
 
 def _audit_lines(runtime_root: Path) -> list[dict]:
@@ -64,13 +67,15 @@ def _valid_fields(**overrides) -> dict:
 # ---------------------------------------------------------------------------
 # valid POST
 # ---------------------------------------------------------------------------
-def test_post_valid_stages_one_job(tmp_path):
+def test_post_valid_stages_one_job(tmp_path, enqueue_capture):
     ctx = _ctx(tmp_path)
     status, _c, _b, headers = _post(ctx, _valid_fields(site_id="7050", prompt_id="damage_hazard", prompt_label="Damage / hazard"))
-    files = _queue_files(tmp_path)
-    assert len(files) == 1
-    job = json.loads(files[0].read_text())
+    jobs = _staged_jobs(enqueue_capture)
+    assert len(jobs) == 1
+    job = jobs[0]
+    assert job["job_id"].startswith("shift-report-note-")
     assert job["job_type"] == "shift_report_note"
+    assert not (tmp_path / "queue").exists()
     assert validate_job(job) is True
     payload = job["payload"]
     assert payload["capture_id"] == "cap-9"
@@ -88,17 +93,17 @@ def test_post_valid_stages_one_job(tmp_path):
     assert audits[-1]["route"] == "/captures/send-to-shift-report"
 
 
-def test_post_valid_honors_posted_date(tmp_path):
+def test_post_valid_honors_posted_date(tmp_path, enqueue_capture):
     ctx = _ctx(tmp_path)
     _post(ctx, _valid_fields(date="2026-06-10"))
-    job = json.loads(_queue_files(tmp_path)[0].read_text())
+    job = _staged_jobs(enqueue_capture)[0]
     assert job["payload"]["date"] == "2026-06-10"
 
 
-def test_post_valid_minimal_no_optionals(tmp_path):
+def test_post_valid_minimal_no_optionals(tmp_path, enqueue_capture):
     ctx = _ctx(tmp_path)
     status, _c, _b, headers = _post(ctx, _valid_fields())
-    job = json.loads(_queue_files(tmp_path)[0].read_text())
+    job = _staged_jobs(enqueue_capture)[0]
     assert validate_job(job) is True
     assert "site_id" not in job["payload"]
     assert int(status) == 303
@@ -107,55 +112,55 @@ def test_post_valid_minimal_no_optionals(tmp_path):
 # ---------------------------------------------------------------------------
 # invalid POST -> stage NOTHING, 303 + error
 # ---------------------------------------------------------------------------
-def _assert_rejected(tmp_path, headers, status):
-    assert _queue_files(tmp_path) == []
+def _assert_rejected(enqueue_capture, headers, status):
+    assert enqueue_capture == []
     assert int(status) == 303
     assert "error=" in headers["Location"]
     assert "message=shift_report_note_queued" not in headers["Location"]
 
 
-def test_post_no_confirm_rejected(tmp_path):
+def test_post_no_confirm_rejected(tmp_path, enqueue_capture):
     ctx = _ctx(tmp_path)
     fields = _valid_fields()
     del fields["confirm"]
     status, _c, _b, headers = _post(ctx, fields)
-    _assert_rejected(tmp_path, headers, status)
+    _assert_rejected(enqueue_capture, headers, status)
 
 
-def test_post_no_content_rejected(tmp_path):
+def test_post_no_content_rejected(tmp_path, enqueue_capture):
     ctx = _ctx(tmp_path)
     status, _c, _b, headers = _post(ctx, _valid_fields(content=""))
-    _assert_rejected(tmp_path, headers, status)
+    _assert_rejected(enqueue_capture, headers, status)
 
 
-def test_post_no_actor_rejected(tmp_path):
+def test_post_no_actor_rejected(tmp_path, enqueue_capture):
     ctx = _ctx(tmp_path)
     status, _c, _b, headers = _post(ctx, _valid_fields(actor=""))
-    _assert_rejected(tmp_path, headers, status)
+    _assert_rejected(enqueue_capture, headers, status)
 
 
-def test_post_no_capture_id_rejected(tmp_path):
+def test_post_no_capture_id_rejected(tmp_path, enqueue_capture):
     ctx = _ctx(tmp_path)
     status, _c, _b, headers = _post(ctx, _valid_fields(capture_id=""))
-    _assert_rejected(tmp_path, headers, status)
+    _assert_rejected(enqueue_capture, headers, status)
 
 
-def test_post_no_photo_asset_id_rejected(tmp_path):
+def test_post_no_photo_asset_id_rejected(tmp_path, enqueue_capture):
     ctx = _ctx(tmp_path)
     status, _c, _b, headers = _post(ctx, _valid_fields(photo_asset_id=""))
-    _assert_rejected(tmp_path, headers, status)
+    _assert_rejected(enqueue_capture, headers, status)
 
 
-def test_post_whitespace_content_rejected(tmp_path):
+def test_post_whitespace_content_rejected(tmp_path, enqueue_capture):
     ctx = _ctx(tmp_path)
     status, _c, _b, headers = _post(ctx, _valid_fields(content="   "))
-    _assert_rejected(tmp_path, headers, status)
+    _assert_rejected(enqueue_capture, headers, status)
 
 
 # ---------------------------------------------------------------------------
 # return_to: safe honored, open-redirect rejected
 # ---------------------------------------------------------------------------
-def test_safe_return_to_honored(tmp_path):
+def test_safe_return_to_honored(tmp_path, enqueue_capture):
     ctx = _ctx(tmp_path)
     status, _c, _b, headers = _post(ctx, _valid_fields(return_to="/captures?capture_id=cap-9"))
     loc = headers["Location"]
@@ -163,7 +168,7 @@ def test_safe_return_to_honored(tmp_path):
     assert "message=shift_report_note_queued" in loc
 
 
-def test_open_redirect_absolute_rejected(tmp_path):
+def test_open_redirect_absolute_rejected(tmp_path, enqueue_capture):
     ctx = _ctx(tmp_path)
     status, _c, _b, headers = _post(ctx, _valid_fields(return_to="https://evil.com"))
     loc = headers["Location"]
@@ -171,7 +176,7 @@ def test_open_redirect_absolute_rejected(tmp_path):
     assert loc.startswith("/captures")  # fell back to safe base
 
 
-def test_open_redirect_protocol_relative_rejected(tmp_path):
+def test_open_redirect_protocol_relative_rejected(tmp_path, enqueue_capture):
     ctx = _ctx(tmp_path)
     status, _c, _b, headers = _post(ctx, _valid_fields(return_to="//evil.com/x"))
     loc = headers["Location"]
@@ -190,7 +195,7 @@ def test_safe_return_to_helper_unit():
 # ---------------------------------------------------------------------------
 # post-route dispatch
 # ---------------------------------------------------------------------------
-def test_post_route_dispatch(tmp_path):
+def test_post_route_dispatch(tmp_path, enqueue_capture):
     ctx = _ctx(tmp_path)
     body = urllib.parse.urlencode(_valid_fields()).encode()
     result = post_routes.dispatch_post_route(
@@ -203,4 +208,4 @@ def test_post_route_dispatch(tmp_path):
     assert result is not None
     status = result[0]
     assert int(status) == 303
-    assert len(_queue_files(tmp_path)) == 1
+    assert len(_staged_jobs(enqueue_capture)) == 1

@@ -112,7 +112,7 @@ def _http(cfg, method, path, body=None):
 
 
 @pytest.fixture()
-def live_db():
+def live_db(monkeypatch: pytest.MonkeyPatch):
     cfg = _live_config()
     if cfg is None:
         pytest.skip(
@@ -120,7 +120,9 @@ def live_db():
             "populate ~/.config/btq/config.json)"
         )
     db = f"btq_verify_336_{uuid.uuid4().hex[:12]}"
+    queue_db = f"{db}_queue"
     _http(cfg, "PUT", db)
+    _http(cfg, "PUT", queue_db)
     design = _design_doc()
     _http(
         cfg,
@@ -128,20 +130,28 @@ def live_db():
         f"{db}/_design/btq_field_captures",
         {k: v for k, v in design.items() if k != "_rev"},
     )
+    # Route ALL queue-doc authoring (btq_client.enqueue inside the watcher) at
+    # the scratch queue db — NEVER the real btq_queue. Without this redirect a
+    # test run leaks mark_supply_ordered docs into the production queue.
+    monkeypatch.setenv("BTQ_COUCHDB_URL", cfg.base_url)
+    monkeypatch.setenv("BTQ_COUCHDB_USER", cfg.username)
+    monkeypatch.setenv("BTQ_COUCHDB_PASSWORD", cfg.password)
+    monkeypatch.setenv("BTQ_QUEUE_DATABASE", queue_db)
     try:
         yield cfg, db
     finally:
-        try:
-            request.urlopen(
-                request.Request(
-                    f"{cfg.base_url}/{db}",
-                    headers={**cfg.auth_header(), "Accept": "application/json"},
-                    method="DELETE",
-                ),
-                timeout=10,
-            )
-        except (error.URLError, OSError):
-            pass
+        for target in (db, queue_db):
+            try:
+                request.urlopen(
+                    request.Request(
+                        f"{cfg.base_url}/{target}",
+                        headers={**cfg.auth_header(), "Accept": "application/json"},
+                        method="DELETE",
+                    ),
+                    timeout=10,
+                )
+            except (error.URLError, OSError):
+                pass
 
 
 @pytest.fixture()
@@ -194,6 +204,16 @@ def _queue_files(runtime_root: Path) -> list[Path]:
     if not qd.exists():
         return []
     return sorted(p for p in qd.iterdir() if p.is_file() and p.suffix == ".json")
+
+
+def _queue_docs(cfg) -> list[dict]:
+    """Docs the watcher authored into the scratch btq_queue database."""
+    queue_db = os.environ["BTQ_QUEUE_DATABASE"]
+    _status, body = _http(cfg, "GET", f"{queue_db}/_all_docs?include_docs=true")
+    return sorted(
+        (row["doc"] for row in body.get("rows", []) if not row["id"].startswith("_design")),
+        key=lambda doc: doc["_id"],
+    )
 
 
 def test_process_one_no_action_marks_without_queue_file(tmp_path, logger, monkeypatch) -> None:
@@ -285,10 +305,12 @@ class TestTheGate:
         results = jdw.process_pass(config=cfg, db=db, runtime_root=runtime_root, logger=logger)
         assert all(r["ok"] for r in results), results
 
-        # Exactly ONE queue file, and it belongs to the approved draft.
-        files = _queue_files(runtime_root)
-        assert len(files) == 1, files
-        assert "d-approved" in files[0].name
+        # Exactly ONE queue doc, and it belongs to the approved draft.
+        docs = _queue_docs(cfg)
+        assert len(docs) == 1, docs
+        assert "d-approved" in docs[0]["_id"]
+        # Transport invariant: no queue files are written — CouchDB only.
+        assert _queue_files(runtime_root) == []
 
         # Approved got the mark; pending/rejected did NOT (no mark, no error).
         approved = get_job_draft(cfg, db, "d-approved")
@@ -305,13 +327,13 @@ class TestTheGate:
         _seed_draft(cfg, db, "d-flip", review_status="pending_approval")
         # While pending: gate closed -> nothing.
         jdw.process_pass(config=cfg, db=db, runtime_root=runtime_root, logger=logger)
-        assert _queue_files(runtime_root) == []
+        assert _queue_docs(cfg) == []
         assert not get_job_draft(cfg, db, "d-flip").get("queue_materialized_at")
-        # Approve it -> gate opens -> exactly one file + mark.
+        # Approve it -> gate opens -> exactly one queue doc + mark.
         _seed_draft(cfg, db, "d-flip", review_status="approved")
         jdw.process_pass(config=cfg, db=db, runtime_root=runtime_root, logger=logger)
-        files = _queue_files(runtime_root)
-        assert len(files) == 1, files
+        docs = _queue_docs(cfg)
+        assert len(docs) == 1, docs
         assert get_job_draft(cfg, db, "d-flip").get("queue_materialized_at")
 
 
@@ -329,9 +351,15 @@ class TestCleanJobFileFormat:
                             group_id="grp-clean")
 
         jdw.process_pass(config=cfg, db=db, runtime_root=runtime_root, logger=logger)
-        files = _queue_files(runtime_root)
-        assert len(files) == 1, files
-        job = json.loads(files[0].read_text(encoding="utf-8"))
+        [doc] = _queue_docs(cfg)
+
+        # Strip the CouchDB transport metadata the queue watcher strips at
+        # materialize time; what remains is the clean job.
+        from queue_processor.couchdb_queue_watcher import COUCHDB_METADATA_KEYS, materialize_queue_job
+
+        job = {k: v for k, v in doc.items() if k not in COUCHDB_METADATA_KEYS}
+        job_id = job.pop("job_id")
+        assert job_id.startswith("mark_supply_ordered.d-clean-")
 
         # Exact clean shape.
         assert job == {
@@ -346,17 +374,19 @@ class TestCleanJobFileFormat:
         }, job
 
         # Top-level type is NOT job_draft; no review fields leaked.
-        assert job.get("type") != "job_draft"
+        assert doc.get("type") != "job_draft"
         assert "type" not in job
-        for leak in ("review_status", "message", "_id", "_rev", "draft_id",
-                     "reviewed_by", "reviewed_at", "created_at"):
-            assert leak not in job, f"{leak} leaked into job file"
+        for leak in ("review_status", "message", "draft_id",
+                     "reviewed_by", "reviewed_at"):
+            assert leak not in job, f"{leak} leaked into the queue doc"
 
-        # The REAL processor loader accepts it, and queue_spec validates it.
-        assert validate_job(job) is True
-        payload_back = qp_main.load_job_payload(files[0])
+        # The REAL chain accepts it: the queue watcher materializes the doc and
+        # the REAL processor loader + queue_spec validate the result.
+        assert validate_job(job | {"job_id": job_id}) is True
+        materialized = materialize_queue_job(doc, runtime_root, logging.getLogger("test.jdw.mat"))
+        payload_back = qp_main.load_job_payload(materialized)
         assert payload_back["job_type"] == "mark_supply_ordered"
-        loaded = qp_main.load_job(files[0])
+        loaded = qp_main.load_job(materialized)
         assert loaded.job_type == "mark_supply_ordered"
         assert loaded.payload == payload
         assert loaded.metadata["source"] == "job_draft"
@@ -387,8 +417,8 @@ class TestIdempotency:
         assert [r for r in r1 if r.get("materialized")], r1
         mark1 = get_job_draft(cfg, db, "d-idem").get("queue_materialized_at")
         assert mark1
-        files1 = _queue_files(runtime_root)
-        assert len(files1) == 1
+        docs1 = _queue_docs(cfg)
+        assert len(docs1) == 1
 
         # Second pass: selector no longer returns it (materialized) -> no work.
         selected = jdw.find_approved_unmaterialized_drafts(cfg, db)
@@ -396,28 +426,29 @@ class TestIdempotency:
         r2 = jdw.process_pass(config=cfg, db=db, runtime_root=runtime_root, logger=logger)
         assert not any(r.get("materialized") for r in r2), r2
 
-        files2 = _queue_files(runtime_root)
-        assert len(files2) == 1
-        assert files2 == files1
+        docs2 = _queue_docs(cfg)
+        assert len(docs2) == 1
+        assert docs2[0]["_rev"] == docs1[0]["_rev"]  # untouched, no dup
         mark2 = get_job_draft(cfg, db, "d-idem").get("queue_materialized_at")
         assert mark2 == mark1  # mark unchanged on re-run
 
-    def test_existing_queue_file_not_duplicated(self, live_db, tmp_path, logger) -> None:
-        # If the file already exists (e.g. the mark write failed last time) the
-        # second pass must NOT create a duplicate -- FileExistsError path.
+    def test_existing_queue_doc_not_duplicated(self, live_db, tmp_path, logger) -> None:
+        # If the queue doc already exists (e.g. the mark write failed last
+        # time) the second pass must NOT create a duplicate — the deterministic
+        # doc id makes the re-enqueue an idempotent 409 no-op.
         cfg, db = live_db
         runtime_root = tmp_path
         doc = _seed_draft(cfg, db, "d-exists", review_status="approved")
         job = jdw.build_queue_job_from_draft(doc)
-        dest = jdw.queue_path_for_draft_job(job, "d-exists", runtime_root)
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        dest.write_text(json.dumps(job) + "\n", encoding="utf-8")
-        before = dest.read_text(encoding="utf-8")
+        queue_doc_id = jdw.queue_doc_id_for_draft_job(job, "d-exists")
+        from event_pipeline import btq_client
+
+        btq_client.enqueue(dict(job) | {"job_id": queue_doc_id}, created_by="test-precreate")
+        [before] = _queue_docs(cfg)
 
         jdw.process_pass(config=cfg, db=db, runtime_root=runtime_root, logger=logger)
-        files = _queue_files(runtime_root)
-        assert len(files) == 1, files
-        assert dest.read_text(encoding="utf-8") == before  # untouched, no dup
+        [after] = _queue_docs(cfg)
+        assert after["_rev"] == before["_rev"]  # untouched, no dup
         # The mark still gets written so the draft leaves the selector.
         assert get_job_draft(cfg, db, "d-exists").get("queue_materialized_at")
 
@@ -482,8 +513,8 @@ class TestPoisonPill:
 
         jdw.process_pass(config=cfg, db=db, runtime_root=runtime_root, logger=logger)
 
-        # No queue file produced.
-        assert _queue_files(runtime_root) == []
+        # No queue doc produced.
+        assert _queue_docs(cfg) == []
         doc = get_job_draft(cfg, db, "d-poison")
         # Got the error mark, NOT the success mark.
         assert doc.get("queue_materialize_error")
@@ -494,8 +525,8 @@ class TestPoisonPill:
         assert "d-poison" not in {d.get("draft_id") for d in selected}
         r2 = jdw.process_pass(config=cfg, db=db, runtime_root=runtime_root, logger=logger)
         assert not any(r.get("materialized") for r in r2), r2
-        assert _queue_files(runtime_root) == []
-        # Error mark unchanged (no flip to success, no new file).
+        assert _queue_docs(cfg) == []
+        # Error mark unchanged (no flip to success, no new doc).
         doc2 = get_job_draft(cfg, db, "d-poison")
         assert doc2.get("queue_materialize_error")
         assert not doc2.get("queue_materialized_at")
@@ -543,6 +574,7 @@ class TestCliSmoke:
                 else:
                     os.environ[k] = v
         assert rc == 0
-        # Dry-run wrote NO queue file and left NO mark.
+        # Dry-run authored NO queue doc, wrote NO queue file, left NO mark.
+        assert _queue_docs(cfg) == []
         assert _queue_files(runtime_root) == []
         assert not get_job_draft(cfg, db, "d-cli").get("queue_materialized_at")

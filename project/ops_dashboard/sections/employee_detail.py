@@ -868,8 +868,7 @@ def handle_uniform_post(ctx: object, employee_id: str, body: bytes):
     person = _clean(doc.get("person_id")) or employee_id
 
     try:
-        queue_path = write_set_employee_uniform_job(
-            ctx.runtime_root,
+        queue_doc_id = write_set_employee_uniform_job(
             person=person,
             actor=default_actor(),
             uniform=uniform,
@@ -881,18 +880,18 @@ def handle_uniform_post(ctx: object, employee_id: str, body: bytes):
             "failed: invalid uniform status",
         )
         return ctx.redirect(f"/employees/{quote(employee_id)}?edit=uniform&error=invalid_uniform")
-    except OSError as exc:
+    except Exception as exc:  # noqa: BLE001 - CouchDB enqueue unavailable: redirect, not 500.
         ctx.audit(
             f"/employees/{employee_id}/uniform",
             {"status": status},
-            f"failed: queue write {exc.__class__.__name__}",
+            f"failed: queue enqueue {exc.__class__.__name__}",
         )
         return ctx.redirect(f"/employees/{quote(employee_id)}?edit=uniform&error=queue_unavailable")
 
     ctx.audit(
         f"/employees/{employee_id}/uniform",
         {"status": status},
-        f"success: staged {queue_path.name}",
+        f"success: staged {queue_doc_id}",
     )
     return ctx.redirect(f"/employees/{quote(employee_id)}?staged=uniform")
 
@@ -924,8 +923,7 @@ def handle_home_address_post(ctx: object, employee_id: str, body: bytes):
         job_kwargs = {"home_address": {k: v for k, v in home_address.items() if v}}
 
     try:
-        queue_path = write_set_employee_home_address_job(
-            ctx.runtime_root,
+        queue_doc_id = write_set_employee_home_address_job(
             person=person,
             actor=default_actor(),
             **job_kwargs,
@@ -937,20 +935,19 @@ def handle_home_address_post(ctx: object, employee_id: str, body: bytes):
             "failed: invalid address",
         )
         return ctx.redirect(f"/employees/{quote(employee_id)}?edit=home_address&error=invalid_address")
-    except OSError as exc:
-        # Queue dir unwritable (e.g. misconfigured runtime root): fail as a
-        # redirect, not a 500 — and keep the address out of the audit line.
+    except Exception as exc:  # noqa: BLE001 - CouchDB enqueue unavailable: redirect, not 500,
+        # and keep the address out of the audit line.
         ctx.audit(
             f"/employees/{employee_id}/home-address",
             {"action": action},
-            f"failed: queue write {exc.__class__.__name__}",
+            f"failed: queue enqueue {exc.__class__.__name__}",
         )
         return ctx.redirect(f"/employees/{quote(employee_id)}?edit=home_address&error=queue_unavailable")
 
     ctx.audit(
         f"/employees/{employee_id}/home-address",
         {"action": action},
-        f"success: staged {queue_path.name}",
+        f"success: staged {queue_doc_id}",
     )
     return ctx.redirect(f"/employees/{quote(employee_id)}?staged=home_address")
 

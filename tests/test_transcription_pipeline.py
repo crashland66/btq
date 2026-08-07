@@ -521,53 +521,62 @@ def test_scan_once_logs_domain_corrections(tmp_path: Path) -> None:
     assert {"from": "bct", "to": "VCT"} in sidecar
 
 
-def test_stage_queue_jobs_publishes_with_atomic_replace(tmp_path: Path, monkeypatch) -> None:
-    runtime_root = tmp_path / "runtime"
+def test_stage_queue_jobs_enqueues_couchdb_docs(tmp_path: Path, monkeypatch) -> None:
+    source_dir = tmp_path / "queue_jobs"
+    source_dir.mkdir()
+    job_path = source_dir / "job_1.json"
+    job_path.write_text('{"job_type":"append_to_note","payload":{}}\n', encoding="utf-8")
+    captured: list[dict] = []
+
+    def fake_enqueue(job: dict, created_by: str = "greg", **_kwargs) -> dict:
+        captured.append({"job": job, "created_by": created_by})
+        return {"ok": True, "id": job["job_id"]}
+
+    monkeypatch.setattr("event_pipeline.btq_client.enqueue", fake_enqueue)
+
+    staged_ids = pipeline.stage_queue_jobs([job_path])
+
+    # The artifact's filename stem becomes the deterministic doc id.
+    assert staged_ids == ["job_1"]
+    assert captured[0]["job"]["job_id"] == "job_1"
+    assert captured[0]["job"]["job_type"] == "append_to_note"
+    assert captured[0]["created_by"] == "transcription_pipeline"
+    # Transport invariant: nothing is written into a runtime queue dir.
+    assert not (tmp_path / "runtime").exists()
+
+
+def test_stage_queue_jobs_duplicate_doc_is_idempotent_no_op(tmp_path: Path, monkeypatch) -> None:
     source_dir = tmp_path / "queue_jobs"
     source_dir.mkdir()
     job_path = source_dir / "job_1.json"
     job_path.write_text('{"job_type":"append_to_note","payload":{}}\n', encoding="utf-8")
 
-    original_replace = pipeline.os.replace
-    replace_calls: list[tuple[Path, Path]] = []
+    def duplicate_enqueue(job: dict, created_by: str = "greg", **_kwargs) -> dict:
+        return {"ok": True, "duplicate": True, "id": job["job_id"], "status": 409}
 
-    def observe_replace(src: Path, dst: Path) -> None:
-        src_path = Path(src)
-        dst_path = Path(dst)
-        replace_calls.append((src_path, dst_path))
-        assert src_path.parent == runtime_root / "temp" / "queue-stage"
-        assert dst_path.parent == runtime_root / "queue"
-        assert not dst_path.exists()
-        assert list((runtime_root / "queue").iterdir()) == []
-        original_replace(src, dst)
+    monkeypatch.setattr("event_pipeline.btq_client.enqueue", duplicate_enqueue)
 
-    monkeypatch.setattr(pipeline.os, "replace", observe_replace)
+    staged_ids = pipeline.stage_queue_jobs([job_path])
 
-    staged_paths = pipeline.stage_queue_jobs(runtime_root, [job_path])
-
-    destination = runtime_root / "queue" / "job_1.json"
-    assert staged_paths == [destination]
-    assert len(replace_calls) == 1
-    assert replace_calls[0][1] == destination
-    assert destination.read_text(encoding="utf-8") == job_path.read_text(encoding="utf-8")
-    assert list((runtime_root / "temp" / "queue-stage").iterdir()) == []
+    assert staged_ids == []
 
 
-def test_stage_queue_jobs_skips_existing_destination_without_overwrite(tmp_path: Path) -> None:
-    runtime_root = tmp_path / "runtime"
+def test_stage_queue_jobs_keeps_going_past_a_failing_artifact(tmp_path: Path, monkeypatch) -> None:
     source_dir = tmp_path / "queue_jobs"
-    queue_dir = runtime_root / "queue"
     source_dir.mkdir()
-    queue_dir.mkdir(parents=True)
-    job_path = source_dir / "job_1.json"
-    destination = queue_dir / "job_1.json"
-    job_path.write_text('{"new": true}\n', encoding="utf-8")
-    destination.write_text('{"existing": true}\n', encoding="utf-8")
+    bad_path = source_dir / "job_bad.json"
+    bad_path.write_text("not json", encoding="utf-8")
+    good_path = source_dir / "job_good.json"
+    good_path.write_text('{"job_type":"append_to_note","payload":{}}\n', encoding="utf-8")
 
-    staged_paths = pipeline.stage_queue_jobs(runtime_root, [job_path])
+    def fake_enqueue(job: dict, created_by: str = "greg", **_kwargs) -> dict:
+        return {"ok": True, "id": job["job_id"]}
 
-    assert staged_paths == []
-    assert destination.read_text(encoding="utf-8") == '{"existing": true}\n'
+    monkeypatch.setattr("event_pipeline.btq_client.enqueue", fake_enqueue)
+
+    staged_ids = pipeline.stage_queue_jobs([bad_path, good_path])
+
+    assert staged_ids == ["job_good"]
 
 
 def test_personal_journal_trigger_at_start_stages_personal_job(tmp_path: Path) -> None:
@@ -581,8 +590,22 @@ def test_personal_journal_trigger_at_start_stages_personal_job(tmp_path: Path) -
     old_time = time.time() - 20
     os.utime(audio_path, (old_time, old_time))
 
+    enqueued: list[dict] = []
+
     def stage_generated(_local_root: Path, job_paths: list[Path]) -> int:
-        return len(pipeline.stage_queue_jobs(runtime_root, job_paths))
+        import event_pipeline.btq_client as btq_client_module
+
+        original = btq_client_module.enqueue
+
+        def fake_enqueue(job: dict, created_by: str = "greg", **_kwargs) -> dict:
+            enqueued.append(job)
+            return {"ok": True, "id": job["job_id"]}
+
+        btq_client_module.enqueue = fake_enqueue
+        try:
+            return len(pipeline.stage_queue_jobs(job_paths))
+        finally:
+            btq_client_module.enqueue = original
 
     handled = pipeline.scan_once(
         inbox_dir,
@@ -609,7 +632,8 @@ def test_personal_journal_trigger_at_start_stages_personal_job(tmp_path: Path) -
     assert job["payload"]["body"] == "Today I need to keep this separate."
     assert job["payload"]["audio_file"] == "personal.m4a"
     assert job["payload"]["raw_transcript_path"] == str(transcript_path)
-    assert (runtime_root / "queue" / local_jobs[0].name).exists()
+    assert [j["job_id"] for j in enqueued] == [job["job_id"]]
+    assert not (runtime_root / "queue").exists()
     assert not (local_root / "events_valid").exists()
     assert not (local_root / "queue_jobs" / "job_missed_personal.m4a.json").exists()
 
@@ -917,19 +941,22 @@ def test_personal_journal_trigger_phrase_later_does_not_trigger_personal_mode(tm
     assert sorted((local_root / "events_valid").glob("*.json"))
 
 
-def test_process_btq_queue_jobs_stages_only_and_does_not_drain_queue(tmp_path: Path) -> None:
+def test_process_btq_queue_jobs_enqueues_and_does_not_touch_runtime(tmp_path: Path, monkeypatch) -> None:
     local_root = tmp_path / "local"
     job_dir = local_root / "queue_jobs"
     job_dir.mkdir(parents=True)
     job_path = job_dir / "job_1.json"
     job_path.write_text('{"job_type":"append_to_note","payload":{}}\n', encoding="utf-8")
 
+    def fake_enqueue(job: dict, created_by: str = "greg", **_kwargs) -> dict:
+        return {"ok": True, "id": job["job_id"]}
+
+    monkeypatch.setattr("event_pipeline.btq_client.enqueue", fake_enqueue)
+
     staged_count = pipeline.process_btq_queue_jobs(local_root, [job_path])
 
     assert staged_count == 1
-    assert (local_root / "runtime" / "queue" / "job_1.json").exists()
-    assert not (local_root / "runtime" / "processed" / "job_1.json").exists()
-    assert not (local_root / "runtime" / "failed" / "job_1.json").exists()
+    assert not (local_root / "runtime").exists()
 
 
 def test_scan_once_logs_discovery_and_transcription_progress(tmp_path: Path) -> None:

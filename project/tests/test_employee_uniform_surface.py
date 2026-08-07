@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -53,13 +52,6 @@ def _render(monkeypatch: pytest.MonkeyPatch, doc: dict[str, object], query=None)
     return ed.render(SimpleNamespace(query=query or {}), "jordan")
 
 
-def _staged_jobs(ctx: DummyContext) -> list[dict]:
-    queue_dir = ctx.runtime_root / "queue"
-    if not queue_dir.exists():
-        return []
-    return [json.loads(path.read_text(encoding="utf-8")) for path in queue_dir.glob("*.json")]
-
-
 def test_uniform_read_mode_shows_status_count_and_size(monkeypatch: pytest.MonkeyPatch) -> None:
     body = _render(
         monkeypatch,
@@ -99,7 +91,9 @@ def test_uniform_edit_mode_posts_to_queue_route(monkeypatch: pytest.MonkeyPatch)
     assert "validated queue job" in body
 
 
-def test_uniform_post_stages_valid_queue_job(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_uniform_post_stages_valid_queue_job(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, enqueue_capture: list[dict]
+) -> None:
     _install(monkeypatch, _employee_doc())
     ctx = DummyContext(tmp_path)
 
@@ -111,19 +105,24 @@ def test_uniform_post_stages_valid_queue_job(monkeypatch: pytest.MonkeyPatch, tm
 
     assert status == 303
     assert headers["Location"] == "/employees/jordan?staged=uniform"
-    jobs = _staged_jobs(ctx)
-    assert len(jobs) == 1
-    assert jobs[0]["job_type"] == "set_employee_uniform"
-    assert jobs[0]["payload"]["person"] == "jordan_001"
-    assert jobs[0]["payload"]["uniform"] == {
+    assert len(enqueue_capture) == 1
+    job = enqueue_capture[0]["job"]
+    assert job["job_id"].startswith("set-employee-uniform-")
+    assert job["job_type"] == "set_employee_uniform"
+    assert job["payload"]["person"] == "jordan_001"
+    assert job["payload"]["uniform"] == {
         "status": "needs_shirts",
         "shirt_count": 1,
         "shirt_size": "2XL",
     }
-    assert qs.validate_job(jobs[0])
+    assert qs.validate_job(job)
+    # Unified transport: nothing lands in the runtime file queue.
+    assert not (ctx.runtime_root / "queue").exists()
 
 
-def test_uniform_post_rejects_missing_required_size(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_uniform_post_rejects_missing_required_size(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, enqueue_capture: list[dict]
+) -> None:
     _install(monkeypatch, _employee_doc())
     ctx = DummyContext(tmp_path)
 
@@ -135,7 +134,7 @@ def test_uniform_post_rejects_missing_required_size(monkeypatch: pytest.MonkeyPa
 
     assert status == 303
     assert "error=invalid_uniform" in headers["Location"]
-    assert _staged_jobs(ctx) == []
+    assert enqueue_capture == []
 
 
 def test_save_section_cannot_smuggle_uniform_fields(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

@@ -26,13 +26,20 @@ cat job.json | python3 scripts/btq-enqueue            # PUT into btq_queue
 `btq-enqueue` validates the doc against `queue_spec.py` before writing,
 derives a `job_id` (`<UTC-timestamp>__<slug>`) when one is not supplied, and
 uses the `job_id` as the CouchDB `_id`. The `couchdb_queue_watcher` on the
-runtime host then materializes each pending doc into canonical `btq_vault`
-state. Always `--dry-run` first.
+runtime host materializes each pending doc into its runtime spool and runs
+the durable processing pass itself, then marks the doc `complete` or
+`failed` from the real outcome. Always `--dry-run` first.
 
-Both authoring surfaces produce the same JSON job contract; only the
-transport differs. The audio pipeline (Whisper transcription) parses voice
-memos and PUTs derived jobs into the same `btq_queue`. There is no separate
-file-drop contract to satisfy.
+Since the 2026-08-07 execution-transport unification, CouchDB is the ONLY
+authoring transport. Every in-repo author — the ops dashboard, the audio
+pipeline (Whisper transcription), field-capture issue routing and capture
+retargeting, approved-draft staging (both the file-draft and job_draft
+flows), and the Cowork drop bridge — goes through
+`event_pipeline.btq_client.enqueue` (or `btq-enqueue`) into the same
+`btq_queue`. Nothing writes job files into `runtime/queue` from outside the
+queue processor; that directory is the processor's internal spool, and
+`processed/`/`failed/`/`evidence/` remain the files-as-audit layer for
+replay and repair tooling. There is no file-drop contract to satisfy.
 
 ## Cowork Queue Visibility
 

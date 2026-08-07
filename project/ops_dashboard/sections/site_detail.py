@@ -12,6 +12,8 @@ from urllib.parse import quote
 from urllib import parse as urlparse
 from urllib import request as urlrequest
 
+from event_pipeline.btq_client import BTQClientError
+
 from btq_vault.location_urls import (
     LocationUrlError,
     location_urls_from_doc,
@@ -821,7 +823,8 @@ def _site_url_job_payload(form: dict[str, list[str]], site_id: str) -> dict[str,
     return payload
 
 
-def _write_site_url_job(runtime_root: Path, payload: dict[str, object]) -> Path:
+def _write_site_url_job(payload: dict[str, object]) -> str:
+    from ops_dashboard.common import enqueue_queue_job
     from queue_spec import JOB_SET_SITE_URL, validate_job
 
     suffix = str(uuid.uuid4())
@@ -832,13 +835,7 @@ def _write_site_url_job(runtime_root: Path, payload: dict[str, object]) -> Path:
     }
     if not validate_job(job):
         raise ValueError("invalid set_site_url payload")
-    queue_dir = runtime_root.expanduser().resolve(strict=False) / "queue"
-    queue_dir.mkdir(parents=True, exist_ok=True)
-    queue_path = queue_dir / f"set-site-url-{suffix}.json"
-    temp_path = queue_path.with_name(f".{queue_path.name}.tmp")
-    temp_path.write_text(json.dumps(job, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    temp_path.replace(queue_path)
-    return queue_path
+    return enqueue_queue_job(job)
 
 
 def _format_facility_interval(interval: dict[str, str]) -> str:
@@ -982,7 +979,8 @@ def _site_hours_job_payload(form: dict[str, list[str]], site_id: str) -> dict[st
     return payload
 
 
-def _write_site_hours_job(runtime_root: Path, payload: dict[str, object]) -> Path:
+def _write_site_hours_job(payload: dict[str, object]) -> str:
+    from ops_dashboard.common import enqueue_queue_job
     from queue_spec import JOB_SET_SITE_HOURS, validate_job
 
     suffix = str(uuid.uuid4())
@@ -993,13 +991,7 @@ def _write_site_hours_job(runtime_root: Path, payload: dict[str, object]) -> Pat
     }
     if not validate_job(job):
         raise ValueError("invalid set_site_hours payload")
-    queue_dir = runtime_root.expanduser().resolve(strict=False) / "queue"
-    queue_dir.mkdir(parents=True, exist_ok=True)
-    queue_path = queue_dir / f"set-site-hours-{suffix}.json"
-    temp_path = queue_path.with_name(f".{queue_path.name}.tmp")
-    temp_path.write_text(json.dumps(job, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    temp_path.replace(queue_path)
-    return queue_path
+    return enqueue_queue_job(job)
 
 
 def _operational_calendar_date_range(start_date: str, end_date: str) -> str:
@@ -1308,10 +1300,8 @@ def _site_operational_calendar_job_payload(
     return payload
 
 
-def _write_site_operational_calendar_job(
-    runtime_root: Path,
-    payload: dict[str, object],
-) -> Path:
+def _write_site_operational_calendar_job(payload: dict[str, object]) -> str:
+    from ops_dashboard.common import enqueue_queue_job
     from queue_spec import JOB_SET_SITE_OPERATIONAL_CALENDAR, validate_job
 
     suffix = str(uuid.uuid4())
@@ -1322,16 +1312,7 @@ def _write_site_operational_calendar_job(
     }
     if not validate_job(job):
         raise ValueError("invalid set_site_operational_calendar payload")
-    queue_dir = runtime_root.expanduser().resolve(strict=False) / "queue"
-    queue_dir.mkdir(parents=True, exist_ok=True)
-    queue_path = queue_dir / f"set-site-operational-calendar-{suffix}.json"
-    temp_path = queue_path.with_name(f".{queue_path.name}.tmp")
-    temp_path.write_text(
-        json.dumps(job, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
-    temp_path.replace(queue_path)
-    return queue_path
+    return enqueue_queue_job(job)
 
 
 def _contact_job_payload(
@@ -1390,7 +1371,8 @@ def _generated_contact_id(scope: str, target_id: str, name: str, role: str) -> s
     return f"cnt_{scope}_{target_slug}_{name_slug}_{role_slug}"
 
 
-def _write_set_contact_job(runtime_root: Path, payload: dict[str, object]) -> Path:
+def _write_set_contact_job(payload: dict[str, object]) -> str:
+    from ops_dashboard.common import enqueue_queue_job
     from queue_spec import JOB_SET_CONTACT, validate_job
 
     suffix = str(uuid.uuid4())
@@ -1401,13 +1383,7 @@ def _write_set_contact_job(runtime_root: Path, payload: dict[str, object]) -> Pa
     }
     if not validate_job(job):
         raise ValueError("invalid set_contact payload")
-    queue_dir = runtime_root.expanduser().resolve(strict=False) / "queue"
-    queue_dir.mkdir(parents=True, exist_ok=True)
-    queue_path = queue_dir / f"set-contact-{suffix}.json"
-    temp_path = queue_path.with_name(f".{queue_path.name}.tmp")
-    temp_path.write_text(json.dumps(job, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    temp_path.replace(queue_path)
-    return queue_path
+    return enqueue_queue_job(job)
 
 
 def _site_notes(site_id: str) -> list[dict[str, Any]]:
@@ -1999,14 +1975,14 @@ def handle_site_url_post(ctx: object, site_id: str, body: bytes):
             if "new_url" in payload:
                 url_entry["url"] = payload["new_url"]
             normalize_location_url_entry(url_entry)
-        queue_path = _write_site_url_job(root, payload)
-    except (LocationUrlError, ValueError, OSError) as exc:
+        queue_doc_id = _write_site_url_job(payload)
+    except (LocationUrlError, ValueError, OSError, BTQClientError) as exc:
         if hasattr(ctx, "audit"):
             ctx.audit(f"/sites/{site_id}/urls", form_payload, f"failed: {exc}")
         return _redirect(f"/sites/{quote(site_id)}?error={quote(str(exc))}")
 
     if hasattr(ctx, "audit"):
-        ctx.audit(f"/sites/{site_id}/urls", form_payload, f"success: staged queue_path={queue_path}")
+        ctx.audit(f"/sites/{site_id}/urls", form_payload, f"success: staged queue_doc={queue_doc_id}")
     return _redirect(f"/sites/{quote(site_id)}?message=url_queued")
 
 
@@ -2028,14 +2004,14 @@ def handle_site_hours_post(ctx: object, site_id: str, body: bytes):
 
     try:
         payload = _site_hours_job_payload(form, site_id)
-        queue_path = _write_site_hours_job(root, payload)
-    except (json.JSONDecodeError, FacilityHoursError, ValueError, OSError) as exc:
+        queue_doc_id = _write_site_hours_job(payload)
+    except (json.JSONDecodeError, FacilityHoursError, ValueError, OSError, BTQClientError) as exc:
         if hasattr(ctx, "audit"):
             ctx.audit(f"/sites/{site_id}/facility-hours", form_payload, f"failed: {exc}")
         return _redirect(f"/sites/{quote(site_id)}?error={quote(str(exc))}")
 
     if hasattr(ctx, "audit"):
-        ctx.audit(f"/sites/{site_id}/facility-hours", form_payload, f"success: staged queue_path={queue_path}")
+        ctx.audit(f"/sites/{site_id}/facility-hours", form_payload, f"success: staged queue_doc={queue_doc_id}")
     return _redirect(f"/sites/{quote(site_id)}?message=facility_hours_queued")
 
 
@@ -2075,12 +2051,13 @@ def handle_site_operational_calendar_post(ctx: object, site_id: str, body: bytes
 
     try:
         payload = _site_operational_calendar_job_payload(form, site_id)
-        queue_path = _write_site_operational_calendar_job(root, payload)
+        queue_doc_id = _write_site_operational_calendar_job(payload)
     except (
         json.JSONDecodeError,
         OperationalCalendarError,
         ValueError,
         OSError,
+        BTQClientError,
     ) as exc:
         if hasattr(ctx, "audit"):
             ctx.audit(
@@ -2096,7 +2073,7 @@ def handle_site_operational_calendar_post(ctx: object, site_id: str, body: bytes
         ctx.audit(
             route,
             audit_payload,
-            f"success: staged queue_path={queue_path}",
+            f"success: staged queue_doc={queue_doc_id}",
         )
     success_message = (
         "Operational calendar removal queued."
@@ -2149,14 +2126,14 @@ def handle_contacts_post(ctx: object, site_id: str, body: bytes, *, target_type:
             location_doc=location_doc,
             account_doc=account_doc,
         )
-        queue_path = _write_set_contact_job(root, payload)
-    except (ValueError, OSError) as exc:
+        queue_doc_id = _write_set_contact_job(payload)
+    except (ValueError, OSError, BTQClientError) as exc:
         if hasattr(ctx, "audit"):
             ctx.audit(f"/sites/{site_id}/{route_suffix}", form_payload, f"failed: {exc}")
         return _rerender_error(str(exc))
 
     if hasattr(ctx, "audit"):
-        ctx.audit(f"/sites/{site_id}/{route_suffix}", form_payload, f"success: staged queue_path={queue_path}")
+        ctx.audit(f"/sites/{site_id}/{route_suffix}", form_payload, f"success: staged queue_doc={queue_doc_id}")
     return _redirect(f"/sites/{quote(site_id)}?message=contact_queued")
 
 

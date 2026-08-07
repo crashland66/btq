@@ -1700,9 +1700,10 @@ def test_supplies_nav_entry_present_and_active_on_supplies_page(tmp_path: Path, 
     assert 'href="/equipment" title="Equipment"' not in body
 
 
-def read_single_queue_job(runtime_root: Path) -> dict[str, object]:
-    [path] = sorted((runtime_root / "queue").glob("*.json"))
-    return json.loads(path.read_text(encoding="utf-8"))
+def read_single_queue_job(enqueue_capture: list[dict[str, object]]) -> dict[str, object]:
+    """Return the single job authored through the unified CouchDB enqueue boundary."""
+    [entry] = enqueue_capture
+    return entry["job"]  # type: ignore[return-value]
 
 
 def redirect_query(location: str) -> tuple[str, dict[str, list[str]]]:
@@ -1825,19 +1826,20 @@ def test_supply_confirm_renders_source_target_status_pills(tmp_path: Path, monke
     assert 'class="pill status-ordered"' in body
 
 
-def test_supplies_mark_ordered_post_writes_queue_file(tmp_path: Path) -> None:
+def test_supplies_mark_ordered_post_writes_queue_file(tmp_path: Path, enqueue_capture: list[dict]) -> None:
     runtime_root = tmp_path / "runtime"
 
     status, _content_type, _body = route_response("POST", "/supplies/mark-ordered", runtime_root, b"supply_id=sup_cleaner&actor=Jordan&note=ordered&confirm=1")
-    job = read_single_queue_job(runtime_root)
+    job = read_single_queue_job(enqueue_capture)
 
     assert status == HTTPStatus.SEE_OTHER
     assert job["job_type"] == "mark_supply_ordered"
     assert job["job_id"].startswith("mark-mark_supply_ordered-")
     assert job["payload"] == {"actor": "Jordan", "note": "ordered", "supply_id": "sup_cleaner"}
+    assert not (runtime_root / "queue").exists()
 
 
-def test_supplies_list_card_mark_post_redirects_to_filtered_list(tmp_path: Path) -> None:
+def test_supplies_list_card_mark_post_redirects_to_filtered_list(tmp_path: Path, enqueue_capture: list[dict]) -> None:
     runtime_root = tmp_path / "runtime"
 
     status, _content_type, _body, headers = route_response_with_headers(
@@ -1854,7 +1856,7 @@ def test_supplies_list_card_mark_post_redirects_to_filtered_list(tmp_path: Path)
     assert "supply_id" not in headers["Location"]
 
 
-def test_supplies_list_card_mark_post_preserves_only_whitelisted_filters(tmp_path: Path) -> None:
+def test_supplies_list_card_mark_post_preserves_only_whitelisted_filters(tmp_path: Path, enqueue_capture: list[dict]) -> None:
     runtime_root = tmp_path / "runtime"
 
     _status, _content_type, _body, headers = route_response_with_headers(
@@ -1877,7 +1879,7 @@ def test_supplies_list_card_mark_post_preserves_only_whitelisted_filters(tmp_pat
     assert "junk" not in query
 
 
-def test_supplies_detail_mark_post_redirect_stays_on_detail(tmp_path: Path) -> None:
+def test_supplies_detail_mark_post_redirect_stays_on_detail(tmp_path: Path, enqueue_capture: list[dict]) -> None:
     runtime_root = tmp_path / "runtime"
 
     status, _content_type, _body, headers = route_response_with_headers(
@@ -1923,27 +1925,29 @@ def test_supplies_detail_mark_error_redirect_is_unchanged(tmp_path: Path) -> Non
     assert headers["Location"] == "/supplies?error=missing_field"
 
 
-def test_supplies_mark_ordered_post_refuses_without_confirm(tmp_path: Path) -> None:
+def test_supplies_mark_ordered_post_refuses_without_confirm(tmp_path: Path, enqueue_capture: list[dict]) -> None:
     runtime_root = tmp_path / "runtime"
 
     status, _content_type, _body = route_response("POST", "/supplies/mark-ordered", runtime_root, b"supply_id=sup_cleaner&actor=Jordan")
 
     assert status == HTTPStatus.SEE_OTHER
+    assert enqueue_capture == []
     assert not (runtime_root / "queue").exists()
     assert "confirm_required" in (runtime_root / "logs" / "admin_audit.log").read_text(encoding="utf-8")
 
 
-def test_supplies_mark_ordered_post_refuses_without_supply_id(tmp_path: Path) -> None:
+def test_supplies_mark_ordered_post_refuses_without_supply_id(tmp_path: Path, enqueue_capture: list[dict]) -> None:
     runtime_root = tmp_path / "runtime"
 
     status, _content_type, _body = route_response("POST", "/supplies/mark-ordered", runtime_root, b"actor=Jordan&confirm=1")
 
     assert status == HTTPStatus.SEE_OTHER
+    assert enqueue_capture == []
     assert not (runtime_root / "queue").exists()
     assert "missing supply_id or actor" in (runtime_root / "logs" / "admin_audit.log").read_text(encoding="utf-8")
 
 
-def test_supplies_mark_ordered_post_audit_line_includes_supply_id_and_actor(tmp_path: Path) -> None:
+def test_supplies_mark_ordered_post_audit_line_includes_supply_id_and_actor(tmp_path: Path, enqueue_capture: list[dict]) -> None:
     runtime_root = tmp_path / "runtime"
 
     route_response("POST", "/supplies/mark-ordered", runtime_root, b"supply_id=sup_cleaner&actor=Jordan&confirm=1")
@@ -1953,53 +1957,54 @@ def test_supplies_mark_ordered_post_audit_line_includes_supply_id_and_actor(tmp_
     assert payload["payload"]["supply_id"] == "sup_cleaner"
     assert payload["payload"]["actor"] == "Jordan"
     assert "supply_id=sup_cleaner" in payload["result_summary"]
+    assert "queue_doc=" in payload["result_summary"]
 
 
-def test_supplies_mark_delivered_post_writes_queue_file(tmp_path: Path) -> None:
+def test_supplies_mark_delivered_post_writes_queue_file(tmp_path: Path, enqueue_capture: list[dict]) -> None:
     runtime_root = tmp_path / "runtime"
 
     route_response("POST", "/supplies/mark-delivered", runtime_root, b"supply_id=sup_cleaner&actor=Jordan&confirm=1")
-    job = read_single_queue_job(runtime_root)
+    job = read_single_queue_job(enqueue_capture)
 
     assert job["job_type"] == "mark_supply_delivered"
     assert job["payload"] == {"actor": "Jordan", "supply_id": "sup_cleaner"}
 
 
-def test_supplies_mark_stocked_post_writes_queue_file(tmp_path: Path) -> None:
+def test_supplies_mark_stocked_post_writes_queue_file(tmp_path: Path, enqueue_capture: list[dict]) -> None:
     runtime_root = tmp_path / "runtime"
 
     route_response("POST", "/supplies/mark-stocked", runtime_root, b"supply_id=sup_cleaner&actor=Jordan&confirm=1")
-    job = read_single_queue_job(runtime_root)
+    job = read_single_queue_job(enqueue_capture)
 
     assert job["job_type"] == "mark_supply_stocked"
     assert job["payload"] == {"actor": "Jordan", "supply_id": "sup_cleaner"}
 
 
-def test_supplies_mark_no_action_needed_post_writes_queue_file(tmp_path: Path) -> None:
+def test_supplies_mark_no_action_needed_post_writes_queue_file(tmp_path: Path, enqueue_capture: list[dict]) -> None:
     runtime_root = tmp_path / "runtime"
 
     route_response("POST", "/supplies/mark-no-action-needed", runtime_root, b"supply_id=sup_cleaner&actor=Jordan&confirm=1")
-    job = read_single_queue_job(runtime_root)
+    job = read_single_queue_job(enqueue_capture)
 
     assert job["job_type"] == "mark_supply_no_action_needed"
     assert job["payload"] == {"actor": "Jordan", "supply_id": "sup_cleaner"}
 
 
-def test_supplies_archive_post_writes_generic_archive_job(tmp_path: Path) -> None:
+def test_supplies_archive_post_writes_generic_archive_job(tmp_path: Path, enqueue_capture: list[dict]) -> None:
     runtime_root = tmp_path / "runtime"
 
     route_response("POST", "/supplies/archive", runtime_root, b"supply_id=sup_cleaner&actor=Jordan&confirm=1")
-    job = read_single_queue_job(runtime_root)
+    job = read_single_queue_job(enqueue_capture)
 
     assert job["job_type"] == "mark_record_archived"
     assert job["payload"] == {"record_type": "supply_need", "record_id": "sup_cleaner", "actor": "Jordan"}
 
 
-def test_supplies_edit_post_writes_generic_edit_job(tmp_path: Path) -> None:
+def test_supplies_edit_post_writes_generic_edit_job(tmp_path: Path, enqueue_capture: list[dict]) -> None:
     runtime_root = tmp_path / "runtime"
 
     route_response("POST", "/supplies/edit", runtime_root, b"supply_id=sup_cleaner&actor=Jordan&site_id=7060&item_name=Gloves&quantity_needed=12&urgency=critical&notes=Corrected&status=stocked")
-    job = read_single_queue_job(runtime_root)
+    job = read_single_queue_job(enqueue_capture)
 
     assert job["job_type"] == "edit_record_fields"
     assert job["payload"] == {
@@ -2010,11 +2015,11 @@ def test_supplies_edit_post_writes_generic_edit_job(tmp_path: Path) -> None:
     }
 
 
-def test_issues_mark_resolved_post_writes_queue_file(tmp_path: Path) -> None:
+def test_issues_mark_resolved_post_writes_queue_file(tmp_path: Path, enqueue_capture: list[dict]) -> None:
     runtime_root = tmp_path / "runtime"
 
     status, _content_type, _body = route_response("POST", "/field-capture/issues/mark-resolved", runtime_root, b"issue_id=iss_drain&actor=Jordan&note=fixed&confirm=1")
-    job = read_single_queue_job(runtime_root)
+    job = read_single_queue_job(enqueue_capture)
 
     assert status == HTTPStatus.SEE_OTHER
     assert job["job_type"] == "mark_issue_resolved"
@@ -2022,31 +2027,31 @@ def test_issues_mark_resolved_post_writes_queue_file(tmp_path: Path) -> None:
     assert job["payload"] == {"actor": "Jordan", "issue_id": "iss_drain", "note": "fixed"}
 
 
-def test_issues_mark_monitoring_post_writes_queue_file(tmp_path: Path) -> None:
+def test_issues_mark_monitoring_post_writes_queue_file(tmp_path: Path, enqueue_capture: list[dict]) -> None:
     runtime_root = tmp_path / "runtime"
 
     route_response("POST", "/field-capture/issues/mark-monitoring", runtime_root, b"issue_id=iss_drain&actor=Jordan&confirm=1")
-    job = read_single_queue_job(runtime_root)
+    job = read_single_queue_job(enqueue_capture)
 
     assert job["job_type"] == "mark_issue_monitoring"
     assert job["payload"] == {"actor": "Jordan", "issue_id": "iss_drain"}
 
 
-def test_issues_reopen_post_writes_queue_file(tmp_path: Path) -> None:
+def test_issues_reopen_post_writes_queue_file(tmp_path: Path, enqueue_capture: list[dict]) -> None:
     runtime_root = tmp_path / "runtime"
 
     route_response("POST", "/field-capture/issues/reopen", runtime_root, b"issue_id=iss_drain&actor=Jordan&confirm=1")
-    job = read_single_queue_job(runtime_root)
+    job = read_single_queue_job(enqueue_capture)
 
     assert job["job_type"] == "mark_issue_open"
     assert job["payload"] == {"actor": "Jordan", "issue_id": "iss_drain"}
 
 
-def test_issue_archive_post_writes_generic_archive_job(tmp_path: Path) -> None:
+def test_issue_archive_post_writes_generic_archive_job(tmp_path: Path, enqueue_capture: list[dict]) -> None:
     runtime_root = tmp_path / "runtime"
 
     route_response("POST", "/field-capture/issues/archive", runtime_root, b"issue_id=iss_drain&actor=Jordan&note=dupe&confirm=1")
-    job = read_single_queue_job(runtime_root)
+    job = read_single_queue_job(enqueue_capture)
 
     assert job["job_type"] == "mark_record_archived"
     assert job["payload"] == {"record_type": "site_issue", "record_id": "iss_drain", "actor": "Jordan", "note": "dupe"}
@@ -2074,11 +2079,11 @@ def test_issue_detail_renders_edit_form_with_site_dropdown(tmp_path: Path, monke
     assert 'name="created_at"' not in section
 
 
-def test_issue_edit_post_writes_generic_edit_job(tmp_path: Path) -> None:
+def test_issue_edit_post_writes_generic_edit_job(tmp_path: Path, enqueue_capture: list[dict]) -> None:
     runtime_root = tmp_path / "runtime"
 
     route_response("POST", "/field-capture/issues/edit", runtime_root, b"issue_id=iss_drain&actor=Jordan&site_id=7060&title=Drain&summary=Corrected&priority=urgent&category=safety&resolution_trigger=Clear&archived=true")
-    job = read_single_queue_job(runtime_root)
+    job = read_single_queue_job(enqueue_capture)
 
     assert job["job_type"] == "edit_record_fields"
     assert job["payload"] == {
@@ -2089,11 +2094,11 @@ def test_issue_edit_post_writes_generic_edit_job(tmp_path: Path) -> None:
     }
 
 
-def test_issue_restore_post_writes_generic_unarchive_job(tmp_path: Path) -> None:
+def test_issue_restore_post_writes_generic_unarchive_job(tmp_path: Path, enqueue_capture: list[dict]) -> None:
     runtime_root = tmp_path / "runtime"
 
     route_response("POST", "/field-capture/issues/restore", runtime_root, b"issue_id=iss_drain&actor=Jordan&confirm=1")
-    job = read_single_queue_job(runtime_root)
+    job = read_single_queue_job(enqueue_capture)
 
     assert job["job_type"] == "mark_record_unarchived"
     assert job["payload"] == {"record_type": "site_issue", "record_id": "iss_drain", "actor": "Jordan"}
@@ -2318,19 +2323,20 @@ def test_equipment_confirm_renders_source_target_status_pills(tmp_path: Path, mo
     assert 'class="pill status-approved"' in body
 
 
-def test_equipment_mark_approved_post_writes_queue_file(tmp_path: Path) -> None:
+def test_equipment_mark_approved_post_writes_queue_file(tmp_path: Path, enqueue_capture: list[dict]) -> None:
     runtime_root = tmp_path / "runtime"
 
     status, _content_type, _body = route_response("POST", "/equipment/mark-approved", runtime_root, b"equipment_id=eqr_vacuum&actor=Jordan&note=approved&confirm=1")
-    job = read_single_queue_job(runtime_root)
+    job = read_single_queue_job(enqueue_capture)
 
     assert status == HTTPStatus.SEE_OTHER
     assert job["job_type"] == "mark_equipment_approved"
     assert job["job_id"].startswith("mark-mark_equipment_approved-")
     assert job["payload"] == {"actor": "Jordan", "equipment_id": "eqr_vacuum", "note": "approved"}
+    assert not (runtime_root / "queue").exists()
 
 
-def test_equipment_list_card_mark_post_redirects_to_filtered_list(tmp_path: Path) -> None:
+def test_equipment_list_card_mark_post_redirects_to_filtered_list(tmp_path: Path, enqueue_capture: list[dict]) -> None:
     runtime_root = tmp_path / "runtime"
 
     status, _content_type, _body, headers = route_response_with_headers(
@@ -2347,7 +2353,7 @@ def test_equipment_list_card_mark_post_redirects_to_filtered_list(tmp_path: Path
     assert "equipment_id" not in headers["Location"]
 
 
-def test_equipment_list_card_mark_post_preserves_only_whitelisted_filters(tmp_path: Path) -> None:
+def test_equipment_list_card_mark_post_preserves_only_whitelisted_filters(tmp_path: Path, enqueue_capture: list[dict]) -> None:
     runtime_root = tmp_path / "runtime"
 
     _status, _content_type, _body, headers = route_response_with_headers(
@@ -2370,7 +2376,7 @@ def test_equipment_list_card_mark_post_preserves_only_whitelisted_filters(tmp_pa
     assert "junk" not in query
 
 
-def test_equipment_detail_mark_post_redirect_stays_on_detail(tmp_path: Path) -> None:
+def test_equipment_detail_mark_post_redirect_stays_on_detail(tmp_path: Path, enqueue_capture: list[dict]) -> None:
     runtime_root = tmp_path / "runtime"
 
     status, _content_type, _body, headers = route_response_with_headers(
@@ -2416,17 +2422,18 @@ def test_equipment_detail_mark_error_redirect_is_unchanged(tmp_path: Path) -> No
     assert headers["Location"] == "/equipment?error=missing_field"
 
 
-def test_equipment_mark_approved_post_refuses_without_confirm(tmp_path: Path) -> None:
+def test_equipment_mark_approved_post_refuses_without_confirm(tmp_path: Path, enqueue_capture: list[dict]) -> None:
     runtime_root = tmp_path / "runtime"
 
     status, _content_type, _body = route_response("POST", "/equipment/mark-approved", runtime_root, b"equipment_id=eqr_vacuum&actor=Jordan")
 
     assert status == HTTPStatus.SEE_OTHER
+    assert enqueue_capture == []
     assert not (runtime_root / "queue").exists()
     assert "confirm_required" in (runtime_root / "logs" / "admin_audit.log").read_text(encoding="utf-8")
 
 
-def test_equipment_mark_approved_post_audit_line_includes_equipment_id_and_actor(tmp_path: Path) -> None:
+def test_equipment_mark_approved_post_audit_line_includes_equipment_id_and_actor(tmp_path: Path, enqueue_capture: list[dict]) -> None:
     runtime_root = tmp_path / "runtime"
 
     route_response("POST", "/equipment/mark-approved", runtime_root, b"equipment_id=eqr_vacuum&actor=Jordan&confirm=1")
@@ -2436,63 +2443,64 @@ def test_equipment_mark_approved_post_audit_line_includes_equipment_id_and_actor
     assert payload["payload"]["equipment_id"] == "eqr_vacuum"
     assert payload["payload"]["actor"] == "Jordan"
     assert "equipment_id=eqr_vacuum" in payload["result_summary"]
+    assert "queue_doc=" in payload["result_summary"]
 
 
-def test_equipment_mark_denied_post_writes_queue_file(tmp_path: Path) -> None:
+def test_equipment_mark_denied_post_writes_queue_file(tmp_path: Path, enqueue_capture: list[dict]) -> None:
     runtime_root = tmp_path / "runtime"
 
     route_response("POST", "/equipment/mark-denied", runtime_root, b"equipment_id=eqr_vacuum&actor=Jordan&confirm=1")
-    job = read_single_queue_job(runtime_root)
+    job = read_single_queue_job(enqueue_capture)
 
     assert job["job_type"] == "mark_equipment_denied"
     assert job["payload"] == {"actor": "Jordan", "equipment_id": "eqr_vacuum"}
 
 
-def test_equipment_mark_ordered_post_writes_queue_file(tmp_path: Path) -> None:
+def test_equipment_mark_ordered_post_writes_queue_file(tmp_path: Path, enqueue_capture: list[dict]) -> None:
     runtime_root = tmp_path / "runtime"
 
     route_response("POST", "/equipment/mark-ordered", runtime_root, b"equipment_id=eqr_vacuum&actor=Jordan&confirm=1")
-    job = read_single_queue_job(runtime_root)
+    job = read_single_queue_job(enqueue_capture)
 
     assert job["job_type"] == "mark_equipment_ordered"
     assert job["payload"] == {"actor": "Jordan", "equipment_id": "eqr_vacuum"}
 
 
-def test_equipment_mark_provided_post_writes_queue_file(tmp_path: Path) -> None:
+def test_equipment_mark_provided_post_writes_queue_file(tmp_path: Path, enqueue_capture: list[dict]) -> None:
     runtime_root = tmp_path / "runtime"
 
     route_response("POST", "/equipment/mark-provided", runtime_root, b"equipment_id=eqr_vacuum&actor=Jordan&confirm=1")
-    job = read_single_queue_job(runtime_root)
+    job = read_single_queue_job(enqueue_capture)
 
     assert job["job_type"] == "mark_equipment_provided"
     assert job["payload"] == {"actor": "Jordan", "equipment_id": "eqr_vacuum"}
 
 
-def test_equipment_mark_no_action_needed_post_writes_queue_file(tmp_path: Path) -> None:
+def test_equipment_mark_no_action_needed_post_writes_queue_file(tmp_path: Path, enqueue_capture: list[dict]) -> None:
     runtime_root = tmp_path / "runtime"
 
     route_response("POST", "/equipment/mark-no-action-needed", runtime_root, b"equipment_id=eqr_vacuum&actor=Jordan&confirm=1")
-    job = read_single_queue_job(runtime_root)
+    job = read_single_queue_job(enqueue_capture)
 
     assert job["job_type"] == "mark_equipment_no_action_needed"
     assert job["payload"] == {"actor": "Jordan", "equipment_id": "eqr_vacuum"}
 
 
-def test_equipment_archive_post_writes_generic_archive_job(tmp_path: Path) -> None:
+def test_equipment_archive_post_writes_generic_archive_job(tmp_path: Path, enqueue_capture: list[dict]) -> None:
     runtime_root = tmp_path / "runtime"
 
     route_response("POST", "/equipment/archive", runtime_root, b"equipment_id=eqr_vacuum&actor=Jordan&confirm=1")
-    job = read_single_queue_job(runtime_root)
+    job = read_single_queue_job(enqueue_capture)
 
     assert job["job_type"] == "mark_record_archived"
     assert job["payload"] == {"record_type": "equipment_request", "record_id": "eqr_vacuum", "actor": "Jordan"}
 
 
-def test_equipment_edit_post_writes_generic_edit_job(tmp_path: Path) -> None:
+def test_equipment_edit_post_writes_generic_edit_job(tmp_path: Path, enqueue_capture: list[dict]) -> None:
     runtime_root = tmp_path / "runtime"
 
     route_response("POST", "/equipment/edit", runtime_root, b"equipment_id=eqr_vacuum&actor=Jordan&site_id=7060&equipment_name=Scrubber&reason=Corrected&priority=high&notes=Needed&status=provided")
-    job = read_single_queue_job(runtime_root)
+    job = read_single_queue_job(enqueue_capture)
 
     assert job["job_type"] == "edit_record_fields"
     assert job["payload"] == {

@@ -24,25 +24,26 @@ def seed_three_drafts(runtime_root: Path) -> list[dict[str, object]]:
     return [write_named_draft(runtime_root, f"ajd_filter_{index}") for index in range(3)]
 
 
-def test_stage_approved_drafts_draft_ids_filter_stages_only_named(tmp_path: Path) -> None:
+def test_stage_approved_drafts_draft_ids_filter_stages_only_named(tmp_path: Path, enqueue_capture: list[dict]) -> None:
     runtime_root = tmp_path / "runtime"
     drafts = seed_three_drafts(runtime_root)
 
     counts = stage_approved_drafts(runtime_root / "reviews" / "approved_job_drafts" / "field_capture", runtime_root=runtime_root, draft_ids={str(drafts[0]["draft_id"])})
 
-    queue_files = sorted((runtime_root / "queue").glob("*.json"))
     assert counts == {"discovered": 3, "skipped": 2, "completed": 1, "failed": 0}
-    assert len(queue_files) == 1
-    assert json.loads(queue_files[0].read_text(encoding="utf-8"))["metadata"]["draft_id"] == drafts[0]["draft_id"]
+    assert len(enqueue_capture) == 1
+    assert enqueue_capture[0]["job"]["metadata"]["draft_id"] == drafts[0]["draft_id"]
+    # Transport invariant: no queue files are written — CouchDB is the only path.
+    assert not (runtime_root / "queue").exists()
 
 
-def test_stage_approved_drafts_draft_ids_filter_skips_others(tmp_path: Path) -> None:
+def test_stage_approved_drafts_draft_ids_filter_skips_others(tmp_path: Path, enqueue_capture: list[dict]) -> None:
     runtime_root = tmp_path / "runtime"
     drafts = seed_three_drafts(runtime_root)
 
     stage_approved_drafts(runtime_root / "reviews" / "approved_job_drafts" / "field_capture", runtime_root=runtime_root, draft_ids={str(drafts[1]["draft_id"])})
 
-    staged_ids = [json.loads(path.read_text(encoding="utf-8"))["metadata"]["draft_id"] for path in (runtime_root / "queue").glob("*.json")]
+    staged_ids = [entry["job"]["metadata"]["draft_id"] for entry in enqueue_capture]
     assert staged_ids == [drafts[1]["draft_id"]]
     assert drafts[0]["draft_id"] not in staged_ids
     assert drafts[2]["draft_id"] not in staged_ids

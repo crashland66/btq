@@ -1450,7 +1450,22 @@ def test_field_capture_explicit_proposed_queue_job_overrides_default_mapping(tmp
     assert not (runtime_root / "queue").exists()
 
 
-def test_field_capture_stage_approved_draft_writes_runtime_queue_without_touching_vault(tmp_path: Path) -> None:
+def _materialize_captured(runtime_root: Path, enqueue_capture: list[dict]) -> list[Path]:
+    """Write captured enqueued jobs into runtime/queue as the CouchDB queue
+    watcher's materialize step would — tests that assert on spool state use
+    this to bridge the enqueue → materialize gap."""
+    queue_dir = runtime_root / "queue"
+    queue_dir.mkdir(parents=True, exist_ok=True)
+    paths = []
+    for entry in enqueue_capture:
+        job = dict(entry["job"])
+        path = queue_dir / f"{job['job_id']}.json"
+        path.write_text(json.dumps(job, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        paths.append(path)
+    return paths
+
+
+def test_field_capture_stage_approved_draft_writes_runtime_queue_without_touching_vault(tmp_path: Path, enqueue_capture: list[dict]) -> None:
     runtime_root = tmp_path / "runtime"
     candidate_dir = runtime_root / "reviews" / "action_candidates" / "field_capture"
     draft_dir = runtime_root / "reviews" / "approved_job_drafts" / "field_capture"
@@ -1467,18 +1482,19 @@ def test_field_capture_stage_approved_draft_writes_runtime_queue_without_touchin
 
     assert counts == {"discovered": 1, "skipped": 0, "completed": 1, "failed": 0}
     assert sentinel.read_text(encoding="utf-8") == "do not touch\n"
-    [queue_path] = sorted((runtime_root / "queue").glob("*.json"))
-    job = json.loads(queue_path.read_text(encoding="utf-8"))
+    [entry] = enqueue_capture
+    job = entry["job"]
     assert job["job_type"] == "append_to_note"
     assert job["payload"] == candidate["approval_metadata"]["proposed_queue_job"]["payload"]
     assert job["metadata"]["source"] == "approved_job_draft"
     assert job["metadata"]["candidate_id"] == candidate["candidate_id"]
     assert job["metadata"]["semantic_artifact_path"] == "/runtime/field_capture/audio_semantics/fca_test.json"
     assert job["metadata"]["source_transcript_path"] == "/runtime/field_capture/audio_transcripts/fca_test.json"
+    # Transport invariant: no queue files are written — CouchDB is the only path.
+    assert not (runtime_root / "queue").exists()
     [status_path] = sorted(status_dir.glob("*.json"))
     status = json.loads(status_path.read_text(encoding="utf-8"))
     assert status["status"] == "staged"
-    assert status["queue_path"] == str(queue_path)
 
 
 def test_field_capture_stage_non_approved_or_failed_drafts_does_not_stage(tmp_path: Path) -> None:
@@ -1503,7 +1519,7 @@ def test_field_capture_stage_non_approved_or_failed_drafts_does_not_stage(tmp_pa
     assert status["reason"] == "draft status is not approved: failed"
 
 
-def test_field_capture_stage_same_draft_does_not_duplicate_queue_file(tmp_path: Path) -> None:
+def test_field_capture_stage_same_draft_does_not_duplicate_queue_file(tmp_path: Path, enqueue_capture: list[dict]) -> None:
     runtime_root = tmp_path / "runtime"
     candidate_dir = runtime_root / "reviews" / "action_candidates" / "field_capture"
     draft_dir = runtime_root / "reviews" / "approved_job_drafts" / "field_capture"
@@ -1517,7 +1533,7 @@ def test_field_capture_stage_same_draft_does_not_duplicate_queue_file(tmp_path: 
 
     assert first == {"discovered": 1, "skipped": 0, "completed": 1, "failed": 0}
     assert second == {"discovered": 1, "skipped": 1, "completed": 0, "failed": 0}
-    assert len(sorted((runtime_root / "queue").glob("*.json"))) == 1
+    assert len(enqueue_capture) == 1
 
 
 def test_field_capture_stage_approved_drafts_dry_run_reports_would_stage_without_writes(
@@ -1601,6 +1617,7 @@ def test_field_capture_stage_approved_drafts_dry_run_reports_invalid_job_without
 def test_field_capture_stage_approved_drafts_dry_run_detects_existing_queue_duplicate(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
+    enqueue_capture: list[dict],
 ) -> None:
     runtime_root = tmp_path / "runtime"
     candidate_dir = runtime_root / "reviews" / "action_candidates" / "field_capture"
@@ -1609,6 +1626,9 @@ def test_field_capture_stage_approved_drafts_dry_run_detects_existing_queue_dupl
     write_action_candidate_review(candidate_dir, approved_candidate_payload())
     field_approved_job_drafts.create_approved_job_drafts(candidate_dir, draft_dir, runtime_root=runtime_root)
     field_draft_staging.stage_field_capture_drafts(runtime_root=runtime_root, draft_dir=draft_dir, status_dir=status_dir)
+    # Simulate the CouchDB queue watcher materializing the enqueued doc into
+    # the runtime spool; the dry-run duplicate scan reads that spool.
+    _materialize_captured(runtime_root, enqueue_capture)
     for path in status_dir.glob("*.json"):
         path.unlink()
 
@@ -1627,6 +1647,7 @@ def test_field_capture_stage_approved_drafts_dry_run_detects_processed_or_failed
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
     duplicate_root: str,
+    enqueue_capture: list[dict],
 ) -> None:
     runtime_root = tmp_path / "runtime"
     candidate_dir = runtime_root / "reviews" / "action_candidates" / "field_capture"
@@ -1635,7 +1656,7 @@ def test_field_capture_stage_approved_drafts_dry_run_detects_processed_or_failed
     write_action_candidate_review(candidate_dir, approved_candidate_payload())
     field_approved_job_drafts.create_approved_job_drafts(candidate_dir, draft_dir, runtime_root=runtime_root)
     field_draft_staging.stage_field_capture_drafts(runtime_root=runtime_root, draft_dir=draft_dir, status_dir=status_dir)
-    [queue_path] = sorted((runtime_root / "queue").glob("*.json"))
+    [queue_path] = _materialize_captured(runtime_root, enqueue_capture)
     duplicate_dir = runtime_root / duplicate_root
     duplicate_dir.mkdir(parents=True)
     duplicate_path = duplicate_dir / queue_path.name
@@ -1702,7 +1723,7 @@ def review_candidate(status: str, semantic_path: Path, summary: str) -> dict[str
     )
 
 
-def test_field_capture_review_status_reports_counts_and_job_states(tmp_path: Path) -> None:
+def test_field_capture_review_status_reports_counts_and_job_states(tmp_path: Path, enqueue_capture: list[dict]) -> None:
     runtime_root = tmp_path / "runtime"
     semantic_path = write_semantic_artifact(runtime_root / "field_capture" / "audio_semantics")
     candidate_dir = runtime_root / "reviews" / "action_candidates" / "field_capture"
@@ -1722,7 +1743,7 @@ def test_field_capture_review_status_reports_counts_and_job_states(tmp_path: Pat
     failed_draft["status"] = "failed"
     write_approved_job_draft(draft_dir, failed_draft)
     field_draft_staging.stage_field_capture_drafts(runtime_root=runtime_root, draft_dir=draft_dir, status_dir=staging_dir)
-    [queue_path] = sorted((runtime_root / "queue").glob("*.json"))
+    [queue_path] = _materialize_captured(runtime_root, enqueue_capture)
     queued_job = json.loads(queue_path.read_text(encoding="utf-8"))
     processed_dir = runtime_root / "processed"
     failed_dir = runtime_root / "failed"
@@ -2329,6 +2350,7 @@ def test_list_approved_drafts_json_filters_failed_drafts_and_includes_payload_wi
 def test_list_approved_drafts_reports_queued_state_after_staging_without_mutating_more(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
+    enqueue_capture: list[dict],
 ) -> None:
     runtime_root = tmp_path / "runtime"
     candidate_dir = runtime_root / "reviews" / "action_candidates" / "field_capture"
@@ -2342,6 +2364,7 @@ def test_list_approved_drafts_reports_queued_state_after_staging_without_mutatin
     write_action_candidate_review(candidate_dir, candidate)
     field_approved_job_drafts.create_approved_job_drafts(candidate_dir, draft_dir, runtime_root=runtime_root)
     field_draft_staging.stage_field_capture_drafts(runtime_root=runtime_root, draft_dir=draft_dir, status_dir=staging_dir)
+    _materialize_captured(runtime_root, enqueue_capture)
     queue_before = {path: path.read_text(encoding="utf-8") for path in sorted((runtime_root / "queue").glob("*.json"))}
     staging_before = {path: path.read_text(encoding="utf-8") for path in sorted(staging_dir.glob("*.json"))}
 
@@ -2461,6 +2484,7 @@ def test_show_review_item_candidate_json_shape_is_stable(
 def test_show_review_item_draft_displays_payload_and_queue_state_read_only(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
+    enqueue_capture: list[dict],
 ) -> None:
     runtime_root = tmp_path / "runtime"
     candidate_dir = runtime_root / "reviews" / "action_candidates" / "field_capture"
@@ -2474,6 +2498,7 @@ def test_show_review_item_draft_displays_payload_and_queue_state_read_only(
     write_action_candidate_review(candidate_dir, candidate)
     field_approved_job_drafts.create_approved_job_drafts(candidate_dir, draft_dir, runtime_root=runtime_root)
     field_draft_staging.stage_field_capture_drafts(runtime_root=runtime_root, draft_dir=draft_dir, status_dir=staging_dir)
+    _materialize_captured(runtime_root, enqueue_capture)
     [draft_path] = sorted(draft_dir.glob("*.json"))
     draft = json.loads(draft_path.read_text(encoding="utf-8"))
     queue_before = {path: path.read_text(encoding="utf-8") for path in sorted((runtime_root / "queue").glob("*.json"))}

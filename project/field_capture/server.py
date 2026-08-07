@@ -1215,16 +1215,15 @@ def invalid_retarget_target_id(value: str) -> bool:
     return not value or value.lower() in {"null", "none", "discard"}
 
 
-def stage_queue_job(server: object, job: dict[str, object]) -> Path:
-    runtime_root = Path(getattr(server, "upload_dir")).expanduser().resolve(strict=False).parent
-    queue_dir = runtime_root / "queue"
-    queue_dir.mkdir(parents=True, exist_ok=True)
+def stage_queue_job(server: object, job: dict[str, object]) -> str:
+    """Author the job as a btq_queue CouchDB doc (the unified transport)."""
+    from event_pipeline import btq_client
+
     safe_job_id = safe_slug(str(job.get("job_id") or "retarget-capture"))
-    queue_path = queue_dir / f"{safe_job_id}.json"
-    temp_path = queue_path.with_name(f".{queue_path.name}.tmp")
-    temp_path.write_text(json.dumps(job, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    temp_path.replace(queue_path)
-    return queue_path
+    staged = dict(job)
+    staged["job_id"] = safe_job_id
+    result = btq_client.enqueue(staged, created_by="field_capture_server")
+    return str(result.get("id") or safe_job_id)
 
 
 def _retarget_stage_for_capture(server: object, capture_id: str) -> str:

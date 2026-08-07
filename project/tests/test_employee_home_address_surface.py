@@ -75,13 +75,6 @@ def _render(monkeypatch: pytest.MonkeyPatch, doc: dict[str, object], query: dict
     return ed.render(SimpleNamespace(query=query or {}), "jordan")
 
 
-def _staged_jobs(ctx: DummyContext) -> list[dict]:
-    queue_dir = ctx.runtime_root / "queue"
-    if not queue_dir.exists():
-        return []
-    return [json.loads(path.read_text(encoding="utf-8")) for path in sorted(queue_dir.glob("*.json"))]
-
-
 # ---------------------------------------------------------------------------
 # Read mode: sensitive-labeled section with the inline-edit glyph
 # ---------------------------------------------------------------------------
@@ -139,7 +132,7 @@ def test_notices_render_for_staged_and_invalid(monkeypatch: pytest.MonkeyPatch) 
 # ---------------------------------------------------------------------------
 
 def test_post_set_stages_valid_queue_job_keyed_to_person_id(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, enqueue_capture: list[dict]
 ) -> None:
     _install(monkeypatch, _employee_doc())
     ctx = DummyContext(tmp_path)
@@ -152,33 +145,37 @@ def test_post_set_stages_valid_queue_job_keyed_to_person_id(
 
     assert status == 303
     assert headers["Location"] == "/employees/jordan?staged=home_address"
-    jobs = _staged_jobs(ctx)
-    assert len(jobs) == 1
-    job = jobs[0]
+    assert len(enqueue_capture) == 1
+    job = enqueue_capture[0]["job"]
+    assert job["job_id"].startswith("set-employee-home-address-")
     assert job["job_type"] == "set_employee_home_address"
     assert qs.validate_job(job)
     assert job["payload"]["person"] == "jordan_001"
     assert job["payload"]["home_address"] == FICTIONAL_ADDRESS  # empty country omitted
     assert job["payload"]["source"] == "ops_dashboard"
+    # Unified transport: nothing lands in the runtime file queue.
+    assert not (ctx.runtime_root / "queue").exists()
 
 
 def test_post_clear_stages_clear_job_without_address(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, enqueue_capture: list[dict]
 ) -> None:
     _install(monkeypatch, _employee_doc(home_address=dict(FICTIONAL_ADDRESS)))
     ctx = DummyContext(tmp_path)
 
     ed.handle_home_address_post(ctx, "jordan", b"_action=clear")
 
-    jobs = _staged_jobs(ctx)
-    assert len(jobs) == 1
-    assert jobs[0]["payload"]["action"] == "clear"
-    assert "home_address" not in jobs[0]["payload"]
-    assert qs.validate_job(jobs[0])
+    assert len(enqueue_capture) == 1
+    job = enqueue_capture[0]["job"]
+    assert job["job_id"].startswith("set-employee-home-address-")
+    assert job["payload"]["action"] == "clear"
+    assert "home_address" not in job["payload"]
+    assert qs.validate_job(job)
+    assert not (ctx.runtime_root / "queue").exists()
 
 
 def test_post_invalid_address_stages_nothing_and_redirects_back(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, enqueue_capture: list[dict]
 ) -> None:
     _install(monkeypatch, _employee_doc())
     ctx = DummyContext(tmp_path)
@@ -191,11 +188,11 @@ def test_post_invalid_address_stages_nothing_and_redirects_back(
 
     assert status == 303
     assert "error=invalid_address" in headers["Location"]
-    assert _staged_jobs(ctx) == []
+    assert enqueue_capture == []
 
 
 def test_post_audit_entries_never_contain_the_address(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, enqueue_capture: list[dict]
 ) -> None:
     _install(monkeypatch, _employee_doc())
     ctx = DummyContext(tmp_path)
@@ -217,9 +214,13 @@ def test_post_unwritable_queue_redirects_instead_of_500(
 ) -> None:
     _install(monkeypatch, _employee_doc())
     ctx = DummyContext(tmp_path)
-    # A file where the runtime root should be makes the queue dir unwritable.
-    ctx.runtime_root = tmp_path / "not-a-dir"
-    ctx.runtime_root.write_text("occupied", encoding="utf-8")
+    # The unified CouchDB transport being down surfaces as an enqueue error.
+    from event_pipeline import btq_client
+
+    def broken_enqueue(job: dict, created_by: str = "greg", **_kwargs: object) -> dict:
+        raise btq_client.BTQClientError("CouchDB enqueue unavailable")
+
+    monkeypatch.setattr(btq_client, "enqueue", broken_enqueue)
 
     status, _ctype, _body, headers = ed.handle_home_address_post(
         ctx,
@@ -234,7 +235,7 @@ def test_post_unwritable_queue_redirects_instead_of_500(
 
 
 def test_post_unknown_employee_redirects_not_found(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, enqueue_capture: list[dict]
 ) -> None:
     monkeypatch.setattr(ed, "_load_vault_doc", lambda _doc_id: None)
     ctx = DummyContext(tmp_path)
@@ -243,7 +244,7 @@ def test_post_unknown_employee_redirects_not_found(
 
     assert status == 303
     assert "error=not_found" in headers["Location"]
-    assert _staged_jobs(ctx) == []
+    assert enqueue_capture == []
 
 
 # ---------------------------------------------------------------------------

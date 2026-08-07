@@ -147,9 +147,16 @@ def test_prospects_admin_route_still_handles_exact_paths(monkeypatch: pytest.Mon
     assert "Not Found" in body.decode("utf-8")
 
 
-def test_prospect_promote_post_stages_queue_job(tmp_path: Path) -> None:
+def test_prospect_promote_post_stages_queue_job(tmp_path: Path, monkeypatch) -> None:
     runtime_root = tmp_path / "runtime"
     form = "site_id=7040&actor=Jordan&confirm=1"
+    enqueued: list[dict] = []
+
+    def fake_enqueue(job: dict, created_by: str = "greg", **_kwargs) -> dict:
+        enqueued.append(job)
+        return {"ok": True, "id": job["job_id"]}
+
+    monkeypatch.setattr("event_pipeline.btq_client.enqueue", fake_enqueue)
 
     status, _content_type, _body, headers = route_response_with_headers(
         "POST",
@@ -160,11 +167,12 @@ def test_prospect_promote_post_stages_queue_job(tmp_path: Path) -> None:
 
     assert status == HTTPStatus.SEE_OTHER
     assert headers["Location"] == "/prospects/x?message=staged&site_id=7040"
-    queue_files = list((runtime_root / "queue").glob("promote-prospect-*.json"))
-    assert len(queue_files) == 1
-    payload = json.loads(queue_files[0].read_text(encoding="utf-8"))
-    assert payload["job_type"] == JOB_PROMOTE_PROSPECT
-    assert payload["payload"] == {"prospect_id": "x", "site_id": "7040", "actor": "Jordan"}
+    [job] = enqueued
+    assert str(job["job_id"]).startswith("promote-prospect-")
+    assert job["job_type"] == JOB_PROMOTE_PROSPECT
+    assert job["payload"] == {"prospect_id": "x", "site_id": "7040", "actor": "Jordan"}
+    # Transport invariant: no queue files are written — CouchDB is the only path.
+    assert not (runtime_root / "queue").exists()
 
 
 def test_prospect_promote_post_rejects_missing_confirm(tmp_path: Path) -> None:
