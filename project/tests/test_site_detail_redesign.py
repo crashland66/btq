@@ -326,3 +326,54 @@ def test_edit_about_renders_textarea(monkeypatch: pytest.MonkeyPatch, tmp_path: 
     assert '<textarea name="content">' in html
     assert "Raw about text" in html
     assert "/sites/5/save-section" in html
+
+
+# ---------------------------------------------------------------------------
+# Assigned employees link to their live records (2026-08-07)
+# ---------------------------------------------------------------------------
+
+def test_employee_table_links_names_to_employee_records() -> None:
+    # MUTATION GUARD: the site page's roster names must be links to
+    # /employees/<bare id> — the projector's plain-text default is not enough.
+    from btq_vault.projector import _employee_table
+    from ops_dashboard.sections.site_detail import _employee_record_href
+
+    rows = [
+        {"id": "employee_baronie_john", "doc": {"_id": "employee_baronie_john", "name": "John Baronie", "person_id": "baronie_john", "status": "active"}},
+        {"id": "employee_no_doc", "value": {"name": "Value Only", "status": "active"}},
+    ]
+    html_out = _employee_table(rows, include_sites=False, name_href=_employee_record_href)
+    assert '<a href="/employees/baronie_john">John Baronie</a>' in html_out
+    # Rows resolving only via the view id still link (bare id from row id).
+    assert '<a href="/employees/no_doc">Value Only</a>' in html_out
+
+
+def test_employee_table_without_href_stays_plain_text() -> None:
+    from btq_vault.projector import _employee_table
+
+    rows = [{"id": "employee_x", "doc": {"_id": "employee_x", "name": "Plain <Name>", "status": "active"}}]
+    html_out = _employee_table(rows, include_sites=False)
+    assert "<a href=" not in html_out
+    assert "Plain &lt;Name&gt;" in html_out  # escaping intact on the plain path
+
+
+def test_rendered_site_page_links_assigned_employees(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # MUTATION GUARD at the call site: the RENDERED page must carry the link,
+    # not just the table helper when handed an href builder.
+    def related(_site_id: str) -> dict[str, object]:
+        base = _empty_related(_site_id)
+        base["employee_rows"] = [
+            {"id": "employee_baronie_john", "doc": {"_id": "employee_baronie_john", "name": "John Baronie", "status": "active"}}
+        ]
+        return base
+
+    html = _render(
+        monkeypatch,
+        tmp_path,
+        _sparse_doc(),
+        related=related,
+        captures=([], False, 0),
+    )
+    assert '<a href="/employees/baronie_john">John Baronie</a>' in html

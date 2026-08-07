@@ -5,7 +5,7 @@ import json
 import re
 from collections import defaultdict
 from datetime import date, datetime, timedelta
-from typing import Any
+from typing import Any, Callable
 from urllib import error, parse, request
 
 import markdown
@@ -842,15 +842,25 @@ def _simple_table(headers: list[str], values: list[str]) -> str:
     return _table(headers, rows)
 
 
-def _employee_table(rows: list[dict], *, include_sites: bool) -> str:
+def _employee_table(rows: list[dict], *, include_sites: bool, name_href: Callable[[dict], str] | None = None) -> str:
+    """Employee roster table. name_href, when given, receives the view row and
+    returns an href for the name cell (empty string = plain text) — the
+    dashboard links names to live employee records while static projections
+    keep their own link scheme."""
     headers = ["Name", "Person ID", "Status", "Hire Date"]
     if include_sites:
         headers.append("Site IDs")
     table_rows = []
     for row in rows:
         value = _doc_or_value(row)
+        name_text = _string(value.get("name") or value.get("person_id") or row.get("id"))
+        name_cell = _esc(name_text)
+        if name_href is not None:
+            href = name_href(row)
+            if href:
+                name_cell = f'<a href="{_esc(href)}">{_esc(name_text)}</a>'
         cells = [
-            _string(value.get("name") or value.get("person_id") or row.get("id")),
+            name_cell,
             _string(value.get("person_id")),
             _status(row),
             _string(value.get("hire_date")),
@@ -861,12 +871,12 @@ def _employee_table(rows: list[dict], *, include_sites: bool) -> str:
                 cells.append(", ".join(f'<a href="sites/{_url_path(site_id)}.html">{_esc(site_id)}</a>' for site_id in site_ids))
             else:
                 cells.append("")
-        table_rows.append(
-            "<tr>"
-            + "".join(f"<td>{_esc(cell)}</td>" for cell in cells[:-1])
-            + (f"<td>{cells[-1]}</td>" if include_sites else f"<td>{_esc(cells[-1])}</td>")
-            + "</tr>"
-        )
+        # Name (cells[0]) is pre-rendered HTML; the trailing site-links cell is
+        # raw HTML only when include_sites; everything between is escaped.
+        rendered = [f"<td>{cells[0]}</td>"]
+        rendered.extend(f"<td>{_esc(cell)}</td>" for cell in cells[1:-1])
+        rendered.append(f"<td>{cells[-1]}</td>" if include_sites else f"<td>{_esc(cells[-1])}</td>")
+        table_rows.append("<tr>" + "".join(rendered) + "</tr>")
     return _table(headers, table_rows)
 
 

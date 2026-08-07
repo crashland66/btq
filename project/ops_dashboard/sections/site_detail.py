@@ -1443,6 +1443,15 @@ def _row_doc_or_value(row: dict[str, Any]) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
+def _employee_record_href(row: dict[str, Any]) -> str:
+    """Link an employees_by_site row to its live employee record. The route
+    takes the BARE id (employee_detail re-prepends employee_ on load)."""
+    value = row.get("doc") if isinstance(row.get("doc"), dict) else row.get("value") if isinstance(row.get("value"), dict) else {}
+    doc_id = str(value.get("_id") or row.get("id") or "").strip()
+    bare = doc_id.removeprefix("employee_")
+    return f"/employees/{quote(bare)}" if bare else ""
+
+
 def _employee_person_id(row: dict[str, Any]) -> str:
     value = _row_doc_or_value(row)
     return _text(value.get("person_id") or row.get("id"))
@@ -1595,7 +1604,10 @@ def _related_sections(data: dict[str, Any]) -> list[tuple[str, int, str]]:
         (
             "Employees Assigned",
             len(employee_rows),
-            _section("Employees Assigned", _employee_table(employee_rows, include_sites=False)),
+            _section(
+                "Employees Assigned",
+                _employee_table(employee_rows, include_sites=False, name_href=_employee_record_href),
+            ),
         ),
         (
             "Upcoming coverage gaps",
