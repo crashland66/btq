@@ -101,9 +101,12 @@ def retire(base_url: str, *, execute: bool, archive_name: str) -> None:
     doc_count = int(info.get("doc_count") or 0)
     print(f"[{mode}] archive {PEOPLE_DB} ({doc_count} docs) -> {archive_name}")
     if execute:
+        # The server-side replicator fetches the endpoints itself, so the
+        # request's own auth does not carry over — embed it per endpoint.
+        auth_headers = dict(couchdb_config.from_env().auth_header())
         _request_json(base_url, "POST", "_replicate", {
-            "source": f"{base_url.rstrip('/')}/{PEOPLE_DB}",
-            "target": f"{base_url.rstrip('/')}/{archive_name}",
+            "source": {"url": f"{base_url.rstrip('/')}/{PEOPLE_DB}", "headers": auth_headers},
+            "target": {"url": f"{base_url.rstrip('/')}/{archive_name}", "headers": auth_headers},
             "create_target": True,
         })
         archived = int(_request_json(base_url, "GET", archive_name).get("doc_count") or 0)
