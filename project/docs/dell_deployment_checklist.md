@@ -25,7 +25,7 @@ explicitly changes that.
   `BTQ_COUCHDB_PASSWORD`. CouchDB `btq_vault` is the canonical operational store.
 - Local Dell CouchDB should exist before watcher cutover. The Dell is a full
   CouchDB peer, not just an Ollama/Whisper appliance: it should carry
-  `btq_field_captures`, `btq_people`, `btq_photo_vision`, `btq_queue`,
+  `btq_field_captures`, `btq_photo_vision`, `btq_queue`,
   `btq_sites`, `btq_vault`, and `btq_voice_memos`.
 
 Field-capture SPA deployment remains covered by

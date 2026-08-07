@@ -8,7 +8,6 @@ from event_pipeline import couchdb_config
 
 REQUIRED_DATABASES = (
     couchdb_config.DEFAULT_SITES_DB,
-    couchdb_config.DEFAULT_PEOPLE_DB,
     couchdb_config.DEFAULT_FIELD_CAPTURES_DB,
     couchdb_config.DEFAULT_VOICE_MEMOS_DB,
     couchdb_config.DEFAULT_QUEUE_DB,

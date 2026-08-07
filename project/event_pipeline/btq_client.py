@@ -19,7 +19,6 @@ from queue_spec import ALLOWED_JOB_TYPES, ALLOWED_TOP_LEVEL_FIELDS, JOB_SCHEMAS,
 
 DATABASE_ALIASES = {
     "sites": couchdb_config.DEFAULT_SITES_DB,
-    "people": couchdb_config.DEFAULT_PEOPLE_DB,
     "vault": couchdb_config.DEFAULT_VAULT_DB,
     "queue": couchdb_config.DEFAULT_QUEUE_DB,
     "captures": couchdb_config.DEFAULT_FIELD_CAPTURES_DB,

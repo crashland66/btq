@@ -1121,7 +1121,6 @@ pipeline silently stalls. See the 2026-05-26 incident under
 Every BTQ CouchDB node must have the full database set:
 
 - `btq_field_captures`
-- `btq_people`
 - `btq_photo_vision`
 - `btq_queue`
 - `btq_sites`

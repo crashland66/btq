@@ -14,7 +14,6 @@ IGNORED_EXISTING_FIELDS = {"_rev", "_replication_state", "_replication_state_tim
 
 REPLICATION_DATABASES: tuple[str, ...] = (
     "btq_field_captures",
-    "btq_people",
     "btq_photo_vision",
     "btq_queue",
     "btq_sites",

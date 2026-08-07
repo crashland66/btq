@@ -10,7 +10,6 @@ from typing import Mapping
 from instance_config import (
     DEFAULT_COUCHDB_URL,
     DEFAULT_FIELD_CAPTURES_DB,
-    DEFAULT_PEOPLE_DB,
     DEFAULT_PERSONAL_JOURNAL_DB,
     DEFAULT_PHOTO_VISION_DB,
     DEFAULT_QUEUE_DB,
@@ -104,10 +103,6 @@ def sites_database(override: str | None = None) -> str:
 
 def field_captures_database(override: str | None = None) -> str:
     return override if override is not None else load_instance_config().couchdb_field_captures_db
-
-
-def people_database(override: str | None = None) -> str:
-    return override if override is not None else load_instance_config().couchdb_people_db
 
 
 def photo_vision_database(override: str | None = None) -> str:

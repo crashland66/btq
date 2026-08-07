@@ -32,7 +32,6 @@
       "password": "",
       "sites_db": "btq_sites",
       "field_captures_db": "btq_field_captures",
-      "people_db": "btq_people",
       "photo_vision_db": "btq_photo_vision",
       "queue_db": "btq_queue",
       "vault_db": "btq_vault",

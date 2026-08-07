@@ -814,11 +814,11 @@ def _voice_memo_employees_lookup() -> list[dict[str, str]]:
     from urllib import parse as urllib_parse, request as urllib_request
 
     cfg = couchdb_config.from_env()
-    db_name = "btq_people"
+    db_name = couchdb_config.vault_database()
     url = f"{cfg.base_url.rstrip('/')}/{urllib_parse.quote(db_name, safe='')}/_find"
     selector = {
-        "selector": {"synced_from_vault": True, "status": "active"},
-        "fields": ["_id", "first", "last", "preferred_name", "job", "synced_from_vault", "status"],
+        "selector": {"type": "employee", "status": "active"},
+        "fields": ["_id", "person_id", "first", "last", "preferred_name", "job", "type", "status"],
         "limit": 1000,
     }
     headers = {"Content-Type": "application/json", "Accept": "application/json"}
@@ -829,14 +829,15 @@ def _voice_memo_employees_lookup() -> list[dict[str, str]]:
 
     employees = []
     for doc in response.get("docs", []):
-        if not isinstance(doc, dict) or doc.get("synced_from_vault") is not True or doc.get("status") != "active":
+        if not isinstance(doc, dict) or doc.get("type") != "employee" or doc.get("status") != "active":
             continue
-        employee_id = str(doc.get("_id") or "").strip()
+        employee_id = str(doc.get("person_id") or "").strip() or str(doc.get("_id") or "").strip().removeprefix("employee_")
         if not employee_id:
             continue
         first = str(doc.get("first") or "").strip()
         last = str(doc.get("last") or "").strip()
-        preferred = str(doc.get("preferred_name") or "").strip()
+        raw_preferred = doc.get("preferred_name")
+        preferred = raw_preferred.strip() if isinstance(raw_preferred, str) else ""
         display_first = preferred or first
         job = str(doc.get("job") or "").strip()
         label = f"{display_first} {last}".strip()
