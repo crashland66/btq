@@ -11,6 +11,7 @@ CANONICAL_ENTITY_TYPES: frozenset[str] = frozenset({
     "availability_constraint",
     "prospect", "site_issue", "supply_need", "supply_request", "monthly_summary",
     "equipment_request", "supply_order", "plan", "inventory", "note", "operator",
+    "system_defaults",
 })
 
 # Types that existed in the vault but are resolved to canonical names at

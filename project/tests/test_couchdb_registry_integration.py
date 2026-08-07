@@ -94,11 +94,15 @@ def fake_urlopen_for_views(calls: list[str]):
     def fake_urlopen(req: object, timeout: float = 10.0) -> FakeResponse:
         url = getattr(req, "full_url")
         calls.append(url)
-        if "_view/by_site_id" in url:
+        # Strict URL contract: the registry queries the btq_vault design doc's
+        # sites_* views — anything else (e.g. the retired btq_sites views) 404s.
+        if "/btq_vault/_design/btq_vault/_view/sites_by_site_id" in url:
             if "7050" in url:
                 return FakeResponse(site_id_payload("7050"))
             return FakeResponse(site_id_payload("0000"))
-        return FakeResponse(alias_payload())
+        if "/btq_vault/_design/btq_vault/_view/sites_by_alias" in url:
+            return FakeResponse(alias_payload())
+        raise error.HTTPError(url, 404, "not found", hdrs=None, fp=None)
 
     return fake_urlopen
 

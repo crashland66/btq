@@ -125,13 +125,14 @@ class SubmissionTests(unittest.TestCase):
 class PickerTests(unittest.TestCase):
     def test_get_sites_returns_active_vault_sourced_only(self) -> None:
         def fake_find(database: str, selector: dict) -> dict:
-            self.assertEqual(database, "btq_sites")
+            self.assertEqual(database, "btq_vault")
+            self.assertEqual(selector["selector"], {"type": "location", "status": "active"})
             return {
                 "docs": [
-                    {"_id": "7060", "job": "7060", "account": "Contworks", "location": "Continental Metalworks", "synced_from_vault": True, "status": "active"},
-                    {"_id": "site_legacy", "account": "Legacy", "location": "Old", "synced_from_vault": False, "status": "active"},
-                    {"_id": "1300", "job": "1300", "account": "Inactive", "location": "Closed", "synced_from_vault": True, "status": "inactive"},
-                    {"_id": "7030", "job": "7030", "account": "Alpha", "location": "First", "synced_from_vault": True, "status": "active"},
+                    {"_id": "location_7060", "job": "7060", "site_id": "7060", "account": "Contworks", "location": "Continental Metalworks", "type": "location", "status": "active"},
+                    {"_id": "location_about", "job": "7060", "account": "Contworks", "location": "Continental Metalworks", "type": "location", "status": "active"},
+                    {"_id": "location_1300", "job": "1300", "site_id": "1300", "account": "Inactive", "location": "Closed", "type": "location", "status": "inactive"},
+                    {"_id": "location_7030", "job": "7030", "site_id": "7030", "account": "Alpha", "location": "First", "type": "location", "status": "active"},
                 ]
             }
 

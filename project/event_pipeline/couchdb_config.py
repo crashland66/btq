@@ -13,7 +13,6 @@ from instance_config import (
     DEFAULT_PERSONAL_JOURNAL_DB,
     DEFAULT_PHOTO_VISION_DB,
     DEFAULT_QUEUE_DB,
-    DEFAULT_SITES_DB,
     DEFAULT_VAULT_DB,
     DEFAULT_VOICE_MEMOS_DB,
     load_instance_config,
@@ -95,10 +94,6 @@ def heartbeat_ms(override: int | None = None, *, default: int = DEFAULT_HEARTBEA
     if not raw:
         return default
     return _validate_positive_int("BTQ_COUCHDB_HEARTBEAT_MS", raw)
-
-
-def sites_database(override: str | None = None) -> str:
-    return override if override is not None else load_instance_config().couchdb_sites_db
 
 
 def field_captures_database(override: str | None = None) -> str:

@@ -783,11 +783,11 @@ def _voice_memo_sites_lookup() -> list[dict[str, str]]:
     from urllib import parse as urllib_parse, request as urllib_request
 
     cfg = couchdb_config.from_env()
-    db_name = couchdb_config.sites_database()
+    db_name = couchdb_config.vault_database()
     url = f"{cfg.base_url.rstrip('/')}/{urllib_parse.quote(db_name, safe='')}/_find"
     selector = {
-        "selector": {"synced_from_vault": True, "status": "active"},
-        "fields": ["_id", "job", "account", "location", "synced_from_vault", "status"],
+        "selector": {"type": "location", "status": "active"},
+        "fields": ["_id", "job", "account", "location", "site_id", "type", "status"],
         "limit": 1000,
     }
     headers = {"Content-Type": "application/json", "Accept": "application/json"}
@@ -798,9 +798,10 @@ def _voice_memo_sites_lookup() -> list[dict[str, str]]:
 
     sites = []
     for doc in response.get("docs", []):
-        if not isinstance(doc, dict) or doc.get("synced_from_vault") is not True or doc.get("status") != "active":
+        if not isinstance(doc, dict) or doc.get("type") != "location" or doc.get("status") != "active":
             continue
-        site_id = str(doc.get("_id") or doc.get("job") or "").strip()
+        # site_id marks a registered, routable site; stray location docs never get one.
+        site_id = str(doc.get("site_id") or "").strip()
         if not site_id:
             continue
         account = str(doc.get("account") or "").strip()

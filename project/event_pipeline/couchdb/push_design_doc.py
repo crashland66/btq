@@ -11,16 +11,9 @@ from event_pipeline.couchdb import system_defaults
 
 
 DEFAULT_COUCHDB_URL = "http://127.0.0.1:5984"
-DEFAULT_SITES_DB = "btq_sites"
 DEFAULT_FIELD_CAPTURES_DB = "btq_field_captures"
 DEFAULT_VAULT_DB = "btq_vault"
 DESIGN_DOCS = {
-    "sites": {
-        "database_env": "BTQ_COUCHDB_SITES_DB",
-        "default_database": DEFAULT_SITES_DB,
-        "path": "design_btq_sites.json",
-        "doc_id": "_design/btq_sites",
-    },
     "field_captures": {
         "database_env": "BTQ_COUCHDB_FIELD_CAPTURES_DB",
         "default_database": DEFAULT_FIELD_CAPTURES_DB,

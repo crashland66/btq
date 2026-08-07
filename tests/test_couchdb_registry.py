@@ -31,10 +31,11 @@ def site_doc_payload(
     include_display_categories: bool = False,
 ) -> dict[str, object]:
     payload: dict[str, object] = {
-        "_id": "site_7050",
-        "type": "site",
+        "_id": "location_7050",
+        "type": "location",
         "site_id": "7050",
-        "account": "Summit Wire",
+        "location": "Summit Wire",
+        "capture_active": True,
     }
     if include_capture_guidance:
         payload["capture_guidance"] = capture_guidance
@@ -46,7 +47,9 @@ def site_doc_payload(
 def fake_urlopen_for_site_doc(payload: dict[str, object] | None):
     def fake_urlopen(req: object, timeout: float = 10.0) -> FakeResponse:
         url = getattr(req, "full_url")
-        if url.endswith("/site_7050") and payload is not None:
+        # The registry reads registration off the canonical btq_vault location
+        # doc; a btq_sites site_<id> GET would be the retired path.
+        if url.endswith("/btq_vault/location_7050") and payload is not None:
             return FakeResponse(payload)
         raise error.HTTPError(url, 404, "not found", hdrs=None, fp=None)
 

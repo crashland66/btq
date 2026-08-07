@@ -21,7 +21,7 @@ def resolve_account(
     """Resolve an account/site query to one canonical CouchDB-backed account shape.
 
     `docs` is the test seam: pass synthetic site documents to avoid live CouchDB.
-    With no docs, the function reads `type == "site"` docs from the configured
+    With no docs, the function reads `type == "location"` docs from the configured
     sites database through the existing read-only btq_client helper.
     """
     site_docs = _site_docs_from_injection(docs) if docs is not None else _load_site_docs(config=config)
@@ -145,7 +145,7 @@ def _load_site_docs(*, config: object | None = None) -> list[dict[str, Any]]:
     injected = _docs_from_config(config, ("accounts", "sites", "site_docs"))
     if injected is not None:
         return injected
-    return btq_client.find(couchdb_config.sites_database(), {"type": "site"}, limit=10000)
+    return btq_client.find(couchdb_config.vault_database(), {"type": "location"}, limit=10000)
 
 
 def _load_employee_docs(*, config: object | None = None) -> list[dict[str, Any]]:
@@ -187,7 +187,7 @@ def _employee_docs_from_injection(docs: Iterable[Doc] | Mapping[str, Iterable[Do
 def _account_records(docs: Iterable[Doc]) -> dict[str, dict[str, Any]]:
     by_site_id: dict[str, dict[str, Any]] = {}
     for doc in docs:
-        if str(doc.get("type") or "") != "site":
+        if str(doc.get("type") or "") not in ("location", "site"):
             continue
         site_id = _clean_string(doc.get("site_id") or _site_id_from_doc_id(doc.get("_id")))
         if not site_id:
@@ -200,7 +200,10 @@ def _account_records(docs: Iterable[Doc]) -> dict[str, dict[str, Any]]:
 
 
 def _build_account_record(doc: Doc, site_id: str) -> dict[str, Any]:
-    canonical = _clean_string(doc.get("account") or doc.get("canonical") or doc.get("name") or site_id)
+    # Canonical location docs put the display name in `location` and the short
+    # account code in `account`; legacy site-shaped docs used `account` for the
+    # display name (and mirrored it in `location`), so this order serves both.
+    canonical = _clean_string(doc.get("location") or doc.get("account") or doc.get("canonical") or doc.get("name") or site_id)
     aliases = _account_aliases(doc, canonical, site_id)
     return {
         "doc": doc,
@@ -275,7 +278,7 @@ def _account_shape(account: Mapping[str, Any]) -> dict[str, Any]:
         "canonical_name": account["canonical_name"],
         "aliases": list(account["aliases"]),
         "status": status,
-        "source": _source(doc, couchdb_config.DEFAULT_SITES_DB),
+        "source": _source(doc, couchdb_config.DEFAULT_VAULT_DB),
     }
     manager = _clean_string(doc.get("manager") or doc.get("owner"))
     if manager:
@@ -427,8 +430,9 @@ def _first_name(doc: Doc, display: str) -> str:
 
 def _site_id_from_doc_id(doc_id: object) -> str:
     raw = _clean_string(doc_id)
-    if raw.startswith("site_"):
-        return raw[5:]
+    for prefix in ("location_", "site_"):
+        if raw.startswith(prefix):
+            return raw[len(prefix):]
     return raw
 
 

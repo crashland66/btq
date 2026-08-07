@@ -259,10 +259,10 @@ def default_couchdb_find(database: str, selector: dict) -> dict:
 def load_sites(couchdb_find: Callable[[str, dict], dict] | None = None) -> list[dict]:
     finder = couchdb_find or default_couchdb_find
     response = finder(
-        "btq_sites",
+        "btq_vault",
         {
-            "selector": {"synced_from_vault": True, "status": "active"},
-            "fields": ["_id", "job", "account", "location", "synced_from_vault", "status"],
+            "selector": {"type": "location", "status": "active"},
+            "fields": ["_id", "job", "account", "location", "site_id", "type", "status"],
             "limit": 1000,
         },
     )
@@ -291,7 +291,11 @@ def load_employees(couchdb_find: Callable[[str, dict], dict] | None = None) -> l
 
 
 def is_active_vault_doc(doc: object) -> bool:
-    return isinstance(doc, dict) and doc.get("synced_from_vault") is True and doc.get("status") == "active"
+    if not isinstance(doc, dict) or doc.get("type") != "location" or doc.get("status") != "active":
+        return False
+    # site_id marks a registered, routable site; stray location docs (e.g. the
+    # location_about import artifact duplicating a real site) never get one.
+    return bool(doc.get("site_id"))
 
 
 def is_active_employee_doc(doc: object) -> bool:
@@ -306,7 +310,7 @@ def numeric_sort_key(value: str) -> tuple[int, str]:
 
 
 def adapt_site(doc: dict) -> dict:
-    site_id = str(doc.get("_id") or doc.get("job") or "").strip()
+    site_id = str(doc.get("site_id") or doc.get("job") or doc.get("_id") or "").strip().removeprefix("location_")
     account = str(doc.get("account") or "").strip()
     location = str(doc.get("location") or "").strip()
     return {

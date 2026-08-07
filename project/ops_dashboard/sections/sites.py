@@ -9,6 +9,7 @@ from typing import Any
 from urllib import error, parse, request
 from urllib.parse import parse_qs, quote, urlencode
 
+from btq_vault.entity_types import current_operator_id
 from btq_vault.projector import (  # noqa: PLC2701 - mirror site_detail canonical view helpers.
     DDOC,
     _row_date,
@@ -56,21 +57,24 @@ def request_json(method: str, path: str, payload: dict[str, Any] | None = None) 
 
 
 def doc_path(site_id: str) -> str:
-    return f"{parse.quote(couchdb_config.sites_database(), safe='')}/{parse.quote(f'site_{site_id}', safe='')}"
+    return f"{parse.quote(couchdb_config.vault_database(), safe='')}/{parse.quote(f'location_{site_id}', safe='')}"
 
 
 def all_sites_path() -> str:
-    query = urlencode({"include_docs": "true", "startkey": json.dumps("site_"), "endkey": json.dumps("site_\ufff0")})
-    return f"{parse.quote(couchdb_config.sites_database(), safe='')}/_all_docs?{query}"
+    query = urlencode({"include_docs": "true", "startkey": json.dumps("location_"), "endkey": json.dumps("location_\ufff0")})
+    return f"{parse.quote(couchdb_config.vault_database(), safe='')}/_all_docs?{query}"
 
 
 def canonical_name(doc: dict[str, Any]) -> str:
-    return str(doc.get("canonical_name") or doc.get("canonical") or doc.get("account") or doc.get("location") or "")
+    # Canonical location docs carry the display name in `location` (the short
+    # account code lives in `account`); legacy site-shaped docs used
+    # canonical_name/account for it.
+    return str(doc.get("location") or doc.get("canonical_name") or doc.get("canonical") or doc.get("account") or "")
 
 
 def site_id_from_doc(doc: dict[str, Any]) -> str:
     raw = str(doc.get("site_id") or doc.get("_id") or "")
-    return raw.removeprefix("site_")
+    return raw.removeprefix("location_").removeprefix("site_")
 
 
 def load_site(site_id: str) -> dict[str, Any] | None:
@@ -82,7 +86,7 @@ def load_sites() -> list[dict[str, Any]]:
     _status, payload = request_json("GET", all_sites_path())
     rows = payload.get("rows", []) if isinstance(payload, dict) else []
     docs = [row.get("doc") for row in rows if isinstance(row, dict) and isinstance(row.get("doc"), dict)]
-    return sorted((doc for doc in docs if str(doc.get("_id") or "").startswith("site_")), key=site_id_from_doc)
+    return sorted((doc for doc in docs if str(doc.get("_id") or "").startswith("location_")), key=site_id_from_doc)
 
 
 def render(ctx: object = None) -> str:
@@ -109,9 +113,9 @@ def render_list(ctx: object, query: dict[str, list[str]]) -> str:
     site_filter = first_query_value(query, "site_id_contains").strip().lower()
     canonical_filter = first_query_value(query, "canonical_contains").strip().lower()
     if active_filter == "active":
-        docs = [doc for doc in docs if bool(doc.get("active", True))]
+        docs = [doc for doc in docs if bool(doc.get("capture_active", False))]
     elif active_filter == "inactive":
-        docs = [doc for doc in docs if not bool(doc.get("active", True))]
+        docs = [doc for doc in docs if not bool(doc.get("capture_active", False))]
     if site_filter:
         docs = [doc for doc in docs if site_filter in site_id_from_doc(doc).lower()]
     if canonical_filter:
@@ -125,7 +129,7 @@ def render_list(ctx: object, query: dict[str, list[str]]) -> str:
             {
                 "site_id": site_id_from_doc(doc),
                 "canonical_name": canonical_name(doc),
-                "active": bool(doc.get("active", True)),
+                "active": bool(doc.get("capture_active", False)),
                 "alias_count": len(aliases),
                 "vision_context": vision_context_summary(doc.get("vision_context")),
             }
@@ -245,7 +249,7 @@ def render_form(ctx: object, doc: dict[str, Any], *, is_new: bool, query: dict[s
       <form method="post" action="{action}" class="admin-form">
         <label>{humanize_key("canonical_name")} <input name="canonical_name" required value="{html.escape(canonical_name(doc))}"></label>
         <label>{humanize_key("site_id")} {site_field}</label>
-        <label><input type="checkbox" name="active" value="1" {'checked' if bool(doc.get('active', True)) else ''}> Active</label>
+        <label><input type="checkbox" name="active" value="1" {'checked' if bool(doc.get('capture_active', is_new)) else ''}> Active</label>
         <label>{humanize_key("aliases")} <textarea name="aliases">{html.escape(aliases)}</textarea></label>
         {note_path_field}
         {vision_context_fieldset}
@@ -332,14 +336,18 @@ def form_doc(form: dict[str, list[str]], *, existing: dict[str, Any] | None = No
         raise ValueError("note_path_required")
     categories = parse_display_categories_rows(form, "display_categories")
     vision_context = reconstruct_vision_context(form, (existing or {}).get("vision_context"))
+    # Read-modify-write onto the canonical location doc: only the registration
+    # fields below are the editor's to change — billing/address/service fields
+    # on the same doc belong to the vault pipeline and must ride through.
     doc = dict(existing or {})
+    is_new = not doc
     doc.update(
         {
-            "_id": f"site_{site_id}",
-            "type": "site",
+            "_id": f"location_{site_id}",
+            "type": "location",
             "site_id": site_id,
-            "canonical_name": canonical,
-            "active": first_query_value(form, "active") == "1",
+            "location": canonical,
+            "capture_active": first_query_value(form, "active") == "1",
             "aliases": [line.strip() for line in first_query_value(form, "aliases").splitlines() if line.strip()],
             "note_path": note_path,
             "vision_context": vision_context,
@@ -347,6 +355,10 @@ def form_doc(form: dict[str, list[str]], *, existing: dict[str, Any] | None = No
             "display_categories": categories,
         }
     )
+    if is_new:
+        doc.setdefault("operator", current_operator_id())
+        doc.setdefault("status", "active")
+        doc.setdefault("account", canonical)
     return site_id, doc
 
 
@@ -360,8 +372,8 @@ def submitted_display_categories(form: dict[str, list[str]], field_prefix: str) 
 def partial_form_doc(form: dict[str, list[str]]) -> dict[str, Any]:
     return {
         "site_id": first_query_value(form, "site_id").strip(),
-        "canonical_name": first_query_value(form, "canonical_name").strip(),
-        "active": first_query_value(form, "active") == "1",
+        "location": first_query_value(form, "canonical_name").strip(),
+        "capture_active": first_query_value(form, "active") == "1",
         "aliases": [line.strip() for line in first_query_value(form, "aliases").splitlines() if line.strip()],
         "note_path": first_query_value(form, "note_path").strip(),
         "vision_context": reconstruct_vision_context(form, None),

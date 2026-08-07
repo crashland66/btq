@@ -3,7 +3,7 @@
 Real customer site data is kept OUT of git in ``site_registry.json`` (gitignored,
 shipped to prod boxes out-of-band). A synthetic ``site_registry.example.json`` is
 committed so dev/CI and fresh clones run on fictional data. Runtime resolution
-still prefers the canonical CouchDB ``btq_sites`` registry; this data is the
+still prefers the canonical CouchDB registry (btq_vault location docs); this data is the
 fallback matcher (``event_pipeline.sites.SITES``) and the seed source
 (``migrate_sites.SITE_VISION_CONTEXTS``).
 

@@ -389,7 +389,7 @@ def test_get_doc_returns_none_on_404(patched):
         return 404
 
     patched(router)
-    assert client.get_doc("sites", "missing") is None
+    assert client.get_doc("vault", "missing") is None
 
 
 def test_get_doc_returns_doc(patched):
@@ -397,10 +397,10 @@ def test_get_doc_returns_doc(patched):
         return {"_id": "site-1", "name": "Hillcrest"}
 
     rec = patched(router)
-    doc = client.get_doc("sites", "site-1")
+    doc = client.get_doc("vault", "site-1")
     assert doc == {"_id": "site-1", "name": "Hillcrest"}
     assert rec.calls[0]["method"] == "GET"
-    assert rec.calls[0]["db"] == couchdb_config.DEFAULT_SITES_DB
+    assert rec.calls[0]["db"] == couchdb_config.DEFAULT_VAULT_DB
 
 
 def test_all_docs_omits_design_rows(patched):
@@ -517,7 +517,7 @@ def test_sole_mutator_no_mutation_outside_queue_db(patched):
     rec = patched(router)
 
     # Exercise reads against several canonical (non-queue) DBs.
-    for db in ("sites", "vault", "captures", "photo_vision", "journal", "voice_memos"):
+    for db in ("vault", "captures", "photo_vision", "journal", "voice_memos"):
         client.get_doc(db, "some-id")
         client.all_docs(db)
         client.find(db, {"any": "selector"})

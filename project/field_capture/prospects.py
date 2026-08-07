@@ -71,7 +71,7 @@ def write_prospect(
     doc_id = str(prospect.get("_id") or "").strip()
     if not doc_id:
         raise CouchDBProspectError("prospect document is missing _id")
-    database = couchdb_config.sites_database()
+    database = couchdb_config.vault_database()
     current = _get_doc(cdb_config, database, doc_id)
     doc_to_put = dict(prospect)
     if current and current.get("_rev"):
@@ -84,7 +84,7 @@ def load_prospect(cdb_config: couchdb_config.CouchDBConfig, prospect_id: str) ->
     normalized_id = prospect_id.strip()
     if not normalized_id:
         return None
-    return _get_doc(cdb_config, couchdb_config.sites_database(), f"prospect_{normalized_id}")
+    return _get_doc(cdb_config, couchdb_config.vault_database(), f"prospect_{normalized_id}")
 
 
 def list_active_prospects(cdb_config: couchdb_config.CouchDBConfig) -> list[dict]:
@@ -94,7 +94,7 @@ def list_active_prospects(cdb_config: couchdb_config.CouchDBConfig) -> list[dict
             "status": {"$in": ["open", "quoted"]},
         }
     }
-    data = _post_json(cdb_config, couchdb_config.sites_database(), "_find", payload)
+    data = _post_json(cdb_config, couchdb_config.vault_database(), "_find", payload)
     docs = data.get("docs")
     if not isinstance(docs, list):
         return []

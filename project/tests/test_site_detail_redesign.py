@@ -144,8 +144,9 @@ def test_header_h1_is_name_only_subline_carries_account_id_status(
         captures=([_capture()], False, 3),
     )
 
-    # H1 is the canonical name only — no raw id in the H1.
-    assert _h1(html) == "Acme Corp"
+    # H1 is the canonical site name only (the location doc's `location` field,
+    # the one canonical name post btq_sites-merge) — no raw id in the H1.
+    assert _h1(html) == "Acme HQ"
     assert "9001" not in _h1(html)
     # A muted subline carries account · site_id · status.
     m = re.search(r'class="subline">(.*?)</p>', html)

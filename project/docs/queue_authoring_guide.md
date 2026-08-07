@@ -170,7 +170,7 @@ Do not use:
 How the runtime resolves it:
 
 - the runtime resolves site strings through the current site registry in [sites.py](project/event_pipeline/sites.py)
-- production-style registry lookup uses CouchDB `btq_sites` when
+- production-style registry lookup uses the CouchDB `btq_vault` location docs when
   `BTQ_COUCHDB_URL` is set; local/dev fallback uses the checked-in registry
   only when CouchDB is not configured
 

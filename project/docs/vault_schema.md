@@ -237,7 +237,8 @@ separate contracts and are not changed by operational-calendar jobs.
 
 Runtime site routing is registry-driven, separate from the entity store.
 
-- When `BTQ_COUCHDB_URL` is set, the site registry is read from the `btq_sites`
+- When `BTQ_COUCHDB_URL` is set, the site registry is read from the `btq_vault`
+  `location_*` docs via the `sites_by_alias` / `sites_by_site_id` views in the
   CouchDB database; local/dev routing falls back to the checked-in registry in
   [event_pipeline/sites.py](/Users/operator/btq/project/event_pipeline/sites.py)
   only when CouchDB is not configured.
@@ -259,7 +260,8 @@ System-written or system-updated documents:
 
 Usually human/operator-seeded via the ops dashboard or registry tooling:
 
-- `location` records and the `btq_sites` registry entries
+- `location` records carry the site registration fields (`site_id`, `aliases`,
+  `capture_active`, `vision_context`, `note_path`)
 - `account` records
 - `employee` records
 
@@ -273,7 +275,7 @@ Current coupling points implied by code more than enforced by explicit schema
 validation:
 
 - `location` documents must carry valid enough fields for site validation
-- site routing must stay aligned with the active `btq_sites` registry
+- site routing must stay aligned with the registration fields on the location docs
 - people resolution depends on `person_id` plus name fields
 - unknown-capture reclassification depends on the stored capture shape
 - journal and visit dates use UTC in the current implementation

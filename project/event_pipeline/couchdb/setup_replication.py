@@ -16,7 +16,6 @@ REPLICATION_DATABASES: tuple[str, ...] = (
     "btq_field_captures",
     "btq_photo_vision",
     "btq_queue",
-    "btq_sites",
     "btq_vault",
     "btq_voice_memos",
 )
