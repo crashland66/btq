@@ -15,7 +15,6 @@ EXAMPLE_CONFIG_NAME = "config.example.json"
 DEFAULT_COUCHDB_URL = "http://127.0.0.1:5984"
 DEFAULT_SITES_DB = "btq_sites"
 DEFAULT_FIELD_CAPTURES_DB = "btq_field_captures"
-DEFAULT_PEOPLE_DB = "btq_people"
 DEFAULT_PHOTO_VISION_DB = "btq_photo_vision"
 DEFAULT_QUEUE_DB = "btq_queue"
 DEFAULT_VAULT_DB = "btq_vault"
@@ -32,7 +31,6 @@ class InstanceConfig:
     couchdb_password: str
     couchdb_sites_db: str
     couchdb_field_captures_db: str
-    couchdb_people_db: str
     couchdb_photo_vision_db: str
     couchdb_queue_db: str
     couchdb_vault_db: str
@@ -185,7 +183,6 @@ def load_instance_config(
             "field_captures_db",
             DEFAULT_FIELD_CAPTURES_DB,
         ),
-        couchdb_people_db=_env_or_config("BTQ_COUCHDB_PEOPLE_DB", couchdb, "people_db", DEFAULT_PEOPLE_DB),
         couchdb_photo_vision_db=_env_or_config(
             "BTQ_COUCHDB_PHOTO_VISION_DB",
             couchdb,

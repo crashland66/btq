@@ -279,19 +279,23 @@ def load_sites(couchdb_find: Callable[[str, dict], dict] | None = None) -> list[
 def load_employees(couchdb_find: Callable[[str, dict], dict] | None = None) -> list[dict]:
     finder = couchdb_find or default_couchdb_find
     response = finder(
-        "btq_people",
+        "btq_vault",
         {
-            "selector": {"synced_from_vault": True, "status": "active"},
-            "fields": ["_id", "first", "last", "preferred_name", "job", "synced_from_vault", "status"],
+            "selector": {"type": "employee", "status": "active"},
+            "fields": ["_id", "person_id", "first", "last", "preferred_name", "job", "type", "status"],
             "limit": 1000,
         },
     )
-    rows = [adapt_employee(doc) for doc in response.get("docs", []) if is_active_vault_doc(doc)]
+    rows = [adapt_employee(doc) for doc in response.get("docs", []) if is_active_employee_doc(doc)]
     return sorted(rows, key=lambda item: (str(item.get("last") or "").lower(), str(item.get("first") or "").lower()))
 
 
 def is_active_vault_doc(doc: object) -> bool:
     return isinstance(doc, dict) and doc.get("synced_from_vault") is True and doc.get("status") == "active"
+
+
+def is_active_employee_doc(doc: object) -> bool:
+    return isinstance(doc, dict) and doc.get("type") == "employee" and doc.get("status") == "active"
 
 
 def numeric_sort_key(value: str) -> tuple[int, str]:
@@ -316,15 +320,18 @@ def adapt_site(doc: dict) -> dict:
 def adapt_employee(doc: dict) -> dict:
     first = str(doc.get("first") or "").strip()
     last = str(doc.get("last") or "").strip()
-    preferred = doc.get("preferred_name")
-    display_first = str(preferred or first).strip()
+    # Vault docs carry preferred_name as either a string or an empty list.
+    raw_preferred = doc.get("preferred_name")
+    preferred = raw_preferred.strip() if isinstance(raw_preferred, str) else ""
+    display_first = preferred or first
     job = str(doc.get("job") or "").strip()
+    person_id = str(doc.get("person_id") or "").strip() or str(doc.get("_id") or "").strip().removeprefix("employee_")
     return {
-        "id": str(doc.get("_id") or "").strip(),
+        "id": person_id,
         "label": f"{display_first} {last} — {job}".strip(),
         "first": first,
         "last": last,
-        "preferred_name": preferred if preferred not in {"", None} else None,
+        "preferred_name": preferred or None,
         "job": job,
     }
 

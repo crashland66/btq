@@ -432,7 +432,7 @@ def test_find_posts_selector_and_returns_docs(patched):
         return {"docs": [{"_id": "p1"}, {"_id": "p2"}]}
 
     patched(router)
-    docs = client.find("people", {"role": "cleaner"}, fields=["_id"], limit=5)
+    docs = client.find("vault", {"role": "cleaner"}, fields=["_id"], limit=5)
     assert [d["_id"] for d in docs] == ["p1", "p2"]
     assert captured["method"] == "POST"
     assert captured["tail"] == "_find"
@@ -517,7 +517,7 @@ def test_sole_mutator_no_mutation_outside_queue_db(patched):
     rec = patched(router)
 
     # Exercise reads against several canonical (non-queue) DBs.
-    for db in ("sites", "people", "vault", "captures", "photo_vision", "journal", "voice_memos"):
+    for db in ("sites", "vault", "captures", "photo_vision", "journal", "voice_memos"):
         client.get_doc(db, "some-id")
         client.all_docs(db)
         client.find(db, {"any": "selector"})

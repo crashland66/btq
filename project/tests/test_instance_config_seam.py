@@ -67,7 +67,6 @@ def test_db_name_helpers_default_to_preserved_names() -> None:
     # db-name vars; with none set these must equal the historical defaults.
     assert couchdb_config.sites_database() == "btq_sites"
     assert couchdb_config.field_captures_database() == "btq_field_captures"
-    assert couchdb_config.people_database() == "btq_people"
     assert couchdb_config.photo_vision_database() == "btq_photo_vision"
     assert couchdb_config.queue_database() == "btq_queue"
     assert couchdb_config.vault_database() == "btq_vault"
@@ -79,7 +78,6 @@ def test_db_name_defaults_equal_instance_config_defaults() -> None:
     inst = instance_config.load_instance_config()
     assert couchdb_config.sites_database() == inst.couchdb_sites_db
     assert couchdb_config.field_captures_database() == inst.couchdb_field_captures_db
-    assert couchdb_config.people_database() == inst.couchdb_people_db
     assert couchdb_config.photo_vision_database() == inst.couchdb_photo_vision_db
     assert couchdb_config.queue_database() == inst.couchdb_queue_db
     assert couchdb_config.vault_database() == inst.couchdb_vault_db
@@ -243,7 +241,6 @@ def test_instance_config_holds_only_instance_surface() -> None:
         "couchdb_password",
         "couchdb_sites_db",
         "couchdb_field_captures_db",
-        "couchdb_people_db",
         "couchdb_photo_vision_db",
         "couchdb_queue_db",
         "couchdb_vault_db",

@@ -6,9 +6,9 @@ different label formats, different orderings. The contract now:
 
   * common.site_selector_options() is THE site list: active registry sites,
     "Name (id)" labels, name-sorted, static-SITES fallback on outage.
-  * common.employee_selector_options() is THE user list: mirror values, but
-    the canonical vault decides who is active (normalized-name knockout for
-    stale mirror rows).
+  * common.employee_selector_options() is THE user list: active employees
+    straight from the canonical vault, valued by the unified person_id
+    (the btq_people mirror is retired).
   * Every form builds from these — sentinel options injected into the shared
     helpers must appear in every selector render.
 """
@@ -64,64 +64,80 @@ def test_site_options_fall_back_to_static_table_on_outage(monkeypatch: pytest.Mo
 # employee_selector_options
 # ---------------------------------------------------------------------------
 
-def _install_people(monkeypatch: pytest.MonkeyPatch, mirror: list[dict], vault: list[dict]) -> None:
+def _install_people(monkeypatch: pytest.MonkeyPatch, vault: list[dict]) -> None:
     def fake_find(database: str, selector: dict) -> list[dict]:
-        return mirror if "people" in database else vault
+        assert database == "btq_vault"
+        assert selector == {"type": "employee", "status": "active"}
+        return vault
 
     monkeypatch.setattr(common, "_selector_couch_find", fake_find)
-    monkeypatch.setattr(common.couchdb_config, "people_database", lambda: "btq_people")
     monkeypatch.setattr(common.couchdb_config, "vault_database", lambda: "btq_vault")
 
 
-def test_employee_options_knock_out_vault_inactive_despite_stale_mirror(
+def test_employee_options_come_straight_from_canonical_vault(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # MUTATION GUARD: the operator's actual bug — Scott is "active" in the
-    # mirror but inactive in the canonical vault (different id conventions,
-    # so only the name can join them). He must not be selectable.
+    # The btq_people mirror is retired: the selector queries the vault's
+    # active employees directly, so the stale-mirror knockout that guarded
+    # the old two-source join has no drift left to guard. Values are the
+    # unified person_id.
     _install_people(
         monkeypatch,
-        mirror=[
-            {"_id": "seigh-scott", "first": "Scott", "last": "Seigh", "status": "active"},
-            {"_id": "baronie-john", "first": "John", "last": "Baronie", "status": "active"},
-        ],
         vault=[
-            {"_id": "employee_seigh_scott", "name": "Scott Seigh", "status": "inactive"},
-            {"_id": "employee_baronie_john", "name": "John Baronie", "status": "active"},
+            {"_id": "employee_barton_jane", "person_id": "barton_jane", "first": "Jane", "last": "Barton", "status": "active"},
         ],
     )
-    options = common.employee_selector_options()
-    assert options == [("baronie-john", "John Baronie (baronie-john)")]
+    assert common.employee_selector_options() == [("barton_jane", "Jane Barton (barton_jane)")]
+
+
+def test_employee_options_fall_back_to_doc_id_when_person_id_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_people(
+        monkeypatch,
+        vault=[{"_id": "employee_dawson_erin", "first": "Erin", "last": "Dawson", "status": "active"}],
+    )
+    assert common.employee_selector_options() == [("dawson_erin", "Erin Dawson (dawson_erin)")]
+
+
+def test_employee_options_prefer_preferred_name_and_tolerate_list_shape(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Vault docs carry preferred_name as either a string or an empty list.
+    _install_people(
+        monkeypatch,
+        vault=[
+            {"_id": "employee_nickleby_nicola", "person_id": "nickleby_nicola", "first": "Nicola", "last": "Nickleby", "preferred_name": "Nick", "status": "active"},
+            {"_id": "employee_able_amy", "person_id": "able_amy", "first": "Amy", "last": "Able", "preferred_name": [], "status": "active"},
+        ],
+    )
+    assert common.employee_selector_options() == [
+        ("able_amy", "Amy Able (able_amy)"),
+        ("nickleby_nicola", "Nick Nickleby (nickleby_nicola)"),
+    ]
 
 
 def test_employee_options_sorted_by_name(monkeypatch: pytest.MonkeyPatch) -> None:
     _install_people(
         monkeypatch,
-        mirror=[
-            {"_id": "z-person", "name": "Zed Zane", "status": "active"},
-            {"_id": "a-person", "name": "Amy Able", "status": "active"},
+        vault=[
+            {"_id": "employee_zane_zed", "person_id": "zane_zed", "first": "Zed", "last": "Zane", "status": "active"},
+            {"_id": "employee_able_amy", "person_id": "able_amy", "first": "Amy", "last": "Able", "status": "active"},
         ],
-        vault=[],
     )
     assert [label for _pid, label in common.employee_selector_options()] == [
-        "Amy Able (a-person)",
-        "Zed Zane (z-person)",
+        "Amy Able (able_amy)",
+        "Zed Zane (zane_zed)",
     ]
 
 
 def test_employee_options_degrade_when_vault_unreachable(monkeypatch: pytest.MonkeyPatch) -> None:
-    calls = {"n": 0}
+    def down_find(database: str, selector: dict) -> list[dict]:
+        raise RuntimeError("vault down")
 
-    def flaky_find(database: str, selector: dict) -> list[dict]:
-        calls["n"] += 1
-        if "vault" in database:
-            raise RuntimeError("vault down")
-        return [{"_id": "baronie-john", "name": "John Baronie", "status": "active"}]
-
-    monkeypatch.setattr(common, "_selector_couch_find", flaky_find)
-    monkeypatch.setattr(common.couchdb_config, "people_database", lambda: "btq_people")
+    monkeypatch.setattr(common, "_selector_couch_find", down_find)
     monkeypatch.setattr(common.couchdb_config, "vault_database", lambda: "btq_vault")
-    assert common.employee_selector_options() == [("baronie-john", "John Baronie (baronie-john)")]
+    assert common.employee_selector_options() == []
 
 
 # ---------------------------------------------------------------------------

@@ -142,19 +142,32 @@ class PickerTests(unittest.TestCase):
 
     def test_get_employees_omits_sensitive_identifier(self) -> None:
         def fake_find(database: str, selector: dict) -> dict:
-            self.assertEqual(database, "btq_people")
+            self.assertEqual(database, "btq_vault")
+            self.assertEqual(selector["selector"], {"type": "employee", "status": "active"})
             return {
                 "docs": [
-                    {"_id": "hutton-maria", "first": "Maria", "last": "Hutton", "preferred_name": None, "job": "7050", "synced_from_vault": True, "status": "active"},
-                    {"_id": "hidden-person", "first": "Hidden", "last": "Person", "preferred_name": None, "job": "1000", "synced_from_vault": True, "status": "inactive"},
+                    {"_id": "employee_hutton_maria", "person_id": "hutton_maria", "type": "employee", "first": "Maria", "last": "Hutton", "preferred_name": None, "job": "7050", "status": "active"},
+                    {"_id": "employee_hidden_person", "person_id": "hidden_person", "type": "employee", "first": "Hidden", "last": "Person", "preferred_name": None, "job": "1000", "status": "inactive"},
                 ]
             }
 
         employees = load_employees(fake_find)
         payload = json.dumps({"employees": employees})
-        self.assertEqual(employees[0]["id"], "hutton-maria")
+        self.assertEqual(employees[0]["id"], "hutton_maria")
         self.assertNotIn("5272", payload)
         self.assertNotIn("ehub", payload.lower())
+
+    def test_get_employees_falls_back_to_doc_id_and_tolerates_list_preferred_name(self) -> None:
+        def fake_find(database: str, selector: dict) -> dict:
+            return {
+                "docs": [
+                    {"_id": "employee_dawson_erin", "type": "employee", "first": "Erin", "last": "Dawson", "preferred_name": [], "job": "1200", "status": "active"},
+                ]
+            }
+
+        employees = load_employees(fake_find)
+        self.assertEqual(employees[0]["id"], "dawson_erin")
+        self.assertEqual(employees[0]["label"], "Erin Dawson — 1200")
 
 
 if __name__ == "__main__":

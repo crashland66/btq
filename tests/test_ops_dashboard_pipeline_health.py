@@ -29,9 +29,9 @@ def install_pipeline_fixtures(
         return scheduler_docs or {
             "docs": [
                 {
-                    "doc_id": "vps_to_pro_btq_people",
-                    "source": "http://203.0.113.10:5984/btq_people/",
-                    "target": "http://127.0.0.1:5984/btq_people/",
+                    "doc_id": "vps_to_pro_btq_vault",
+                    "source": "http://203.0.113.10:5984/btq_vault/",
+                    "target": "http://127.0.0.1:5984/btq_vault/",
                     "state": "running",
                     "info": {"error_count": 0, "last_updated": "2026-05-26T12:00:00Z"},
                 },

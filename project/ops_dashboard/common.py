@@ -1867,41 +1867,29 @@ def _selector_couch_find(database: str, selector: dict[str, object]) -> list[dic
 def employee_selector_options() -> list[tuple[str, str]]:
     """THE active-employee selector for user pickers.
 
-    Values stay in the btq_people mirror's person_id convention (what capture
-    attribution uses), but the canonical vault decides who is active: the
-    mirror's status field has gone stale on some status-change paths, so any
-    mirror-"active" person whose vault record is inactive is knocked out by
-    normalized-name match. Labeled "Name (person_id)", sorted by name.
+    Straight canonical-vault query: active employee docs, valued by the
+    unified person_id (what capture attribution and tokens use since the
+    lastname_firstname unification retired the btq_people mirror). Labeled
+    "Name (person_id)", sorted by name.
     """
     def _person_label(doc: dict[str, object]) -> str:
-        first = str(doc.get("preferred_name") or doc.get("first") or "").strip()
+        raw_preferred = doc.get("preferred_name")
+        preferred = raw_preferred.strip() if isinstance(raw_preferred, str) else ""
+        first = preferred or str(doc.get("first") or "").strip()
         last = str(doc.get("last") or "").strip()
-        return str(doc.get("name") or "").strip() or f"{first} {last}".strip()
-
-    def _name_key(value: str) -> str:
-        return re.sub(r"[^a-z0-9]+", " ", value.lower()).strip()
+        return f"{first} {last}".strip() or str(doc.get("name") or "").strip()
 
     try:
-        mirror = _selector_couch_find(couchdb_config.people_database(), {"synced_from_vault": True, "status": "active"})
-    except Exception:  # noqa: BLE001 - people db outage renders an empty picker, not a 500.
+        docs = _selector_couch_find(couchdb_config.vault_database(), {"type": "employee", "status": "active"})
+    except Exception:  # noqa: BLE001 - vault outage renders an empty picker, not a 500.
         return []
-    try:
-        vault_inactive_names = {
-            _name_key(_person_label(doc))
-            for doc in _selector_couch_find(couchdb_config.vault_database(), {"type": "employee"})
-            if str(doc.get("status") or "").strip().lower() != "active"
-        }
-    except Exception:  # noqa: BLE001 - vault outage degrades to mirror-only filtering.
-        vault_inactive_names = set()
 
     options: list[tuple[str, str]] = []
-    for doc in mirror:
-        person_id = str(doc.get("person_id") or doc.get("_id") or "").strip()
-        label = _person_label(doc) or person_id
+    for doc in docs:
+        person_id = str(doc.get("person_id") or "").strip() or str(doc.get("_id") or "").strip().removeprefix("employee_")
         if not person_id:
             continue
-        if _name_key(label) and _name_key(label) in vault_inactive_names:
-            continue
+        label = _person_label(doc) or person_id
         options.append((person_id, f"{label} ({person_id})"))
     return sorted(options, key=lambda option: option[1].casefold())
 
