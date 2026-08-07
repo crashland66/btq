@@ -11,7 +11,7 @@ from http.cookies import SimpleCookie
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, unquote, urlsplit
+from urllib.parse import parse_qs, quote, unquote, urlsplit
 
 from capture_ingest import (
     IMPORT_MAX_IMAGES,
@@ -213,6 +213,9 @@ class UnifiedCaptureHandler(BaseHTTPRequestHandler):
                 cache_control="public, max-age=300",
             )
             return
+        if path == "/manifest.webmanifest":
+            self.handle_manifest(urlsplit(self.path).query)
+            return
         if path.startswith("/static/"):
             if self.try_serve_shared_static(path):
                 return
@@ -224,6 +227,36 @@ class UnifiedCaptureHandler(BaseHTTPRequestHandler):
         if self.try_serve_public(path):
             return
         self.write_json({"error": "not_found"}, HTTPStatus.NOT_FOUND)
+
+    def handle_manifest(self, raw_query: str) -> None:
+        """Serve the PWA manifest dynamically, mirroring field_capture.
+
+        iOS isolates localStorage AND cookies between Safari and the standalone
+        PWA container that "Add to Home Screen" creates. The only durable
+        per-user state that crosses the boundary is what's baked into the
+        manifest's start_url at install time. index.html already requests
+        /manifest.webmanifest?token=<value>; without this route the query is
+        ignored and the home-screen icon launches unauthenticated — which is
+        why field workers stayed on photos.gregstoltz.com.
+        """
+        manifest_path = PUBLIC_ROOT / "manifest.webmanifest"
+        try:
+            data = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            self.write_json({"error": "manifest_unavailable"}, HTTPStatus.INTERNAL_SERVER_ERROR)
+            return
+        tokens = parse_qs(raw_query or "").get("token", [])
+        if tokens and tokens[0]:
+            # safe="" matters: quote() defaults to safe="/", which would emit a
+            # raw slash and silently repoint start_url at another path.
+            data["start_url"] = f"/?token={quote(tokens[0], safe='')}"
+        # no-store so iOS re-fetches at Add-to-Home-Screen time; otherwise a
+        # cached token-less manifest would defeat the dynamic start_url.
+        self.write_bytes(
+            json.dumps(data).encode("utf-8"),
+            "application/manifest+json",
+            cache_control="no-store",
+        )
 
     def handle_apple_app_site_association(self) -> None:
         payload = apple_app_site_association_payload()

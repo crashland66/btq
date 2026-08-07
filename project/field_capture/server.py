@@ -674,7 +674,9 @@ class FieldCaptureHandler(BaseHTTPRequestHandler):
             return
         tokens = parse_qs(raw_query or "").get("token", [])
         if tokens and tokens[0]:
-            data["start_url"] = f"/?token={quote(tokens[0])}"
+            # safe="" matters: quote() defaults to safe="/", which would emit a
+            # raw slash and silently repoint start_url at another path.
+            data["start_url"] = f"/?token={quote(tokens[0], safe='')}"
         body = json.dumps(data).encode("utf-8")
         self.send_response(HTTPStatus.OK)
         self.send_header("Content-Type", "application/manifest+json")

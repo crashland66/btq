@@ -318,6 +318,31 @@ class ScaffoldTests(unittest.TestCase):
         self.assertIn("unifiedCaptureToken", resp.text)
         self.assertIn("/api/submit", resp.text)
 
+    def test_manifest_without_token_keeps_the_static_start_url(self) -> None:
+        resp = self.get("/manifest.webmanifest")
+        self.assertEqual(resp.status, 200)
+        self.assertIn("application/manifest+json", resp.headers.get("Content-Type", ""))
+        self.assertEqual(resp.json()["start_url"], "/")
+
+    def test_manifest_bakes_the_token_into_start_url(self) -> None:
+        resp = self.get("/manifest.webmanifest?token=fc_abc123")
+        self.assertEqual(resp.status, 200)
+        payload = resp.json()
+        # This is the whole point: iOS keeps only start_url across the
+        # Add-to-Home-Screen boundary, so the token has to ride in it.
+        self.assertEqual(payload["start_url"], "/?token=fc_abc123")
+        # Everything else must survive untouched, or the installed icon breaks.
+        self.assertEqual(payload["display"], "standalone")
+        self.assertEqual(payload["scope"], "/")
+
+    def test_manifest_percent_encodes_token_and_is_never_cached(self) -> None:
+        resp = self.get("/manifest.webmanifest?token=a%2Fb%20c")
+        self.assertEqual(resp.status, 200)
+        # A raw "/" would silently repoint start_url at another path.
+        self.assertEqual(resp.json()["start_url"], "/?token=a%2Fb%20c")
+        # A cached token-less manifest would defeat the dynamic start_url.
+        self.assertEqual(resp.headers.get("Cache-Control", ""), "no-store")
+
     def test_static_db_js_served_as_javascript(self) -> None:
         resp = self.get("/static/db.js")
         self.assertEqual(resp.status, 200)
