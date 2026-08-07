@@ -715,18 +715,7 @@ def render(ctx: object, employee_id: str) -> str:
             f'<a class="button" href="/sites/{html.escape(primary_site, quote=True)}">Primary site</a>'
             if primary_site else ""
         )
-        # Static entity pages are keyed by the FULL CouchDB doc _id
-        # (projector emits entity/employee/<doc_id>.html), so the vault link must
-        # use employee_<id>, not the bare route id. (Unlike /vault/sites/<bare_id>,
-        # which has its own dedicated projection.)
-        vault_doc_id = html.escape(str(doc.get("_id") or f"employee_{employee_id}"), quote=True)
-        vault_btn = f'<a class="button" href="/vault/entity/employee/{vault_doc_id}.html">Vault page</a>'
         all_employees_btn = '<a class="button" href="/employees">All employees</a>'
-        admin_links = (
-            '<section><h3>Admin links</h3>'
-            f'<p class="actions">{vault_btn}</p>'
-            "</section>"
-        )
         if primary_site_name:
             subline_primary = primary_site_name
         else:
@@ -832,7 +821,6 @@ def render(ctx: object, employee_id: str) -> str:
                 )
             )
 
-        sections.append(_details_block("Admin metadata", None, admin_links))
 
         body = "".join(sections)
         return html_page(f"Employee {employee_id} — BTQ", body, active_section="employee_detail")

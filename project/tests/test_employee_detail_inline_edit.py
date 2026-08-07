@@ -105,8 +105,8 @@ def test_admin_links_no_longer_carry_edit_buttons(monkeypatch: pytest.MonkeyPatc
     body = _render(monkeypatch)
     assert ">Edit identity</a>" not in body
     assert ">Edit assignment</a>" not in body
-    # The vault link survives in Admin links.
-    assert 'href="/vault/entity/employee/employee_jordan.html"' in body
+    # No vault-projection links anywhere (retired 2026-08-07).
+    assert "/vault/" not in body
 
 
 def test_sparse_doc_still_offers_edit_glyphs(monkeypatch: pytest.MonkeyPatch) -> None:

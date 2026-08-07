@@ -37,17 +37,17 @@ def test_get_employee_detail_renders_identity_section(monkeypatch: pytest.Monkey
     assert "<h3>Assignment</h3>" in html
 
 
-def test_employee_detail_vault_button_uses_full_doc_id(
+def test_employee_detail_has_no_vault_projection_links(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The Vault page button must point at the static entity page, which is
-    keyed by the full CouchDB _id (employee_<id>), not the bare route id."""
+    """The static vault projection was retired 2026-08-07 (stale since May);
+    no page may link into /vault/ again."""
     monkeypatch.setattr(employee_detail, "_load_vault_doc", lambda _doc_id: _employee_doc())
 
     html = employee_detail.render(SimpleNamespace(query={}), "jordan")
 
-    assert 'href="/vault/entity/employee/employee_jordan.html"' in html
-    assert 'href="/vault/entity/employee/jordan.html"' not in html
+    assert "/vault/" not in html
+    assert "Admin metadata" not in html
 
 
 def test_employee_detail_header_has_all_employees_link(monkeypatch: pytest.MonkeyPatch) -> None:

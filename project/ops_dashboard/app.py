@@ -88,31 +88,6 @@ def json_response(payload: object, status: HTTPStatus = HTTPStatus.OK) -> tuple[
     return status, "application/json; charset=utf-8", json.dumps(payload, indent=2, sort_keys=True).encode("utf-8"), {}
 
 
-VAULT_PROJECTION_DIR_ENV = "BTQ_VAULT_PROJECTION_DIR"
-VAULT_PROJECTION_DIR_DEFAULT = "~/btq_projection"
-
-
-def serve_vault_response(route_path: str) -> tuple[HTTPStatus, str, bytes, dict[str, str]]:
-    projection_dir_raw = os.environ.get(VAULT_PROJECTION_DIR_ENV, VAULT_PROJECTION_DIR_DEFAULT).strip()
-    projection_dir = Path(projection_dir_raw).expanduser().resolve()
-    rel = route_path.removeprefix("/vault").lstrip("/")
-    if not rel or rel.endswith("/"):
-        rel = (rel or "") + "index.html"
-    # Guard against path traversal.
-    target = (projection_dir / rel).resolve()
-    if not str(target).startswith(str(projection_dir) + os.sep) and target != projection_dir:
-        return json_response({"error": "not_found"}, HTTPStatus.NOT_FOUND)
-    if target.is_dir():
-        target = target / "index.html"
-    if not target.exists() or not target.is_file():
-        return json_response({"error": "not_found"}, HTTPStatus.NOT_FOUND)
-    content_type = mimetypes.guess_type(target.name)[0] or "application/octet-stream"
-    try:
-        return HTTPStatus.OK, content_type, target.read_bytes(), {"Cache-Control": "no-store"}
-    except OSError:
-        return json_response({"error": "not_found"}, HTTPStatus.NOT_FOUND)
-
-
 def static_response(route_path: str) -> tuple[HTTPStatus, str, bytes, dict[str, str]]:
     try:
         content_type, body = serve_static_asset(route_path, Path(__file__).resolve().parent / "static")
@@ -168,8 +143,6 @@ def route_response_with_headers(method: str, path: str, runtime_root: Path, body
         return json_response(inbox.inbox_payload(ctx))
     if route_path == "/api/swipe-queue.json":
         return json_response(swipe.swipe_payload(runtime_root))
-    if route_path == "/vault" or route_path.startswith("/vault/"):
-        return serve_vault_response(route_path)
     if route_path.startswith("/static/"):
         return static_response(route_path)
     if route_path.startswith("/media/"):

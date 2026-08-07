@@ -98,23 +98,17 @@ def test_demo_set_keeps_all_other_nav_items(monkeypatch):
         assert f'href="{href}"' in nav, f"non-admin nav entry {href} must remain in demo mode"
 
 
-def test_vault_route_serves_without_nav_link(tmp_path: Path, monkeypatch):
+def test_vault_route_is_retired(tmp_path: Path, monkeypatch):
+    """The static vault projection was retired 2026-08-07 (it had been stale
+    since May); /vault/ must 404 and the nav must not link it."""
     from tests.test_ops_dashboard import request_text
-
-    projection_dir = tmp_path / "projection"
-    vault_index = projection_dir / "types" / "index.html"
-    vault_index.parent.mkdir(parents=True)
-    vault_index.write_text("<!doctype html><title>Vault Types</title>", encoding="utf-8")
-    monkeypatch.setenv("BTQ_VAULT_PROJECTION_DIR", str(projection_dir))
 
     nav = nav_html("home")
     assert "/vault/types/index.html" not in nav
     assert ">Vault<" not in nav
 
-    status, content_type, body = request_text("GET", "/vault/types/index.html", tmp_path / "runtime")
-    assert status == HTTPStatus.OK
-    assert content_type == "text/html"
-    assert "Vault Types" in body
+    status, _content_type, _body = request_text("GET", "/vault/types/index.html", tmp_path / "runtime")
+    assert status == HTTPStatus.NOT_FOUND
 
 
 @pytest.mark.parametrize("value", ["1", "true", "TRUE", "  TRUE ", "yes", "on", "On", "YeS"])
