@@ -17,7 +17,7 @@ mutation classes.
 - Data path: `/srv/btq/data`
 - Runtime path: `/srv/btq/runtime`
 - Token DB: `/srv/btq/data/field_capture_tokens.sqlite3`
-- Person/site resolution: CouchDB (`btq_vault` / `btq_sites`) via the service's
+- Person/site resolution: CouchDB (`btq_vault`) via the service's
   `BTQ_COUCHDB_*` environment
 - Production user/group: `btq-field:btq-field`
 

@@ -15,12 +15,12 @@ from tests.test_ops_dashboard import request_text
 
 def site_doc(site_id: str = "7050", *, active: bool = True) -> dict[str, object]:
     return {
-        "_id": f"site_{site_id}",
+        "_id": f"location_{site_id}",
         "_rev": "1-abc",
-        "type": "site",
+        "type": "location",
         "site_id": site_id,
-        "canonical_name": "Summit Wire" if site_id == "7050" else "Inactive Site",
-        "active": active,
+        "location": "Summit Wire" if site_id == "7050" else "Inactive Site",
+        "capture_active": active,
         "aliases": ["summit", "wire"],
         "note_path": "Accounts/Summit/about.md",
         "vision_context": "Industrial context",
@@ -299,7 +299,7 @@ def test_site_new_post_creates_doc_with_id_pattern(monkeypatch: pytest.MonkeyPat
 
     assert status == HTTPStatus.SEE_OTHER
     assert headers["Location"] == "/sites?site_id=new_site&message=created"
-    assert puts[0]["_id"] == "site_new_site"
+    assert puts[0]["_id"] == "location_new_site"
 
 
 def test_site_new_post_rejects_duplicate_site_id(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

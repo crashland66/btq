@@ -38,14 +38,12 @@ def test_couchdb_helpers_resolve_from_env_and_match_instance_config(
     monkeypatch.setenv("BTQ_COUCHDB_URL", "http://couch.sentinel:5999/")
     monkeypatch.setenv("BTQ_COUCHDB_USER", "verifier")
     monkeypatch.setenv("BTQ_COUCHDB_PASSWORD", "verifier-pass")
-    monkeypatch.setenv("BTQ_COUCHDB_SITES_DB", "sentinel_sites")
     monkeypatch.setenv("BTQ_COUCHDB_VAULT_DB", "sentinel_vault")
 
     # Helpers return the same values the old inline os.environ.get() did.
     assert couchdb_config.base_url() == "http://couch.sentinel:5999"  # trailing slash stripped
     assert couchdb_config.username() == "verifier"
     assert couchdb_config.password() == "verifier-pass"
-    assert couchdb_config.sites_database() == "sentinel_sites"
     assert couchdb_config.vault_database() == "sentinel_vault"
 
     cfg = couchdb_config.from_env()
@@ -58,14 +56,12 @@ def test_couchdb_helpers_resolve_from_env_and_match_instance_config(
     assert inst.couchdb_url.rstrip("/") == couchdb_config.base_url()
     assert inst.couchdb_user == couchdb_config.username()
     assert inst.couchdb_password == couchdb_config.password()
-    assert inst.couchdb_sites_db == couchdb_config.sites_database()
     assert inst.couchdb_vault_db == couchdb_config.vault_database()
 
 
 def test_db_name_helpers_default_to_preserved_names() -> None:
     # The hermetic conftest deletes the couchdb url/user/pass vars but not the
     # db-name vars; with none set these must equal the historical defaults.
-    assert couchdb_config.sites_database() == "btq_sites"
     assert couchdb_config.field_captures_database() == "btq_field_captures"
     assert couchdb_config.photo_vision_database() == "btq_photo_vision"
     assert couchdb_config.queue_database() == "btq_queue"
@@ -76,7 +72,6 @@ def test_db_name_helpers_default_to_preserved_names() -> None:
 
 def test_db_name_defaults_equal_instance_config_defaults() -> None:
     inst = instance_config.load_instance_config()
-    assert couchdb_config.sites_database() == inst.couchdb_sites_db
     assert couchdb_config.field_captures_database() == inst.couchdb_field_captures_db
     assert couchdb_config.photo_vision_database() == inst.couchdb_photo_vision_db
     assert couchdb_config.queue_database() == inst.couchdb_queue_db
@@ -239,7 +234,6 @@ def test_instance_config_holds_only_instance_surface() -> None:
         "couchdb_url",
         "couchdb_user",
         "couchdb_password",
-        "couchdb_sites_db",
         "couchdb_field_captures_db",
         "couchdb_photo_vision_db",
         "couchdb_queue_db",

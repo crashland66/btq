@@ -74,7 +74,7 @@ def test_write_prospect_round_trips_via_load_prospect(monkeypatch: pytest.Monkey
     assert prospects.load_prospect(config, "x") == stored
 
 
-def test_write_prospect_targets_sites_database(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_write_prospect_targets_vault_database(monkeypatch: pytest.MonkeyPatch) -> None:
     requests: list[object] = []
 
     def fake_urlopen(req: object, timeout: float) -> FakeResponse:
@@ -90,8 +90,9 @@ def test_write_prospect_targets_sites_database(monkeypatch: pytest.MonkeyPatch) 
     assert prospects.write_prospect(config, prospect=doc)["ok"] is True
     assert requests
     urls = [getattr(req, "full_url", "") for req in requests]
-    assert any("/btq_sites/" in url for url in urls)
-    assert not any("/btq_vault/" in url for url in urls)
+    # Prospects live in the canonical vault; btq_sites is retired.
+    assert any("/btq_vault/" in url for url in urls)
+    assert not any("/btq_sites/" in url for url in urls)
 
 
 def test_load_prospect_returns_none_on_404(monkeypatch: pytest.MonkeyPatch) -> None:

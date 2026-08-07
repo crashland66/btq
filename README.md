@@ -409,7 +409,7 @@ Instance-specific fields:
 - CouchDB URL and credentials:
   `BTQ_COUCHDB_URL`, `BTQ_COUCHDB_USER`, `BTQ_COUCHDB_PASSWORD`
 - CouchDB database-name overrides:
-  `BTQ_COUCHDB_SITES_DB`, `BTQ_COUCHDB_FIELD_CAPTURES_DB`,
+  `BTQ_COUCHDB_FIELD_CAPTURES_DB`,
   `BTQ_COUCHDB_PEOPLE_DB`, `BTQ_COUCHDB_PHOTO_VISION_DB`,
   `BTQ_COUCHDB_QUEUE_DB`, `BTQ_COUCHDB_VAULT_DB`,
   `BTQ_COUCHDB_PERSONAL_JOURNAL_DB`, `BTQ_COUCHDB_VOICE_MEMOS_DB`
@@ -444,7 +444,7 @@ of truth; there is no Obsidian markdown projection.
 
 Important current coupling:
 
-- runtime site routing uses the active site registry — the `btq_sites` CouchDB
+- runtime site routing uses the active site registry — the `btq_vault` CouchDB
   database when `BTQ_COUCHDB_URL` is set, falling back to
   [project/event_pipeline/sites.py](project/event_pipeline/sites.py) in
   local/dev when CouchDB is not configured

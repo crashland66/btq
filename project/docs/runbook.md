@@ -384,7 +384,7 @@ structured `error` metadata: `type: timeout`, `message`, `model_name`,
 retry later with `--replace-failed` so serial processing remains predictable.
 
 When a site is known and CouchDB site registry access is configured, the prompt
-includes safe site background from the `btq_sites` document `vision_context`.
+includes safe site background from the location doc's `vision_context`.
 This is advisory background only. The model must still describe visible facts
 only and use uncertain language when the image does not match the context. New
 or explicitly regenerated sidecars record `site_context_used`,
@@ -1030,8 +1030,8 @@ recent log warnings/errors. The Inbox is the default operator landing page.
   `monitoring` or `resolved` to `open`
 - `/failed/retry-sidecar` mutates one retry-intent file consumed by
   `pipeline_watcher`
-- `/sites/save` mutates one `btq_sites` document
-- `/sites/new` mutates one `btq_sites` document
+- `/sites/save` mutates the registration fields of one `btq_vault` `location_*` document
+- `/sites/new` creates one `btq_vault` `location_*` document
 - `/tokens/new` mutates one row in the field-capture token SQLite store
 - `/tokens/revoke` mutates one row in the same store by marking it revoked
 - `/system/save` mutates one `system_defaults` CouchDB document
@@ -1123,7 +1123,6 @@ Every BTQ CouchDB node must have the full database set:
 - `btq_field_captures`
 - `btq_photo_vision`
 - `btq_queue`
-- `btq_sites`
 - `btq_vault`
 - `btq_voice_memos`
 
@@ -1201,12 +1200,12 @@ Personal journal jobs do not run through operational event extraction and do not
 
 Current runtime routing uses the active site registry through
 [event_pipeline/sites.py](/Users/operator/btq/project/event_pipeline/sites.py).
-When `BTQ_COUCHDB_URL` is set, `sites.py` reads the CouchDB `btq_sites`
+When `BTQ_COUCHDB_URL` is set, `sites.py` reads the CouchDB `btq_vault` site
 registry. When that environment variable is unset, local/dev routing falls back
 to the checked-in hardcoded registry.
 
 `project/event_pipeline/couchdb/push_design_doc.py` provisions both supported
-design documents by default: `btq_sites` for site registry lookups and
+design documents by default: `btq_vault` (whose `sites_by_alias` / `sites_by_site_id` views drive site registry lookups) and
 `btq_field_captures` for field-capture viewer/media lookups.
 
 The active registry currently provides:
@@ -1239,7 +1238,7 @@ That means this repository shows:
 - the runtime registry consumer
 - the queue-processor side site validation logic
 
-It does not show code that rebuilds the active `btq_sites` registry on a
+It does not show code that rebuilds the active site registry on a
 schedule. Site seed/migration code writes CouchDB documents with IDs like
 `site_<site_id>`, for example `site_7050`, including aliases and optional vision
 context.
@@ -1345,7 +1344,7 @@ Check in this order:
 
 1. confirm a canonical `location` document exists for the site
 2. confirm the `location` document carries `type: location` and either `job` or `site_id`
-3. check whether the site exists in the active `btq_sites` registry (or [event_pipeline/sites.py](/Users/operator/btq/project/event_pipeline/sites.py) in local/dev fallback)
+3. check whether the site exists in the active site registry (btq_vault location docs) (or [event_pipeline/sites.py](../event_pipeline/sites.py) in local/dev fallback)
 4. confirm the spoken or typed site reference matches a canonical name or alias in that registry
 5. if your environment uses an external registry refresh, verify that it has actually run and updated the runtime registry used by the current process
 

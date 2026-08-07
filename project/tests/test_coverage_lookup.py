@@ -126,7 +126,7 @@ def test_ranking_orders_by_distance_and_partitions_fleet() -> None:
 def test_page_ranks_links_and_warns(monkeypatch: pytest.MonkeyPatch) -> None:
     body = _render(monkeypatch)
     # Site naming matches the site page's own convention (sites.canonical_name).
-    assert "Potential coverage near Hoganas" in body
+    assert "Potential coverage near North American Hoganas" in body
     # MUTATION GUARD: the explicit warning is present and prominent.
     assert "Proximity is not availability" in body
     assert "Potential coverage only." in body

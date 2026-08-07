@@ -78,7 +78,7 @@ The `_security` payload grants the channel user reader and writer membership on
 
 ## Picker Permissions
 
-The voice-memo runtime user also needs reader access on `btq_sites` and
+The voice-memo runtime user also needs reader access on
 `btq_vault` so `/api/sites` and `/api/employees` can populate the PWA pickers
 (employees read straight from the canonical vault since the btq_people
 mirror was retired).
@@ -88,7 +88,7 @@ As CouchDB admin, on the VPS:
 ```bash
 VOICE_USER="$(grep ^VOICE_COUCHDB_USER /etc/btq/voice-memo.env | cut -d= -f2)"
 
-for db in btq_sites btq_vault; do
+for db in btq_vault; do
   curl -u admin:$ADMIN_PASS -X PUT \
     "http://127.0.0.1:5984/${db}/_security" \
     -H 'Content-Type: application/json' \

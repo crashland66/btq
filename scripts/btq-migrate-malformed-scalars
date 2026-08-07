@@ -44,8 +44,6 @@ from typing import Any
 
 ALLOWED_DATABASES = (
     "btq_vault",
-    "btq_sites",
-    "btq_people",
     "btq_field_captures",
     "btq_photo_vision",
 )

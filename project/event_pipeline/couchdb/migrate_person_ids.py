@@ -56,7 +56,7 @@ EXTRA_LEGACY_PERSON_IDS: dict[str, str] = {
     "prs_01KSGY3B8A0CZT6ZB05VQ9HP32": "stoltz_gregory",
 }
 
-# Databases whose docs may reference a person_id. btq_sites and
+# Databases whose docs may reference a person_id. The (retired) sites db and
 # btq_photo_vision were audited and hold no person references; btq_queue is
 # excluded on purpose (see module docstring).
 REWRITE_DATABASES: tuple[str, ...] = ("btq_vault", "btq_field_captures", "btq_voice_memos")

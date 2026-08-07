@@ -7,7 +7,8 @@ person/site per test (which is how synthetic data scattered into prod before).
 The IDs/names here are kept in sync with the REAL canonical records created for the
 demo token:
   - employee ``employee_sandbox-user`` in ``btq_vault`` (type ``employee``)
-  - site ``SANDBOX`` in ``btq_sites`` (type ``site``)
+  - site ``SANDBOX`` — code-canonical builtin row in ``CouchDBSiteRegistry``
+    (deliberately NOT a ``btq_vault`` location doc)
 so a test fixture and the live tokenized link describe the same identity.
 """
 
@@ -44,10 +45,10 @@ def sandbox_employee_doc(**overrides: Any) -> dict[str, Any]:
 
 
 def sandbox_site_doc(**overrides: Any) -> dict[str, Any]:
-    """Canonical site doc (``btq_sites``, ``_id`` == ``site_id``, type ``site``).
+    """Legacy-shaped site doc for tests that stub registry view sources.
 
     ``active: True`` (boolean) is REQUIRED for the site to be submittable: the
-    btq_sites ``by_site_id`` view gates on ``doc.active === true`` and emits
+    old ``by_site_id`` view gated on ``doc.active === true`` and emitted
     ``canonical: doc.account`` — so without it the fc app's /api/session returns an
     empty ``sites`` list and disables capture (mis-reported as "cannot submit").
     """

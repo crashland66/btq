@@ -61,14 +61,13 @@ class SetupDatabasesTests(unittest.TestCase):
     def test_create_required_databases(self) -> None:
         with mock.patch(
             "event_pipeline.couchdb.setup_databases.create_database",
-            side_effect=["created", "created", "created", "exists", "created", "created"],
+            side_effect=["created", "created", "exists", "created", "created"],
         ) as create_mock:
             outcomes = setup_databases.create_required_databases("http://couchdb.test", {})
 
         self.assertEqual(
             outcomes,
             {
-                "btq_sites": "created",
                 "btq_field_captures": "created",
                 "btq_voice_memos": "created",
                 "btq_queue": "exists",
@@ -76,7 +75,7 @@ class SetupDatabasesTests(unittest.TestCase):
                 "btq_personal_journal": "created",
             },
         )
-        self.assertEqual(create_mock.call_count, 6)
+        self.assertEqual(create_mock.call_count, 5)
 
 
 class ProvisionVaultIndexesTests(unittest.TestCase):

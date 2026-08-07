@@ -8,9 +8,13 @@ from typing import Any
 from urllib import error, parse, request
 
 from event_pipeline import couchdb_config
+from event_pipeline.site_registry_data import (
+    BUILTIN_SANDBOX_SITE,
+    BUILTIN_SANDBOX_VISION_CONTEXT,
+)
 
 
-DEFAULT_SITES_DB = couchdb_config.DEFAULT_SITES_DB
+DEFAULT_VAULT_DB = couchdb_config.DEFAULT_VAULT_DB
 
 
 class CouchDBRegistryError(Exception):
@@ -38,10 +42,40 @@ class SiteRow:
     vision_context: dict[str, Any] | None
 
 
+def _builtin_alias_rows() -> list[SiteRow]:
+    """SANDBOX rows for when the views carry no SANDBOX doc.
+
+    The demo persona is code-canonical: it must resolve (fc site picker, token
+    authorization) without a location_SANDBOX doc polluting btq_vault. A real
+    view row for the same site_id overrides these."""
+    return [
+        SiteRow(
+            alias=normalize_for_match(str(alias)),
+            site_id=str(BUILTIN_SANDBOX_SITE["site_id"]),
+            canonical=str(BUILTIN_SANDBOX_SITE["canonical"]),
+            note_path=str(BUILTIN_SANDBOX_SITE["note_path"]),
+            vision_context=dict(BUILTIN_SANDBOX_VISION_CONTEXT),
+        )
+        for alias in BUILTIN_SANDBOX_SITE["aliases"]
+    ]
+
+
+def _builtin_site_id_row(site_id: str) -> SiteRow | None:
+    if site_id != str(BUILTIN_SANDBOX_SITE["site_id"]):
+        return None
+    return _builtin_alias_rows()[0]
+
+
 class CouchDBSiteRegistry:
     """
-    Queries CouchDB btq_sites views for site resolution.
-    Replaces the hardcoded SITES list in sites.py.
+    Queries the btq_vault sites_by_alias / sites_by_site_id views for site
+    resolution. Site registration lives on the canonical ``location_<site_id>``
+    docs (fields: site_id, aliases, capture_active, vision_context, note_path,
+    capture_guidance, display_categories) — the old sites database is retired.
+
+    SANDBOX is the one code-canonical site: the demo persona is deliberately
+    kept out of btq_vault (mirroring site_detail._builtin_location_doc), so a
+    builtin row backs it whenever the views do not provide one.
 
     Thread-safe for read access. Results are cached for the duration
     of one watcher cycle (caller controls cache lifetime by instantiating
@@ -50,7 +84,7 @@ class CouchDBSiteRegistry:
     Environment configuration:
     BTQ_COUCHDB_URL defaults to http://127.0.0.1:5984.
     BTQ_COUCHDB_USER and BTQ_COUCHDB_PASSWORD default to empty, meaning no auth.
-    BTQ_COUCHDB_SITES_DB defaults to btq_sites.
+    BTQ_COUCHDB_VAULT_DB defaults to btq_vault.
     BTQ_COUCHDB_TIMEOUT defaults to 10 seconds.
     """
 
@@ -75,7 +109,7 @@ class CouchDBSiteRegistry:
         self.base_url = config.base_url
         self.username = config.username
         self.password = config.password
-        self.database = couchdb_config.sites_database(database)
+        self.database = couchdb_config.vault_database(database)
         self.timeout = config.timeout
         self._auth_header = config.auth_header()
         self._lock = threading.RLock()
@@ -141,7 +175,7 @@ class CouchDBSiteRegistry:
         return row.vision_context
 
     def get_capture_guidance(self, site_id: str) -> str | None:
-        """Return the per-site capture_guidance string from btq_sites, or None if absent/empty."""
+        """Return the per-site capture_guidance string from the location doc, or None if absent/empty."""
         doc = self._get_site_doc(str(site_id))
         guidance = doc.get("capture_guidance") if isinstance(doc, dict) else None
         if isinstance(guidance, str) and guidance.strip():
@@ -149,7 +183,7 @@ class CouchDBSiteRegistry:
         return None
 
     def get_display_categories(self, site_id: str) -> list[dict[str, str]] | None:
-        """Return the per-site display_categories list from btq_sites, or None if absent/empty/malformed."""
+        """Return the per-site display_categories list from the location doc, or None if absent/empty/malformed."""
         doc = self._get_site_doc(str(site_id))
         categories = doc.get("display_categories") if isinstance(doc, dict) else None
         if not isinstance(categories, list) or not categories:
@@ -194,18 +228,21 @@ class CouchDBSiteRegistry:
     def _get_alias_rows(self) -> list[SiteRow]:
         with self._lock:
             if self._alias_rows is None:
-                payload = self._request_json(self._view_url("by_alias"))
-                self._alias_rows = self._parse_alias_rows(payload)
+                payload = self._request_json(self._view_url("sites_by_alias"))
+                rows = self._parse_alias_rows(payload)
+                view_site_ids = {row.site_id for row in rows}
+                rows.extend(row for row in _builtin_alias_rows() if row.site_id not in view_site_ids)
+                self._alias_rows = rows
             return list(self._alias_rows)
 
     def _get_site_id_row(self, site_id: str) -> SiteRow | None:
         with self._lock:
             if site_id not in self._site_id_rows:
                 query = parse.urlencode({"key": json.dumps(site_id)})
-                payload = self._request_json(f"{self._view_url('by_site_id')}?{query}")
+                payload = self._request_json(f"{self._view_url('sites_by_site_id')}?{query}")
                 rows = payload.get("rows")
                 if not isinstance(rows, list) or not rows:
-                    self._site_id_rows[site_id] = None
+                    self._site_id_rows[site_id] = _builtin_site_id_row(site_id)
                 else:
                     self._site_id_rows[site_id] = self._row_from_value(str(rows[0].get("key", site_id)), rows[0].get("value"))
             return self._site_id_rows[site_id]
@@ -213,7 +250,7 @@ class CouchDBSiteRegistry:
     def _view_url(self, view_name: str) -> str:
         db = parse.quote(self.database, safe="")
         view = parse.quote(view_name, safe="")
-        return f"{self.base_url}/{db}/_design/btq_sites/_view/{view}"
+        return f"{self.base_url}/{db}/_design/btq_vault/_view/{view}"
 
     def _doc_url(self, doc_id: str) -> str:
         db = parse.quote(self.database, safe="")
@@ -221,7 +258,7 @@ class CouchDBSiteRegistry:
         return f"{self.base_url}/{db}/{doc}"
 
     def _get_site_doc(self, site_id: str) -> dict[str, Any] | None:
-        doc_id = f"site_{site_id.strip()}"
+        doc_id = f"location_{site_id.strip()}"
         try:
             return self._request_json(self._doc_url(doc_id))
         except CouchDBRegistryError as exc:

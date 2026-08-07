@@ -63,7 +63,7 @@ def request_json(method: str, path: str, payload: dict[str, Any] | None = None) 
 
 
 def _doc_path() -> str:
-    return f"{parse.quote(couchdb_config.sites_database(), safe='')}/{parse.quote(DOC_ID, safe='')}"
+    return f"{parse.quote(couchdb_config.vault_database(), safe='')}/{parse.quote(DOC_ID, safe='')}"
 
 
 def load_system_defaults() -> dict[str, Any]:

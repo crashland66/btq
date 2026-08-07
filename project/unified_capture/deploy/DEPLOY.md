@@ -11,7 +11,7 @@ apps. It does not retire or modify `photos.example.com` or
 - Systemd service: `btq-unified-capture.service`
 - Loopback API: `127.0.0.1:8081`
 - Token DB: `/srv/btq/data/field_capture_tokens.sqlite3`
-- Person/site resolution: CouchDB (`btq_vault` / `btq_sites`) via `BTQ_COUCHDB_*`
+- Person/site resolution: CouchDB (`btq_vault`) via `BTQ_COUCHDB_*`
 - Upload root: `/srv/btq/runtime/uploads`
 - Photo cap: `--max-images 25` in the systemd `ExecStart`
 - Optional service environment: `/etc/btq/unified-capture.env`

@@ -26,7 +26,7 @@ explicitly changes that.
 - Local Dell CouchDB should exist before watcher cutover. The Dell is a full
   CouchDB peer, not just an Ollama/Whisper appliance: it should carry
   `btq_field_captures`, `btq_photo_vision`, `btq_queue`,
-  `btq_sites`, `btq_vault`, and `btq_voice_memos`.
+  `btq_vault`, and `btq_voice_memos`.
 
 Field-capture SPA deployment remains covered by
 [field-capture-production-deployment.md](/Users/operator/btq/project/field_capture/field-capture-production-deployment.md).
