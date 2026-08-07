@@ -10,7 +10,7 @@ from event_pipeline import couchdb_config
 logger = logging.getLogger(__name__)
 
 DOC_TYPE = "photo_vision_sidecar"
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 class PhotoVisionCouchDBError(Exception):
@@ -18,85 +18,53 @@ class PhotoVisionCouchDBError(Exception):
 
 
 def build_photo_vision_document(sidecar_payload: dict[str, object]) -> dict[str, object]:
-    """Map a sidecar payload to the btq_photo_vision CouchDB document schema."""
+    """Map a sidecar payload to the btq_photo_vision CouchDB document.
+
+    Schema 2 stores the FULL sidecar payload instead of a hand-picked subset —
+    the subset mapping silently dropped every field added after it was written
+    (summary, quality_flags, source_image_path, site context), which is how
+    the dashboard's CouchDB reads drifted from disk. Only derived doc plumbing
+    is layered on top: _id, doc_type, schema_version, and search_text.
+    """
     photo_asset_id = str(sidecar_payload.get("photo_asset_id") or "").strip()
     if not photo_asset_id:
         raise PhotoVisionCouchDBError("sidecar_payload is missing photo_asset_id")
 
-    provenance = sidecar_payload.get("provenance") if isinstance(sidecar_payload.get("provenance"), dict) else {}
-
-    description = str(sidecar_payload.get("description") or "")
-    summary = str(sidecar_payload.get("summary") or "")
-    area_guess = str(sidecar_payload.get("area_guess") or "")
-    visible_objects = sidecar_payload.get("visible_objects")
-    possible_conditions = sidecar_payload.get("possible_conditions")
-    possible_issues = sidecar_payload.get("possible_issues")
+    doc: dict[str, object] = {
+        str(key): value
+        for key, value in sidecar_payload.items()
+        if not str(key).startswith("_")
+    }
+    doc["_id"] = photo_asset_id
+    doc["doc_type"] = DOC_TYPE
+    doc["schema_version"] = SCHEMA_VERSION
+    # Pre-lane sidecars lack vision_lane; consumers filter on it, so the
+    # normalized default survives the passthrough rewrite.
+    lane = str(sidecar_payload.get("vision_lane") or "").strip()
+    doc["vision_lane"] = lane if lane in {"qc", "pow"} else "pow"
+    # deep_analysis consumers iterate a list; a malformed shape is dropped
+    # rather than propagated (pinned by test_build_doc_ignores_non_list_deep_analysis).
+    if "deep_analysis" in doc and not isinstance(doc["deep_analysis"], list):
+        del doc["deep_analysis"]
 
     def _str_list(value: object) -> list[str]:
         if not isinstance(value, list):
             return []
         return [str(item).strip() for item in value if str(item).strip()]
 
-    qc_category = str(sidecar_payload.get("qc_category") or "")
-    vision_lane = str(sidecar_payload.get("vision_lane") or "pow").strip()
-    if vision_lane not in {"qc", "pow"}:
-        vision_lane = "pow"
-    raw_vision_category = sidecar_payload.get("vision_category")
-    vision_category = str(raw_vision_category).strip() if raw_vision_category is not None else None
-    category_agreement = str(sidecar_payload.get("category_agreement") or "").strip()
-
-    search_parts = [description, summary, area_guess, qc_category, vision_category or "", category_agreement]
-    search_parts.extend(_str_list(visible_objects))
-    search_parts.extend(_str_list(possible_conditions))
-    search_parts.extend(_str_list(possible_issues))
-    search_text = " ".join(part for part in search_parts if part).lower()
-
-    quality = sidecar_payload.get("quality") if isinstance(sidecar_payload.get("quality"), dict) else None
-
-    doc: dict[str, object] = {
-        "_id": photo_asset_id,
-        "doc_type": DOC_TYPE,
-        "schema_version": SCHEMA_VERSION,
-        "status": str(sidecar_payload.get("status") or ""),
-        "generated_at": str(sidecar_payload.get("generated_at") or ""),
-        "site_id": str(sidecar_payload.get("site_id") or ""),
-        "capture_id": str(sidecar_payload.get("capture_id") or provenance.get("capture_id") or ""),
-        "photo_asset_id": photo_asset_id,
-        "photo_id": str(sidecar_payload.get("photo_id") or provenance.get("photo_id") or ""),
-        "submitter_id": str(sidecar_payload.get("submitter_id") or ""),
-        "qc_category": qc_category,
-        "vision_lane": vision_lane,
-        "vision_category": vision_category,
-        "category_agreement": category_agreement,
-        "description": description,
-        "summary": summary,
-        "area_guess": area_guess,
-        "submitted_area": str(sidecar_payload.get("submitted_area") or ""),
-        "submitted_phase": str(sidecar_payload.get("submitted_phase") or ""),
-        "visible_objects": _str_list(visible_objects),
-        "possible_conditions": _str_list(possible_conditions),
-        "possible_issues": _str_list(possible_issues),
-        "confidence": sidecar_payload.get("confidence"),
-        "needs_human_review": bool(sidecar_payload.get("needs_human_review", True)),
-        "warnings": _str_list(sidecar_payload.get("warnings")),
-        "quality": quality,
-        "search_text": search_text,
-        "model_name": str(sidecar_payload.get("model_name") or ""),
-        "model_provider": str(sidecar_payload.get("model_provider") or ""),
-        "source_image_hash": str(sidecar_payload.get("source_image_hash") or ""),
-        "provenance": provenance,
-    }
-
-    error_payload = sidecar_payload.get("error")
-    if isinstance(error_payload, dict):
-        doc["error"] = error_payload
-
-    deep_analysis = sidecar_payload.get("deep_analysis")
-    if isinstance(deep_analysis, list):
-        doc["deep_analysis"] = deep_analysis
-
+    search_parts = [
+        str(sidecar_payload.get("description") or ""),
+        str(sidecar_payload.get("summary") or ""),
+        str(sidecar_payload.get("area_guess") or ""),
+        str(sidecar_payload.get("qc_category") or ""),
+        str(sidecar_payload.get("vision_category") or ""),
+        str(sidecar_payload.get("category_agreement") or ""),
+    ]
+    search_parts.extend(_str_list(sidecar_payload.get("visible_objects")))
+    search_parts.extend(_str_list(sidecar_payload.get("possible_conditions")))
+    search_parts.extend(_str_list(sidecar_payload.get("possible_issues")))
+    doc["search_text"] = " ".join(part for part in search_parts if part).lower()
     return doc
-
 
 def _get_current_rev(config: couchdb_config.CouchDBConfig, database: str, doc_id: str) -> str | None:
     """Return the current _rev of a document, or None if it does not exist."""
@@ -232,3 +200,97 @@ def query_photo_vision_by_capture_ids(
     for docs in grouped.values():
         docs.sort(key=lambda doc: (str(doc.get("photo_id") or ""), str(doc.get("_id") or "")))
     return grouped
+
+
+def fetch_all_photo_vision_docs(
+    config: couchdb_config.CouchDBConfig,
+    *,
+    database: str | None = None,
+    page_size: int = 5000,
+    max_pages: int = 400,
+) -> list[dict[str, Any]]:
+    """Every photo_vision_sidecar doc, bookmark-paginated (the corpus is ~16k
+    and growing; a fixed limit would silently truncate)."""
+    docs: list[dict[str, Any]] = []
+    bookmark: object = None
+    for _ in range(max_pages):
+        mango: dict[str, object] = {
+            "selector": {"doc_type": DOC_TYPE},
+            "limit": page_size,
+        }
+        if bookmark:
+            mango["bookmark"] = bookmark
+        payload = query_photo_vision(config, mango, database=database)
+        page = [doc for doc in payload.get("docs", []) if isinstance(doc, dict)]
+        docs.extend(page)
+        if len(page) < page_size:
+            break
+        bookmark = payload.get("bookmark")
+        if not bookmark:
+            break
+    return docs
+
+
+def _bulk_revs(config: couchdb_config.CouchDBConfig, database: str, doc_ids: list[str]) -> dict[str, str]:
+    db_quoted = parse.quote(database, safe="")
+    url = f"{config.base_url}/{db_quoted}/_all_docs"
+    body = json.dumps({"keys": doc_ids}).encode("utf-8")
+    headers = {"Accept": "application/json", "Content-Type": "application/json"}
+    headers.update(config.auth_header())
+    req = request.Request(url, data=body, headers=headers, method="POST")
+    with request.urlopen(req, timeout=config.timeout) as response:
+        rows = json.loads(response.read().decode("utf-8")).get("rows", [])
+    revs: dict[str, str] = {}
+    for row in rows:
+        if isinstance(row, dict) and isinstance(row.get("value"), dict):
+            revs[str(row.get("id"))] = str(row["value"].get("rev") or "")
+    return revs
+
+
+def _bulk_put(config: couchdb_config.CouchDBConfig, database: str, docs: list[dict[str, Any]]) -> int:
+    db_quoted = parse.quote(database, safe="")
+    url = f"{config.base_url}/{db_quoted}/_bulk_docs"
+    body = json.dumps({"docs": docs}).encode("utf-8")
+    headers = {"Accept": "application/json", "Content-Type": "application/json"}
+    headers.update(config.auth_header())
+    req = request.Request(url, data=body, headers=headers, method="POST")
+    with request.urlopen(req, timeout=max(config.timeout, 60.0)) as response:
+        results = json.loads(response.read().decode("utf-8"))
+    return sum(1 for item in results if isinstance(item, dict) and item.get("ok"))
+
+
+def reconcile_photo_vision_from_disk(
+    config: couchdb_config.CouchDBConfig,
+    photo_vision_dir: "Path",
+    *,
+    database: str | None = None,
+    batch_size: int = 500,
+) -> dict[str, int]:
+    """Re-put every disk sidecar through the full-payload mapping.
+
+    Idempotent one-shot: upgrades subset-schema docs to schema 2 and closes
+    any write-through gaps, making CouchDB the complete read source.
+    """
+    from pathlib import Path
+
+    db = database or couchdb_config.photo_vision_database()
+    paths = sorted(Path(photo_vision_dir).glob("*.json"))
+    written = 0
+    skipped = 0
+    for start in range(0, len(paths), batch_size):
+        batch_docs: list[dict[str, Any]] = []
+        for path in paths[start:start + batch_size]:
+            try:
+                sidecar = json.loads(path.read_text(encoding="utf-8"))
+                batch_docs.append(build_photo_vision_document(sidecar))
+            except Exception:  # noqa: BLE001 - unreadable sidecars are counted, not fatal.
+                skipped += 1
+        if not batch_docs:
+            continue
+        revs = _bulk_revs(config, db, [str(doc["_id"]) for doc in batch_docs])
+        for doc in batch_docs:
+            rev = revs.get(str(doc["_id"]))
+            if rev:
+                doc["_rev"] = rev
+        written += _bulk_put(config, db, batch_docs)
+    return {"disk_sidecars": len(paths), "written": written, "unreadable": skipped}

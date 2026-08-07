@@ -1990,6 +1990,7 @@ def photo_vision_sidecar_summary(path: Path, payload: dict[str, object] | None, 
             "image_media_url": "",
             "area_guess": "",
             "description": "",
+            "summary": "",
             "visible_objects": [],
             "possible_conditions": [],
             "possible_issues": [],
@@ -2028,6 +2029,7 @@ def photo_vision_sidecar_summary(path: Path, payload: dict[str, object] | None, 
         "site_context_summary": str(payload.get("site_context_summary") or ""),
         "area_guess": str(payload.get("area_guess") or ""),
         "description": str(payload.get("description") or ""),
+        "summary": str(payload.get("summary") or ""),
         "visible_objects": string_list(payload.get("visible_objects")),
         "possible_conditions": string_list(payload.get("possible_conditions")),
         "possible_issues": string_list(payload.get("possible_issues")),
@@ -2048,48 +2050,61 @@ _PHOTO_VISION_CACHE_LOCK = threading.Lock()
 
 
 def load_photo_vision_sidecars(photo_vision_dir: Path) -> list[dict[str, object]]:
-    if not photo_vision_dir.exists():
-        return []
-    try:
-        dir_mtime = photo_vision_dir.stat().st_mtime
-    except OSError:
-        dir_mtime = 0.0
+    """Photo-vision summaries for dashboard views.
 
-    def _cached_if_fresh() -> list[dict[str, object]] | None:
-        cached = _PHOTO_VISION_CACHE.get(photo_vision_dir)
-        if cached is None:
-            return None
-        cached_at, cached_dir_mtime, cached_result = cached
-        if cached_dir_mtime != dir_mtime or time.monotonic() - cached_at >= _PHOTO_VISION_CACHE_TTL_SECONDS:
-            return None
-        return cached_result
-
-    fresh = _cached_if_fresh()
-    if fresh is not None:
-        return fresh
-
-    # Serialize cold loads. Without this, concurrent /failed or /inbox
-    # hits each scan and json-parse all ~2400 sidecar files in parallel,
-    # spiking transient memory past the dashboard's RSS watchdog and
-    # killing the daemon. The lock makes the first arriver fill the
-    # cache while the rest wait, so peak memory is bounded.
+    CouchDB (btq_photo_vision) is the read source — every dashboard read must
+    live inside the replica for the offline/local-sync goal — with the disk
+    sidecar scan kept solely as a fallback when CouchDB is unreachable. The
+    short TTL cache bounds query volume and, on the fallback path, the
+    concurrent cold-load memory spike that once tripped the RSS watchdog.
+    """
     with _PHOTO_VISION_CACHE_LOCK:
-        fresh = _cached_if_fresh()
-        if fresh is not None:
-            return fresh
-        sidecars: list[tuple[float, dict[str, object]]] = []
-        for path in photo_vision_dir.glob("*.json"):
-            try:
-                mtime = path.stat().st_mtime
-            except OSError:
-                continue
-            payload, error = read_json_artifact(path)
-            sidecars.append((mtime, photo_vision_sidecar_summary(path, payload, error)))
-        sidecars.sort(key=lambda item: (item[0], str(item[1]["name"])), reverse=True)
-        result = [summary for _mtime, summary in sidecars]
-        _PHOTO_VISION_CACHE[photo_vision_dir] = (time.monotonic(), dir_mtime, result)
+        cached = _PHOTO_VISION_CACHE.get(photo_vision_dir)
+        if cached is not None:
+            cached_at, _marker, cached_result = cached
+            if time.monotonic() - cached_at < _PHOTO_VISION_CACHE_TTL_SECONDS:
+                return cached_result
+        result = _load_photo_vision_sidecars_uncached(photo_vision_dir)
+        _PHOTO_VISION_CACHE[photo_vision_dir] = (time.monotonic(), 0.0, result)
         return result
 
+
+def _load_photo_vision_sidecars_uncached(photo_vision_dir: Path) -> list[dict[str, object]]:
+    try:
+        from field_capture.photo_vision_couchdb import fetch_all_photo_vision_docs
+
+        docs = fetch_all_photo_vision_docs(couchdb_config.from_env())
+        summaries: list[dict[str, object]] = []
+        for doc in docs:
+            asset_id = str(doc.get("photo_asset_id") or doc.get("_id") or "").strip()
+            if not asset_id:
+                continue
+            # The path is constructed, not read: /failed's runtime-file viewer
+            # still links to the on-disk artifact when one exists.
+            summaries.append(photo_vision_sidecar_summary(photo_vision_dir / f"{asset_id}.json", doc))
+        summaries.sort(
+            key=lambda item: (str(item.get("generated_at") or ""), str(item.get("name") or "")),
+            reverse=True,
+        )
+        return summaries
+    except Exception as exc:  # noqa: BLE001 - Couch outage degrades to the disk scan.
+        logger.warning("photo-vision CouchDB read failed; falling back to disk sidecars: %s", exc)
+        return _load_photo_vision_sidecars_from_disk(photo_vision_dir)
+
+
+def _load_photo_vision_sidecars_from_disk(photo_vision_dir: Path) -> list[dict[str, object]]:
+    if not photo_vision_dir.exists():
+        return []
+    sidecars: list[tuple[float, dict[str, object]]] = []
+    for path in photo_vision_dir.glob("*.json"):
+        try:
+            mtime = path.stat().st_mtime
+        except OSError:
+            continue
+        payload, error = read_json_artifact(path)
+        sidecars.append((mtime, photo_vision_sidecar_summary(path, payload, error)))
+    sidecars.sort(key=lambda item: (item[0], str(item[1]["name"])), reverse=True)
+    return [summary for _mtime, summary in sidecars]
 
 def photo_vision_status(runtime_root: Path) -> dict[str, object]:
     intake_dir = field_photo_vision.default_intake_dir(runtime_root)
