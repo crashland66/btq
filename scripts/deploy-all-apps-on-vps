@@ -1,0 +1,285 @@
+#!/usr/bin/env bash
+# deploy-all-apps-on-vps — deploy every BTQ app tree on the VPS from one source revision.
+#
+# WHY THIS EXISTS
+# ---------------
+# The gateway VPS runs THREE services, each with its own full copy of the repo:
+#
+#   btq-unified-capture  :8081  unified capture SPA  /srv/btq/apps/unified-capture/project
+#   btq-field-capture    :8080  legacy capture SPA   /srv/btq/apps/field-capture/project
+#   btq-admin            :8083  admin reporting      /srv/btq/apps/admin/source
+#
+# On 2026-08-07 the sites-vault merge retired the btq_sites database but only
+# unified-capture was redeployed. field-capture and admin kept running June 5
+# code that queried the deleted database, and the field crew — who are on
+# photos, not fc — lost their site picker for eleven hours. Nothing surfaced
+# the drift, because nothing recorded which revision each tree was on.
+#
+# Both SPA paths are supported indefinitely (operator decision, same day):
+# existing workers stay on photos, new hires are onboarded on fc. So there is
+# no future date when deploying only one tree becomes safe.
+#
+# WHAT IT GUARANTEES
+# ------------------
+# Every deployed tree gets a .btq-deployed-rev stamp, and this script ALWAYS
+# ends with a drift report comparing those stamps to the source revision. It
+# exits non-zero when the trees disagree — including when you deliberately
+# deployed a subset. A partial rollout is allowed; a SILENT one is not.
+#
+# Deploy order is deliberate: fc and admin first, photos last. photos carries
+# the live field crew, so it is only touched after the release has proven
+# itself on the quieter surfaces, and a failure earlier in the run stops
+# before it is restarted at all.
+#
+# Usage:
+#   deploy-all-apps-on-vps                 # all three, in the safe order
+#   deploy-all-apps-on-vps fc admin        # subset; still drift-reports at the end
+#   deploy-all-apps-on-vps --status        # report only, deploy nothing
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+SOURCE_ROOT="${BTQ_DEPLOY_SOURCE_ROOT:-$(cd "${SCRIPT_DIR}/.." && pwd)}"
+SYSTEMCTL="${BTQ_DEPLOY_SYSTEMCTL:-/usr/bin/systemctl}"
+STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
+
+FC_APP_DIR="${UNIFIED_CAPTURE_APP_DIR:-/srv/btq/apps/unified-capture}"
+PHOTOS_APP_DIR="${FIELD_CAPTURE_APP_DIR:-/srv/btq/apps/field-capture}"
+ADMIN_APP_DIR="${BTQ_ADMIN_APP_DIR:-/srv/btq/apps/admin}"
+ADMIN_BACKUP_ROOT="${BTQ_ADMIN_BACKUP_ROOT:-/srv/btq/backups/admin}"
+ADMIN_SERVICE="${BTQ_ADMIN_SERVICE:-btq-admin.service}"
+ADMIN_OWNER="${BTQ_ADMIN_OWNER:-btq-admin:btq-admin}"
+
+# Real hostnames stay out of this repo. The field-capture script's built-in
+# default is a placeholder (photos.example.com) whose public smoke test can
+# never pass, so the operator host comes from an untracked machine-local env
+# file — or the run stops rather than deploying against a URL that cannot
+# verify. That silent placeholder is a trap; make it loud instead.
+DEPLOY_ENV_FILE="${BTQ_DEPLOY_ENV_FILE:-/etc/btq/deploy.env}"
+if [[ -r "${DEPLOY_ENV_FILE}" ]]; then
+  # shellcheck disable=SC1090
+  set -a; . "${DEPLOY_ENV_FILE}"; set +a
+fi
+PHOTOS_PUBLIC_URL="${FIELD_CAPTURE_PUBLIC_URL:-}"
+
+STAMP_FILE=".btq-deployed-rev"
+
+if [[ -d "${SOURCE_ROOT}/.git" ]] && command -v git >/dev/null 2>&1; then
+  SOURCE_REV="$(git -C "${SOURCE_ROOT}" rev-parse --short HEAD)"
+  if ! git -C "${SOURCE_ROOT}" diff --quiet || ! git -C "${SOURCE_ROOT}" diff --cached --quiet; then
+    SOURCE_REV="${SOURCE_REV}-dirty"
+  fi
+else
+  SOURCE_REV="unknown"
+fi
+
+DEPLOYED=()
+FAILED=""
+
+fail() {
+  echo "deploy-all preflight failed: $*" >&2
+  exit 1
+}
+
+app_dir_for() {
+  case "$1" in
+    fc) echo "${FC_APP_DIR}" ;;
+    photos) echo "${PHOTOS_APP_DIR}" ;;
+    admin) echo "${ADMIN_APP_DIR}" ;;
+  esac
+}
+
+service_for() {
+  case "$1" in
+    fc) echo "btq-unified-capture.service" ;;
+    photos) echo "btq-field-capture.service" ;;
+    admin) echo "${ADMIN_SERVICE}" ;;
+  esac
+}
+
+read_stamp() {
+  local dir
+  dir="$(app_dir_for "$1")"
+  if [[ -f "${dir}/${STAMP_FILE}" ]]; then
+    cat "${dir}/${STAMP_FILE}"
+  else
+    echo "unstamped"
+  fi
+}
+
+write_stamp() {
+  local app="$1" dir
+  dir="$(app_dir_for "${app}")"
+  printf '%s %s\n' "${SOURCE_REV}" "${STAMP}" | sudo -n tee "${dir}/${STAMP_FILE}" >/dev/null
+}
+
+# --------------------------------------------------------------------------- #
+# Per-app deploys
+# --------------------------------------------------------------------------- #
+
+deploy_fc() {
+  echo "==> fc (unified-capture)"
+  "${SOURCE_ROOT}/scripts/deploy-unified-capture-app-on-vps"
+  write_stamp fc
+}
+
+deploy_photos() {
+  echo "==> photos (field-capture)"
+  if [[ -z "${PHOTOS_PUBLIC_URL}" ]]; then
+    fail "FIELD_CAPTURE_PUBLIC_URL is unset. Set it in ${DEPLOY_ENV_FILE} (machine-local, untracked) or in the environment; the sibling script's built-in default is an unreachable placeholder."
+  fi
+  FIELD_CAPTURE_PUBLIC_URL="${PHOTOS_PUBLIC_URL}" \
+    "${SOURCE_ROOT}/scripts/deploy-field-capture-app-on-vps"
+  write_stamp photos
+}
+
+# admin has no dedicated script — its tree is a FLATTENED copy of project/
+# (/srv/btq/apps/admin/source), not APP_DIR/project like the other two.
+deploy_admin() {
+  echo "==> admin (admin-reporting)"
+  local target="${ADMIN_APP_DIR}/source"
+  [[ -d "${target}" ]] || fail "admin tree missing: ${target}"
+
+  echo "Backing up to ${ADMIN_BACKUP_ROOT}/admin-${STAMP}..."
+  sudo -n mkdir -p "${ADMIN_BACKUP_ROOT}"
+  sudo -n cp -a "${ADMIN_APP_DIR}" "${ADMIN_BACKUP_ROOT}/admin-${STAMP}"
+
+  echo "Installing release."
+  sudo -n rsync -a --delete \
+    --exclude '__pycache__/' \
+    --exclude '*.pyc' \
+    --exclude '.pytest_cache/' \
+    --exclude '.mypy_cache/' \
+    --exclude '.ruff_cache/' \
+    "${SOURCE_ROOT}/project/" "${target}/"
+  sudo -n chown -R "${ADMIN_OWNER}" "${target}"
+
+  echo "Restarting ${ADMIN_SERVICE}..."
+  sudo -n "${SYSTEMCTL}" restart "${ADMIN_SERVICE}"
+  sleep 2
+  sudo -n "${SYSTEMCTL}" is-active "${ADMIN_SERVICE}"
+  write_stamp admin
+}
+
+# --------------------------------------------------------------------------- #
+# Verification
+# --------------------------------------------------------------------------- #
+
+# Each app answers on loopback with a signature that proves the PROCESS is
+# serving, not just that systemd thinks the unit is up.
+verify_app() {
+  local app="$1" code
+  case "${app}" in
+    fc)
+      curl -fsS --max-time 10 http://127.0.0.1:8081/api/health \
+        | grep -F '"app": "unified_capture"' >/dev/null \
+        || { echo "fc health check did not identify unified_capture" >&2; return 1; }
+      ;;
+    photos)
+      curl -fsS --max-time 10 http://127.0.0.1:8080/app.js \
+        | grep -F 'saveCapture' >/dev/null \
+        || { echo "photos /app.js missing saveCapture" >&2; return 1; }
+      ;;
+    admin)
+      # Token-gated: 401 is the healthy answer. A connection error is not.
+      code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 http://127.0.0.1:8083/ || echo 000)"
+      [[ "${code}" == "401" || "${code}" == "200" ]] \
+        || { echo "admin loopback returned ${code} (expected 401)" >&2; return 1; }
+      ;;
+  esac
+  return 0
+}
+
+drift_report() {
+  local app stamp rev drift=0
+  echo
+  echo "Deployed-revision report (source ${SOURCE_REV}):"
+  printf '  %-8s %-22s %-10s %s\n' "APP" "DEPLOYED REV" "SERVICE" "HEALTH"
+  for app in fc photos admin; do
+    stamp="$(read_stamp "${app}")"
+    rev="${stamp%% *}"
+    local svc health
+    svc="$(sudo -n "${SYSTEMCTL}" is-active "$(service_for "${app}")" 2>/dev/null || echo inactive)"
+    if verify_app "${app}" >/dev/null 2>&1; then health="ok"; else health="FAILED"; fi
+    printf '  %-8s %-22s %-10s %s\n' "${app}" "${rev}" "${svc}" "${health}"
+    [[ "${rev}" == "${SOURCE_REV}" ]] || drift=1
+    [[ "${svc}" == "active" && "${health}" == "ok" ]] || drift=1
+  done
+  echo
+  if (( drift )); then
+    cat >&2 <<EOF
+DRIFT: not every app tree is on ${SOURCE_REV} and healthy.
+
+This is the condition that caused the 2026-08-07 outage. Both SPA paths are
+live — photos carries the existing field crew, fc carries new hires and the
+native iOS app — so a stale tree is a real outage waiting on the next schema
+or database change, not a cosmetic inconsistency.
+
+Re-run without arguments to bring every tree to ${SOURCE_REV}.
+EOF
+    return 1
+  fi
+  echo "All app trees on ${SOURCE_REV} and healthy."
+  return 0
+}
+
+on_exit() {
+  local status=$?
+  if (( status != 0 )) && [[ -n "${FAILED}" ]]; then
+    echo >&2
+    echo "FAILED during: ${FAILED}" >&2
+    if (( ${#DEPLOYED[@]} )); then
+      echo "Already deployed this run: ${DEPLOYED[*]}" >&2
+    else
+      echo "Nothing was deployed this run." >&2
+    fi
+    echo "Backups from this run are stamped ${STAMP}." >&2
+    echo "The trees are now INCONSISTENT — resolve before leaving this session." >&2
+  fi
+}
+trap on_exit EXIT
+
+# --------------------------------------------------------------------------- #
+# Main
+# --------------------------------------------------------------------------- #
+
+[[ -f "${SOURCE_ROOT}/project/unified_capture/server.py" ]] \
+  || fail "source root does not look like the BTQ repo: ${SOURCE_ROOT}"
+[[ -x "${SYSTEMCTL}" ]] || fail "systemctl not executable: ${SYSTEMCTL}"
+
+if [[ "${1:-}" == "--status" ]]; then
+  drift_report
+  exit $?
+fi
+
+APPS=("$@")
+if (( ${#APPS[@]} == 0 )); then
+  # fc and admin first; photos (the live field crew) last.
+  APPS=(fc admin photos)
+fi
+
+for app in "${APPS[@]}"; do
+  case "${app}" in
+    fc|photos|admin) ;;
+    *) fail "unknown app '${app}' (expected: fc, photos, admin)" ;;
+  esac
+  [[ -d "$(app_dir_for "${app}")" ]] || fail "app dir missing: $(app_dir_for "${app}")"
+done
+
+echo "Deploying BTQ VPS apps from ${SOURCE_ROOT} at ${SOURCE_REV}"
+echo "Apps: ${APPS[*]}"
+echo
+
+for app in "${APPS[@]}"; do
+  FAILED="${app}"
+  case "${app}" in
+    fc) deploy_fc ;;
+    photos) deploy_photos ;;
+    admin) deploy_admin ;;
+  esac
+  DEPLOYED+=("${app}")
+  FAILED=""
+  echo
+done
+
+drift_report
