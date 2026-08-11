@@ -13,6 +13,7 @@ from event_pipeline.couchdb_registry import CouchDBRegistryError
 from event_pipeline.extraction_terms import get_extraction_terms
 from event_pipeline.sites import resolve_site_id, resolve_site_note_path
 from field_capture.display_categories import (
+    DOCUMENTATION_CAPTURE_CATEGORY_VALUES,
     SUPPLY_REQUEST_CAPTURE_CATEGORY,
     SUPPLY_REQUEST_CAPTURE_CATEGORY_LABEL,
 )
@@ -117,6 +118,60 @@ MOVEMENT_TERMS = (
     "brought to",
     "for use at",
     "for next week",
+)
+BARE_LABEL_CONDITION_TERMS = tuple(
+    dict.fromkeys(
+        (
+            *LOSS_TERMS,
+            *MOVEMENT_TERMS,
+            "locked",
+            "broken",
+            "leak",
+            "leaking",
+            "clog",
+            "clogged",
+            "backed up",
+            "damaged",
+            "dirty",
+            "flood",
+            "hole",
+            "spill",
+            "overflow",
+            "stuck",
+            "down",
+            "hazard",
+            "issue",
+            "problem",
+            "missing",
+            "empty",
+            "out",
+        )
+    )
+)
+BARE_LABEL_FINITE_VERB_TERMS = (
+    "is",
+    "are",
+    "was",
+    "were",
+    "has",
+    "have",
+    "needs",
+    "won't",
+    "can't",
+    "doesn't",
+    "no longer",
+)
+BARE_LABEL_REQUEST_VERB_TERMS = (
+    "fix",
+    "check",
+    "call",
+    "order",
+    "bring",
+    "replace",
+    "repair",
+    "clean",
+    "send",
+    "please",
 )
 ROUTINE_SUPPLY_NEED_TERMS = ("low", "out of", "running low", "restock", "need more", "reorder")
 SUPPLY_EQUIPMENT_NEED_TERMS = tuple(
@@ -495,6 +550,13 @@ def _build_semantic_prompt(capture: CaptureSemanticInput | FieldAudioTranscript)
         "QA trash pull, swept, mopped, emptied, restocked, vacuumed, dusted, wiped, cleaned, scrubbed, "
         "\"done\", \"complete\", \"finished\") and is NOT a new request or problem, emit NO action for "
         "it. If the entire note is only completion/acknowledgement reports, return "
+        '{"extracted_actions": []}.\n\n'
+        "Location labels: the note may only name the photographed room, area, or department, and "
+        "the selected capture category may name the space. At an industrial site a leading word "
+        'may be the department: "Melting offices" means the offices in the Melting department. '
+        "Never invent a predicate. You may normalize spacing or capitalization, but never turn "
+        '"X offices" into "Offices are X" or add "needs attention" when nothing requests it. '
+        "A label with no expressed condition, need, event, request, or command must return "
         '{"extracted_actions": []}.\n\n'
         + category_routing
         + "Context: "
@@ -1073,6 +1135,7 @@ def capture_category_actions(
     *,
     model_extraction_available: bool = False,
 ) -> list[ExtractedAction]:
+    actions = bare_location_label_documentation_actions(actions, source)
     if is_supply_request_capture_category(source.area):
         return supply_request_category_actions(
             actions,
@@ -1090,6 +1153,37 @@ def is_supply_request_capture_category(area: str) -> bool:
         SUPPLY_REQUEST_CAPTURE_CATEGORY.casefold(),
         SUPPLY_REQUEST_CAPTURE_CATEGORY_LABEL.casefold(),
     }
+
+
+def note_is_bare_location_label(source_text: str, area: str) -> bool:
+    text = collapse_whitespace(source_text)
+    category = collapse_whitespace(area).casefold()
+    if category not in DOCUMENTATION_CAPTURE_CATEGORY_VALUES:
+        return False
+    if not text or len(text.split()) > 6:
+        return False
+    if need_signal_present(text) or re.search(r"\d|\?", text):
+        return False
+    expressed_content_terms = (
+        *BARE_LABEL_CONDITION_TERMS,
+        *BARE_LABEL_FINITE_VERB_TERMS,
+        *BARE_LABEL_REQUEST_VERB_TERMS,
+    )
+    haystack = _norm(text)
+    return not any(_contains_need_signal_term(haystack, term) for term in expressed_content_terms)
+
+
+def bare_location_label_documentation_actions(
+    actions: list[ExtractedAction],
+    source: CaptureSemanticInput,
+) -> list[ExtractedAction]:
+    if not note_is_bare_location_label(source.source_text, source.area):
+        return actions
+    return [
+        action
+        for action in actions
+        if action.job_type in {"", JOB_APPEND_TO_NOTE}
+    ]
 
 
 def supply_request_category_actions(
@@ -1872,7 +1966,7 @@ def _rule_extracted_actions(source: CaptureSemanticInput, cleaned: str, issue_ty
         except (TypeError, ValueError):
             continue
         extracted.append(action_with_valid_proposed_queue_job(action, source))
-    return extracted
+    return bare_location_label_documentation_actions(extracted, source)
 
 
 def _matched_supply_equipment_terms(text: str) -> list[str]:

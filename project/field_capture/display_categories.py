@@ -1,5 +1,12 @@
 from __future__ import annotations
 
+REPORT_ISSUE_CAPTURE_CATEGORY_DEFINITION = {
+    "label": "Report an Issue",
+    "canonical": "report_an_issue",
+}
+REPORT_ISSUE_CAPTURE_CATEGORY = REPORT_ISSUE_CAPTURE_CATEGORY_DEFINITION["canonical"]
+REPORT_ISSUE_CAPTURE_CATEGORY_LABEL = REPORT_ISSUE_CAPTURE_CATEGORY_DEFINITION["label"]
+
 SUPPLY_REQUEST_CAPTURE_CATEGORY_DEFINITION = {
     "label": "Supply Request",
     # Capture-category namespace: deliberately distinct from the existing
@@ -10,7 +17,7 @@ SUPPLY_REQUEST_CAPTURE_CATEGORY = SUPPLY_REQUEST_CAPTURE_CATEGORY_DEFINITION["ca
 SUPPLY_REQUEST_CAPTURE_CATEGORY_LABEL = SUPPLY_REQUEST_CAPTURE_CATEGORY_DEFINITION["label"]
 
 BUILTIN_FALLBACK_CATEGORIES = [
-    {"label": "Report an Issue", "canonical": "report_an_issue"},
+    REPORT_ISSUE_CAPTURE_CATEGORY_DEFINITION,
     SUPPLY_REQUEST_CAPTURE_CATEGORY_DEFINITION,
     {"label": "Entryways / Lobby / Doorways", "canonical": "Entryways / Lobby / Doorways"},
     {"label": "Windows / Glass / Sills / Ledges", "canonical": "Windows / Glass / Sills / Ledges"},
@@ -37,6 +44,16 @@ OPERATOR_ONLY_CATEGORIES = [
 ]
 OPERATOR_ONLY_CANONICALS = frozenset(entry["canonical"] for entry in OPERATOR_ONLY_CATEGORIES)
 OPERATOR_ONLY_LABELS = frozenset(entry["label"] for entry in OPERATOR_ONLY_CATEGORIES)
+DOCUMENTATION_CAPTURE_CATEGORY_VALUES = frozenset(
+    str(entry[key]).strip().casefold()
+    for entry in (*BUILTIN_FALLBACK_CATEGORIES, *OPERATOR_ONLY_CATEGORIES)
+    if entry["canonical"]
+    not in {
+        REPORT_ISSUE_CAPTURE_CATEGORY,
+        SUPPLY_REQUEST_CAPTURE_CATEGORY,
+    }
+    for key in ("canonical", "label")
+)
 
 
 def normalize_display_categories(categories: object) -> list[dict[str, str]]:
