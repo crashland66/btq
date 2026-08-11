@@ -2236,6 +2236,75 @@ class SubmitBehaviorTests(unittest.TestCase):
         self.assertEqual(len(self._uploaded_files()), files_after_first)
         self.assertEqual(second.json()["capture_id"], cap)
 
+    def test_complete_retry_repairs_partial_capture(self) -> None:
+        cap = "cap-unified-partial-0001"
+        fields = _valid_submit_fields(capture_id=cap)
+        first_photos = [
+            (f"{index}.png", "image/png", _TINY_PNG + bytes([index]))
+            for index in range(1, 4)
+        ]
+        full_photos = [
+            *first_photos,
+            ("4.png", "image/png", _TINY_PNG + b"\x04"),
+        ]
+        first = self.submit(fields, photos=first_photos)
+        self.assertEqual(first.status, 201, first.text)
+        created_at = self.writer.put_calls[0]["created_at"]
+
+        repaired = self.submit(
+            fields,
+            photos=full_photos,
+            audio=[("voice.wav", "audio/wav", _TINY_WAV)],
+        )
+
+        self.assertEqual(repaired.status, 200, repaired.text)
+        self.assertTrue(repaired.json().get("idempotent_repair"))
+        self.assertEqual(repaired.json()["photo_count"], 4)
+        self.assertEqual(repaired.json()["audio_count"], 1)
+        self.assertEqual(len(self.writer.put_calls), 2)
+        final_doc = self.writer.put_calls[-1]
+        self.assertEqual(final_doc["created_at"], created_at)
+        self.assertEqual(len(final_doc["photos"]), 4)
+        self.assertEqual(len(final_doc["audio"]), 1)
+        self.assertEqual(final_doc["processing_state"], "pending")
+        self.assertEqual(final_doc["ingest_repairs"][-1]["prior_photo_count"], 3)
+        self.assertEqual(len(self._uploaded_files()), 5)
+
+    def test_retry_with_same_capture_id_but_different_identity_is_conflict(self) -> None:
+        cap = "cap-unified-conflict-0001"
+        fields = _valid_submit_fields(capture_id=cap)
+        first = self.submit(fields, photos=[("a.png", "image/png", _TINY_PNG)])
+        self.assertEqual(first.status, 201, first.text)
+
+        conflicting_fields = dict(fields)
+        conflicting_fields["captured_at"] = "2026-06-06T15:30:00Z"
+        conflict = self.submit(conflicting_fields, photos=[("a.png", "image/png", _TINY_PNG)])
+
+        self.assertEqual(conflict.status, 409, conflict.text)
+        self.assertEqual(conflict.json()["error"], "capture_id_conflict")
+        self.assertEqual(len(self.writer.put_calls), 1)
+
+    def test_truncated_request_body_is_rejected_before_multipart_parse(self) -> None:
+        body, content_type = _multipart_body(
+            _valid_submit_fields(capture_id="cap-unified-truncated-0001"),
+            photos=[("a.png", "image/png", _TINY_PNG)],
+        )
+        resp = drive_post_multipart(
+            self.server,
+            "/api/submit",
+            body[:-20],
+            content_type,
+            headers={
+                "Authorization": f"Bearer {self.token}",
+                "Content-Length": str(len(body)),
+            },
+        )
+
+        self.assertEqual(resp.status, 400, resp.text)
+        self.assertEqual(resp.json()["error"], "incomplete_request")
+        self.assertEqual(len(self.writer.put_calls), 0)
+        self.assertEqual(self._uploaded_files(), [])
+
     # ----- audio size policy (decision 9: ~50 MB, not 10 MB) --------------- #
 
     def test_configured_audio_limit_is_50mb_not_10mb(self) -> None:

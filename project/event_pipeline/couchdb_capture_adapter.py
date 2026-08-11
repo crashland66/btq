@@ -8,7 +8,7 @@ from typing import Any, Callable
 
 from event_pipeline.couchdb_registry import CouchDBSiteRegistry
 from field_capture import pull_bundle
-from processing_core.artifacts import read_json_object
+from processing_core.artifacts import read_json_object, write_json_object
 from queue_spec import JOB_PHOTO_CAPTURE, validate_job
 
 
@@ -173,6 +173,64 @@ def media_copy_plan(
     return local_records, copy_plan
 
 
+def _media_record_key(record: object) -> str:
+    if not isinstance(record, dict):
+        return ""
+    upload_id = str(record.get("upload_id") or "").strip()
+    if upload_id:
+        return upload_id
+    filename = str(record.get("filename") or "").strip()
+    mime_type = str(record.get("mime_type") or "").strip()
+    return f"{filename}\0{mime_type}" if filename else ""
+
+
+def is_safe_intake_media_expansion(
+    existing: dict[str, object] | None,
+    incoming: dict[str, object],
+) -> bool:
+    """Return True only when incoming strictly adds media to the same intake job."""
+    if not isinstance(existing, dict):
+        return False
+    existing_payload = existing.get("payload")
+    incoming_payload = incoming.get("payload")
+    if not isinstance(existing_payload, dict) or not isinstance(incoming_payload, dict):
+        return False
+
+    existing_without_media = dict(existing)
+    incoming_without_media = dict(incoming)
+    existing_payload_without_media = dict(existing_payload)
+    incoming_payload_without_media = dict(incoming_payload)
+    for field in ("photos", "audio"):
+        existing_payload_without_media.pop(field, None)
+        incoming_payload_without_media.pop(field, None)
+    existing_without_media["payload"] = existing_payload_without_media
+    incoming_without_media["payload"] = incoming_payload_without_media
+    if existing_without_media != incoming_without_media:
+        return False
+
+    existing_count = 0
+    incoming_count = 0
+    for field in ("photos", "audio"):
+        existing_records = existing_payload.get(field, [])
+        incoming_records = incoming_payload.get(field, [])
+        if not isinstance(existing_records, list) or not isinstance(incoming_records, list):
+            return False
+        existing_by_key = {_media_record_key(record): record for record in existing_records}
+        incoming_by_key = {_media_record_key(record): record for record in incoming_records}
+        if (
+            "" in existing_by_key
+            or "" in incoming_by_key
+            or len(existing_by_key) != len(existing_records)
+            or len(incoming_by_key) != len(incoming_records)
+        ):
+            return False
+        if any(incoming_by_key.get(key) != record for key, record in existing_by_key.items()):
+            return False
+        existing_count += len(existing_records)
+        incoming_count += len(incoming_records)
+    return incoming_count > existing_count
+
+
 def import_couchdb_capture(
     *,
     doc: dict[str, Any],
@@ -256,7 +314,14 @@ def import_couchdb_capture(
                 )
             counts[action] += 1
             results.append({"type": "media", "action": action, "source": f"{remote_host}:{remote_path}", "destination": str(local_path)})
-        if existing_intake_exists:
+        intake_was_expanded = is_safe_intake_media_expansion(existing_intake, intake_job)
+        if existing_intake_exists and intake_was_expanded:
+            if dry_run:
+                action = "would_copy"
+            else:
+                write_json_object(intake_dest_path, intake_job)
+                action = "copied"
+        elif existing_intake_exists:
             action = "skipped"
         else:
             try:
@@ -270,7 +335,9 @@ def import_couchdb_capture(
             "source": f"couchdb:{capture_id}",
             "destination": str(intake_dest_path),
         }
-        if existing_intake_exists and not existing_intake_matches:
+        if intake_was_expanded:
+            intake_result["note"] = "existing intake refreshed with additional media"
+        elif existing_intake_exists and not existing_intake_matches:
             intake_result["note"] = "existing intake retained; regenerated content differed"
         results.append(intake_result)
     except CaptureAdapterError as exc:

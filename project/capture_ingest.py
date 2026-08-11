@@ -79,6 +79,17 @@ def validate_content_length(raw_length: str | None, request_max_bytes: int) -> i
     return content_length
 
 
+def read_complete_body(read_body: Callable[[int], bytes], content_length: int) -> bytes:
+    body = read_body(content_length)
+    if len(body) != content_length:
+        raise SubmissionError(
+            HTTPStatus.BAD_REQUEST,
+            "incomplete_request",
+            "Submission body was incomplete; retry the upload",
+        )
+    return body
+
+
 def read_multipart_submission(
     raw_length: str | None,
     content_type: str,
@@ -88,7 +99,7 @@ def read_multipart_submission(
     content_length = validate_content_length(raw_length, limits.request_max_bytes)
     if not content_type.startswith("multipart/form-data"):
         raise SubmissionError(HTTPStatus.BAD_REQUEST, "expected_multipart", "Expected multipart form data")
-    body = read_body(content_length)
+    body = read_complete_body(read_body, content_length)
     fields, uploads = parse_multipart(body, content_type)
     photos = [upload for upload in uploads if upload.field_name == "photos"]
     audio_files = [upload for upload in uploads if upload.field_name == "audio"]

@@ -242,6 +242,61 @@ def test_existing_intake_with_missing_media_recopies_media_retains_intake(
     assert path.read_bytes() == before_bytes
 
 
+def test_existing_intake_is_refreshed_for_strict_media_expansion(tmp_path: Path) -> None:
+    seed_first_import(tmp_path)
+
+    second_remote = f"/srv/sandbox/runtime/uploads/{SANDBOX_CAPTURE_ID}/photo_002.jpg"
+    audio_remote = f"/srv/sandbox/runtime/uploads/{SANDBOX_CAPTURE_ID}/voice.m4a"
+    expanded_doc = sandbox_doc(
+        photos=[
+            *sandbox_doc()["photos"],
+            {
+                "filename": "photo_002.jpg",
+                "mime_type": "image/jpeg",
+                "stored_path": second_remote,
+            },
+        ],
+        audio=[
+            {
+                "filename": "voice.m4a",
+                "mime_type": "audio/mp4",
+                "stored_path": audio_remote,
+            }
+        ],
+    )
+    runner = RecordingRunner(
+        remote_sizes={
+            SANDBOX_PHOTO_REMOTE: 5,
+            second_remote: 5,
+            audio_remote: 5,
+        }
+    )
+
+    result = import_couchdb_capture(
+        doc=expanded_doc,
+        runtime_root=tmp_path,
+        remote_host=SANDBOX_HOST,
+        registry=SandboxRegistry(),
+        runner=runner,
+    )
+
+    refreshed = json.loads(intake_path(tmp_path, SANDBOX_CAPTURE_ID).read_text(encoding="utf-8"))
+    assert [record["filename"] for record in refreshed["payload"]["photos"]] == [
+        "photo_001.jpg",
+        "photo_002.jpg",
+    ]
+    assert [record["filename"] for record in refreshed["payload"]["audio"]] == ["voice.m4a"]
+    assert result["counts"] == {
+        "copied": 3,
+        "skipped": 1,
+        "failed": 0,
+        "would_copy": 0,
+    }
+    intake_results = [item for item in result["results"] if item["type"] == "intake_json"]
+    assert intake_results[0]["action"] == "copied"
+    assert "refreshed" in intake_results[0]["note"]
+
+
 # --- validation guard still raises ---
 
 

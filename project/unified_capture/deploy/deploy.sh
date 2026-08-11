@@ -68,13 +68,17 @@ if [ "${run_python}" = "1" ]; then
 	sudo rsync -az --delete \
 		--exclude '/.git/' \
 		--exclude '/.venv/' \
+		--exclude '/apple/' \
 		--exclude '/btq_runtime/' \
+		--exclude '/runtime/' \
+		--exclude '/project/.venv/' \
 		--exclude '/project/.runtime/' \
 		--exclude '/project/.runtime-dry/' \
 		--exclude '/project/unified_capture/public/' \
 		--exclude '/project/unified_capture/deploy/' \
 		--exclude '/dist/' \
 		--exclude '/config.json' \
+		--exclude 'node_modules/' \
 		--exclude '__pycache__/' \
 		--exclude '*.pyc' \
 		"${SOURCE_DIR}/" "${APP_ROOT}/"

@@ -23,6 +23,8 @@ from capture_ingest import (
     lookup_existing_capture,
     normalize_capture_id,
     parse_multipart,
+    read_complete_body,
+    utc_now_iso,
     validate_content_length,
     validate_uploaded_photos,
     mirror_capture_media_from_disk,
@@ -335,12 +337,15 @@ class UnifiedCaptureHandler(BaseHTTPRequestHandler):
         )
         submit_fields: dict[str, str] = {}
         submit_photo_count: int | None = None
+        response_status = HTTPStatus.CREATED
+        response_extra: dict[str, object] = {}
         try:
             fields, photos, audio_files = self.read_multipart_submission(max_images=effective_max_images)
             submit_fields = fields
             submit_photo_count = len(photos)
             self.validate_submit_authorization(session, fields)
             capture_id = normalize_capture_id(fields.get("capture_id", ""), fallback_prefix="cap-unified-")
+            doc, media_records = self.build_submit_document(fields, photos, audio_files, session, capture_id)
             if fields.get("capture_id"):
                 try:
                     existing = lookup_existing_capture(
@@ -359,24 +364,36 @@ class UnifiedCaptureHandler(BaseHTTPRequestHandler):
                     )
                     return
                 if existing is not None:
-                    existing_photos = existing.get("photos") if isinstance(existing.get("photos"), list) else []
-                    existing_audio = existing.get("audio") if isinstance(existing.get("audio"), list) else []
-                    self.write_json(
-                        {
-                            "status": "submitted",
-                            "job_id": str(fields.get("job_id") or ""),
-                            "capture_id": capture_id,
-                            "couchdb_doc_id": str(existing.get("_id") or capture_id),
-                            "photo_count": len(existing_photos),
-                            "audio_count": len(existing_audio),
-                            "idempotent_replay": True,
-                        },
-                        HTTPStatus.OK,
+                    doc, media_records, repair_uploads = self.prepare_idempotent_retry(
+                        existing,
+                        doc,
+                        media_records,
+                        photos + audio_files,
                     )
-                    return
-
-            doc, media_records = self.build_submit_document(fields, photos, audio_files, session, capture_id)
-            mirror_candidates = write_capture_media(media_records, photos + audio_files, self.server.upload_dir)
+                    if repair_uploads is None:
+                        existing_photos = existing.get("photos") if isinstance(existing.get("photos"), list) else []
+                        existing_audio = existing.get("audio") if isinstance(existing.get("audio"), list) else []
+                        self.write_json(
+                            {
+                                "status": "submitted",
+                                "job_id": str(fields.get("job_id") or ""),
+                                "capture_id": capture_id,
+                                "couchdb_doc_id": str(existing.get("_id") or capture_id),
+                                "photo_count": len(existing_photos),
+                                "audio_count": len(existing_audio),
+                                "idempotent_replay": True,
+                            },
+                            HTTPStatus.OK,
+                        )
+                        return
+                    response_status = HTTPStatus.OK
+                    response_extra["idempotent_repair"] = True
+                    uploads_to_write = repair_uploads
+                else:
+                    uploads_to_write = photos + audio_files
+            else:
+                uploads_to_write = photos + audio_files
+            mirror_candidates = write_capture_media(media_records, uploads_to_write, self.server.upload_dir)
         except SubmissionError as error:
             if submit_photo_count is None:
                 submit_photo_count = getattr(self, "_submit_photo_count", None)
@@ -394,18 +411,87 @@ class UnifiedCaptureHandler(BaseHTTPRequestHandler):
             )
             return
         couchdb_doc_id = str(response.get("id") or doc["_id"])
-        self.write_json(
-            {
+        response_body: dict[str, object] = {
                 "status": "submitted",
                 "job_id": str(fields.get("job_id") or ""),
                 "capture_id": str(doc["capture_id"]),
                 "couchdb_doc_id": couchdb_doc_id,
                 "photo_count": len(photos),
                 "audio_count": len(audio_files),
-            },
-            HTTPStatus.CREATED,
-        )
+            }
+        response_body.update(response_extra)
+        self.write_json(response_body, response_status)
         self.server.enqueue_capture_media_mirror(mirror_candidates)
+
+    @staticmethod
+    def media_record_key(record: object) -> str:
+        if not isinstance(record, dict):
+            return ""
+        upload_id = str(record.get("upload_id") or "").strip()
+        if upload_id:
+            return upload_id
+        filename = str(record.get("filename") or "").strip()
+        mime_type = str(record.get("mime_type") or "").strip()
+        return f"{filename}\0{mime_type}" if filename else ""
+
+    def prepare_idempotent_retry(
+        self,
+        existing: dict[str, object],
+        incoming: dict[str, object],
+        incoming_media: list[object],
+        incoming_uploads: list[UploadedFile],
+    ) -> tuple[dict[str, object], list[object], list[UploadedFile] | None]:
+        identity_fields = ("site_id", "target_type", "target_id", "person_id", "qc_category", "captured_at")
+        if any(str(existing.get(key) or "") != str(incoming.get(key) or "") for key in identity_fields):
+            raise SubmissionError(
+                HTTPStatus.CONFLICT,
+                "capture_id_conflict",
+                "Capture ID already belongs to a different submission",
+            )
+
+        existing_photos = existing.get("photos") if isinstance(existing.get("photos"), list) else []
+        existing_audio = existing.get("audio") if isinstance(existing.get("audio"), list) else []
+        existing_media = existing_photos + existing_audio
+        existing_keys = {self.media_record_key(record) for record in existing_media}
+        incoming_keys = [self.media_record_key(record) for record in incoming_media]
+        if "" in existing_keys or any(not key for key in incoming_keys) or len(set(incoming_keys)) != len(incoming_keys):
+            raise SubmissionError(HTTPStatus.CONFLICT, "capture_id_conflict", "Capture media cannot be reconciled safely")
+        incoming_key_set = set(incoming_keys)
+        if not existing_keys.issubset(incoming_key_set):
+            raise SubmissionError(
+                HTTPStatus.CONFLICT,
+                "capture_id_conflict",
+                "Capture ID already contains different media",
+            )
+        if existing_keys == incoming_key_set:
+            return existing, [], None
+
+        missing_indexes = [index for index, key in enumerate(incoming_keys) if key not in existing_keys]
+        repaired = dict(existing)
+        repaired["photos"] = incoming.get("photos") if isinstance(incoming.get("photos"), list) else []
+        incoming_audio = incoming.get("audio") if isinstance(incoming.get("audio"), list) else []
+        if incoming_audio:
+            repaired["audio"] = incoming_audio
+        else:
+            repaired.pop("audio", None)
+        repaired["processing_state"] = "pending"
+        repair_history = existing.get("ingest_repairs") if isinstance(existing.get("ingest_repairs"), list) else []
+        repaired["ingest_repairs"] = [
+            *repair_history,
+            {
+                "repaired_at": utc_now_iso(),
+                "prior_photo_count": len(existing_photos),
+                "prior_audio_count": len(existing_audio),
+                "photo_count": len(repaired["photos"]),
+                "audio_count": len(incoming_audio),
+                "reason": "complete_retry_after_partial_upload",
+            },
+        ]
+        return (
+            repaired,
+            [incoming_media[index] for index in missing_indexes],
+            [incoming_uploads[index] for index in missing_indexes],
+        )
 
     def handle_media(self, media_path: str) -> None:
         # Captured media can include resident-area photos, so never serve it
@@ -802,7 +888,8 @@ class UnifiedCaptureHandler(BaseHTTPRequestHandler):
         content_type = self.headers.get("Content-Type", "")
         if not content_type.startswith("multipart/form-data"):
             raise SubmissionError(HTTPStatus.BAD_REQUEST, "expected_multipart", "Expected multipart form data")
-        fields, uploads = parse_multipart(self.rfile.read(content_length), content_type)
+        body = read_complete_body(self.rfile.read, content_length)
+        fields, uploads = parse_multipart(body, content_type)
         photos = [upload for upload in uploads if upload.field_name == "photos"]
         self._submit_fields = fields
         self._submit_photo_count = len(photos)
