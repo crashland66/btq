@@ -108,6 +108,38 @@ LOSS_TERMS = (
     "can't find",
     "cannot find",
 )
+SITE_ISSUE_DAMAGE_TERMS = (
+    "break",
+    "breaks",
+    "breaking",
+    "broke",
+    "broken",
+    "busted",
+    "fail",
+    "fails",
+    "failed",
+    "failing",
+    "failure",
+    "damage",
+    "damaged",
+    "crack",
+    "cracked",
+    "defect",
+    "defective",
+    "faulty",
+    "inoperable",
+    "jammed",
+    "malfunction",
+    "malfunctioned",
+    "malfunctioning",
+    "not working",
+    "out of order",
+    "stuck",
+    "won't work",
+    "will not work",
+    "doesn't work",
+    "does not work",
+)
 MOVEMENT_TERMS = (
     "took with me",
     "took it with me",
@@ -927,11 +959,11 @@ def log_site_issue_payload(action: ExtractedAction, source: CaptureSemanticInput
     if "client_notified" not in payload or not isinstance(payload.get("client_notified"), bool):
         payload["client_notified"] = False
     if not payload_text(payload, "category"):
-        payload["category"] = "supply"
+        payload["category"] = site_issue_category(action)
     if not payload_text(payload, "priority"):
         payload["priority"] = site_issue_priority(action)
     if not payload_text(payload, "resolution_trigger"):
-        payload["resolution_trigger"] = "operator confirms item recovered or replaced"
+        payload["resolution_trigger"] = site_issue_resolution_trigger(action)
     if not payload_text(payload, "source"):
         payload["source"] = source.source_kind or "capture_semantics"
     if "related_capture_ids" not in payload and source.capture_id:
@@ -1060,9 +1092,112 @@ def resolved_site_note_path_for_source(source: CaptureSemanticInput, payload_fie
 
 
 def site_issue_title(action: ExtractedAction, source: CaptureSemanticInput) -> str:
-    site = source.site_label or action.target_label or source.site_id
-    suffix = f" at {site}" if site else ""
-    return f"Equipment or supply loss reported{suffix}"
+    report = action.summary.strip() or action.source_excerpt.strip()
+    if report:
+        text = " ".join(report.split())
+        if len(text) <= 80:
+            return text
+        return text[:77].rstrip() + "..."
+    site = (source.site_label or action.target_label or source.site_id).strip()
+    return f"Site issue reported at {site}" if site else "Site issue reported"
+
+
+def site_issue_category(action: ExtractedAction) -> str:
+    text = site_issue_report_text(action)
+    if site_issue_text_contains(text, SITE_ISSUE_DAMAGE_TERMS):
+        return "maintenance"
+    if site_issue_text_contains(text, ("access", "badge", "badges", "key", "keys", "lock", "locked", "locking", "lockout", "locked out", "unlock")):
+        return "access"
+    if site_issue_text_contains(text, ("safety", "hazard", "hazardous", "unsafe", "ppe", "injury", "injured")):
+        return "safety"
+    if site_issue_text_contains(text, ("staff", "staffing", "employee", "employees", "crew", "short staffed", "understaffed", "call off", "no show")):
+        return "staffing"
+    if site_issue_text_contains(text, ("cleanliness", "dirty", "unclean", "quality", "complaint", "not cleaned", "missed cleaning")):
+        return "quality"
+    if site_issue_text_contains(
+        text,
+        (
+            "maintenance",
+            "repair",
+            *SITE_ISSUE_DAMAGE_TERMS,
+            "plumbing",
+            "leak",
+            "leaking",
+            "drain",
+            "draining",
+            "clog",
+            "clogged",
+            "backed up",
+            "overflow",
+            "flood",
+            "water",
+            "urinal",
+            "tile",
+            "washout",
+            "washed out",
+            "rain",
+            "storm",
+        ),
+    ):
+        return "maintenance"
+    if site_issue_text_contains(text, ("client request", "client requested", "customer request", "customer requested")):
+        return "client_request"
+    if site_issue_text_contains(
+        text,
+        (
+            "supply",
+            "supplies",
+            "stock",
+            "restock",
+            "consumable",
+            "equipment",
+            "vacuum",
+            "machine",
+            "mop",
+            "extractor",
+            "scrubber",
+            *LOSS_TERMS,
+            "loss",
+        ),
+    ):
+        return "supply"
+    return "other"
+
+
+def site_issue_resolution_trigger(action: ExtractedAction) -> str:
+    text = site_issue_report_text(action)
+    category = site_issue_category(action)
+    if category == "access":
+        return "operator confirms access is restored"
+    if category == "maintenance":
+        if site_issue_text_contains(text, ("drain", "draining", "clog", "clogged", "backed up", "urinal")):
+            return "operator confirms the drain is clear and working properly"
+        if site_issue_text_contains(text, ("plumbing", "leak", "leaking", "overflow", "flood", "water")):
+            return "operator confirms the source is repaired and the affected area is dry"
+        return "operator confirms the repair is complete and the reported condition is resolved"
+    if category == "supply":
+        if site_issue_text_contains(text, (*LOSS_TERMS, "loss")):
+            return "operator confirms item recovered or replaced"
+        if site_issue_text_contains(text, ("stock", "restock", "out of", "running low", "consumable")):
+            return "operator confirms the item is restocked"
+        return "operator confirms the reported supply condition is resolved"
+    if category == "quality":
+        return "operator confirms the quality or cleanliness condition is corrected"
+    if category == "safety":
+        return "operator confirms the safety hazard is corrected"
+    if category == "staffing":
+        return "operator confirms the staffing condition is resolved"
+    if category == "client_request":
+        return "operator confirms the client request is addressed"
+    return "operator confirms the reported condition is resolved"
+
+
+def site_issue_report_text(action: ExtractedAction) -> str:
+    return " ".join(part.strip() for part in (action.summary, action.source_excerpt) if part.strip()).lower()
+
+
+def site_issue_text_contains(text: str, terms: Iterable[str]) -> bool:
+    return any(re.search(rf"\b{re.escape(term)}\b", text) for term in terms)
 
 
 def site_issue_priority(action: ExtractedAction) -> str:
