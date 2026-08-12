@@ -71,9 +71,11 @@ public struct BTQFieldCaptureRootView: View {
                 case .active:
                     Task { await model.resumeOnlineWork() }
                 case .background:
-                    backgroundSyncScheduler.scheduleSyncIfNeeded(pendingCount: model.queueSummary.pending)
-                    backgroundSyncScheduler.beginExpiringSyncIfNeeded(pendingCount: model.queueSummary.pending) {
+                    let activeUploadCount = model.backgroundSyncWorkCount
+                    backgroundSyncScheduler.scheduleSyncIfNeeded(pendingCount: activeUploadCount)
+                    backgroundSyncScheduler.beginExpiringSyncIfNeeded(pendingCount: activeUploadCount) {
                         await model.syncPending()
+                        await model.waitForPendingSyncQuiescence()
                     }
                 case .inactive:
                     break

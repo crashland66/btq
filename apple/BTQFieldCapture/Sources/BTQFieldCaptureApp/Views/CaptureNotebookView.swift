@@ -630,6 +630,8 @@ struct CaptureNotebookView: View {
         let savedAudios = pendingAudios
         let didSave = await model.saveQuickObservation(photos: savedPhotos, audios: savedAudios)
         if didSave {
+            // The saved LocalCapture now owns these app-managed files. Reset only
+            // editor references; upload confirmation remains responsible for release.
             pendingPhotos.removeAll { savedPhoto in
                 savedPhotos.contains { $0.id == savedPhoto.id }
             }

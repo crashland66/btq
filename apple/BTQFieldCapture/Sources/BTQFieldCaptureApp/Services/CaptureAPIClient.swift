@@ -20,6 +20,24 @@ public struct SubmitCaptureResponse: Codable, Equatable, Sendable {
     }
 }
 
+public struct CaptureUploadReconciliation: Equatable, Sendable {
+    public var liveCaptureIDs: Set<String>
+    public var completedResponses: [String: SubmitCaptureResponse]
+    public var isAuthoritative: Bool
+
+    public init(
+        liveCaptureIDs: Set<String> = [],
+        completedResponses: [String: SubmitCaptureResponse] = [:],
+        isAuthoritative: Bool = true
+    ) {
+        self.liveCaptureIDs = liveCaptureIDs
+        self.completedResponses = completedResponses
+        self.isAuthoritative = isAuthoritative
+    }
+
+    public static let unavailable = CaptureUploadReconciliation(isAuthoritative: false)
+}
+
 public enum CaptureAPIError: Error, Equatable, LocalizedError, CustomStringConvertible, Sendable {
     case insecureBaseURL
     case invalidResponse
@@ -57,6 +75,9 @@ public protocol CaptureAPIClient: Sendable {
     func decideInboxItem(action: InboxDecisionAction, item: InboxItem, reason: String?, baseURL: URL, token: String) async throws -> InboxDecisionResponse
     func decideInboxSet(_ drafts: [InboxSetDecisionEntry], baseURL: URL, token: String) async throws -> InboxSetDecisionResponse
     func submit(capture: LocalCapture, baseURL: URL, token: String) async throws -> SubmitCaptureResponse
+    func reconcileBackgroundUploads(captureIDs: Set<String>) async -> CaptureUploadReconciliation
+    func finishBackgroundUpload(captureID: String) async
+    func sweepUploadBodies(preservingCaptureIDs: Set<String>) async
 }
 
 public extension CaptureAPIClient {
@@ -71,6 +92,13 @@ public extension CaptureAPIClient {
     func decideInboxSet(_ drafts: [InboxSetDecisionEntry], baseURL: URL, token: String) async throws -> InboxSetDecisionResponse {
         throw CaptureAPIError.serverStatus(status: 501, code: "inbox_unavailable", message: "Inbox review is not available.")
     }
+
+    func reconcileBackgroundUploads(captureIDs: Set<String>) async -> CaptureUploadReconciliation {
+        .unavailable
+    }
+
+    func finishBackgroundUpload(captureID: String) async {}
+    func sweepUploadBodies(preservingCaptureIDs: Set<String>) async {}
 }
 
 public final class HTTPCaptureAPIClient: CaptureAPIClient, @unchecked Sendable {
@@ -82,11 +110,14 @@ public final class HTTPCaptureAPIClient: CaptureAPIClient, @unchecked Sendable {
     private let encoder: JSONEncoder
     private let decoder: JSONDecoder
     private let uploadBodyDirectory: URL
+    private let uploadBodyLock = NSLock()
+    private var reservedUploadBodyCaptureIDs: [String: Int] = [:]
 
     public init(
         session: URLSession = BackgroundUploadSupport.makeForegroundUploadSession(),
         uploader: any CaptureUploader = BackgroundUploader.shared,
-        uploadBodyDirectory: URL = FileManager.default.temporaryDirectory
+        uploadBodyDirectory: URL = BackgroundUploadSupport.defaultUploadRootDirectory()
+            .appendingPathComponent("Bodies", isDirectory: true)
     ) {
         self.session = session
         self.uploader = uploader
@@ -211,17 +242,22 @@ public final class HTTPCaptureAPIClient: CaptureAPIClient, @unchecked Sendable {
     }
 
     public func submit(capture: LocalCapture, baseURL: URL, token: String) async throws -> SubmitCaptureResponse {
+        reserveUploadBody(for: capture.captureID)
+        defer { releaseUploadBodyReservation(for: capture.captureID) }
+
         let boundary = "Boundary-\(UUID().uuidString)"
         var request = URLRequest(url: try secureAPIURL(baseURL: baseURL, path: "api/submit"))
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
-        let bodyFile = uploadBodyDirectory.appendingPathComponent("btq-upload-\(capture.captureID)-\(UUID().uuidString).multipart")
+        let bodyStore = MultipartUploadBodyStore(rootDirectory: uploadBodyDirectory)
+        let bodyFile = try bodyStore.makeBodyFileURL(captureID: capture.captureID)
+        defer { removeUploadBody(bodyFile, captureID: capture.captureID) }
         try MultipartCaptureBuilder.writeBody(for: capture, boundary: boundary, to: bodyFile)
-        defer { try? FileManager.default.removeItem(at: bodyFile) }
+        try LocalFilePrivacy.protectExistingItem(bodyFile)
 
-        let (data, response) = try await uploader.upload(request, fromFile: bodyFile)
+        let (data, response) = try await uploader.upload(request, fromFile: bodyFile, captureID: capture.captureID)
         guard let http = response as? HTTPURLResponse else {
             throw CaptureAPIError.invalidResponse
         }
@@ -234,6 +270,91 @@ public final class HTTPCaptureAPIClient: CaptureAPIClient, @unchecked Sendable {
         return try decoder.decode(SubmitCaptureResponse.self, from: data)
     }
 
+    public func reconcileBackgroundUploads(captureIDs: Set<String>) async -> CaptureUploadReconciliation {
+        let snapshot = await uploader.reconciliationSnapshot()
+        guard snapshot.isAuthoritative else { return .unavailable }
+        let globallyLiveCaptureIDs = snapshot.liveCaptureIDs.union(uploadBodyReservations())
+
+        var completedResponses: [String: SubmitCaptureResponse] = [:]
+        let relevantCompletions = snapshot.completions
+            .filter { captureIDs.contains($0.captureID) }
+            .sorted { $0.completedAt > $1.completedAt }
+        for completion in relevantCompletions where completedResponses[completion.captureID] == nil {
+            guard completion.errorDescription == nil,
+                  let statusCode = completion.statusCode,
+                  (200..<300).contains(statusCode),
+                  let response = try? decoder.decode(SubmitCaptureResponse.self, from: completion.responseData),
+                  response.captureID == completion.captureID else {
+                continue
+            }
+            completedResponses[completion.captureID] = response
+        }
+
+        let failedCaptureIDs = Set(relevantCompletions.map(\.captureID))
+            .subtracting(completedResponses.keys)
+        for captureID in failedCaptureIDs {
+            await uploader.discardCompletion(for: captureID)
+        }
+
+        return CaptureUploadReconciliation(
+            liveCaptureIDs: globallyLiveCaptureIDs.subtracting(completedResponses.keys),
+            completedResponses: completedResponses,
+            isAuthoritative: true
+        )
+    }
+
+    public func finishBackgroundUpload(captureID: String) async {
+        await uploader.discardCompletion(for: captureID)
+        uploadBodyLock.withLock {
+            guard reservedUploadBodyCaptureIDs[captureID] == nil else { return }
+            MultipartUploadBodyStore(rootDirectory: uploadBodyDirectory).removeBodies(for: captureID)
+        }
+    }
+
+    public func sweepUploadBodies(preservingCaptureIDs: Set<String>) async {
+        let snapshot = await uploader.reconciliationSnapshot()
+        guard snapshot.isAuthoritative else { return }
+        uploadBodyLock.withLock {
+            let globallyPreservedCaptureIDs = preservingCaptureIDs
+                .union(snapshot.liveCaptureIDs)
+                .union(reservedUploadBodyCaptureIDs.keys)
+            MultipartUploadBodyStore(rootDirectory: uploadBodyDirectory)
+                .sweep(preservingCaptureIDs: globallyPreservedCaptureIDs)
+        }
+    }
+
+    private func reserveUploadBody(for captureID: String) {
+        uploadBodyLock.withLock {
+            reservedUploadBodyCaptureIDs[captureID, default: 0] += 1
+        }
+    }
+
+    private func releaseUploadBodyReservation(for captureID: String) {
+        uploadBodyLock.withLock {
+            guard let reservationCount = reservedUploadBodyCaptureIDs[captureID] else { return }
+            if reservationCount == 1 {
+                reservedUploadBodyCaptureIDs.removeValue(forKey: captureID)
+            } else {
+                reservedUploadBodyCaptureIDs[captureID] = reservationCount - 1
+            }
+        }
+    }
+
+    private func uploadBodyReservations() -> Set<String> {
+        uploadBodyLock.withLock { Set(reservedUploadBodyCaptureIDs.keys) }
+    }
+
+    private func removeUploadBody(_ bodyFile: URL, captureID: String) {
+        uploadBodyLock.withLock {
+            if reservedUploadBodyCaptureIDs[captureID] == 1 {
+                MultipartUploadBodyStore(rootDirectory: uploadBodyDirectory)
+                    .removeBodies(for: captureID)
+            } else {
+                try? FileManager.default.removeItem(at: bodyFile)
+            }
+        }
+    }
+
     private func secureAPIURL(baseURL: URL, path: String) throws -> URL {
         guard baseURL.btqUsesHTTPS else {
             throw CaptureAPIError.insecureBaseURL
@@ -244,6 +365,47 @@ public final class HTTPCaptureAPIClient: CaptureAPIClient, @unchecked Sendable {
     private func serverError(status: Int, data: Data) -> CaptureAPIError {
         let payload = try? decoder.decode(CaptureAPIErrorPayload.self, from: data)
         return .serverStatus(status: status, code: payload?.error, message: payload?.message)
+    }
+}
+
+private struct MultipartUploadBodyStore: Sendable {
+    let rootDirectory: URL
+
+    func makeBodyFileURL(captureID: String) throws -> URL {
+        let directory = captureDirectory(captureID: captureID)
+        try LocalFilePrivacy.prepareDirectory(rootDirectory)
+        try LocalFilePrivacy.prepareDirectory(directory)
+        return directory.appendingPathComponent("body-\(UUID().uuidString).multipart")
+    }
+
+    func removeBodies(for captureID: String) {
+        try? FileManager.default.removeItem(at: captureDirectory(captureID: captureID))
+    }
+
+    func sweep(preservingCaptureIDs: Set<String>) {
+        guard let entries = try? FileManager.default.contentsOfDirectory(
+            at: rootDirectory,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles]
+        ) else {
+            return
+        }
+        let preservedDirectoryNames = Set(preservingCaptureIDs.map(encodedCaptureID))
+        for entry in entries where !preservedDirectoryNames.contains(entry.lastPathComponent) {
+            try? FileManager.default.removeItem(at: entry)
+        }
+    }
+
+    private func captureDirectory(captureID: String) -> URL {
+        rootDirectory.appendingPathComponent(encodedCaptureID(captureID), isDirectory: true)
+    }
+
+    private func encodedCaptureID(_ captureID: String) -> String {
+        Data(captureID.utf8)
+            .base64EncodedString()
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: "+", with: "-")
+            .replacingOccurrences(of: "=", with: "")
     }
 }
 

@@ -1470,7 +1470,9 @@ import UniformTypeIdentifiers
     #expect(captureViewSource.contains(".disabled(!canEditDraft)"))
     #expect(captureViewSource.contains("Draft cleared because this account cannot submit captures."))
     #expect(rootViewSource.contains("case .background:"))
-    #expect(rootViewSource.contains("beginExpiringSyncIfNeeded(pendingCount: model.queueSummary.pending)"))
+    // Prompt 124 followup-2: the background assertion must cover captures already
+    // `.uploading`, not just `.pending`, so the count is assembled before the call.
+    #expect(rootViewSource.contains("beginExpiringSyncIfNeeded(pendingCount: activeUploadCount)"))
     #expect(rootViewSource.contains("await model.syncPending()"))
     #expect(!rootViewSource.contains("recorder.pause()"))
     #expect(!rootViewSource.contains("VoiceRecorder().pause()"))
@@ -2708,6 +2710,9 @@ import UniformTypeIdentifiers
 
     model.observationText = "Backend rejection test"
     let didSave = await model.saveQuickObservation()
+    // Save now returns at the durable-local boundary (prompt 124), so the upload
+    // attempt this test asserts on runs in the detached drain. Wait for it.
+    await model.waitForPendingSyncQuiescence()
 
     #expect(didSave)
     #expect(model.captures.first?.status == .failed)
@@ -2737,6 +2742,9 @@ import UniformTypeIdentifiers
 
     model.observationText = "Backend audio rejection test"
     let didSave = await model.saveQuickObservation()
+    // Save now returns at the durable-local boundary (prompt 124), so the upload
+    // attempt this test asserts on runs in the detached drain. Wait for it.
+    await model.waitForPendingSyncQuiescence()
 
     #expect(didSave)
     #expect(model.captures.first?.status == .failed)
@@ -3047,6 +3055,9 @@ import UniformTypeIdentifiers
 
     model.observationText = "Retry me"
     let didSave = await model.saveQuickObservation()
+    // Save now returns at the durable-local boundary (prompt 124), so the failing
+    // upload this test requeues from runs in the detached drain. Wait for it.
+    await model.waitForPendingSyncQuiescence()
     let captureID = model.captures.first?.captureID
 
     #expect(didSave)

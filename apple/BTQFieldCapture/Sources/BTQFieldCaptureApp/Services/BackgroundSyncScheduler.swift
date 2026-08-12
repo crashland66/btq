@@ -24,7 +24,27 @@ public struct NoopBackgroundSyncScheduler: BackgroundSyncScheduling {
 import BackgroundTasks
 import UIKit
 
-@MainActor
+private final class BackgroundTaskCompletionGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private let task: BGProcessingTask
+    private var didComplete = false
+
+    init(task: BGProcessingTask) {
+        self.task = task
+    }
+
+    func complete(success: Bool) {
+        let shouldComplete = lock.withLock {
+            guard !didComplete else { return false }
+            didComplete = true
+            return true
+        }
+        if shouldComplete {
+            task.setTaskCompleted(success: success)
+        }
+    }
+}
+
 public enum IOSBackgroundSyncTaskHandler {
     public static func register(operation: @escaping @MainActor @Sendable () async -> Void) {
         BGTaskScheduler.shared.register(
@@ -43,13 +63,15 @@ public enum IOSBackgroundSyncTaskHandler {
         task: BGProcessingTask,
         operation: @escaping @MainActor @Sendable () async -> Void
     ) {
-        let syncTask = Task {
+        let completionGate = BackgroundTaskCompletionGate(task: task)
+        Task { @MainActor in
             await operation()
-            task.setTaskCompleted(success: true)
+            completionGate.complete(success: true)
         }
         task.expirationHandler = {
-            syncTask.cancel()
-            task.setTaskCompleted(success: false)
+            // The serial URLSession transfer is deliberately independent of this finite BGTask.
+            // Report expiration promptly without claiming that cancellation stops that transfer.
+            completionGate.complete(success: false)
         }
     }
 }
@@ -78,10 +100,10 @@ public struct IOSBackgroundSyncScheduler: BackgroundSyncScheduling {
         guard pendingCount > 0 else { return }
 
         var backgroundTask: UIBackgroundTaskIdentifier = .invalid
-        var syncTask: Task<Void, Never>?
         backgroundTask = UIApplication.shared.beginBackgroundTask(withName: "BTQ Capture Sync") {
-            syncTask?.cancel()
-            Task { @MainActor in
+            // Expiration ends the finite UIKit assertion synchronously. It intentionally does
+            // not pretend to cancel the independently owned background URLSession transfer.
+            MainActor.assumeIsolated {
                 if backgroundTask != .invalid {
                     UIApplication.shared.endBackgroundTask(backgroundTask)
                     backgroundTask = .invalid
@@ -89,7 +111,7 @@ public struct IOSBackgroundSyncScheduler: BackgroundSyncScheduling {
             }
         }
 
-        syncTask = Task { @MainActor in
+        Task { @MainActor in
             await operation()
             if backgroundTask != .invalid {
                 UIApplication.shared.endBackgroundTask(backgroundTask)

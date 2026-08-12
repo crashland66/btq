@@ -105,6 +105,13 @@ public struct LocalMediaStore: Sendable {
 
     public func releaseManagedMedia(for capture: LocalCapture) -> LocalCapture {
         deleteMedia(for: [capture])
+        return captureWithReleasedManagedMediaReferences(capture)
+    }
+
+    /// Clears references to app-managed evidence without deleting it. The queue uses this to
+    /// persist server-confirmed state before removing the files, so process death cannot restore
+    /// a pending capture whose only media copy has already been deleted.
+    public func captureWithReleasedManagedMediaReferences(_ capture: LocalCapture) -> LocalCapture {
         var released = capture
         released.photos = capture.photos.map { photo in
             var releasedPhoto = photo
