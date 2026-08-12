@@ -184,6 +184,7 @@ def html_document(title: str, body: str) -> str:
         '<meta name="robots" content="noindex,nofollow,noarchive">'
         '<meta name="color-scheme" content="light dark">'
         f'<title>{_escape(title)}</title><link rel="stylesheet" href="/viewer.css">'
+        '<script src="/viewer.js" defer></script>'
         f"</head><body><main>{body}</main></body></html>"
     )
 

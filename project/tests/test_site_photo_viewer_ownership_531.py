@@ -178,3 +178,28 @@ def test_server_survives_a_thirty_image_burst_behind_a_proxy() -> None:
 
     assert SitePhotoViewerServer.request_queue_size >= 32
     assert SitePhotoViewerHandler.protocol_version == "HTTP/1.1"
+
+
+def test_lightbox_enhancement_is_wired_with_csp_and_fallback() -> None:
+    """532: same-origin script, script-src in CSP, href fallback intact."""
+    from http import HTTPStatus as HS
+
+    from site_photo_viewer.server import SECURITY_HEADERS, route_response
+
+    assert "script-src 'self'" in SECURITY_HEADERS["Content-Security-Policy"]
+
+    counters = {"captures": 0, "vision": 0, "target": 0}
+    deps = _make_deps(counters)
+    status, content_type, body, _ = route_response(
+        "GET", "/viewer.js?token=ignored", Tokens(), dependencies=deps
+    )
+    assert status == HS.OK
+    assert "javascript" in content_type
+    assert b"preventDefault" in body
+    assert b"Escape" in body
+
+    status, _, page, _ = route_response("GET", "/?token=good", Tokens(), dependencies=deps)
+    assert status == HS.OK
+    text = page.decode()
+    assert '<script src="/viewer.js" defer></script>' in text
+    assert 'class="media-frame" href="/media/' in text  # no-JS fallback preserved

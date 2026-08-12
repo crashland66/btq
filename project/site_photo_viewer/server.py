@@ -49,13 +49,14 @@ APP_VERSION = 1
 DEFAULT_TOKEN_DB = Path("/srv/btq/data/field_capture_tokens.sqlite3")
 DEFAULT_UPLOAD_ROOT = Path("/srv/btq/data/uploads")
 VIEWER_CSS_PATH = Path(__file__).with_name("public") / "viewer.css"
+VIEWER_JS_PATH = Path(__file__).with_name("public") / "viewer.js"
 MAX_QUERY_LENGTH = 200
 MAX_PAGE_NUMBER = 1_000_000
 CORPUS_CACHE_TTL_SECONDS = 120
 CORPUS_CACHE_MAX_SITES = 32
 MEDIA_AVAILABILITY_MAX_WORKERS = 8
 VIEWER_CSP = (
-    "default-src 'none'; style-src 'self'; img-src 'self' https:; "
+    "default-src 'none'; style-src 'self'; script-src 'self'; img-src 'self' https:; "
     "base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
 )
 SECURITY_HEADERS = {
@@ -332,6 +333,8 @@ def route_response(
         return json_response({"app": APP_NAME, "version": APP_VERSION})
     if parsed.path == "/viewer.css":
         return viewer_stylesheet_response()
+    if parsed.path == "/viewer.js":
+        return viewer_script_response()
     if parsed.path != "/" and not parsed.path.startswith("/media/"):
         return html_error(HTTPStatus.NOT_FOUND, "Not found")
 
@@ -663,6 +666,15 @@ def viewer_stylesheet_response() -> Response:
         logging.warning("site photo viewer stylesheet read failed: %s", type(exc).__name__)
         return html_error(HTTPStatus.SERVICE_UNAVAILABLE, "The photo viewer is temporarily unavailable.")
     return response(HTTPStatus.OK, "text/css; charset=utf-8", body)
+
+
+def viewer_script_response() -> Response:
+    try:
+        body = VIEWER_JS_PATH.read_bytes()
+    except OSError as exc:
+        logging.warning("site photo viewer script read failed: %s", type(exc).__name__)
+        return html_error(HTTPStatus.SERVICE_UNAVAILABLE, "The photo viewer is temporarily unavailable.")
+    return response(HTTPStatus.OK, "text/javascript; charset=utf-8", body)
 
 
 def first_query_value(query: Mapping[str, Sequence[str]], key: str) -> str:

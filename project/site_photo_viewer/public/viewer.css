@@ -10,6 +10,7 @@
   --accent: #2563eb;
   --on-accent: #ffffff;
   --warn: #b45309;
+  --lightbox-backdrop: rgb(15 18 22 / 88%);
 }
 
 @media (prefers-color-scheme: dark) {
@@ -24,6 +25,7 @@
     --accent: #3b82f6;
     --on-accent: #ffffff;
     --warn: #f59e0b;
+    --lightbox-backdrop: rgb(0 0 0 / 90%);
   }
 }
 
@@ -41,6 +43,10 @@ html {
 
 body {
   margin: 0;
+}
+
+body.lightbox-open {
+  overflow: hidden;
 }
 
 main {
@@ -178,6 +184,48 @@ button {
   height: 100%;
   object-fit: cover;
   width: 100%;
+}
+
+.photo-lightbox {
+  align-items: center;
+  background: var(--lightbox-backdrop);
+  display: flex;
+  inset: 0;
+  justify-content: center;
+  padding: 4vh 4vw;
+  position: fixed;
+  z-index: 1000;
+}
+
+.photo-lightbox[hidden] {
+  display: none;
+}
+
+.photo-lightbox img {
+  border-radius: 8px;
+  display: block;
+  max-height: 92vh;
+  max-width: 92vw;
+  object-fit: contain;
+}
+
+.lightbox-close {
+  align-items: center;
+  background: var(--panel);
+  border-color: var(--line);
+  color: var(--ink);
+  display: inline-flex;
+  justify-content: center;
+  min-height: 40px;
+  min-width: 40px;
+  padding: 8px 16px;
+  position: absolute;
+  right: max(12px, env(safe-area-inset-right));
+  top: max(12px, env(safe-area-inset-top));
+}
+
+.lightbox-close:hover {
+  background: var(--soft);
 }
 
 .media-placeholder {
