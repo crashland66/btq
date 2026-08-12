@@ -61,18 +61,24 @@ public struct BackgroundUploadSnapshot: Equatable, Sendable {
     public var liveCaptureIDs: Set<String>
     public var completions: [BackgroundUploadCompletion]
     public var isAuthoritative: Bool
+    public var taskDescriptions: [String?]?
 
     public init(
         liveCaptureIDs: Set<String> = [],
         completions: [BackgroundUploadCompletion] = [],
-        isAuthoritative: Bool = true
+        isAuthoritative: Bool = true,
+        taskDescriptions: [String?]? = []
     ) {
         self.liveCaptureIDs = liveCaptureIDs
         self.completions = completions
         self.isAuthoritative = isAuthoritative
+        self.taskDescriptions = taskDescriptions
     }
 
-    public static let unavailable = BackgroundUploadSnapshot(isAuthoritative: false)
+    public static let unavailable = BackgroundUploadSnapshot(
+        isAuthoritative: false,
+        taskDescriptions: nil
+    )
 }
 
 /// Performs the capture upload. Abstracted so the API client stays testable: production uses
@@ -165,7 +171,8 @@ public final class BackgroundUploader: NSObject, CaptureUploader, URLSessionData
         return BackgroundUploadSnapshot(
             liveCaptureIDs: liveCaptureIDs,
             completions: completions,
-            isAuthoritative: true
+            isAuthoritative: true,
+            taskDescriptions: tasks.map(\.taskDescription)
         )
     }
 

@@ -24,18 +24,24 @@ public struct CaptureUploadReconciliation: Equatable, Sendable {
     public var liveCaptureIDs: Set<String>
     public var completedResponses: [String: SubmitCaptureResponse]
     public var isAuthoritative: Bool
+    public var taskDescriptions: [String?]?
 
     public init(
         liveCaptureIDs: Set<String> = [],
         completedResponses: [String: SubmitCaptureResponse] = [:],
-        isAuthoritative: Bool = true
+        isAuthoritative: Bool = true,
+        taskDescriptions: [String?]? = []
     ) {
         self.liveCaptureIDs = liveCaptureIDs
         self.completedResponses = completedResponses
         self.isAuthoritative = isAuthoritative
+        self.taskDescriptions = taskDescriptions
     }
 
-    public static let unavailable = CaptureUploadReconciliation(isAuthoritative: false)
+    public static let unavailable = CaptureUploadReconciliation(
+        isAuthoritative: false,
+        taskDescriptions: nil
+    )
 }
 
 public enum CaptureAPIError: Error, Equatable, LocalizedError, CustomStringConvertible, Sendable {
@@ -272,7 +278,12 @@ public final class HTTPCaptureAPIClient: CaptureAPIClient, @unchecked Sendable {
 
     public func reconcileBackgroundUploads(captureIDs: Set<String>) async -> CaptureUploadReconciliation {
         let snapshot = await uploader.reconciliationSnapshot()
-        guard snapshot.isAuthoritative else { return .unavailable }
+        guard snapshot.isAuthoritative else {
+            return CaptureUploadReconciliation(
+                isAuthoritative: false,
+                taskDescriptions: snapshot.taskDescriptions
+            )
+        }
         let globallyLiveCaptureIDs = snapshot.liveCaptureIDs.union(uploadBodyReservations())
 
         var completedResponses: [String: SubmitCaptureResponse] = [:]
@@ -299,7 +310,8 @@ public final class HTTPCaptureAPIClient: CaptureAPIClient, @unchecked Sendable {
         return CaptureUploadReconciliation(
             liveCaptureIDs: globallyLiveCaptureIDs.subtracting(completedResponses.keys),
             completedResponses: completedResponses,
-            isAuthoritative: true
+            isAuthoritative: true,
+            taskDescriptions: snapshot.taskDescriptions
         )
     }
 
