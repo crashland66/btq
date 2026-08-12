@@ -11,7 +11,7 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qs, quote, urlencode, unquote, urlsplit, urlunsplit
+from urllib.parse import parse_qs, urlencode, unquote, urlsplit, urlunsplit
 
 from event_pipeline import couchdb_config
 from event_pipeline.couchdb_capture_reader import (
@@ -31,12 +31,22 @@ from .read_model import (
     TokenSiteScopeError,
     VisionByCaptureProjection,
 )
+from .render import (
+    html_document,
+    media_url,
+    render_latest_page,
+    render_site_picker,
+    viewer_url,
+)
 
 
 APP_NAME = "site_photo_viewer"
 APP_VERSION = 1
 DEFAULT_TOKEN_DB = Path("/srv/btq/data/field_capture_tokens.sqlite3")
 DEFAULT_UPLOAD_ROOT = Path("/srv/btq/data/uploads")
+VIEWER_CSS_PATH = Path(__file__).with_name("public") / "viewer.css"
+MAX_QUERY_LENGTH = 200
+MAX_PAGE_NUMBER = 1_000_000
 VIEWER_CSP = (
     "default-src 'none'; style-src 'self'; img-src 'self' https:; "
     "base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
@@ -53,6 +63,7 @@ SECURITY_HEADERS = {
 CaptureReader = Callable[..., list[dict[str, Any]]]
 TargetLookupReader = Callable[..., dict[str, str] | None]
 LabelResolver = Callable[[str], str | None]
+VisionReader = Callable[..., VisionByCaptureProjection]
 Response = tuple[HTTPStatus, str, bytes, dict[str, str]]
 
 
@@ -65,6 +76,8 @@ class ViewerDependencies:
     capture_reader: CaptureReader = query_captures_by_site_id
     target_lookup_reader: TargetLookupReader = query_capture_target_by_upload_id
     label_resolver: LabelResolver | None = None
+    vision_database: str | None = None
+    vision_reader: VisionReader | None = None
 
 
 class SitePhotoViewerServer(ThreadingHTTPServer):
@@ -168,6 +181,8 @@ def route_response(
     capture_reader: CaptureReader = query_captures_by_site_id,
     target_lookup_reader: TargetLookupReader = query_capture_target_by_upload_id,
     label_resolver: LabelResolver | None = None,
+    vision_database: str | None = None,
+    vision_reader: VisionReader | None = None,
 ) -> Response:
     """Return a complete response without relying on handler state.
 
@@ -188,10 +203,15 @@ def route_response(
         return html_error(HTTPStatus.BAD_REQUEST, "Invalid request.")
     if parsed.path == "/api/health":
         return json_response({"app": APP_NAME, "version": APP_VERSION})
+    if parsed.path == "/viewer.css":
+        return viewer_stylesheet_response()
     if parsed.path != "/" and not parsed.path.startswith("/media/"):
         return html_error(HTTPStatus.NOT_FOUND, "Not found")
 
-    query = parse_qs(parsed.query, keep_blank_values=True)
+    try:
+        query = parse_request_query(parsed.query)
+    except (UnicodeDecodeError, ValueError):
+        return html_error(HTTPStatus.BAD_REQUEST, "Invalid request.")
     token = first_query_value(query, "token").strip()
     try:
         record = token_store.authenticate(token) if token else None
@@ -212,6 +232,8 @@ def route_response(
             capture_reader=capture_reader,
             target_lookup_reader=target_lookup_reader,
             label_resolver=label_resolver,
+            vision_database=vision_database,
+            vision_reader=vision_reader,
         )
 
     if parsed.path.startswith("/media/"):
@@ -225,6 +247,11 @@ def route_page(
     record: TokenRecord,
     dependencies: ViewerDependencies,
 ) -> Response:
+    try:
+        search_query, page_number = gallery_parameters(query)
+    except ValueError:
+        return html_error(HTTPStatus.BAD_REQUEST, "Invalid request.")
+
     site_was_supplied = "site" in query
     selected_site = first_query_value(query, "site").strip() if site_was_supplied else None
     try:
@@ -267,12 +294,41 @@ def route_page(
             site_label=scope.site_labels[scope.selected_site_id],
             upload_root=dependencies.upload_root,
         )
-        corpus = SitePhotoCorpus.join(capture_photos, VisionByCaptureProjection.from_mapping({}))
-        page = SitePhotoPage.from_corpus(corpus)
+        if dependencies.vision_reader is None:
+            vision = VisionByCaptureProjection.from_mapping({})
+        else:
+            vision = dependencies.vision_reader(
+                dependencies.config,
+                (photo.capture_id for photo in capture_photos),
+                database=dependencies.vision_database,
+            )
+        corpus = SitePhotoCorpus.join(capture_photos, vision)
+        page_url = lambda number: viewer_url(  # noqa: E731
+            token,
+            site_id=(scope.selected_site_id if len(scope.allowed_site_ids) > 1 else None),
+            query=search_query,
+            page_number=number,
+        )
+        page = SitePhotoPage.from_corpus(
+            corpus,
+            query=search_query,
+            page_number=page_number,
+            url_for_page=page_url,
+        )
     except Exception as exc:
         logging.warning("site photo viewer capture read failed: %s", type(exc).__name__)
         return html_error(HTTPStatus.SERVICE_UNAVAILABLE, "The photo viewer is temporarily unavailable.")
-    return html_response(render_latest_page(scope, token, page))
+
+    last_page = max(1, (page.total_results + page.page_size - 1) // page.page_size)
+    if page_number > last_page:
+        return response(
+            HTTPStatus.FOUND,
+            "text/plain; charset=utf-8",
+            b"",
+            {"Location": page_url(last_page)},
+        )
+    page = page.resolve_media_availability(dependencies.media_store.exists)
+    return html_response(render_latest_page(scope, token, page, query=search_query))
 
 
 def route_media(
@@ -376,68 +432,66 @@ def prove_authorized_photo_key(
     return HTTPStatus.NOT_FOUND
 
 
-def render_site_picker(scope: TokenSiteScope, token: str) -> str:
-    items = []
-    for site_id in scope.allowed_site_ids:
-        href = viewer_url(token, site_id=site_id)
-        items.append(
-            f'<li><a href="{html.escape(href, quote=True)}">'
-            f"{html.escape(scope.site_labels[site_id])}</a></li>"
-        )
-    body = "<h1>Choose a site</h1><ul>" + "".join(items) + "</ul>"
-    return html_document("Choose a site", body)
-
-
-def render_latest_page(scope: TokenSiteScope, token: str, page: SitePhotoPage) -> str:
-    assert scope.selected_site_id is not None
-    label = html.escape(scope.site_labels[scope.selected_site_id])
-    items: list[str] = []
-    for photo in page.photos:
-        filename = html.escape(photo.filename or "Photo")
-        if photo.media_key:
-            media_href = media_url(photo.media_key, token)
-            media_markup = (
-                f'<a href="{html.escape(media_href, quote=True)}">'
-                f'<img src="{html.escape(media_href, quote=True)}" alt="{filename}" loading="lazy"></a>'
-            )
-        else:
-            media_markup = "<span>Media reference is invalid.</span>"
-        items.append(f"<li>{media_markup}<p>{filename}</p></li>")
-    empty = "<p>No photos are available.</p>" if not items else ""
-    picker_link = ""
-    if len(scope.allowed_site_ids) > 1:
-        picker_link = f'<p><a href="{html.escape(viewer_url(token), quote=True)}">Choose another site</a></p>'
-    body = (
-        f"<h1>{label}</h1><h2>Latest photos</h2>{picker_link}"
-        f"<p>{page.total_results} photos</p>{empty}<ul>{''.join(items)}</ul>"
-    )
-    return html_document(f"Latest photos — {scope.site_labels[scope.selected_site_id]}", body)
-
-
-def html_document(title: str, body: str) -> str:
-    return (
-        "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">"
-        "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
-        "<meta name=\"robots\" content=\"noindex,nofollow,noarchive\">"
-        "<meta name=\"color-scheme\" content=\"light dark\">"
-        f"<title>{html.escape(title)}</title></head><body><main>{body}</main></body></html>"
+def parse_request_query(raw_query: str) -> dict[str, list[str]]:
+    if not _has_valid_percent_encoding(raw_query):
+        raise ValueError("invalid percent encoding")
+    return parse_qs(
+        raw_query,
+        keep_blank_values=True,
+        strict_parsing=True,
+        encoding="utf-8",
+        errors="strict",
+        max_num_fields=20,
     )
 
 
-def viewer_url(token: str, *, site_id: str | None = None) -> str:
-    values = {"token": token}
-    if site_id is not None:
-        values["site"] = site_id
-    return f"/?{urlencode(values)}"
+def gallery_parameters(query: Mapping[str, Sequence[str]]) -> tuple[str, int]:
+    query_values = query.get("q", ())
+    if len(query_values) > 1:
+        raise ValueError("q must occur at most once")
+    search_query = str(query_values[0]) if query_values else ""
+    if len(search_query) > MAX_QUERY_LENGTH or "\x00" in search_query:
+        raise ValueError("q is malformed or too long")
+
+    page_values = query.get("page", ())
+    if len(page_values) > 1:
+        raise ValueError("page must occur at most once")
+    if not page_values:
+        return search_query, 1
+    raw_page = str(page_values[0])
+    if not raw_page.isascii() or not raw_page.isdigit() or raw_page.startswith("0"):
+        raise ValueError("page must be a positive integer")
+    page_number = int(raw_page)
+    if page_number > MAX_PAGE_NUMBER:
+        raise ValueError("page is too large")
+    return search_query, page_number
 
 
-def media_url(media_key: str, token: str) -> str:
-    return f"/media/{quote(media_key, safe='')}?{urlencode({'token': token})}"
+def viewer_stylesheet_response() -> Response:
+    try:
+        body = VIEWER_CSS_PATH.read_bytes()
+    except OSError as exc:
+        logging.warning("site photo viewer stylesheet read failed: %s", type(exc).__name__)
+        return html_error(HTTPStatus.SERVICE_UNAVAILABLE, "The photo viewer is temporarily unavailable.")
+    return response(HTTPStatus.OK, "text/css; charset=utf-8", body)
 
 
 def first_query_value(query: Mapping[str, Sequence[str]], key: str) -> str:
     values = query.get(key, ())
     return str(values[0]) if values else ""
+
+
+def _has_valid_percent_encoding(value: str) -> bool:
+    index = 0
+    hexadecimal = frozenset("0123456789abcdefABCDEF")
+    while index < len(value):
+        if value[index] == "%":
+            if index + 2 >= len(value) or value[index + 1] not in hexadecimal or value[index + 2] not in hexadecimal:
+                return False
+            index += 3
+            continue
+        index += 1
+    return True
 
 
 def _valid_media_key(value: str) -> bool:
@@ -530,6 +584,8 @@ def build_dependencies(upload_root: Path) -> ViewerDependencies:
         upload_root=upload_root.expanduser().resolve(strict=False),
         media_store=required_s3_media_store(upload_root),
         label_resolver=registry.resolve_canonical,
+        vision_database=couchdb_config.photo_vision_database(),
+        vision_reader=VisionByCaptureProjection.fetch,
     )
 
 

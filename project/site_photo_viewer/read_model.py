@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -15,6 +15,9 @@ from token_store import UNIVERSAL_SITE_SCOPE, TokenRecord
 PAGE_SIZE = 60
 DATE_UNAVAILABLE = "Date unavailable"
 INVALID_REFERENCE = "invalid_reference"
+MEDIA_AVAILABLE = "available"
+MEDIA_UNAVAILABLE = "unavailable"
+MEDIA_CHECK_FAILED = "check_failed"
 MEDIA_UNCHECKED = "unchecked"
 VISION_AVAILABLE = "available"
 VISION_UNAVAILABLE = "unavailable"
@@ -358,6 +361,35 @@ class SitePhotoPage:
     @property
     def photos(self) -> tuple[_SitePhotoRecord, ...]:
         return tuple(photo for group in self.groups for photo in group.photos)
+
+    def resolve_media_availability(
+        self,
+        exists: Callable[[str], bool],
+    ) -> SitePhotoPage:
+        """Return this page with every displayed media key checked once.
+
+        Invalid references are preserved from the capture projection. A store
+        error is a per-photo honest state rather than a dead image or an empty
+        gallery.
+        """
+        states: dict[str, str] = {}
+        groups: list[_PhotoDateGroup] = []
+        for group in self.groups:
+            photos: list[_SitePhotoRecord] = []
+            for photo in group.photos:
+                state = photo.availability_state
+                if photo.media_key:
+                    if photo.media_key not in states:
+                        try:
+                            states[photo.media_key] = (
+                                MEDIA_AVAILABLE if exists(photo.media_key) else MEDIA_UNAVAILABLE
+                            )
+                        except Exception:
+                            states[photo.media_key] = MEDIA_CHECK_FAILED
+                    state = states[photo.media_key]
+                photos.append(replace(photo, availability_state=state))
+            groups.append(replace(group, photos=tuple(photos)))
+        return replace(self, groups=tuple(groups))
 
 
 def _capture_timestamp(capture: Mapping[str, object]) -> str:
