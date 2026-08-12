@@ -1,6 +1,10 @@
 import Foundation
 import OSLog
 
+#if os(iOS)
+import Darwin
+#endif
+
 public struct ReconciliationFieldDiagnosticRecord: Codable, Equatable, Identifiable, Sendable {
     public enum TaskDescription: Codable, Equatable, Sendable {
         case nilValue
@@ -147,3 +151,11 @@ struct ReconciliationFieldDiagnosticRecorder {
             .appendingPathComponent("ReconciliationFieldDiagnostics.json")
     }
 }
+
+#if os(iOS)
+enum ReconciliationFieldDiagnosticTermination {
+    static func terminateImmediately() -> Never {
+        Darwin.abort()
+    }
+}
+#endif
