@@ -170,3 +170,11 @@ def test_backend_outage_on_cold_media_is_503() -> None:
     )
     status, _, _, _ = _media(KEY, deps)
     assert status == HTTPStatus.SERVICE_UNAVAILABLE
+
+
+def test_server_survives_a_thirty_image_burst_behind_a_proxy() -> None:
+    """Backlog and keep-alive contract from the 2026-08-12 502 incident."""
+    from site_photo_viewer.server import SitePhotoViewerHandler, SitePhotoViewerServer
+
+    assert SitePhotoViewerServer.request_queue_size >= 32
+    assert SitePhotoViewerHandler.protocol_version == "HTTP/1.1"

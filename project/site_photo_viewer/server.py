@@ -202,6 +202,10 @@ class ViewerDependencies:
 
 class SitePhotoViewerServer(ThreadingHTTPServer):
     daemon_threads = True
+    # A gallery page fires ~30 concurrent /media requests through Caddy. The
+    # socketserver default backlog of 5 RSTs the overflow, which Caddy
+    # surfaces as 502s (live incident, 2026-08-12).
+    request_queue_size = 64
 
     def __init__(
         self,
@@ -216,6 +220,9 @@ class SitePhotoViewerServer(ThreadingHTTPServer):
 
 class SitePhotoViewerHandler(BaseHTTPRequestHandler):
     server: SitePhotoViewerServer
+    # Keep-alive so Caddy reuses upstream connections instead of racing
+    # HTTP/1.0 closes; every response already carries Content-Length.
+    protocol_version = "HTTP/1.1"
 
     def do_GET(self) -> None:
         self._handle("GET")
