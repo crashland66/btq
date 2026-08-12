@@ -147,8 +147,9 @@ import Testing
 
 @Test func prompt485VerifierPrompt480OriginalEncodedByteContractRemainsIntact() throws {
     let source = try prompt485VerifierSource("Views/CameraCaptureView.swift")
-    // Prompt 128 replaced the controller-as-delegate extension with a per-shot
-    // `SequencedPhotoCaptureDelegate` plus an ordered delivery drain.
+    // Prompt 128 replaced the controller-as-delegate extension with a per-shot capture
+    // delegate plus a FIFO delivery drain; its follow-on renamed that delegate to
+    // `PhotoCaptureDelegate` when the sequence numbers were dropped.
     //
     // VERIFIER CORRECTION (prompt 128 review): the prompt-128 edit split this into two
     // DISJOINT slices — the delegate class and `deliverReadyPhotosInOrder` — which left
@@ -157,21 +158,24 @@ import Testing
     // `prompt485Ordered` relationship between producing the bytes and handing them off.
     // The original assertion covered the whole path as ONE contiguous span. Restored to
     // one span with the same shape: from the delegate that produces the bytes through to
-    // the `// MARK: - Preview layer bridge` boundary.
+    // the `// MARK: - Preview layer bridge` boundary. Keep it contiguous.
     let evidencePath = try prompt485Slice(
         source,
-        from: "private final class SequencedPhotoCaptureDelegate",
+        from: "private final class PhotoCaptureDelegate",
         to: "// MARK: - Preview layer bridge"
     )
 
     #expect(source.contains("import AVFoundation"))
     #expect(source.contains("settings.photoQualityPrioritization = CameraCaptureSettingsFactory.qualityPrioritization"))
-    // Prompt 128: balanced prioritization removes pictorial-grade pre-capture latency.
-    // It does NOT change what is stored — `fileDataRepresentation()` still yields the
-    // full original encode. Auto-deferred delivery is disabled so this can never be a
-    // proxy image.
-    #expect(source.contains("static let qualityPrioritization: AVCapturePhotoOutput.QualityPrioritization = .balanced"))
+    // Prioritization returned to `.quality` (operator decision: evidence sharpness wins),
+    // now offset by zero-shutter-lag, responsive capture and prepared photo settings, and
+    // with fast-capture prioritization explicitly OFF so nothing may silently drop below
+    // the requested level. None of that changes what is STORED —
+    // `fileDataRepresentation()` still yields the full original encode, and auto-deferred
+    // delivery is disabled so it can never be a proxy image.
+    #expect(source.contains("static let qualityPrioritization: AVCapturePhotoOutput.QualityPrioritization = .quality"))
     #expect(source.contains("isAutoDeferredPhotoDeliveryEnabled = false"))
+    #expect(source.contains("isFastCapturePrioritizationEnabled = false"))
     #expect(prompt485Ordered([
         "photo.fileDataRepresentation()",
         "await onPhoto?(data)",
