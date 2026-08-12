@@ -1,0 +1,8 @@
+{
+  "_id": "_design/site_photo_viewer",
+  "views": {
+    "by_capture": {
+      "map": "function(doc) {\n  if (doc.doc_type !== \"photo_vision_sidecar\") return;\n  if (!doc.capture_id) return;\n  emit(doc.capture_id, {\n    photo_id: doc.photo_id || \"\",\n    filename: doc.filename || \"\",\n    source_image_path: doc.source_image_path || \"\",\n    description: doc.description || \"\",\n    summary: doc.summary || \"\",\n    area_guess: doc.area_guess || \"\",\n    qc_category: doc.qc_category || \"\"\n  });\n}"
+    }
+  }
+}

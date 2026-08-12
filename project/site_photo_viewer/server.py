@@ -5,8 +5,12 @@ import html
 import json
 import logging
 import os
+import threading
+import time
+from collections import OrderedDict
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass, field
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -47,6 +51,9 @@ DEFAULT_UPLOAD_ROOT = Path("/srv/btq/data/uploads")
 VIEWER_CSS_PATH = Path(__file__).with_name("public") / "viewer.css"
 MAX_QUERY_LENGTH = 200
 MAX_PAGE_NUMBER = 1_000_000
+CORPUS_CACHE_TTL_SECONDS = 120
+CORPUS_CACHE_MAX_SITES = 32
+MEDIA_AVAILABILITY_MAX_WORKERS = 8
 VIEWER_CSP = (
     "default-src 'none'; style-src 'self'; img-src 'self' https:; "
     "base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
@@ -67,6 +74,78 @@ VisionReader = Callable[..., VisionByCaptureProjection]
 Response = tuple[HTTPStatus, str, bytes, dict[str, str]]
 
 
+@dataclass
+class _SitePhotoCorpusCacheEntry:
+    cached_at: float
+    corpus: SitePhotoCorpus
+    availability: dict[str, bool]
+
+
+class SitePhotoCorpusCache:
+    """Small passive cache of authorized, per-site viewer read models."""
+
+    def __init__(self) -> None:
+        self._entries: OrderedDict[tuple[str, str], _SitePhotoCorpusCacheEntry] = OrderedDict()
+        self._lock = threading.Lock()
+
+    def get(self, database: str, site_id: str) -> tuple[SitePhotoCorpus, dict[str, bool]] | None:
+        key = (database, site_id)
+        now = time.monotonic()
+        with self._lock:
+            self._discard_expired(now)
+            entry = self._entries.get(key)
+            if entry is None:
+                return None
+            return entry.corpus, dict(entry.availability)
+
+    def store(
+        self,
+        database: str,
+        site_id: str,
+        corpus: SitePhotoCorpus,
+    ) -> tuple[SitePhotoCorpus, dict[str, bool]]:
+        key = (database, site_id)
+        now = time.monotonic()
+        with self._lock:
+            self._discard_expired(now)
+            existing = self._entries.get(key)
+            if existing is not None:
+                return existing.corpus, dict(existing.availability)
+            self._entries[key] = _SitePhotoCorpusCacheEntry(
+                cached_at=now,
+                corpus=corpus,
+                availability={},
+            )
+            while len(self._entries) > CORPUS_CACHE_MAX_SITES:
+                self._entries.popitem(last=False)
+            return corpus, {}
+
+    def update_availability(
+        self,
+        database: str,
+        site_id: str,
+        availability: Mapping[str, bool],
+    ) -> None:
+        if not availability:
+            return
+        key = (database, site_id)
+        now = time.monotonic()
+        with self._lock:
+            self._discard_expired(now)
+            entry = self._entries.get(key)
+            if entry is not None:
+                entry.availability.update(availability)
+
+    def _discard_expired(self, now: float) -> None:
+        expired = [
+            key
+            for key, entry in self._entries.items()
+            if now - entry.cached_at >= CORPUS_CACHE_TTL_SECONDS
+        ]
+        for key in expired:
+            del self._entries[key]
+
+
 @dataclass(frozen=True)
 class ViewerDependencies:
     config: couchdb_config.CouchDBConfig
@@ -78,6 +157,7 @@ class ViewerDependencies:
     label_resolver: LabelResolver | None = None
     vision_database: str | None = None
     vision_reader: VisionReader | None = None
+    corpus_cache: SitePhotoCorpusCache = field(default_factory=SitePhotoCorpusCache)
 
 
 class SitePhotoViewerServer(ThreadingHTTPServer):
@@ -283,26 +363,37 @@ def route_page(
         return html_response(render_site_picker(scope, token))
 
     try:
-        captures = dependencies.capture_reader(
-            dependencies.config,
+        cached = dependencies.corpus_cache.get(
+            dependencies.captures_database,
             scope.selected_site_id,
-            database=dependencies.captures_database,
         )
-        capture_photos = CapturePhotoProjection.from_capture_rows(
-            captures,
-            site_id=scope.selected_site_id,
-            site_label=scope.site_labels[scope.selected_site_id],
-            upload_root=dependencies.upload_root,
-        )
-        if dependencies.vision_reader is None:
-            vision = VisionByCaptureProjection.from_mapping({})
-        else:
-            vision = dependencies.vision_reader(
+        if cached is None:
+            captures = dependencies.capture_reader(
                 dependencies.config,
-                (photo.capture_id for photo in capture_photos),
-                database=dependencies.vision_database,
+                scope.selected_site_id,
+                database=dependencies.captures_database,
             )
-        corpus = SitePhotoCorpus.join(capture_photos, vision)
+            capture_photos = CapturePhotoProjection.from_capture_rows(
+                captures,
+                site_id=scope.selected_site_id,
+                site_label=scope.site_labels[scope.selected_site_id],
+                upload_root=dependencies.upload_root,
+            )
+            if dependencies.vision_reader is None:
+                vision = VisionByCaptureProjection.from_mapping({})
+            else:
+                vision = dependencies.vision_reader(
+                    dependencies.config,
+                    (photo.capture_id for photo in capture_photos),
+                    database=dependencies.vision_database,
+                )
+            corpus, cached_availability = dependencies.corpus_cache.store(
+                dependencies.captures_database,
+                scope.selected_site_id,
+                SitePhotoCorpus.join(capture_photos, vision),
+            )
+        else:
+            corpus, cached_availability = cached
         page_url = lambda number: viewer_url(  # noqa: E731
             token,
             site_id=(scope.selected_site_id if len(scope.allowed_site_ids) > 1 else None),
@@ -327,8 +418,51 @@ def route_page(
             b"",
             {"Location": page_url(last_page)},
         )
-    page = page.resolve_media_availability(dependencies.media_store.exists)
+    page, resolved_availability = resolve_page_media_availability(
+        page,
+        dependencies.media_store.exists,
+        cached_availability,
+    )
+    dependencies.corpus_cache.update_availability(
+        dependencies.captures_database,
+        scope.selected_site_id,
+        resolved_availability,
+    )
     return html_response(render_latest_page(scope, token, page, query=search_query))
+
+
+def resolve_page_media_availability(
+    page: SitePhotoPage,
+    exists: Callable[[str], bool],
+    cached_availability: Mapping[str, bool],
+) -> tuple[SitePhotoPage, dict[str, bool]]:
+    """Resolve unique displayed keys concurrently and preserve per-key failures."""
+    availability = dict(cached_availability)
+    missing_keys = tuple(
+        dict.fromkeys(
+            photo.media_key
+            for photo in page.photos
+            if photo.media_key and photo.media_key not in availability
+        )
+    )
+    resolved: dict[str, bool] = {}
+    if missing_keys:
+        try:
+            with ThreadPoolExecutor(max_workers=MEDIA_AVAILABILITY_MAX_WORKERS) as executor:
+                futures = {executor.submit(exists, key): key for key in missing_keys}
+                for future in as_completed(futures):
+                    key = futures[future]
+                    try:
+                        resolved[key] = bool(future.result())
+                    except Exception:
+                        continue
+        except Exception as exc:
+            logging.warning(
+                "site photo viewer media availability pool failed: %s",
+                type(exc).__name__,
+            )
+    availability.update(resolved)
+    return page.resolve_media_availability(availability.__getitem__), resolved
 
 
 def route_media(
@@ -585,7 +719,7 @@ def build_dependencies(upload_root: Path) -> ViewerDependencies:
         media_store=required_s3_media_store(upload_root),
         label_resolver=registry.resolve_canonical,
         vision_database=couchdb_config.photo_vision_database(),
-        vision_reader=VisionByCaptureProjection.fetch,
+        vision_reader=VisionByCaptureProjection.fetch_from_view,
     )
 
 

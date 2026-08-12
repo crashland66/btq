@@ -225,6 +225,93 @@ def query_photo_vision_by_capture_ids(
     return grouped
 
 
+def query_photo_vision_view_by_capture_ids(
+    config: couchdb_config.CouchDBConfig,
+    capture_ids: list[str],
+    *,
+    database: str,
+) -> dict[str, list[dict]]:
+    """Return projected photo vision rows from the ``by_capture`` view."""
+    cleaned_ids = sorted({str(capture_id).strip() for capture_id in capture_ids if str(capture_id).strip()})
+    if not cleaned_ids:
+        return {}
+
+    db_quoted = parse.quote(database, safe="")
+    url = f"{config.base_url}/{db_quoted}/_design/site_photo_viewer/_view/by_capture"
+    body = json.dumps({"keys": cleaned_ids}, sort_keys=True).encode("utf-8")
+    headers = {"Accept": "application/json", "Content-Type": "application/json"}
+    headers.update(config.auth_header())
+    req = request.Request(url, data=body, headers=headers, method="POST")
+    try:
+        with request.urlopen(req, timeout=config.timeout) as response:
+            status = int(getattr(response, "status", getattr(response, "code", 200)))
+            raw = response.read()
+    except error.HTTPError as exc:
+        raise PhotoVisionCouchDBError(
+            f"CouchDB photo vision by_capture view failed: HTTP {exc.code}"
+        ) from exc
+    except (error.URLError, OSError) as exc:
+        raise PhotoVisionCouchDBError(f"CouchDB photo vision by_capture view failed: {exc}") from exc
+
+    if not 200 <= status < 300:
+        raise PhotoVisionCouchDBError(
+            f"CouchDB photo vision by_capture view failed: HTTP {status}"
+        )
+    try:
+        parsed = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise PhotoVisionCouchDBError(
+            "CouchDB photo vision by_capture view returned invalid JSON"
+        ) from exc
+    if not isinstance(parsed, dict):
+        raise PhotoVisionCouchDBError(
+            "CouchDB photo vision by_capture view returned non-object JSON"
+        )
+    rows = parsed.get("rows")
+    if not isinstance(rows, list):
+        raise PhotoVisionCouchDBError(
+            "CouchDB photo vision by_capture view returned no rows list"
+        )
+
+    emitted_fields = (
+        "photo_id",
+        "filename",
+        "source_image_path",
+        "description",
+        "summary",
+        "area_guess",
+        "qc_category",
+    )
+    requested_ids = set(cleaned_ids)
+    grouped: dict[str, list[dict]] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            raise PhotoVisionCouchDBError(
+                "CouchDB photo vision by_capture view returned a malformed row"
+            )
+        doc_id = str(row.get("id") or "").strip()
+        capture_id = str(row.get("key") or "").strip()
+        value = row.get("value")
+        if (
+            not doc_id
+            or not capture_id
+            or capture_id not in requested_ids
+            or not isinstance(value, dict)
+            or any(field not in value for field in emitted_fields)
+        ):
+            raise PhotoVisionCouchDBError(
+                "CouchDB photo vision by_capture view returned a malformed row"
+            )
+        projected = {field: value[field] for field in emitted_fields}
+        projected["_id"] = doc_id
+        projected["capture_id"] = capture_id
+        grouped.setdefault(capture_id, []).append(projected)
+
+    for docs in grouped.values():
+        docs.sort(key=lambda doc: (str(doc.get("photo_id") or ""), str(doc.get("_id") or "")))
+    return grouped
+
+
 def fetch_all_photo_vision_docs(
     config: couchdb_config.CouchDBConfig,
     *,

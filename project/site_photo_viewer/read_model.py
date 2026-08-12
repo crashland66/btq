@@ -7,7 +7,10 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 from event_pipeline import couchdb_config
-from field_capture.photo_vision_couchdb import query_photo_vision_by_capture_ids
+from field_capture.photo_vision_couchdb import (
+    query_photo_vision_by_capture_ids,
+    query_photo_vision_view_by_capture_ids,
+)
 from media_store import media_key_from_stored_path
 from token_store import UNIVERSAL_SITE_SCOPE, TokenRecord
 
@@ -168,6 +171,27 @@ class VisionByCaptureProjection:
     ) -> VisionByCaptureProjection:
         cleaned = tuple(sorted({str(value).strip() for value in capture_ids if str(value).strip()}))
         fetched = query_photo_vision_by_capture_ids(config, list(cleaned), database=database)
+        return cls(
+            by_capture_id={
+                capture_id: tuple(doc for doc in fetched.get(capture_id, []) if isinstance(doc, dict))
+                for capture_id in cleaned
+            }
+        )
+
+    @classmethod
+    def fetch_from_view(
+        cls,
+        config: couchdb_config.CouchDBConfig,
+        capture_ids: Iterable[str],
+        *,
+        database: str | None = None,
+    ) -> VisionByCaptureProjection:
+        cleaned = tuple(sorted({str(value).strip() for value in capture_ids if str(value).strip()}))
+        fetched = query_photo_vision_view_by_capture_ids(
+            config,
+            list(cleaned),
+            database=database or couchdb_config.photo_vision_database(),
+        )
         return cls(
             by_capture_id={
                 capture_id: tuple(doc for doc in fetched.get(capture_id, []) if isinstance(doc, dict))
