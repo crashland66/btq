@@ -3,8 +3,9 @@
 #
 # WHY THIS EXISTS
 # ---------------
-# The gateway VPS runs THREE services, each with its own full copy of the repo:
+# The gateway VPS runs FOUR services, each with its own full copy of the repo:
 #
+#   btq-site-photo-viewer :8084  site photo viewer    /srv/btq/apps/site-photo-viewer/source
 #   btq-unified-capture  :8081  unified capture SPA  /srv/btq/apps/unified-capture/project
 #   btq-field-capture    :8080  legacy capture SPA   /srv/btq/apps/field-capture/project
 #   btq-admin            :8083  admin reporting      /srv/btq/apps/admin/source
@@ -26,15 +27,15 @@
 # exits non-zero when the trees disagree — including when you deliberately
 # deployed a subset. A partial rollout is allowed; a SILENT one is not.
 #
-# Deploy order is deliberate: fc and admin first, photos last. photos carries
-# the live field crew, so it is only touched after the release has proven
-# itself on the quieter surfaces, and a failure earlier in the run stops
-# before it is restarted at all.
+# Deploy order is deliberate: viewer, fc, and admin first, photos last. photos
+# carries the live field crew, so it is only touched after the release has
+# proven itself on the quieter surfaces, and a failure earlier in the run
+# stops before it is restarted at all.
 #
 # Usage:
-#   deploy-all-apps-on-vps                 # all three, in the safe order
-#   deploy-all-apps-on-vps fc admin        # subset; still drift-reports at the end
-#   deploy-all-apps-on-vps --status        # report only, deploy nothing
+#   deploy-all-apps-on-vps                    # all four, in the safe order
+#   deploy-all-apps-on-vps viewer fc admin    # subset; still drift-reports at the end
+#   deploy-all-apps-on-vps --status           # report only, deploy nothing
 
 set -euo pipefail
 
@@ -46,8 +47,10 @@ STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 FC_APP_DIR="${UNIFIED_CAPTURE_APP_DIR:-/srv/btq/apps/unified-capture}"
 PHOTOS_APP_DIR="${FIELD_CAPTURE_APP_DIR:-/srv/btq/apps/field-capture}"
 ADMIN_APP_DIR="${BTQ_ADMIN_APP_DIR:-/srv/btq/apps/admin}"
+VIEWER_APP_DIR="${BTQ_SITE_PHOTO_VIEWER_APP_DIR:-/srv/btq/apps/site-photo-viewer}"
 ADMIN_BACKUP_ROOT="${BTQ_ADMIN_BACKUP_ROOT:-/srv/btq/backups/admin}"
 ADMIN_SERVICE="${BTQ_ADMIN_SERVICE:-btq-admin.service}"
+VIEWER_SERVICE="${BTQ_SITE_PHOTO_VIEWER_SERVICE:-btq-site-photo-viewer.service}"
 ADMIN_OWNER="${BTQ_ADMIN_OWNER:-btq-admin:btq-admin}"
 
 # Real hostnames stay out of this repo. The field-capture script's built-in
@@ -61,6 +64,7 @@ if [[ -r "${DEPLOY_ENV_FILE}" ]]; then
   set -a; . "${DEPLOY_ENV_FILE}"; set +a
 fi
 PHOTOS_PUBLIC_URL="${FIELD_CAPTURE_PUBLIC_URL:-}"
+VIEWER_PUBLIC_URL="${SITE_PHOTO_VIEWER_PUBLIC_URL:-}"
 
 STAMP_FILE=".btq-deployed-rev"
 
@@ -83,6 +87,7 @@ fail() {
 
 app_dir_for() {
   case "$1" in
+    viewer) echo "${VIEWER_APP_DIR}" ;;
     fc) echo "${FC_APP_DIR}" ;;
     photos) echo "${PHOTOS_APP_DIR}" ;;
     admin) echo "${ADMIN_APP_DIR}" ;;
@@ -91,6 +96,7 @@ app_dir_for() {
 
 service_for() {
   case "$1" in
+    viewer) echo "${VIEWER_SERVICE}" ;;
     fc) echo "btq-unified-capture.service" ;;
     photos) echo "btq-field-capture.service" ;;
     admin) echo "${ADMIN_SERVICE}" ;;
@@ -116,6 +122,13 @@ write_stamp() {
 # --------------------------------------------------------------------------- #
 # Per-app deploys
 # --------------------------------------------------------------------------- #
+
+deploy_viewer() {
+  echo "==> viewer (site-photo-viewer)"
+  SITE_PHOTO_VIEWER_PUBLIC_URL="${VIEWER_PUBLIC_URL}" \
+    "${SOURCE_ROOT}/scripts/deploy-site-photo-viewer-on-vps"
+  write_stamp viewer
+}
 
 deploy_fc() {
   echo "==> fc (unified-capture)"
@@ -170,6 +183,11 @@ deploy_admin() {
 verify_app() {
   local app="$1" code
   case "${app}" in
+    viewer)
+      curl -fsS --max-time 10 http://127.0.0.1:8084/api/health \
+        | grep -F '"app": "site_photo_viewer"' >/dev/null \
+        || { echo "viewer health check did not identify site_photo_viewer" >&2; return 1; }
+      ;;
     fc)
       curl -fsS --max-time 10 http://127.0.0.1:8081/api/health \
         | grep -F '"app": "unified_capture"' >/dev/null \
@@ -195,7 +213,7 @@ drift_report() {
   echo
   echo "Deployed-revision report (source ${SOURCE_REV}):"
   printf '  %-8s %-22s %-10s %s\n' "APP" "DEPLOYED REV" "SERVICE" "HEALTH"
-  for app in fc photos admin; do
+  for app in viewer fc photos admin; do
     stamp="$(read_stamp "${app}")"
     rev="${stamp%% *}"
     local svc health
@@ -254,14 +272,14 @@ fi
 
 APPS=("$@")
 if (( ${#APPS[@]} == 0 )); then
-  # fc and admin first; photos (the live field crew) last.
-  APPS=(fc admin photos)
+  # The quiet viewer proves the release first; photos (the live field crew) last.
+  APPS=(viewer fc admin photos)
 fi
 
 for app in "${APPS[@]}"; do
   case "${app}" in
-    fc|photos|admin) ;;
-    *) fail "unknown app '${app}' (expected: fc, photos, admin)" ;;
+    viewer|fc|photos|admin) ;;
+    *) fail "unknown app '${app}' (expected: viewer, fc, photos, admin)" ;;
   esac
   [[ -d "$(app_dir_for "${app}")" ]] || fail "app dir missing: $(app_dir_for "${app}")"
 done
@@ -273,6 +291,7 @@ echo
 for app in "${APPS[@]}"; do
   FAILED="${app}"
   case "${app}" in
+    viewer) deploy_viewer ;;
     fc) deploy_fc ;;
     photos) deploy_photos ;;
     admin) deploy_admin ;;
