@@ -174,19 +174,42 @@ def query_photo_vision_by_capture_ids(
     *,
     database: str | None = None,
 ) -> dict[str, list[dict]]:
-    """Return photo vision docs grouped by capture_id, ordered by photo_id."""
+    """Return every matching photo vision doc, grouped and ordered by photo_id."""
     cleaned_ids = sorted({str(capture_id).strip() for capture_id in capture_ids if str(capture_id).strip()})
     if not cleaned_ids:
         return {}
 
-    mango = {
-        "selector": {"capture_id": {"$in": cleaned_ids}},
-        "limit": max(100, len(cleaned_ids) * 10),
-    }
-    response = query_photo_vision(config, mango, database=database)
-    docs_raw = response.get("docs")
-    if not isinstance(docs_raw, list):
-        return {}
+    page_size = max(100, len(cleaned_ids) * 10)
+    max_pages = 400
+    docs_raw: list[object] = []
+    bookmark: object = None
+    seen_bookmarks: set[str] = set()
+    for _ in range(max_pages):
+        mango: dict[str, object] = {
+            "selector": {"capture_id": {"$in": cleaned_ids}},
+            "limit": page_size,
+        }
+        if bookmark:
+            mango["bookmark"] = bookmark
+        response = query_photo_vision(config, mango, database=database)
+        page_raw = response.get("docs")
+        if not isinstance(page_raw, list):
+            raise PhotoVisionCouchDBError("CouchDB photo vision _find returned no docs list")
+        docs_raw.extend(page_raw)
+        if len(page_raw) < page_size:
+            break
+        next_bookmark = response.get("bookmark")
+        bookmark_key = str(next_bookmark or "")
+        if not bookmark_key or bookmark_key in seen_bookmarks:
+            raise PhotoVisionCouchDBError(
+                "CouchDB photo vision pagination stopped before the complete result set"
+            )
+        seen_bookmarks.add(bookmark_key)
+        bookmark = next_bookmark
+    else:
+        raise PhotoVisionCouchDBError(
+            f"CouchDB photo vision query exceeded safety cap of {max_pages} pages"
+        )
 
     grouped: dict[str, list[dict]] = {}
     for doc in docs_raw:
@@ -213,6 +236,7 @@ def fetch_all_photo_vision_docs(
     and growing; a fixed limit would silently truncate)."""
     docs: list[dict[str, Any]] = []
     bookmark: object = None
+    seen_bookmarks: set[str] = set()
     for _ in range(max_pages):
         mango: dict[str, object] = {
             "selector": {"doc_type": DOC_TYPE},
@@ -225,9 +249,18 @@ def fetch_all_photo_vision_docs(
         docs.extend(page)
         if len(page) < page_size:
             break
-        bookmark = payload.get("bookmark")
-        if not bookmark:
-            break
+        next_bookmark = payload.get("bookmark")
+        bookmark_key = str(next_bookmark or "")
+        if not bookmark_key or bookmark_key in seen_bookmarks:
+            raise PhotoVisionCouchDBError(
+                "CouchDB photo vision pagination stopped before the complete result set"
+            )
+        seen_bookmarks.add(bookmark_key)
+        bookmark = next_bookmark
+    else:
+        raise PhotoVisionCouchDBError(
+            f"CouchDB photo vision query exceeded safety cap of {max_pages} pages"
+        )
     return docs
 
 

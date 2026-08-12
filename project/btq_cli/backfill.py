@@ -6,7 +6,7 @@ from pathlib import Path
 
 from btq_vault.couch_store import CouchDBEntityStore
 from config import get_config
-from btq_cli import media_backfill_to_r2
+from btq_cli import media_backfill_to_r2, media_coverage
 from field_capture import backfill_employees as field_backfill_employees
 from field_capture import dedupe_employee_docs as field_dedupe_employee_docs
 from queue_processor import backfill_unknown_captures
@@ -53,6 +53,17 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
     media_to_r2_parser.add_argument("--limit", type=int, help="Maximum number of upload files to scan for staged runs.")
     media_to_r2_parser.add_argument("--verbose", action="store_true", help="Print per-object key decisions.")
     media_to_r2_parser.set_defaults(func=media_backfill_to_r2.handle_backfill_media_to_r2)
+    media_coverage_parser = subparsers.add_parser(
+        "audit-media-coverage",
+        help="Audit canonical capture photo references against configured R2 storage.",
+    )
+    media_coverage_parser.add_argument(
+        "--runtime-root",
+        type=Path,
+        help="Runtime root whose uploads/ path anchors legacy absolute media references.",
+    )
+    media_coverage_parser.add_argument("--json", action="store_true")
+    media_coverage_parser.set_defaults(func=media_coverage.handle_audit_media_coverage)
 
 
 def _require_vault_root(args: argparse.Namespace) -> Path:

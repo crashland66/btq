@@ -24,6 +24,7 @@ EXPECTED_SUBCOMMANDS = [
     "backfill-field-capture-employees",
     "dedupe-employee-docs",
     "backfill-media-to-r2",
+    "audit-media-coverage",
     "shift-report-to-sc",
     "replay",
     "skill",
