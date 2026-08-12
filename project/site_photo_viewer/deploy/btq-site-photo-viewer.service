@@ -1,0 +1,33 @@
+[Unit]
+Description=BTQ Site Photo Viewer — read-only, token-gated
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=btq-viewer
+Group=btq-viewer
+SupplementaryGroups=btq-field
+WorkingDirectory=/srv/btq/apps/site-photo-viewer/source
+Environment=PYTHONPATH=/srv/btq/apps/site-photo-viewer/source
+Environment=PYTHONDONTWRITEBYTECODE=1
+EnvironmentFile=-/etc/gregstoltz/viewer.env
+ExecStart=/usr/bin/python3 -m site_photo_viewer.server --host 127.0.0.1 --port 8084 --token-db /srv/btq/data/field_capture_tokens.sqlite3 --upload-root /srv/btq/data/uploads
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+# Authentication updates last_used_at. SQLite therefore needs WAL/journal
+# writes as well as access to the database file itself.
+ReadWritePaths=/srv/btq/data
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target

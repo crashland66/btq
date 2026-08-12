@@ -1,0 +1,124 @@
+#!/usr/bin/env bash
+# Deploy only the standalone BTQ site photo viewer on the gateway VPS.
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SOURCE_ROOT="${BTQ_DEPLOY_SOURCE_ROOT:-$(cd "${SCRIPT_DIR}/.." && pwd)}"
+APP_DIR="${BTQ_SITE_PHOTO_VIEWER_APP_DIR:-/srv/btq/apps/site-photo-viewer}"
+TARGET="${APP_DIR}/source"
+BACKUP_ROOT="${BTQ_SITE_PHOTO_VIEWER_BACKUP_ROOT:-/srv/btq/backups/site-photo-viewer}"
+SERVICE="${BTQ_SITE_PHOTO_VIEWER_SERVICE:-btq-site-photo-viewer.service}"
+SYSTEMCTL="${BTQ_DEPLOY_SYSTEMCTL:-/usr/bin/systemctl}"
+OWNER="${BTQ_SITE_PHOTO_VIEWER_OWNER:-btq-viewer:btq-viewer}"
+ENV_FILE="${BTQ_SITE_PHOTO_VIEWER_ENV_FILE:-/etc/gregstoltz/viewer.env}"
+DEPLOY_ENV_FILE="${BTQ_DEPLOY_ENV_FILE:-/etc/btq/deploy.env}"
+TOKEN_DB="${BTQ_SITE_PHOTO_VIEWER_TOKEN_DB:-/srv/btq/data/field_capture_tokens.sqlite3}"
+STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
+
+fail() {
+	echo "site photo viewer deploy failed: $*" >&2
+	exit 1
+}
+
+if [[ -r "${DEPLOY_ENV_FILE}" ]]; then
+	# shellcheck disable=SC1090
+	set -a
+	. "${DEPLOY_ENV_FILE}"
+	set +a
+fi
+PUBLIC_URL="${SITE_PHOTO_VIEWER_PUBLIC_URL:-}"
+
+[[ -n "${PUBLIC_URL}" ]] || fail "SITE_PHOTO_VIEWER_PUBLIC_URL is required in ${DEPLOY_ENV_FILE}"
+[[ "${PUBLIC_URL}" == https://* || "${PUBLIC_URL}" == http://* ]] \
+	|| fail "SITE_PHOTO_VIEWER_PUBLIC_URL must be an absolute HTTP(S) URL"
+[[ -f "${SOURCE_ROOT}/project/site_photo_viewer/server.py" ]] \
+	|| fail "source root does not contain project/site_photo_viewer/server.py: ${SOURCE_ROOT}"
+[[ -f "${SOURCE_ROOT}/project/site_photo_viewer/deploy/btq-site-photo-viewer.service" ]] \
+	|| fail "viewer systemd unit is missing from the source tree"
+[[ -x "${SYSTEMCTL}" ]] || fail "systemctl is not executable: ${SYSTEMCTL}"
+[[ -f "${TOKEN_DB}" ]] || fail "shared token database not found: ${TOKEN_DB}"
+sudo -n test -f "${ENV_FILE}" || fail "viewer environment file not found: ${ENV_FILE}"
+/usr/bin/python3 -c 'import boto3' >/dev/null 2>&1 \
+	|| fail "boto3 is not installed for /usr/bin/python3"
+
+echo "Verifying viewer environment, CouchDB reads, and R2 configuration..."
+sudo -n env SOURCE_ROOT="${SOURCE_ROOT}" ENV_FILE="${ENV_FILE}" /bin/sh -eu -c '
+	set -a
+	. "$ENV_FILE"
+	set +a
+	[ "${BTQ_MEDIA_STORE:-}" = "s3" ] || { echo "BTQ_MEDIA_STORE must be s3" >&2; exit 1; }
+	for name in BTQ_R2_ENDPOINT_URL BTQ_R2_BUCKET BTQ_R2_ACCESS_KEY_ID BTQ_R2_SECRET_ACCESS_KEY; do
+		eval "value=\${$name:-}"
+		[ -n "$value" ] || { echo "$name is required" >&2; exit 1; }
+	done
+	PYTHONPATH="$SOURCE_ROOT/project" /usr/bin/python3 -c "from pathlib import Path; from site_photo_viewer.server import required_s3_media_store; required_s3_media_store(Path(\"/srv/btq/data/uploads\"))"
+	url="${BTQ_COUCHDB_URL:-http://127.0.0.1:5984}"
+	for db in \
+		"${BTQ_COUCHDB_FIELD_CAPTURES_DB:-btq_field_captures}" \
+		"${BTQ_COUCHDB_PHOTO_VISION_DB:-btq_photo_vision}" \
+		"${BTQ_COUCHDB_VAULT_DB:-btq_vault}"; do
+		if [ -n "${BTQ_COUCHDB_USER:-}" ]; then
+			code="$(curl -sS -o /dev/null -w "%{http_code}" -u "$BTQ_COUCHDB_USER:$BTQ_COUCHDB_PASSWORD" "$url/$db")"
+		else
+			code="$(curl -sS -o /dev/null -w "%{http_code}" "$url/$db")"
+		fi
+		[ "$code" = "200" ] || { echo "cannot read required CouchDB database $db (HTTP $code)" >&2; exit 1; }
+	done
+' || fail "viewer environment preflight failed"
+
+echo "Ensuring dedicated service user..."
+if ! id btq-viewer >/dev/null 2>&1; then
+	sudo -n useradd --system --no-create-home --shell /usr/sbin/nologin btq-viewer
+fi
+getent group btq-field >/dev/null 2>&1 || fail "required btq-field group does not exist"
+sudo -n usermod -aG btq-field btq-viewer
+
+echo "Backing up the existing viewer app..."
+sudo -n mkdir -p "${BACKUP_ROOT}"
+if sudo -n test -d "${APP_DIR}"; then
+	sudo -n cp -a "${APP_DIR}" "${BACKUP_ROOT}/site-photo-viewer-${STAMP}"
+fi
+
+echo "Installing flattened project source into ${TARGET}..."
+sudo -n mkdir -p "${TARGET}"
+sudo -n rsync -a --delete \
+	--exclude '__pycache__/' \
+	--exclude '*.pyc' \
+	--exclude '.pytest_cache/' \
+	--exclude '.mypy_cache/' \
+	--exclude '.ruff_cache/' \
+	"${SOURCE_ROOT}/project/" "${TARGET}/"
+sudo -n chown -R "${OWNER}" "${TARGET}"
+
+echo "Installing ${SERVICE}..."
+sudo -n install -m 0644 \
+	"${SOURCE_ROOT}/project/site_photo_viewer/deploy/btq-site-photo-viewer.service" \
+	"/etc/systemd/system/${SERVICE}"
+sudo -n "${SYSTEMCTL}" daemon-reload
+sudo -n "${SYSTEMCTL}" enable "${SERVICE}"
+
+echo "Restarting only ${SERVICE}..."
+sudo -n "${SYSTEMCTL}" restart "${SERVICE}"
+sudo -n "${SYSTEMCTL}" is-active "${SERVICE}" >/dev/null
+
+echo "Checking loopback health signature..."
+healthy=0
+for _attempt in 1 2 3 4 5 6 7 8 9 10; do
+	if curl -fsS --max-time 10 http://127.0.0.1:8084/api/health \
+		| grep -F '"app": "site_photo_viewer"' >/dev/null; then
+		healthy=1
+		break
+	fi
+	sleep 1
+done
+if [[ "${healthy}" != "1" ]]; then
+	sudo -n "${SYSTEMCTL}" --no-pager status "${SERVICE}" >&2 || true
+	fail "loopback health check did not identify site_photo_viewer"
+fi
+
+echo "Checking public unauthenticated gate..."
+public_code="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 15 "${PUBLIC_URL%/}/")"
+[[ "${public_code}" == "401" ]] \
+	|| fail "public viewer returned ${public_code}; expected unauthenticated 401"
+
+echo "Site photo viewer deploy complete: loopback health is valid and public auth returns 401."
