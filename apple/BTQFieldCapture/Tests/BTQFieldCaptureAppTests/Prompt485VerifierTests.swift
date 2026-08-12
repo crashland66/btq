@@ -148,19 +148,19 @@ import Testing
 @Test func prompt485VerifierPrompt480OriginalEncodedByteContractRemainsIntact() throws {
     let source = try prompt485VerifierSource("Views/CameraCaptureView.swift")
     // Prompt 128 replaced the controller-as-delegate extension with a per-shot
-    // `SequencedPhotoCaptureDelegate` (responsive capture can deliver out of shutter
-    // order), so the byte contract now spans two places: the delegate produces the
-    // original encoded bytes, and an ordered delivery drain hands them to `onPhoto`.
-    // Both halves are asserted below. The invariant is unchanged: the ORIGINAL encode
-    // reaches the draft with no re-encode.
-    let delegate = try prompt485Slice(
+    // `SequencedPhotoCaptureDelegate` plus an ordered delivery drain.
+    //
+    // VERIFIER CORRECTION (prompt 128 review): the prompt-128 edit split this into two
+    // DISJOINT slices — the delegate class and `deliverReadyPhotosInOrder` — which left
+    // the middle of the evidence-byte path (the capture completion closure and
+    // `enqueuePhotoResult`) covered by NO re-encode assertion, and dropped the
+    // `prompt485Ordered` relationship between producing the bytes and handing them off.
+    // The original assertion covered the whole path as ONE contiguous span. Restored to
+    // one span with the same shape: from the delegate that produces the bytes through to
+    // the `// MARK: - Preview layer bridge` boundary.
+    let evidencePath = try prompt485Slice(
         source,
         from: "private final class SequencedPhotoCaptureDelegate",
-        to: "// MARK: - Session controller"
-    )
-    let delivery = try prompt485Slice(
-        source,
-        from: "private func deliverReadyPhotosInOrder",
         to: "// MARK: - Preview layer bridge"
     )
 
@@ -172,13 +172,13 @@ import Testing
     // proxy image.
     #expect(source.contains("static let qualityPrioritization: AVCapturePhotoOutput.QualityPrioritization = .balanced"))
     #expect(source.contains("isAutoDeferredPhotoDeliveryEnabled = false"))
-    #expect(delegate.contains("photo.fileDataRepresentation()"))
-    #expect(delivery.contains("await onPhoto?(data)"))
-    for section in [delegate, delivery] {
-        #expect(!section.contains("UIImage(data:"))
-        #expect(!section.contains("jpegData("))
-        #expect(!section.contains("pngData("))
-    }
+    #expect(prompt485Ordered([
+        "photo.fileDataRepresentation()",
+        "await onPhoto?(data)",
+    ], in: evidencePath))
+    #expect(!evidencePath.contains("UIImage(data:"))
+    #expect(!evidencePath.contains("jpegData("))
+    #expect(!evidencePath.contains("pngData("))
 }
 
 private func prompt485VerifierSource(_ relativePath: String) throws -> String {
