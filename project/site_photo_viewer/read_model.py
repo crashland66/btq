@@ -15,7 +15,7 @@ from media_store import media_key_from_stored_path
 from token_store import UNIVERSAL_SITE_SCOPE, TokenRecord
 
 
-PAGE_SIZE = 60
+PAGE_SIZE = 30
 DATE_UNAVAILABLE = "Date unavailable"
 INVALID_REFERENCE = "invalid_reference"
 MEDIA_AVAILABLE = "available"

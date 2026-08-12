@@ -345,21 +345,21 @@ def _corpus_of(count: int, *, site: str = "site_a") -> SitePhotoCorpus:
 def test_exact_total_is_computed_before_slicing() -> None:
     page = SitePhotoPage.from_corpus(_corpus_of(150), page_number=2)
     assert page.total_results == 150
-    assert page.page_size == PAGE_SIZE == 60
-    assert page.first_position == 61
-    assert page.last_position == 120
-    assert len(page.photos) == 60
+    assert page.page_size == PAGE_SIZE == 30
+    assert page.first_position == 31
+    assert page.last_position == 60
+    assert len(page.photos) == 30
 
 
 def test_last_page_positions_and_next_url() -> None:
     urls: list[int] = []
     page = SitePhotoPage.from_corpus(
-        _corpus_of(150), page_number=3, url_for_page=lambda n: urls.append(n) or f"/p{n}"
+        _corpus_of(150), page_number=5, url_for_page=lambda n: urls.append(n) or f"/p{n}"
     )
     assert page.first_position == 121
     assert page.last_position == 150
     assert page.next_url is None
-    assert page.previous_url == "/p2"
+    assert page.previous_url == "/p4"
 
 
 def test_order_is_newest_first_and_deterministic() -> None:

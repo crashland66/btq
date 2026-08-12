@@ -249,7 +249,7 @@ def _many_captures(count: int) -> list[dict[str, object]]:
 def test_second_page_slices_and_links_carry_token_and_query() -> None:
     captures = _many_captures(90)
     text = _page_text("/?token=good&page=2", captures=captures, vision={}, store=FakeStore())
-    assert "Showing 61–90 of 90 photos" in text
+    assert "Showing 31–60 of 90 photos" in text
     assert 'rel="prev"' in text
     assert "token=good" in text
 
@@ -262,7 +262,7 @@ def test_beyond_last_page_redirects_to_last_keeping_query() -> None:
     assert status == HTTPStatus.FOUND
     assert body == b""
     location = headers["Location"]
-    assert "page=2" in location and "q=site" in location and "token=good" in location
+    assert "page=3" in location and "q=site" in location and "token=good" in location
 
 
 def test_malformed_parameters_are_400() -> None:

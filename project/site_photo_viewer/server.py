@@ -78,6 +78,7 @@ Response = tuple[HTTPStatus, str, bytes, dict[str, str]]
 class _SitePhotoCorpusCacheEntry:
     cached_at: float
     corpus: SitePhotoCorpus
+    media_keys: frozenset[str]
     availability: dict[str, bool]
 
 
@@ -87,6 +88,8 @@ class SitePhotoCorpusCache:
     def __init__(self) -> None:
         self._entries: OrderedDict[tuple[str, str], _SitePhotoCorpusCacheEntry] = OrderedDict()
         self._lock = threading.Lock()
+        self._condition = threading.Condition(self._lock)
+        self._building: set[tuple[str, str]] = set()
 
     def get(self, database: str, site_id: str) -> tuple[SitePhotoCorpus, dict[str, bool]] | None:
         key = (database, site_id)
@@ -97,6 +100,14 @@ class SitePhotoCorpusCache:
             if entry is None:
                 return None
             return entry.corpus, dict(entry.availability)
+
+    def authorized_media_keys(self, database: str, site_id: str) -> frozenset[str] | None:
+        key = (database, site_id)
+        now = time.monotonic()
+        with self._lock:
+            self._discard_expired(now)
+            entry = self._entries.get(key)
+            return None if entry is None else entry.media_keys
 
     def store(
         self,
@@ -114,11 +125,40 @@ class SitePhotoCorpusCache:
             self._entries[key] = _SitePhotoCorpusCacheEntry(
                 cached_at=now,
                 corpus=corpus,
+                media_keys=frozenset(
+                    photo.media_key for photo in corpus.photos if photo.media_key is not None
+                ),
                 availability={},
             )
             while len(self._entries) > CORPUS_CACHE_MAX_SITES:
                 self._entries.popitem(last=False)
             return corpus, {}
+
+    def get_or_build(
+        self,
+        database: str,
+        site_id: str,
+        build: Callable[[], SitePhotoCorpus],
+    ) -> tuple[SitePhotoCorpus, dict[str, bool]]:
+        """Return one cached corpus, coalescing concurrent cold builds per site."""
+        key = (database, site_id)
+        with self._condition:
+            while True:
+                self._discard_expired(time.monotonic())
+                entry = self._entries.get(key)
+                if entry is not None:
+                    return entry.corpus, dict(entry.availability)
+                if key not in self._building:
+                    self._building.add(key)
+                    break
+                self._condition.wait()
+
+        try:
+            return self.store(database, site_id, build())
+        finally:
+            with self._condition:
+                self._building.discard(key)
+                self._condition.notify_all()
 
     def update_availability(
         self,
@@ -363,37 +403,11 @@ def route_page(
         return html_response(render_site_picker(scope, token))
 
     try:
-        cached = dependencies.corpus_cache.get(
-            dependencies.captures_database,
+        corpus, cached_availability = load_site_photo_corpus(
             scope.selected_site_id,
+            scope.site_labels[scope.selected_site_id],
+            dependencies,
         )
-        if cached is None:
-            captures = dependencies.capture_reader(
-                dependencies.config,
-                scope.selected_site_id,
-                database=dependencies.captures_database,
-            )
-            capture_photos = CapturePhotoProjection.from_capture_rows(
-                captures,
-                site_id=scope.selected_site_id,
-                site_label=scope.site_labels[scope.selected_site_id],
-                upload_root=dependencies.upload_root,
-            )
-            if dependencies.vision_reader is None:
-                vision = VisionByCaptureProjection.from_mapping({})
-            else:
-                vision = dependencies.vision_reader(
-                    dependencies.config,
-                    (photo.capture_id for photo in capture_photos),
-                    database=dependencies.vision_database,
-                )
-            corpus, cached_availability = dependencies.corpus_cache.store(
-                dependencies.captures_database,
-                scope.selected_site_id,
-                SitePhotoCorpus.join(capture_photos, vision),
-            )
-        else:
-            corpus, cached_availability = cached
         page_url = lambda number: viewer_url(  # noqa: E731
             token,
             site_id=(scope.selected_site_id if len(scope.allowed_site_ids) > 1 else None),
@@ -429,6 +443,42 @@ def route_page(
         resolved_availability,
     )
     return html_response(render_latest_page(scope, token, page, query=search_query))
+
+
+def load_site_photo_corpus(
+    site_id: str,
+    site_label: str,
+    dependencies: ViewerDependencies,
+) -> tuple[SitePhotoCorpus, dict[str, bool]]:
+    """Build and cache the canonical, vision-joined corpus for one site."""
+
+    def build() -> SitePhotoCorpus:
+        captures = dependencies.capture_reader(
+            dependencies.config,
+            site_id,
+            database=dependencies.captures_database,
+        )
+        capture_photos = CapturePhotoProjection.from_capture_rows(
+            captures,
+            site_id=site_id,
+            site_label=site_label,
+            upload_root=dependencies.upload_root,
+        )
+        if dependencies.vision_reader is None:
+            vision = VisionByCaptureProjection.from_mapping({})
+        else:
+            vision = dependencies.vision_reader(
+                dependencies.config,
+                (photo.capture_id for photo in capture_photos),
+                database=dependencies.vision_database,
+            )
+        return SitePhotoCorpus.join(capture_photos, vision)
+
+    return dependencies.corpus_cache.get_or_build(
+        dependencies.captures_database,
+        site_id,
+        build,
+    )
 
 
 def resolve_page_media_availability(
@@ -510,15 +560,15 @@ def prove_authorized_photo_key(
     media_key: str,
     dependencies: ViewerDependencies,
 ) -> HTTPStatus:
-    """Prove that ``media_key`` is a photo in canonical capture metadata.
+    """Prove that ``media_key`` belongs to a cached, site-scoped photo corpus."""
+    for site_id in scope.allowed_site_ids:
+        authorized_keys = dependencies.corpus_cache.authorized_media_keys(
+            dependencies.captures_database,
+            site_id,
+        )
+        if authorized_keys is not None and media_key in authorized_keys:
+            return HTTPStatus.OK
 
-    The upload-id view narrows modern records to their canonical owner. Old
-    records without emitted upload IDs fall back to each explicitly authorized
-    site's canonical capture rows. The photo-row verification also prevents an
-    audio upload from being exposed through the photo endpoint.
-    """
-    target: dict[str, str] | None = None
-    target_lookup_failed = False
     try:
         target = dependencies.target_lookup_reader(
             dependencies.config,
@@ -526,8 +576,8 @@ def prove_authorized_photo_key(
             database=dependencies.captures_database,
         )
     except Exception as exc:
-        target_lookup_failed = True
         logging.warning("site photo viewer media ownership lookup failed: %s", type(exc).__name__)
+        return HTTPStatus.SERVICE_UNAVAILABLE
 
     if target is not None:
         target_type = str(target.get("target_type") or "").strip()
@@ -540,28 +590,26 @@ def prove_authorized_photo_key(
     else:
         sites_to_check = scope.allowed_site_ids
 
-    canonical_lookup_failed = False
+    corpus_build_failed = False
     for site_id in sites_to_check:
         try:
-            captures = dependencies.capture_reader(
-                dependencies.config,
+            load_site_photo_corpus(
                 site_id,
-                database=dependencies.captures_database,
+                scope.site_labels.get(site_id, site_id),
+                dependencies,
             )
         except Exception as exc:
-            canonical_lookup_failed = True
-            logging.warning("site photo viewer canonical media lookup failed: %s", type(exc).__name__)
+            corpus_build_failed = True
+            logging.warning("site photo viewer media corpus build failed: %s", type(exc).__name__)
             continue
-        photos = CapturePhotoProjection.from_capture_rows(
-            captures,
-            site_id=site_id,
-            site_label=site_id,
-            upload_root=dependencies.upload_root,
+        authorized_keys = dependencies.corpus_cache.authorized_media_keys(
+            dependencies.captures_database,
+            site_id,
         )
-        if any(photo.media_key == media_key for photo in photos):
+        if authorized_keys is not None and media_key in authorized_keys:
             return HTTPStatus.OK
 
-    if canonical_lookup_failed or (target_lookup_failed and not sites_to_check):
+    if corpus_build_failed:
         return HTTPStatus.SERVICE_UNAVAILABLE
     return HTTPStatus.NOT_FOUND
 
