@@ -1399,7 +1399,10 @@ import UniformTypeIdentifiers
     #expect(cameraViewSource.contains("public static var isCameraAvailable"))
     #expect(cameraViewSource.contains("private let photoOutput = AVCapturePhotoOutput()"))
     #expect(cameraViewSource.contains("self.session.addOutput(self.photoOutput)"))
-    #expect(cameraViewSource.contains("self.photoOutput.capturePhoto(with: settings, delegate: self)"))
+    // Prompt 128: the capture delegate moved out of CameraSessionController into a
+    // per-shot SequencedPhotoCaptureDelegate, so responsive capture cannot reorder
+    // photos relative to the shutter. Still exactly one capturePhoto call.
+    #expect(cameraViewSource.contains("self.photoOutput.capturePhoto(with: settings, delegate: delegate)"))
     #expect(cameraViewSource.contains("photo.fileDataRepresentation()"))
     #expect(!cameraViewSource.contains("? .camera : .photoLibrary"))
     #expect(cameraViewSource.contains("let rotation = CaptureRotation()"))

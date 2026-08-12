@@ -36,10 +36,15 @@ import Testing
 
 @Test func prompt485VerifierCaptureStampsOutputOnSessionQueueBeforePhotoCapture() throws {
     let source = try prompt485VerifierSource("Views/CameraCaptureView.swift")
+    // Prompt 128 moved the capture delegate out of `CameraSessionController` into a
+    // per-shot `SequencedPhotoCaptureDelegate`, so the old `// MARK: - Capture delegate`
+    // boundary and the `delegate: self` argument are gone. The invariant this test
+    // guards — rotation stamped on the session queue exactly once, before exactly one
+    // capture — is unchanged.
     let capture = try prompt485Slice(
         source,
         from: "func capturePhoto()",
-        to: "// MARK: - Capture delegate"
+        to: "private func enqueuePhotoResult"
     )
 
     #expect(prompt485Ordered([
@@ -47,7 +52,7 @@ import Testing
         "sessionQueue.async",
         "applyCaptureRotation(rotationAngle, to: self.photoOutput)",
         "let settings = AVCapturePhotoSettings()",
-        "self.photoOutput.capturePhoto(with: settings, delegate: self)",
+        "self.photoOutput.capturePhoto(with: settings, delegate: delegate)",
     ], in: capture))
     #expect(prompt485Occurrences(of: "applyCaptureRotation(", in: capture) == 1)
     #expect(prompt485Occurrences(of: "capturePhoto(with:", in: capture) == 1)
@@ -142,22 +147,38 @@ import Testing
 
 @Test func prompt485VerifierPrompt480OriginalEncodedByteContractRemainsIntact() throws {
     let source = try prompt485VerifierSource("Views/CameraCaptureView.swift")
+    // Prompt 128 replaced the controller-as-delegate extension with a per-shot
+    // `SequencedPhotoCaptureDelegate` (responsive capture can deliver out of shutter
+    // order), so the byte contract now spans two places: the delegate produces the
+    // original encoded bytes, and an ordered delivery drain hands them to `onPhoto`.
+    // Both halves are asserted below. The invariant is unchanged: the ORIGINAL encode
+    // reaches the draft with no re-encode.
     let delegate = try prompt485Slice(
         source,
-        from: "extension CameraSessionController: AVCapturePhotoCaptureDelegate",
+        from: "private final class SequencedPhotoCaptureDelegate",
+        to: "// MARK: - Session controller"
+    )
+    let delivery = try prompt485Slice(
+        source,
+        from: "private func deliverReadyPhotosInOrder",
         to: "// MARK: - Preview layer bridge"
     )
 
     #expect(source.contains("import AVFoundation"))
     #expect(source.contains("settings.photoQualityPrioritization = CameraCaptureSettingsFactory.qualityPrioritization"))
-    #expect(source.contains("static let qualityPrioritization: AVCapturePhotoOutput.QualityPrioritization = .quality"))
-    #expect(prompt485Ordered([
-        "photo.fileDataRepresentation()",
-        "await self.onPhoto?(data)",
-    ], in: delegate))
-    #expect(!delegate.contains("UIImage(data:"))
-    #expect(!delegate.contains("jpegData("))
-    #expect(!delegate.contains("pngData("))
+    // Prompt 128: balanced prioritization removes pictorial-grade pre-capture latency.
+    // It does NOT change what is stored — `fileDataRepresentation()` still yields the
+    // full original encode. Auto-deferred delivery is disabled so this can never be a
+    // proxy image.
+    #expect(source.contains("static let qualityPrioritization: AVCapturePhotoOutput.QualityPrioritization = .balanced"))
+    #expect(source.contains("isAutoDeferredPhotoDeliveryEnabled = false"))
+    #expect(delegate.contains("photo.fileDataRepresentation()"))
+    #expect(delivery.contains("await onPhoto?(data)"))
+    for section in [delegate, delivery] {
+        #expect(!section.contains("UIImage(data:"))
+        #expect(!section.contains("jpegData("))
+        #expect(!section.contains("pngData("))
+    }
 }
 
 private func prompt485VerifierSource(_ relativePath: String) throws -> String {
