@@ -1,5 +1,8 @@
+import CoreGraphics
 import Foundation
+import ImageIO
 import Testing
+import UniformTypeIdentifiers
 @testable import BTQFieldCaptureApp
 
 // Independent verification of the media-ownership fix (the field incident where a
@@ -35,6 +38,35 @@ private func exists(_ url: URL?) -> Bool {
     guard let url else { return false }
     return FileManager.default.fileExists(atPath: url.path)
 }
+
+private func makeVerifierImageData(type: UTType) throws -> Data {
+    let width = 4
+    let height = 3
+    var pixels = Array(repeating: UInt32(0xFF_44_88_CC), count: width * height)
+    guard let context = CGContext(
+        data: &pixels,
+        width: width,
+        height: height,
+        bitsPerComponent: 8,
+        bytesPerRow: width * 4,
+        space: CGColorSpaceCreateDeviceRGB(),
+        bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+    ), let image = context.makeImage() else {
+        throw ImageNormalizerError.encodeFailed
+    }
+    let data = NSMutableData()
+    guard let destination = CGImageDestinationCreateWithData(data, type.identifier as CFString, 1, nil) else {
+        throw ImageNormalizerError.encodeFailed
+    }
+    CGImageDestinationAddImage(destination, image, nil)
+    guard CGImageDestinationFinalize(destination) else {
+        throw ImageNormalizerError.encodeFailed
+    }
+    return data as Data
+}
+
+private func makeVerifierPNGData() throws -> Data { try makeVerifierImageData(type: .png) }
+private func makeVerifierJPEGData() throws -> Data { try makeVerifierImageData(type: .jpeg) }
 
 private enum OwnershipVerifierStoreError: Error {
     case saveFailed
@@ -940,4 +972,752 @@ private func contiguousBlock(_ lines: [String]) -> String {
     ])))
     #expect(captureView.contains("clearRecorder(intent: .discard)"))
     #expect(captureView.contains("recorderClearIntents[audio.id] = .discard"))
+}
+
+// MARK: - Async photo write: reserve-then-write ordering
+//
+// The photo encode + multi-megabyte atomic write moved into `Task.detached`, and the
+// draft is persisted with the photo REFERENCE before the file exists. That inverts the
+// hazard this suite was built around: instead of a file with no owner (deletable), we
+// now get an owner with no file (a claim the device cannot back). These tests pin the
+// ordering, prove the new window degrades into the visible recovery path rather than a
+// silent loss, and re-run the ownership mutation controls against a reservation.
+
+@Test @MainActor func aReservedPhotoIsOwnedBeforeItsBytesAreWritten() async {
+    let root = makeTempRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let mediaStore = LocalMediaStore(rootDirectory: root)
+    let model = await makeModel(mediaStore: mediaStore, online: false)
+    model.selectSite(id: demoSiteID())
+
+    let photo = mediaStore.makePhotoDestination(preferredStem: "camera", bucketID: "visit-burst")
+    // A reservation names a managed URL and writes nothing.
+    #expect(photo.fileURL != nil)
+    #expect(!exists(photo.fileURL))
+
+    let owned = await model.appendPhotoToDraft(photo, photos: [photo])
+    #expect(owned)
+
+    // Ownership exists while the file still does not.
+    #expect(!exists(photo.fileURL))
+    #expect(model.persistedCapturesOwningMedia.contains { capture in
+        capture.photos.contains { $0.id == photo.id && $0.fileURL == photo.fileURL }
+    })
+
+    // Now the detached write lands.
+    #expect(throws: Never.self) {
+        try mediaStore.writePhotoData(try makeVerifierJPEGData(), to: photo)
+    }
+    #expect(exists(photo.fileURL))
+
+    // The bytes are protected by the ownership established before they existed.
+    mediaStore.deletePendingMedia(
+        photos: [photo],
+        preservingMediaOwnedBy: model.persistedCapturesOwningMedia
+    )
+    #expect(exists(photo.fileURL))
+
+    // MUTATION CONTROL: the file is deletable; only the reservation's ownership saved it.
+    mediaStore.deletePendingMedia(photos: [photo], preservingMediaOwnedBy: [])
+    #expect(!exists(photo.fileURL))
+}
+
+@Test func aReservationRefusesToWriteOutsideTheManagedRoot() throws {
+    let root = makeTempRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let store = LocalMediaStore(rootDirectory: root)
+
+    let outside = FileManager.default.temporaryDirectory
+        .appendingPathComponent("btq-escape-\(UUID().uuidString).jpg")
+    let forged = CapturePhoto(filename: "escape.jpg", fileURL: outside)
+    #expect(throws: LocalMediaStoreError.invalidPhotoDestination) {
+        try store.writePhotoData(try makeVerifierJPEGData(), to: forged)
+    }
+    #expect(!exists(outside))
+
+    let unreserved = CapturePhoto(filename: "nowhere.jpg", fileURL: nil)
+    #expect(throws: LocalMediaStoreError.invalidPhotoDestination) {
+        try store.writePhotoData(try makeVerifierJPEGData(), to: unreserved)
+    }
+}
+
+@Test @MainActor func aPhotoWhoseBytesNeverLandedDegradesIntoTheVisibleRecoveryPath() async {
+    // The new crash window: the app dies between reservation and write completion, so a
+    // persisted capture claims a photo the device does not have. That must surface, not
+    // vanish quietly.
+    let root = makeTempRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let mediaStore = LocalMediaStore(rootDirectory: root)
+
+    let writtenURL = mediaStore.mediaDirectory(bucketID: "visit-burst").appendingPathComponent("shot-1.jpg")
+    writeFile(writtenURL, "shot-1-evidence-bytes")
+    let written = CapturePhoto(filename: "shot-1.jpg", fileURL: writtenURL)
+    // Reserved, owned, never written: exactly what a mid-write kill leaves behind.
+    let unwritten = mediaStore.makePhotoDestination(preferredStem: "shot-2", bucketID: "visit-burst")
+    #expect(!exists(unwritten.fileURL))
+
+    let api = MultipartRecordingAPIClient()
+    let model = await makeModel(apiClient: api, mediaStore: mediaStore, online: false)
+    model.selectSite(id: demoSiteID())
+    model.observationText = "west corridor"
+    #expect(await model.saveQuickObservation(photos: [written, unwritten]))
+
+    await model.handleConnectivityChange(.satisfied)
+    await model.waitForPendingSyncQuiescence()
+
+    // Condemned loudly, and never sent with a photo it cannot back.
+    #expect(model.captures.first?.status == .failed)
+    #expect(model.captures.first?.lastError?.contains("Missing photo file") == true)
+    #expect(await api.submittedCaptures.isEmpty)
+
+    // ...and it lands in the recovery path this suite already validated.
+    let shown = model.missingMediaRecoveryDescription(for: model.captures[0]) ?? ""
+    #expect(shown.contains(unwritten.filename))
+    #expect(shown.contains("1 surviving photo"))
+
+    await model.uploadSurvivingMedia(for: model.captures[0].captureID)
+    await model.waitForPendingSyncQuiescence()
+
+    let submitted = await api.submittedCaptures
+    #expect(submitted.count == 1)
+    #expect(submitted.first?.photos.count == 1)
+    #expect(submitted.first?.note.contains(unwritten.filename) == true)
+    let wire = String(decoding: await api.submittedBodies.first ?? Data(), as: UTF8.self)
+    #expect(wire.contains("shot-1-evidence-bytes"))
+    #expect(wire.contains("\"photo_count\":1"))
+    #expect(model.captures.first?.status == .done)
+}
+
+@Test @MainActor func theDraftKeepsShotOrderAndRefusesOutOfOrderAppends() async {
+    let root = makeTempRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let mediaStore = LocalMediaStore(rootDirectory: root)
+    let model = await makeModel(mediaStore: mediaStore, online: false)
+    model.selectSite(id: demoSiteID())
+
+    var shots: [CapturePhoto] = []
+    for index in 0..<5 {
+        let photo = mediaStore.makePhotoDestination(preferredStem: "shot-\(index)", bucketID: "visit-burst")
+        shots.append(photo)
+        #expect(await model.appendPhotoToDraft(photo, photos: shots))
+    }
+    #expect(model.captures.first?.photos.map(\.id) == shots.map(\.id))
+
+    // The append must name the photo it is adding, as the last element.
+    let stateBefore = model.captures
+    #expect(await model.appendPhotoToDraft(shots[1], photos: shots) == false)
+    #expect(model.captures == stateBefore)
+    #expect(model.statusMessage == "Could not save photo order locally.")
+
+    // ...and a duplicated reference is refused too.
+    let duplicate = mediaStore.makePhotoDestination(preferredStem: "dupe", bucketID: "visit-burst")
+    #expect(await model.appendPhotoToDraft(duplicate, photos: shots + [duplicate, duplicate]) == false)
+    #expect(model.captures == stateBefore)
+}
+
+@Test func thePickerImportStillStoresTheOriginalEvidenceBytes() throws {
+    // Migrated guarantee (see the ContractTests note): the picker path used to hand the
+    // source URL to the media store; it now reads the file into Data first. That is only
+    // safe if both normalizer entry points produce identical bytes — otherwise imported
+    // evidence would be silently re-encoded differently from camera evidence.
+    let temp = makeTempRoot()
+    defer { try? FileManager.default.removeItem(at: temp) }
+    let sourceURL = temp.appendingPathComponent("picker-source.png")
+    try makeVerifierPNGData().write(to: sourceURL)
+
+    let fromURL = try ImageNormalizer.normalizedData(from: sourceURL, policy: .fieldCapture)
+    let fromData = try ImageNormalizer.normalizedData(from: try Data(contentsOf: sourceURL), policy: .fieldCapture)
+    #expect(fromURL == fromData)
+    #expect(!fromURL.isEmpty)
+}
+
+// MARK: - Durability of the incremental draft append
+
+private func makeSQLiteStore() throws -> (store: SQLiteFieldCaptureStore, directory: URL) {
+    let directory = makeTempRoot()
+    return (SQLiteFieldCaptureStore(fileURL: directory.appendingPathComponent("field-capture.sqlite")), directory)
+}
+
+private func makeJournalDraft(photos: [CapturePhoto]) -> LocalCapture {
+    LocalCapture(
+        captureID: "capture-journal",
+        jobID: "job-journal",
+        visitID: nil,
+        siteID: "site_1",
+        siteLabel: "Site One",
+        targetID: "site_1",
+        qcCategory: "general_note",
+        note: "journal draft",
+        capturedAt: .now,
+        exportedAt: .now,
+        status: .draft,
+        photos: photos
+    )
+}
+
+private func journalPhoto(_ name: String) -> CapturePhoto {
+    CapturePhoto(filename: "\(name).jpg", fileURL: URL(fileURLWithPath: "/dev/null/\(name).jpg"))
+}
+
+@Test func theIncrementalAppendDoesNotRewriteTheFullSnapshot() async throws {
+    // Proof that the per-photo write is genuinely incremental rather than a full snapshot
+    // wearing a new name: the append is handed a snapshot that is MISSING an unrelated
+    // submitted capture. If it rewrote the snapshot, that capture would disappear.
+    let (store, directory) = try makeSQLiteStore()
+    defer { try? FileManager.default.removeItem(at: directory) }
+
+    let submitted = LocalCapture(
+        captureID: "capture-submitted",
+        jobID: "job-submitted",
+        visitID: nil,
+        siteID: "site_1",
+        siteLabel: "Site One",
+        targetID: "site_1",
+        qcCategory: "general_note",
+        note: "already uploaded",
+        capturedAt: .now,
+        exportedAt: .now,
+        status: .done
+    )
+    let durable = FieldCaptureSnapshot(
+        account: .defaultProduction,
+        session: .demo,
+        sites: BTQSession.demo.sites,
+        captures: [submitted]
+    )
+    try await store.save(durable)
+
+    let photo = journalPhoto("incremental")
+    let draft = makeJournalDraft(photos: [photo])
+    var misleading = durable
+    misleading.captures = [draft]
+    misleading.accountWorkspaces = [BTQAccountWorkspace(account: .defaultProduction, captures: [draft])]
+    try await store.appendDraftPhoto(
+        photo,
+        to: draft,
+        accountID: BTQAccount.defaultProduction.id,
+        snapshot: misleading
+    )
+
+    let reloaded = try await store.load()
+    // The durable snapshot was untouched by the append.
+    #expect(reloaded.captures.contains { $0.captureID == "capture-submitted" && $0.status == .done })
+    // ...and the journaled draft is still readable on top of it.
+    #expect(reloaded.captures.contains { $0.captureID == "capture-journal" })
+}
+
+@Test func aFullSaveClearsTheDraftJournalSoTheSnapshotStaysAuthoritative() async throws {
+    let (store, directory) = try makeSQLiteStore()
+    defer { try? FileManager.default.removeItem(at: directory) }
+
+    let base = FieldCaptureSnapshot(
+        account: .defaultProduction,
+        session: .demo,
+        sites: BTQSession.demo.sites,
+        captures: []
+    )
+    try await store.save(base)
+
+    var draft = makeJournalDraft(photos: [])
+    for index in 1...18 {
+        let photo = journalPhoto("burst-\(index)")
+        draft.photos.append(photo)
+        try await store.appendDraftPhoto(
+            photo,
+            to: draft,
+            accountID: BTQAccount.defaultProduction.id,
+            snapshot: base
+        )
+    }
+
+    let journaled = try await store.load()
+    let journaledDraft = journaled.captures.first { $0.captureID == "capture-journal" }
+    // A whole burst survives a relaunch, in shot order.
+    #expect(journaledDraft?.photos.count == 18)
+    #expect(journaledDraft?.photos.map(\.filename) == (1...18).map { "burst-\($0).jpg" })
+
+    // Promoting the draft writes a full snapshot, which must retire the journal so the
+    // snapshot alone is authoritative from then on.
+    var promoted = journaledDraft!
+    promoted.status = .pending
+    var promotedSnapshot = base
+    promotedSnapshot.captures = [promoted]
+    promotedSnapshot.accountWorkspaces = [
+        BTQAccountWorkspace(account: .defaultProduction, session: .demo, sites: BTQSession.demo.sites, captures: [promoted])
+    ]
+    try await store.save(promotedSnapshot)
+
+    let afterPromotion = try await store.load()
+    #expect(afterPromotion.captures.count == 1)
+    #expect(afterPromotion.captures.first?.status == .pending)
+    #expect(afterPromotion.captures.first?.photos.count == 18)
+}
+
+@Test func theStoreKeepsItsDurabilityPragmasAndWritesTheSnapshotAtomicallyWithTheJournalReset() throws {
+    let source = try sourceFile("Sources/BTQFieldCaptureApp/Stores/SQLiteFieldCaptureStore.swift")
+    // Durability settings are untouched by the incremental-append work.
+    #expect(source.contains("PRAGMA journal_mode=WAL;"))
+    #expect(source.contains("PRAGMA synchronous=FULL;"))
+    #expect(source.contains("PRAGMA foreign_keys=ON;"))
+    // The snapshot write and the journal reset are one transaction: a snapshot can never
+    // be durable while stale draft rows survive to be replayed on top of it.
+    #expect(source.contains(contiguousBlock([
+        "            try inTransaction(database) {",
+        "                try writeSnapshot(data, database)",
+        "                try execute(\"DELETE FROM draft_photos; DELETE FROM draft_captures;\", database)",
+        "            }",
+    ])))
+    // The append is likewise all-or-nothing: no photo row without its owning draft row.
+    #expect(source.contains(contiguousBlock([
+        "                try upsertDraftMetadata(",
+        "                    metadataData,",
+        "                    accountID: accountID,",
+        "                    captureID: draft.captureID,",
+        "                    database: database",
+        "                )",
+        "                try insertDraftPhoto(",
+    ])))
+}
+
+@Test func theCameraDeliversPhotosThroughASingleFlightDrain() throws {
+    // Shot order under the detached write rests entirely on this: one FIFO delivery task
+    // is the sole caller of `onPhoto`, so two draft appends can never interleave. The
+    // model's own "must be last" guard cannot detect an earlier photo being dropped, so
+    // this drain is the load-bearing guarantee, not a redundancy.
+    let camera = try sourceFile("Sources/BTQFieldCaptureApp/Views/CameraCaptureView.swift")
+    #expect(camera.contains(contiguousBlock([
+        "    private func deliverReadyPhotosInOrder() {",
+        "        guard !isDeliveringPhotos else { return }",
+        "        isDeliveringPhotos = true",
+        "",
+        "        Task { @MainActor in",
+        "            while !pendingPhotoResults.isEmpty {",
+        "                let result = pendingPhotoResults.removeFirst()",
+        "                switch result {",
+        "                case .success(let data):",
+        "                    capturedCount += 1",
+        "                    await onPhoto?(data)",
+    ])))
+}
+
+@Test func theEditorPersistsOwnershipBeforeTheDetachedWriteAndRollsBackOnFailure() throws {
+    let captureView = try sourceFile("Sources/BTQFieldCaptureApp/Views/CaptureNotebookView.swift")
+    // One contiguous region: own it, then write it, then roll the ownership back if the
+    // write failed. Reordering these would recreate a file with no owner.
+    #expect(captureView.contains(contiguousBlock([
+        "        let photos = pendingPhotos + [photo]",
+        "        guard await model.appendPhotoToDraft(photo, photos: photos, audios: activeDraftAudios) else {",
+        "            return false",
+        "        }",
+        "",
+        "        do {",
+        "            try await Task.detached(priority: .userInitiated) {",
+        "                try write()",
+        "            }.value",
+        "        } catch {",
+        "            _ = await model.removeUnwrittenDraftPhoto(photo.id, siteID: context.siteID)",
+        "            mediaStore.deletePendingMedia(",
+        "                photos: [photo],",
+        "                preservingMediaOwnedBy: model.persistedCapturesOwningMedia",
+        "            )",
+    ])))
+    // Migrated: the write-in-flight flag moved from view-local `@State` onto the model,
+    // so the protection no longer depends on a SwiftUI `.disabled()` modifier that a new
+    // caller could bypass. Every guarantee the view-local spelling carried is preserved
+    // below, and the model-level rejection is asserted behaviourally in
+    // `bothSavePathsRefuseToPromoteADraftWhileAPhotoWriteIsInFlight`.
+    #expect(captureView.contains("model.canSubmitCaptures && !isSavingDraft && !isImportingPhotos && !model.isWritingPhoto"))
+    #expect(!captureView.contains("@State private var isWritingPhoto"))
+    // The write window is opened and closed around the whole own-then-write sequence.
+    #expect(captureView.contains(contiguousBlock([
+        "        model.beginPhotoWrite()",
+        "        defer { model.endPhotoWrite() }",
+    ])))
+    #expect(captureView.contains(contiguousBlock([
+        "            .buttonStyle(.borderedProminent)",
+        "            .disabled(!canEditDraft)",
+        "            .accessibilityIdentifier(\"capture.upload\")",
+    ])))
+    // Draft restoration must not race a write and clobber the in-flight strip.
+    #expect(captureView.contains(contiguousBlock([
+        "        guard !model.isWritingPhoto,",
+        "              pendingPhotos.isEmpty,",
+    ])))
+}
+
+@Test @MainActor func bothSavePathsRefuseToPromoteADraftWhileAPhotoWriteIsInFlight() async {
+    // The property that stops a capture being condemned for a photo that is merely still
+    // being written. It must hold at the model, not only behind a disabled button.
+    let root = makeTempRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let mediaStore = LocalMediaStore(rootDirectory: root)
+    let api = MultipartRecordingAPIClient()
+    let model = await makeModel(apiClient: api, mediaStore: mediaStore, online: false)
+    model.selectSite(id: demoSiteID())
+
+    let photoURL = mediaStore.mediaDirectory(bucketID: "visit").appendingPathComponent("written.jpg")
+    writeFile(photoURL, "written-bytes")
+    let photo = CapturePhoto(filename: "written.jpg", fileURL: photoURL)
+
+    model.beginPhotoWrite()
+    #expect(model.isWritingPhoto)
+    model.observationText = "mid-write"
+    #expect(await model.saveQuickObservation(photos: [photo]) == false)
+    #expect(model.statusMessage == "Wait for the photo to finish saving.")
+    #expect(!model.captures.contains { $0.status == .pending })
+
+    // Appending more evidence during a write is still allowed: a burst must not stall.
+    let reserved = mediaStore.makePhotoDestination(preferredStem: "burst", bucketID: "visit")
+    #expect(await model.appendPhotoToDraft(reserved, photos: [reserved]))
+
+    // Reference counted, so overlapping writes cannot clear the flag early.
+    model.beginPhotoWrite()
+    model.endPhotoWrite()
+    #expect(model.isWritingPhoto)
+    model.endPhotoWrite()
+    #expect(!model.isWritingPhoto)
+    // Unbalanced releases must not drive it negative and re-open the window falsely.
+    model.endPhotoWrite()
+    #expect(!model.isWritingPhoto)
+    model.beginPhotoWrite()
+    #expect(model.isWritingPhoto)
+    model.endPhotoWrite()
+
+    #expect(await model.saveQuickObservation(photos: [photo]))
+    #expect(model.captures.contains { $0.status == .pending })
+}
+
+@Test func bothSavePathsPinTheirWriteInFlightRejection() throws {
+    let model = try sourceFile("Sources/BTQFieldCaptureApp/Stores/FieldCaptureModel.swift")
+    let captureView = try sourceFile("Sources/BTQFieldCaptureApp/Views/CaptureNotebookView.swift")
+    // Model path: the promotion itself refuses, independent of any view.
+    #expect(model.contains(contiguousBlock([
+        "        guard !isWritingPhoto else {",
+        "            statusMessage = \"Wait for the photo to finish saving.\"",
+        "            return false",
+        "        }",
+    ])))
+    // Editor path: the draft save refuses too, in the function and not only the modifier.
+    #expect(captureView.contains("guard !isSavingDraft, !model.isWritingPhoto else { return }"))
+    // Reference counting lives with the flag, so it cannot be half-adopted.
+    #expect(model.contains(contiguousBlock([
+        "    public func endPhotoWrite() {",
+        "        activePhotoWriteCount = max(0, activePhotoWriteCount - 1)",
+        "        isWritingPhoto = activePhotoWriteCount > 0",
+        "    }",
+    ])))
+}
+
+// MARK: - Q3: camera backpressure (source-level only — see the report)
+//
+// `CameraCaptureView.swift` is `#if os(iOS) && canImport(UIKit)`, so `swift test` on
+// macOS never compiles it. The slot accounting below is verified by reading and pinned
+// structurally; it is NOT proven by execution here, and the memory bound itself needs
+// on-device measurement.
+
+@Test func theCameraBoundsAppOwnedPhotoBuffersAndCannotWedgeTheExit() throws {
+    let camera = try sourceFile("Sources/BTQFieldCaptureApp/Views/CameraCaptureView.swift")
+    #expect(camera.contains("private static let maxPendingPhotoDeliveries = 2"))
+    #expect(camera.contains(contiguousBlock([
+        "    var canCapturePhoto: Bool {",
+        "        pendingPhotoDeliveryCount < Self.maxPendingPhotoDeliveries",
+        "    }",
+    ])))
+    // A slot is claimed before the shot is issued...
+    #expect(camera.contains(contiguousBlock([
+        "        guard canCapturePhoto else { return }",
+        "        pendingPhotoDeliveryCount += 1",
+    ])))
+    // ...and released only after the draft append (and therefore the write) has finished,
+    // so the slot really does cover the buffer's whole lifetime.
+    #expect(camera.contains(contiguousBlock([
+        "                case .success(let data):",
+        "                    capturedCount += 1",
+        "                    await onPhoto?(data)",
+        "                case .failure(let message):",
+        "                    captureError = message",
+        "                }",
+        "                pendingPhotoDeliveryCount = max(0, pendingPhotoDeliveryCount - 1)",
+    ])))
+    // Every issued shot yields exactly one result, so a slot cannot leak: the processing
+    // callback is idempotent and `didFinishCaptureFor` is the terminal fallback.
+    #expect(camera.contains("private var didDeliverResult = false"))
+    #expect(camera.contains(contiguousBlock([
+        "        guard !didDeliverResult else { return }",
+        "        didDeliverResult = true",
+    ])))
+    // Backpressure gates the SHUTTER only. Done must stay live, or a stalled write would
+    // trap the operator in the sheet — the opposite of the symptom being fixed.
+    #expect(camera.contains(".disabled(!controller.canCapturePhoto)"))
+    #expect(camera.contains(contiguousBlock([
+        "            Button(\"Done\") { dismiss() }",
+        "                .font(.headline.weight(.semibold))",
+    ])))
+    let doneRange = try #require(camera.range(of: "Button(\"Done\") { dismiss() }"))
+    let shutterRange = try #require(camera.range(of: ".accessibilityLabel(\"Take photo\")"))
+    let betweenDoneAndShutter = String(camera[doneRange.upperBound..<shutterRange.lowerBound])
+    #expect(!betweenDoneAndShutter.contains("canCapturePhoto"))
+}
+
+// MARK: - Q1: the journal must survive every save/append interleaving
+//
+// The blocker this replaces: journal rows REPLACED the snapshot's photo list instead of
+// merging onto it, so any full save mid-batch (a keystroke in the observation note is
+// enough) silently dropped every photo taken before it. The invariant below is the one
+// that was violated: after a relaunch, `load()` returns exactly what the operator shot,
+// in shot order, for every interleaving of shots, full saves and strip deletions.
+
+private enum JournalStep {
+    /// One shutter press: an incremental, journal-only append.
+    case shoot(String)
+    /// Anything that rewrites the whole snapshot — a note keystroke, a category change,
+    /// a voice memo, the trailing `persist()` in `load()`.
+    case fullSave
+    /// The per-photo trash can, which re-persists the reduced draft as a full snapshot.
+    case deletePhotoThenFullSave(String)
+}
+
+private struct JournalScenarioResult {
+    var expected: [String]
+    var loadedCaptures: [String]
+    var loadedWorkspace: [String]
+}
+
+private func runJournalScenario(_ steps: [JournalStep]) async throws -> JournalScenarioResult {
+    let directory = makeTempRoot()
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let store = SQLiteFieldCaptureStore(fileURL: directory.appendingPathComponent("field-capture.sqlite"))
+    let accountID = BTQAccount.defaultProduction.id
+
+    let base = FieldCaptureSnapshot(
+        account: .defaultProduction,
+        session: .demo,
+        sites: BTQSession.demo.sites,
+        captures: []
+    )
+    try await store.save(base)
+
+    var draft = makeJournalDraft(photos: [])
+    func snapshotWithDraft() -> FieldCaptureSnapshot {
+        var snapshot = base
+        snapshot.captures = [draft]
+        snapshot.accountWorkspaces = [
+            BTQAccountWorkspace(
+                account: .defaultProduction,
+                session: .demo,
+                sites: BTQSession.demo.sites,
+                captures: [draft]
+            )
+        ]
+        return snapshot
+    }
+
+    for step in steps {
+        switch step {
+        case .shoot(let name):
+            let photo = journalPhoto(name)
+            draft.photos.append(photo)
+            try await store.appendDraftPhoto(
+                photo,
+                to: draft,
+                accountID: accountID,
+                snapshot: snapshotWithDraft()
+            )
+        case .fullSave:
+            try await store.save(snapshotWithDraft())
+        case .deletePhotoThenFullSave(let name):
+            draft.photos.removeAll { $0.filename == "\(name).jpg" }
+            try await store.save(snapshotWithDraft())
+        }
+    }
+
+    let reloaded = try await store.load()
+    let loadedDraft = reloaded.captures.first { $0.captureID == draft.captureID }
+    let workspaceDraft = reloaded.accountWorkspaces
+        .first { $0.account.id == accountID }?
+        .captures
+        .first { $0.captureID == draft.captureID }
+    return JournalScenarioResult(
+        expected: draft.photos.map(\.filename),
+        loadedCaptures: loadedDraft?.photos.map(\.filename) ?? [],
+        loadedWorkspace: workspaceDraft?.photos.map(\.filename) ?? []
+    )
+}
+
+private let journalScenarios: [(name: String, steps: [JournalStep])] = [
+    // The blocker, exactly: shots, a full save, more shots.
+    ("full save mid-batch", [
+        .shoot("p1"), .shoot("p2"), .shoot("p3"), .shoot("p4"), .shoot("p5"),
+        .fullSave,
+        .shoot("p6"), .shoot("p7"), .shoot("p8"),
+    ]),
+    ("appends then full save", [
+        .shoot("p1"), .shoot("p2"), .shoot("p3"), .shoot("p4"), .shoot("p5"),
+        .fullSave,
+    ]),
+    ("full save before any shot", [
+        .fullSave,
+        .shoot("p1"), .shoot("p2"), .shoot("p3"),
+    ]),
+    // A note being typed while shooting: a full save between every shot.
+    ("save interleaved with every shot", [
+        .shoot("p1"), .fullSave,
+        .shoot("p2"), .fullSave,
+        .shoot("p3"), .fullSave,
+        .shoot("p4"), .fullSave,
+        .shoot("p5"),
+    ]),
+    ("repeated saves in a row", [
+        .shoot("p1"), .shoot("p2"), .fullSave, .fullSave, .fullSave,
+        .shoot("p3"),
+    ]),
+    // The strip's trash can between appends.
+    ("delete from the strip mid-batch", [
+        .shoot("p1"), .shoot("p2"), .shoot("p3"), .shoot("p4"), .shoot("p5"),
+        .deletePhotoThenFullSave("p3"),
+        .shoot("p6"), .shoot("p7"),
+    ]),
+    ("delete after a save then keep shooting", [
+        .shoot("p1"), .shoot("p2"), .shoot("p3"),
+        .fullSave,
+        .deletePhotoThenFullSave("p2"),
+        .shoot("p4"), .shoot("p5"),
+    ]),
+    ("delete the first photo then shoot", [
+        .shoot("p1"), .shoot("p2"),
+        .deletePhotoThenFullSave("p1"),
+        .shoot("p3"),
+    ]),
+]
+
+@Test func everySaveAndAppendInterleavingReloadsExactlyWhatWasShot() async throws {
+    for scenario in journalScenarios {
+        let result = try await runJournalScenario(scenario.steps)
+        #expect(result.loadedCaptures == result.expected, "\(scenario.name): active captures")
+        #expect(result.loadedWorkspace == result.expected, "\(scenario.name): account workspace")
+        // Guards against a merge that "passes" by returning an empty list.
+        #expect(!result.expected.isEmpty, "\(scenario.name): empty expectation")
+        #expect(
+            Set(result.loadedCaptures).count == result.loadedCaptures.count,
+            "\(scenario.name): duplicates"
+        )
+    }
+    #expect(journalScenarios.count == 8)
+}
+
+@Test func theFullEighteenShotBurstReloadsInShotOrder() async throws {
+    let result = try await runJournalScenario((1...18).map { JournalStep.shoot("burst-\($0)") })
+    #expect(result.expected == (1...18).map { "burst-\($0).jpg" })
+    #expect(result.loadedCaptures == result.expected)
+    #expect(result.loadedWorkspace == result.expected)
+}
+
+@Test func theOriginalFieldSequenceSurvivesARelaunch() async throws {
+    // Verbatim: five shots, the operator types the observation note (full save), three
+    // more shots, then iOS jetsams the app. This returned 3 photos before the fix.
+    let result = try await runJournalScenario([
+        .shoot("dock-1"), .shoot("dock-2"), .shoot("dock-3"), .shoot("dock-4"), .shoot("dock-5"),
+        .fullSave,
+        .shoot("dock-6"), .shoot("dock-7"), .shoot("dock-8"),
+    ])
+    #expect(result.loadedCaptures.count == 8)
+    #expect(result.loadedCaptures == (1...8).map { "dock-\($0).jpg" })
+}
+
+// MARK: - Q2: the merge itself, attacked
+
+@Test func aRepeatedJournalRowForTheSamePhotoDoesNotDuplicateIt() async throws {
+    let directory = makeTempRoot()
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let store = SQLiteFieldCaptureStore(fileURL: directory.appendingPathComponent("db.sqlite"))
+    let accountID = BTQAccount.defaultProduction.id
+    let base = FieldCaptureSnapshot(
+        account: .defaultProduction,
+        session: .demo,
+        sites: BTQSession.demo.sites,
+        captures: []
+    )
+    try await store.save(base)
+
+    var draft = makeJournalDraft(photos: [journalPhoto("a"), journalPhoto("b")])
+    for photo in draft.photos {
+        try await store.appendDraftPhoto(photo, to: draft, accountID: accountID, snapshot: base)
+    }
+    // The same photo journaled again (a retried append) must update, never duplicate.
+    try await store.appendDraftPhoto(draft.photos[0], to: draft, accountID: accountID, snapshot: base)
+
+    let reloaded = try await store.load()
+    let photos = reloaded.captures.first?.photos ?? []
+    #expect(photos.map(\.filename) == ["a.jpg", "b.jpg"])
+    #expect(Set(photos.map(\.id)).count == photos.count)
+
+    // ...and again after the snapshot already holds it, which is the collision case:
+    // a photo present in BOTH the snapshot and the journal.
+    draft.photos = photos
+    var withDraft = base
+    withDraft.captures = [draft]
+    withDraft.accountWorkspaces = [BTQAccountWorkspace(account: .defaultProduction, captures: [draft])]
+    try await store.save(withDraft)
+    try await store.appendDraftPhoto(draft.photos[1], to: draft, accountID: accountID, snapshot: withDraft)
+
+    let afterCollision = try await store.load()
+    let collided = afterCollision.captures.first?.photos ?? []
+    #expect(collided.map(\.filename) == ["a.jpg", "b.jpg"])
+    #expect(Set(collided.map(\.id)).count == collided.count)
+}
+
+@Test func aJournalRowForAPhotoMissingFromTheDraftIsStillRestoredExactlyOnce() async throws {
+    // A stale row: journaled, then the caller's draft no longer lists it. The durable
+    // journal must win (evidence is never dropped) without duplicating anything.
+    let directory = makeTempRoot()
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let store = SQLiteFieldCaptureStore(fileURL: directory.appendingPathComponent("db.sqlite"))
+    let accountID = BTQAccount.defaultProduction.id
+    let base = FieldCaptureSnapshot(
+        account: .defaultProduction,
+        session: .demo,
+        sites: BTQSession.demo.sites,
+        captures: []
+    )
+    try await store.save(base)
+
+    let first = journalPhoto("first")
+    let second = journalPhoto("second")
+    var draft = makeJournalDraft(photos: [first])
+    try await store.appendDraftPhoto(first, to: draft, accountID: accountID, snapshot: base)
+
+    // The caller loses `first` from its in-memory draft, then journals `second`.
+    draft.photos = [second]
+    try await store.appendDraftPhoto(second, to: draft, accountID: accountID, snapshot: base)
+
+    let reloaded = try await store.load()
+    let photos = reloaded.captures.first?.photos ?? []
+    #expect(photos.count == 2)
+    #expect(Set(photos.map(\.filename)) == ["first.jpg", "second.jpg"])
+    #expect(Set(photos.map(\.id)).count == photos.count)
+}
+
+@Test func anOutOfRangeJournalPositionIsClampedWithoutLosingAPhoto() async throws {
+    let directory = makeTempRoot()
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let store = SQLiteFieldCaptureStore(fileURL: directory.appendingPathComponent("db.sqlite"))
+    let accountID = BTQAccount.defaultProduction.id
+    let base = FieldCaptureSnapshot(
+        account: .defaultProduction,
+        session: .demo,
+        sites: BTQSession.demo.sites,
+        captures: []
+    )
+    try await store.save(base)
+
+    // A draft claiming position 7 for a photo while nothing precedes it in the journal.
+    let sparse = journalPhoto("sparse")
+    let padded = (1...7).map { journalPhoto("pad-\($0)") } + [sparse]
+    let draft = makeJournalDraft(photos: padded)
+    try await store.appendDraftPhoto(sparse, to: draft, accountID: accountID, snapshot: base)
+
+    let reloaded = try await store.load()
+    let photos = reloaded.captures.first?.photos ?? []
+    #expect(photos.map(\.filename) == ["sparse.jpg"])
+    #expect(Set(photos.map(\.id)).count == photos.count)
 }

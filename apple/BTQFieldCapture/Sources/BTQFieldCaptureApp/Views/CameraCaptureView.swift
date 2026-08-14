@@ -109,6 +109,7 @@ final class CameraSessionController: NSObject, ObservableObject {
     @Published private(set) var capturedCount: Int = 0
     /// Surfaced to an in-view alert on any failure, so nothing is silently dropped.
     @Published var captureError: String?
+    @Published private(set) var pendingPhotoDeliveryCount = 0
 
     private let photoOutput = AVCapturePhotoOutput()
     private var currentInput: AVCaptureDeviceInput?
@@ -116,6 +117,10 @@ final class CameraSessionController: NSObject, ObservableObject {
     private var isConfigured = false
     private var pendingPhotoResults: [PhotoCaptureResult] = []
     private var isDeliveringPhotos = false
+    /// Backpressure caps app-owned full-resolution encoded buffers while a detached
+    /// media write is in progress. Two slots keep the shutter usable without allowing
+    /// an 18-20 shot burst to retain tens of megabytes of `Data`.
+    private static let maxPendingPhotoDeliveries = 2
     /// Keeps both the live preview and encoded photos upright as the device rotates.
     let rotation = CaptureRotation()
 
@@ -158,6 +163,10 @@ final class CameraSessionController: NSObject, ObservableObject {
     /// Does the active device have a usable flash? Drives the flash toggle + mode.
     var activeDeviceHasFlash: Bool {
         currentInput?.device.hasFlash ?? false
+    }
+
+    var canCapturePhoto: Bool {
+        pendingPhotoDeliveryCount < Self.maxPendingPhotoDeliveries
     }
 
     func toggleFacing() {
@@ -296,6 +305,8 @@ final class CameraSessionController: NSObject, ObservableObject {
             captureError = "The camera is not ready."
             return
         }
+        guard canCapturePhoto else { return }
+        pendingPhotoDeliveryCount += 1
         let flashMode = CameraCaptureSettingsFactory.flashMode(
             flashOn: flashOn,
             deviceHasFlash: activeDeviceHasFlash
@@ -344,6 +355,7 @@ final class CameraSessionController: NSObject, ObservableObject {
                 case .failure(let message):
                     captureError = message
                 }
+                pendingPhotoDeliveryCount = max(0, pendingPhotoDeliveryCount - 1)
             }
             isDeliveringPhotos = false
         }
@@ -519,6 +531,7 @@ public struct CameraCaptureView: View {
                 }
             }
             .accessibilityLabel("Take photo")
+            .disabled(!controller.canCapturePhoto)
 
             Spacer()
 

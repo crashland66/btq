@@ -573,8 +573,34 @@ import UniformTypeIdentifiers
     #expect(captureView.contains("photoImportMessage"))
     #expect(captureView.contains("PickedPhotoFile"))
     #expect(captureView.contains("FileRepresentation(importedContentType: .image)"))
-    #expect(captureView.contains("savePhoto(fileURL: pickedPhoto.fileURL, prefix: \"photo\")"))
+    // Migrated: the picker's save became async and context-scoped when the photo write
+    // moved off the main actor. The guarantee the old one-line pin carried — the picked
+    // FILE is handed to the media store, and the picker's temporary file is cleaned up on
+    // both the success and the failure branch — is preserved here as one contiguous
+    // region, so it cannot be weakened by being split into disjoint slices. The ordering
+    // is load-bearing: the draft context is re-checked immediately before the save, and
+    // the temporary file must outlive the save because the write now reads it from a
+    // detached task.
+    #expect(captureView.contains([
+        "            guard await savePhoto(fileURL: pickedPhoto.fileURL, prefix: \"photo\", context: context) else {",
+        "                try? FileManager.default.removeItem(at: pickedPhoto.fileURL)",
+        "                failedCount += 1",
+        "                await Task.yield()",
+        "                continue",
+        "            }",
+        "            try? FileManager.default.removeItem(at: pickedPhoto.fileURL)",
+        "            importedCount += 1",
+    ].joined(separator: "\n")))
     #expect(!captureView.contains("item.loadTransferable(type: Data.self)"))
+    // Strengthened: both import paths must reserve a managed destination first and write
+    // through the reserved photo, so ownership can be persisted before the bytes exist.
+    #expect(captureView.contains("mediaStore.makePhotoDestination(preferredStem: prefix, bucketID: mediaBucketID)"))
+    #expect(captureView.contains("try mediaStore.writePhotoData(data, to: photo)"))
+    #expect(captureView.contains("Task.detached(priority: .userInitiated)"))
+    // The evidence-byte guarantee behind the picker's switch from a URL to Data is
+    // asserted for real (byte equality of both normalizer entry points) in
+    // MediaOwnershipIndependentVerifierTests.thePickerImportStillStoresTheOriginalEvidenceBytes.
+    #expect(!captureView.contains("mediaStore.savePhotoFile("))
     #expect(captureView.contains("\"capture.photos.picker\""))
     #expect(captureView.contains("\"capture.photos.importing\""))
     #expect(captureView.contains("\"capture.photos.import.message\""))
@@ -1460,7 +1486,27 @@ import UniformTypeIdentifiers
     #expect(captureViewSource.contains("private var canEditDraft"))
     #expect(captureViewSource.contains("model.canSubmitCaptures && !isSavingDraft"))
     #expect(captureViewSource.contains("Task { await saveCurrentDraft() }"))
-    #expect(captureViewSource.contains("guard !isSavingDraft else { return }"))
+    // Migrated: the re-entrancy guard gained a second condition when the photo write moved
+    // off the main actor. Pinned as one contiguous region so the guarantee it carried —
+    // a save cannot start twice, and cannot mutate anything before validation — stays
+    // whole, and so the new condition cannot be dropped separately: promoting a draft
+    // while a photo write is in flight would condemn the capture for a photo that is
+    // merely unfinished. The rejection is also enforced at the model, asserted
+    // behaviourally in MediaOwnershipIndependentVerifierTests.
+    #expect(captureViewSource.contains([
+        "    private func saveCurrentDraft() async {",
+        "        guard !isSavingDraft, !model.isWritingPhoto else { return }",
+        "        guard model.validateQuickObservationDraft(photoCount: pendingPhotos.count, hasAudio: hasPendingAudio) else {",
+        "            return",
+        "        }",
+        "",
+        "        isSavingDraft = true",
+        "        defer { isSavingDraft = false }",
+    ].joined(separator: "\n")))
+    // The write-in-flight flag is shared state on the model, not view-local, so a future
+    // caller cannot bypass it by not being a SwiftUI button.
+    #expect(captureViewSource.contains("!model.isWritingPhoto"))
+    #expect(!captureViewSource.contains("@State private var isWritingPhoto"))
     #expect(captureViewSource.contains("defer { isSavingDraft = false }"))
     #expect(captureViewSource.contains("let savedPhotos = pendingPhotos"))
     #expect(captureViewSource.contains("pendingPhotos.removeAll"))

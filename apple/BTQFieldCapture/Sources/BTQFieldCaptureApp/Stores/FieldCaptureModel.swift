@@ -30,6 +30,7 @@ public final class FieldCaptureModel {
     public private(set) var notificationPermissionStatus: NotificationPermissionStatus = .unknown
     public private(set) var requiresReconnect: Bool = false
     public private(set) var reconciliationFieldDiagnostics: [ReconciliationFieldDiagnosticRecord]
+    public private(set) var isWritingPhoto = false
 
     private let store: any FieldCaptureStore
     private let apiClient: any CaptureAPIClient
@@ -41,6 +42,7 @@ public final class FieldCaptureModel {
     private var pendingSyncTask: Task<Void, Never>?
     private var syncPendingRequested = false
     private var liveBackgroundUploadCaptureIDs: Set<String> = []
+    private var activePhotoWriteCount = 0
 
     public init(
         store: any FieldCaptureStore = SQLiteFieldCaptureStore(),
@@ -726,6 +728,100 @@ public final class FieldCaptureModel {
         selectedCategoryValue = defaultCategoryValue(for: selectedSite)
     }
 
+    public func beginPhotoWrite() {
+        activePhotoWriteCount += 1
+        isWritingPhoto = true
+    }
+
+    public func endPhotoWrite() {
+        activePhotoWriteCount = max(0, activePhotoWriteCount - 1)
+        isWritingPhoto = activePhotoWriteCount > 0
+    }
+
+    /// Establishes durable ownership of a reserved photo URL without rewriting the full
+    /// snapshot. The media writer may create the file only after this method succeeds.
+    @discardableResult
+    public func appendPhotoToDraft(
+        _ photo: CapturePhoto,
+        photos: [CapturePhoto],
+        audios: [CaptureAudio] = []
+    ) async -> Bool {
+        guard photos.last?.id == photo.id,
+              photos.filter({ $0.id == photo.id }).count == 1 else {
+            statusMessage = "Could not save photo order locally."
+            return false
+        }
+        guard let site = selectedSite else {
+            statusMessage = "Choose a site before adding media."
+            return false
+        }
+        guard canSubmitCaptures else {
+            statusMessage = "This account cannot submit captures."
+            return false
+        }
+        guard photos.count <= maxImagesPerCapture else {
+            statusMessage = "Limit is \(photoLimitDescription) per capture."
+            return false
+        }
+
+        let previousCaptures = captures
+        let previousAccountWorkspaces = accountWorkspaces
+        let note = observationText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let category = selectedCategoryValue ?? defaultCategoryValue(for: site) ?? "general_note"
+        let now = Date()
+        let draftIndex: Int
+        if let index = captures.firstIndex(where: { $0.status == .draft && $0.siteID == site.siteID }) {
+            captures[index].siteLabel = site.label
+            captures[index].targetID = site.siteID
+            captures[index].qcCategory = category
+            captures[index].note = note
+            captures[index].exportedAt = now
+            captures[index].photos = photos
+            captures[index].audios = audios
+            captures[index].audio = audios.first
+            draftIndex = index
+        } else {
+            let suffix = String(UUID().uuidString.prefix(8)).lowercased()
+            let kind: CaptureAssetKind = audios.isEmpty ? .photo : .photoVoice
+            captures.append(
+                LocalCapture(
+                    captureID: BTQFormatting.makeCaptureID(capturedAt: now, suffix: suffix),
+                    jobID: BTQFormatting.makeJobID(exportedAt: now, assetKind: kind, siteLabel: site.label, suffix: suffix),
+                    visitID: activeVisit(forSiteID: site.siteID)?.id,
+                    siteID: site.siteID,
+                    siteLabel: site.label,
+                    targetID: site.siteID,
+                    qcCategory: category,
+                    note: note,
+                    capturedAt: now,
+                    exportedAt: now,
+                    status: .draft,
+                    photos: photos,
+                    audios: audios
+                )
+            )
+            draftIndex = captures.index(before: captures.endIndex)
+        }
+
+        upsertCurrentWorkspace()
+        let snapshot = currentSnapshot()
+        do {
+            try await store.appendDraftPhoto(
+                photo,
+                to: captures[draftIndex],
+                accountID: account.id,
+                snapshot: snapshot
+            )
+            statusMessage = "Draft saved locally."
+            return true
+        } catch {
+            captures = previousCaptures
+            accountWorkspaces = previousAccountWorkspaces
+            statusMessage = "Could not save draft locally."
+            return false
+        }
+    }
+
     @discardableResult
     public func upsertDraftCapture(photos: [CapturePhoto], audio: CaptureAudio? = nil, audios: [CaptureAudio] = []) async -> Bool {
         let audioAttachments = audios.isEmpty ? audio.map { [$0] } ?? [] : audios
@@ -791,6 +887,32 @@ public final class FieldCaptureModel {
         }
     }
 
+    /// Rolls back a pre-owned photo reference when its atomic file write fails. This rare
+    /// recovery path may use the full snapshot; successful per-photo writes never do.
+    @discardableResult
+    public func removeUnwrittenDraftPhoto(_ photoID: UUID, siteID: String?) async -> Bool {
+        guard let siteID,
+              let index = captures.firstIndex(where: { $0.status == .draft && $0.siteID == siteID }),
+              captures[index].photos.contains(where: { $0.id == photoID }) else {
+            return true
+        }
+        let previousCaptures = captures
+        let previousAccountWorkspaces = accountWorkspaces
+        captures[index].photos.removeAll { $0.id == photoID }
+        if captures[index].photos.isEmpty && captures[index].audioAttachments.isEmpty {
+            captures.remove(at: index)
+        }
+        do {
+            try await persist()
+            return true
+        } catch {
+            captures = previousCaptures
+            accountWorkspaces = previousAccountWorkspaces
+            statusMessage = "Could not remove an unwritten photo reference."
+            return false
+        }
+    }
+
     @discardableResult
     public func removeDraftCapture(siteID: String? = nil) async -> Bool {
         let draftSiteID = siteID ?? selectedSite?.siteID
@@ -841,6 +963,10 @@ public final class FieldCaptureModel {
 
     @discardableResult
     public func saveQuickObservation(photos: [CapturePhoto] = [], audio: CaptureAudio? = nil, audios: [CaptureAudio] = []) async -> Bool {
+        guard !isWritingPhoto else {
+            statusMessage = "Wait for the photo to finish saving."
+            return false
+        }
         let audioAttachments = audios.isEmpty ? audio.map { [$0] } ?? [] : audios
         guard validateQuickObservationDraft(photoCount: photos.count, hasAudio: !audioAttachments.isEmpty) else {
             return false
@@ -1728,16 +1854,18 @@ public final class FieldCaptureModel {
 
     private func persist() async throws {
         upsertCurrentWorkspace()
-        try await store.save(
-            FieldCaptureSnapshot(
-                account: account,
-                session: session,
-                sites: sites,
-                visits: visits,
-                captures: captures,
-                activeAccountID: account.id,
-                accountWorkspaces: accountWorkspaces
-            )
+        try await store.save(currentSnapshot())
+    }
+
+    private func currentSnapshot() -> FieldCaptureSnapshot {
+        FieldCaptureSnapshot(
+            account: account,
+            session: session,
+            sites: sites,
+            visits: visits,
+            captures: captures,
+            activeAccountID: account.id,
+            accountWorkspaces: accountWorkspaces
         )
     }
 

@@ -76,10 +76,6 @@ struct CaptureNotebookView: View {
                 let context = currentDraftContext
                 Task { await loadPhotos(items, context: context) }
             }
-            .onChange(of: pendingPhotos) { _, photos in
-                guard !photos.isEmpty, !isSavingDraft else { return }
-                Task { await persistActiveMediaDraft(photos: photos) }
-            }
             .onChange(of: model.captures) { _, _ in
                 restoreActiveDraftIfAvailable()
             }
@@ -115,9 +111,7 @@ struct CaptureNotebookView: View {
             .sheet(isPresented: $showCamera) {
                 CameraCaptureView { data in
                     guard let context = cameraDraftContext, canAttachMedia(to: context) else { return }
-                    if let photo = savePhoto(data: data, prefix: "camera") {
-                        await appendPhotoToDraft(photo, context: context)
-                    }
+                    await savePhoto(data: data, prefix: "camera", context: context)
                 }
                 .ignoresSafeArea()
                 .onDisappear {
@@ -559,7 +553,7 @@ struct CaptureNotebookView: View {
     }
 
     private var canEditDraft: Bool {
-        model.canSubmitCaptures && !isSavingDraft && !isImportingPhotos
+        model.canSubmitCaptures && !isSavingDraft && !isImportingPhotos && !model.isWritingPhoto
     }
 
     private var currentDraftContext: DraftContext {
@@ -608,7 +602,7 @@ struct CaptureNotebookView: View {
     }
 
     private func saveCurrentDraft() async {
-        guard !isSavingDraft else { return }
+        guard !isSavingDraft, !model.isWritingPhoto else { return }
         guard model.validateQuickObservationDraft(photoCount: pendingPhotos.count, hasAudio: hasPendingAudio) else {
             return
         }
@@ -676,18 +670,14 @@ struct CaptureNotebookView: View {
                 try? FileManager.default.removeItem(at: pickedPhoto.fileURL)
                 break
             }
-            guard let photo = savePhoto(fileURL: pickedPhoto.fileURL, prefix: "photo") else {
+            guard await savePhoto(fileURL: pickedPhoto.fileURL, prefix: "photo", context: context) else {
                 try? FileManager.default.removeItem(at: pickedPhoto.fileURL)
                 failedCount += 1
                 await Task.yield()
                 continue
             }
             try? FileManager.default.removeItem(at: pickedPhoto.fileURL)
-            if await appendPhotoToDraft(photo, context: context) {
-                importedCount += 1
-            } else {
-                failedCount += 1
-            }
+            importedCount += 1
             await Task.yield()
         }
 
@@ -698,40 +688,72 @@ struct CaptureNotebookView: View {
         }
     }
 
-    private func savePhoto(data: Data, prefix: String) -> CapturePhoto? {
-        guard pendingPhotos.count < model.maxImagesPerCapture else { return nil }
-        return try? mediaStore.savePhotoData(data, preferredStem: prefix, bucketID: mediaBucketID)
-    }
-
-    private func savePhoto(fileURL: URL, prefix: String) -> CapturePhoto? {
-        guard pendingPhotos.count < model.maxImagesPerCapture else { return nil }
-        return try? mediaStore.savePhotoFile(fileURL, preferredStem: prefix, bucketID: mediaBucketID)
+    @discardableResult
+    private func savePhoto(data: Data, prefix: String, context: DraftContext) async -> Bool {
+        guard pendingPhotos.count < model.maxImagesPerCapture else { return false }
+        let photo = mediaStore.makePhotoDestination(preferredStem: prefix, bucketID: mediaBucketID)
+        let mediaStore = mediaStore
+        return await appendPhotoToDraft(photo, context: context) {
+            try mediaStore.writePhotoData(data, to: photo)
+        }
     }
 
     @discardableResult
-    private func appendPhotoToDraft(_ photo: CapturePhoto, context: DraftContext) async -> Bool {
+    private func savePhoto(fileURL: URL, prefix: String, context: DraftContext) async -> Bool {
+        guard pendingPhotos.count < model.maxImagesPerCapture else { return false }
+        let photo = mediaStore.makePhotoDestination(preferredStem: prefix, bucketID: mediaBucketID)
+        let mediaStore = mediaStore
+        return await appendPhotoToDraft(photo, context: context) {
+            let data = try Data(contentsOf: fileURL)
+            try mediaStore.writePhotoData(data, to: photo)
+        }
+    }
+
+    @discardableResult
+    private func appendPhotoToDraft(
+        _ photo: CapturePhoto,
+        context: DraftContext,
+        write: @escaping @Sendable () throws -> Void
+    ) async -> Bool {
         guard canAttachMedia(to: context) else {
+            return false
+        }
+        model.beginPhotoWrite()
+        defer { model.endPhotoWrite() }
+
+        let photos = pendingPhotos + [photo]
+        guard await model.appendPhotoToDraft(photo, photos: photos, audios: activeDraftAudios) else {
+            return false
+        }
+
+        do {
+            try await Task.detached(priority: .userInitiated) {
+                try write()
+            }.value
+        } catch {
+            _ = await model.removeUnwrittenDraftPhoto(photo.id, siteID: context.siteID)
+            mediaStore.deletePendingMedia(
+                photos: [photo],
+                preservingMediaOwnedBy: model.persistedCapturesOwningMedia
+            )
+            model.statusMessage = "Could not save photo locally."
+            return false
+        }
+
+        guard model.persistedCapturesOwningMedia.contains(where: { capture in
+            capture.photos.contains(where: { $0.id == photo.id })
+        }) else {
             mediaStore.deletePendingMedia(
                 photos: [photo],
                 preservingMediaOwnedBy: model.persistedCapturesOwningMedia
             )
             return false
         }
-        pendingPhotos.append(photo)
-        let didPersist = await model.upsertDraftCapture(photos: pendingPhotos, audios: activeDraftAudios)
-        if !didPersist {
-            pendingPhotos.removeAll { $0.id == photo.id }
-            mediaStore.deletePendingMedia(
-                photos: [photo],
-                preservingMediaOwnedBy: model.persistedCapturesOwningMedia
-            )
-        }
-        return didPersist
-    }
 
-    private func persistActiveMediaDraft(photos: [CapturePhoto]) async {
-        guard !photos.isEmpty, canEditDraft else { return }
-        await model.upsertDraftCapture(photos: photos, audios: activeDraftAudios)
+        if isActiveDraftContext(context), !pendingPhotos.contains(where: { $0.id == photo.id }) {
+            pendingPhotos.append(photo)
+        }
+        return true
     }
 
     private func persistActiveDraftIfPresent() async {
@@ -740,7 +762,8 @@ struct CaptureNotebookView: View {
     }
 
     private func restoreActiveDraftIfAvailable() {
-        guard pendingPhotos.isEmpty,
+        guard !model.isWritingPhoto,
+              pendingPhotos.isEmpty,
               recorder.lastAudio == nil,
               let draft = model.activeDraftCapture else {
             return

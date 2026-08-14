@@ -2,6 +2,7 @@ import Foundation
 
 public enum LocalMediaStoreError: Error, Equatable {
     case missingSourceFile
+    case invalidPhotoDestination
 }
 
 public struct LocalMediaStore: Sendable {
@@ -15,13 +16,32 @@ public struct LocalMediaStore: Sendable {
     }
 
     public func savePhotoData(_ data: Data, preferredStem: String = "photo", bucketID: String = UUID().uuidString) throws -> CapturePhoto {
+        let photo = makePhotoDestination(preferredStem: preferredStem, bucketID: bucketID)
+        try writePhotoData(data, to: photo)
+        return photo
+    }
+
+    /// Reserves the final managed URL without creating the file. Callers can durably attach
+    /// this reference to a draft before the evidence file becomes visible to deletion code.
+    public func makePhotoDestination(
+        preferredStem: String = "photo",
+        bucketID: String = UUID().uuidString
+    ) -> CapturePhoto {
         let filename = "\(safeStem(preferredStem))-\(UUID().uuidString).\(imagePolicy.format.fileExtension)"
         let url = mediaDirectory(bucketID: bucketID).appendingPathComponent(filename)
+        return CapturePhoto(filename: filename, mimeType: imagePolicy.format.mimeType, fileURL: url)
+    }
+
+    /// Performs image processing and the multi-megabyte atomic write for a reserved photo.
+    /// UI callers invoke this from a detached task after the destination is draft-owned.
+    public func writePhotoData(_ data: Data, to photo: CapturePhoto) throws {
+        guard let url = photo.fileURL, isManagedMediaURL(url) else {
+            throw LocalMediaStoreError.invalidPhotoDestination
+        }
         let normalizedData = try ImageNormalizer.normalizedData(from: data, policy: imagePolicy)
         try prepareMediaDirectory(for: url)
         try normalizedData.write(to: url, options: [.atomic])
         try LocalFilePrivacy.protectExistingItem(url)
-        return CapturePhoto(filename: filename, mimeType: imagePolicy.format.mimeType, fileURL: url)
     }
 
     public func savePhotoFile(_ sourceURL: URL, preferredStem: String = "photo", bucketID: String = UUID().uuidString) throws -> CapturePhoto {
