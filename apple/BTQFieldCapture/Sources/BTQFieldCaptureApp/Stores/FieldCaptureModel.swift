@@ -202,6 +202,12 @@ public final class FieldCaptureModel {
         return drafts.first
     }
 
+    public var persistedCapturesOwningMedia: [LocalCapture] {
+        captures + accountWorkspaces
+            .filter { $0.account.id != account.id }
+            .flatMap(\.captures)
+    }
+
     public var accounts: [BTQAccount] {
         accountWorkspaces.map(\.account)
     }
@@ -656,7 +662,13 @@ public final class FieldCaptureModel {
             return
         }
         if let removedWorkspace {
-            mediaStore.deleteMedia(for: removedWorkspace.captures)
+            // Account removal is blocked while any capture is not done, and done captures have
+            // already released managed references. The empty owner set is therefore intentional.
+            let noRetainedMediaOwnersAfterGuardedAccountRemoval: [LocalCapture] = []
+            mediaStore.deleteMedia(
+                for: removedWorkspace.captures,
+                preservingMediaOwnedBy: noRetainedMediaOwnersAfterGuardedAccountRemoval
+            )
         }
         try? await tokenStore.deleteToken(accountID: accountID)
         accountWorkspaces.removeAll { $0.account.id == accountID }
@@ -779,15 +791,29 @@ public final class FieldCaptureModel {
         }
     }
 
-    public func removeDraftCapture(siteID: String? = nil) async {
+    @discardableResult
+    public func removeDraftCapture(siteID: String? = nil) async -> Bool {
         let draftSiteID = siteID ?? selectedSite?.siteID
         guard let draftSiteID,
               let index = captures.firstIndex(where: { $0.status == .draft && $0.siteID == draftSiteID }) else {
-            return
+            return true
         }
+        let previousCaptures = captures
+        let previousAccountWorkspaces = accountWorkspaces
         let draft = captures.remove(at: index)
-        mediaStore.deleteMedia(for: [draft])
-        try? await persist()
+        do {
+            try await persist()
+        } catch {
+            captures = previousCaptures
+            accountWorkspaces = previousAccountWorkspaces
+            statusMessage = "Could not remove the saved draft. Its media was kept."
+            return false
+        }
+        mediaStore.deleteMedia(
+            for: [draft],
+            preservingMediaOwnedBy: persistedCapturesOwningMedia
+        )
+        return true
     }
 
     @discardableResult
@@ -999,7 +1025,10 @@ public final class FieldCaptureModel {
                         shouldStopDrain = true
                         break
                     }
-                    mediaStore.deleteMedia(for: [mediaCapture])
+                    mediaStore.deleteMedia(
+                        for: [mediaCapture],
+                        preservingMediaOwnedBy: persistedCapturesOwningMedia
+                    )
                     await apiClient.finishBackgroundUpload(captureID: uploadingCapture.captureID)
                     successfulUploadCount += 1
                     statusMessage = "Synced \(confirmedCapture.siteLabel)"
@@ -1118,6 +1147,71 @@ public final class FieldCaptureModel {
         await syncPending()
     }
 
+    public func missingMediaRecoveryDescription(for capture: LocalCapture) -> String? {
+        guard capture.status == .failed else { return nil }
+        let recovery = repairedMissingMedia(for: capture)
+        // Keep the existing recovery affordance for stale persisted URLs even when every file
+        // is rediscovered. Confirming that case persists the repaired URLs without a loss note.
+        guard !missingMedia(for: capture).isEmpty else { return nil }
+        let missing = recovery.missing
+        guard !missing.isEmpty else {
+            return "All saved media is available. Confirming will repair this capture so it can be retried. No media-loss note will be added."
+        }
+        return "\(missing.summary) \(survivingMediaSummary(for: recovery.capture, excluding: missing)) will be uploaded. A permanent media-loss note will be added to this capture."
+    }
+
+    public func uploadSurvivingMedia(for captureID: String) async {
+        guard !isSyncing else {
+            statusMessage = "Wait for sync to finish before recovering this capture."
+            return
+        }
+        guard let index = captures.firstIndex(where: { $0.captureID == captureID }),
+              captures[index].status == .failed else {
+            return
+        }
+
+        let previousCapture = captures[index]
+        let previousAccountWorkspaces = accountWorkspaces
+        let recovery = repairedMissingMedia(for: previousCapture)
+        let repairedCapture = recovery.capture
+        let missing = recovery.missing
+        guard !missing.isEmpty else {
+            captures[index] = repairedCapture
+            statusMessage = "All saved media is available. Retry the capture instead."
+            try? await persist()
+            return
+        }
+
+        var recoveredCapture = repairedCapture
+        recoveredCapture.photos.removeAll { missing.photoIDs.contains($0.id) }
+        recoveredCapture.audios.removeAll { missing.audioIDs.contains($0.id) }
+        recoveredCapture.audio = recoveredCapture.audios.first
+        let survivingSummary = survivingMediaSummary(for: repairedCapture, excluding: missing)
+        let lossRecord = "Media loss before upload: \(missing.inlineSummary). Operator confirmed upload of \(survivingSummary.lowercased())."
+        recoveredCapture.note = recoveredCapture.note.trimmingCharacters(in: .whitespacesAndNewlines)
+        if recoveredCapture.note.isEmpty {
+            recoveredCapture.note = lossRecord
+        } else {
+            recoveredCapture.note += "\n\n\(lossRecord)"
+        }
+        recoveredCapture.status = .pending
+        recoveredCapture.lastError = nil
+        recoveredCapture.retryAfter = nil
+        captures[index] = recoveredCapture
+
+        do {
+            try await persist()
+        } catch {
+            captures[index] = previousCapture
+            accountWorkspaces = previousAccountWorkspaces
+            statusMessage = "Could not save media recovery. The surviving evidence was kept."
+            return
+        }
+
+        statusMessage = "Recovery saved. Uploading surviving media with the loss recorded."
+        await syncPending()
+    }
+
     public func deleteCapture(_ captureID: String) async {
         guard let index = captures.firstIndex(where: { $0.captureID == captureID }) else {
             return
@@ -1126,10 +1220,22 @@ public final class FieldCaptureModel {
             statusMessage = "Capture is uploading and cannot be removed yet."
             return
         }
+        let previousCaptures = captures
+        let previousAccountWorkspaces = accountWorkspaces
         let capture = captures.remove(at: index)
-        mediaStore.deleteMedia(for: [capture])
+        do {
+            try await persist()
+        } catch {
+            captures = previousCaptures
+            accountWorkspaces = previousAccountWorkspaces
+            statusMessage = "Could not remove the capture. Its media was kept."
+            return
+        }
+        mediaStore.deleteMedia(
+            for: [capture],
+            preservingMediaOwnedBy: persistedCapturesOwningMedia
+        )
         statusMessage = "Capture removed"
-        try? await persist()
     }
 
     public func displayError(for capture: LocalCapture) -> String? {
@@ -1421,7 +1527,10 @@ public final class FieldCaptureModel {
         }
 
         for mediaCapture in confirmedMedia {
-            mediaStore.deleteMedia(for: [mediaCapture])
+            mediaStore.deleteMedia(
+                for: [mediaCapture],
+                preservingMediaOwnedBy: persistedCapturesOwningMedia
+            )
         }
         for captureID in consumedCompletionIDs {
             await apiClient.finishBackgroundUpload(captureID: captureID)
@@ -1457,19 +1566,44 @@ public final class FieldCaptureModel {
     }
 
     private func missingMediaDescription(for capture: LocalCapture) -> String? {
-        for photo in capture.photos {
-            guard let fileURL = photo.fileURL,
-                  FileManager.default.fileExists(atPath: fileURL.path) else {
-                return "Missing photo file: \(photo.filename)"
-            }
+        let missing = missingMedia(for: capture)
+        if let photo = missing.photos.first {
+            return "Missing photo file: \(photo.filename)"
         }
-        for audio in capture.audioAttachments {
-            guard let fileURL = audio.fileURL,
-                  FileManager.default.fileExists(atPath: fileURL.path) else {
-                return "Missing audio file: \(audio.filename)"
-            }
+        if let audio = missing.audios.first {
+            return "Missing audio file: \(audio.filename)"
         }
         return nil
+    }
+
+    private func missingMedia(for capture: LocalCapture) -> MissingCaptureMedia {
+        MissingCaptureMedia(
+            photos: capture.photos.filter { mediaFileExists($0.fileURL) == false },
+            audios: capture.audioAttachments.filter { mediaFileExists($0.fileURL) == false }
+        )
+    }
+
+    private func repairedMissingMedia(
+        for capture: LocalCapture
+    ) -> (capture: LocalCapture, missing: MissingCaptureMedia) {
+        let repairedCapture = mediaStore.repairManagedMediaURLs(for: capture)
+        return (repairedCapture, missingMedia(for: repairedCapture))
+    }
+
+    private func mediaFileExists(_ fileURL: URL?) -> Bool {
+        guard let fileURL else { return false }
+        return FileManager.default.fileExists(atPath: fileURL.path)
+    }
+
+    private func survivingMediaSummary(
+        for capture: LocalCapture,
+        excluding missing: MissingCaptureMedia
+    ) -> String {
+        let photoCount = capture.photos.count - missing.photos.count
+        let audioCount = capture.audioAttachments.count - missing.audios.count
+        let photos = "\(photoCount) surviving photo\(photoCount == 1 ? "" : "s")"
+        let audios = "\(audioCount) surviving voice memo\(audioCount == 1 ? "" : "s")"
+        return "\(photos) and \(audios)"
     }
 
     private func validateSubmitResponse(_ response: SubmitCaptureResponse, for capture: LocalCapture) throws {
@@ -1526,7 +1660,11 @@ public final class FieldCaptureModel {
         let sourceAudioURLs = Set(source.audioAttachments.compactMap(\.fileURL))
         for audio in prepared.audioAttachments {
             guard let fileURL = audio.fileURL, !sourceAudioURLs.contains(fileURL) else { continue }
-            mediaStore.deletePendingMedia(photos: [], audio: audio)
+            mediaStore.deletePendingMedia(
+                photos: [],
+                audio: audio,
+                preservingMediaOwnedBy: persistedCapturesOwningMedia
+            )
         }
     }
 
@@ -1619,6 +1757,36 @@ public final class FieldCaptureModel {
         }
         pendingSyncTask = task
         return task
+    }
+}
+
+private struct MissingCaptureMedia {
+    var photos: [CapturePhoto]
+    var audios: [CaptureAudio]
+
+    var isEmpty: Bool {
+        photos.isEmpty && audios.isEmpty
+    }
+
+    var photoIDs: Set<UUID> {
+        Set(photos.map(\.id))
+    }
+
+    var audioIDs: Set<UUID> {
+        Set(audios.map(\.id))
+    }
+
+    var summary: String {
+        "Missing from this device: \(itemDescriptions.joined(separator: ", "))."
+    }
+
+    var inlineSummary: String {
+        "missing \(itemDescriptions.joined(separator: ", "))"
+    }
+
+    private var itemDescriptions: [String] {
+        photos.map { "photo \"\($0.filename)\"" }
+            + audios.map { "voice memo \"\($0.filename)\"" }
     }
 }
 

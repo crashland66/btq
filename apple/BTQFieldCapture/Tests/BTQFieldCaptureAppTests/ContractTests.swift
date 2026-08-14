@@ -651,8 +651,30 @@ import UniformTypeIdentifiers
     #expect(queueView.contains("Retry upload for"))
     #expect(queueView.contains("Moves this failed capture back to pending."))
     #expect(queueView.contains("private var canRetryFailedCapture"))
-    #expect(queueView.contains("Delete unretryable capture for"))
-    #expect(queueView.contains("The saved media file is missing, so this capture must be deleted and captured again."))
+    // Migrated: a failed capture whose media is partly missing is no longer pushed
+    // toward "delete and re-take" (which destroyed the surviving photos). The row now
+    // offers a recovery action, and the destructive action it replaced still exists on
+    // the swipe/context affordances, so the capture is never left with no way out.
+    #expect(queueView.contains("Label(\"Upload Remaining\", systemImage: \"arrow.up.circle\")"))
+    #expect(queueView.contains("Upload surviving media for"))
+    #expect(queueView.contains("Shows exactly what is missing before recording the loss and uploading the surviving evidence."))
+    #expect(queueView.contains("model.uploadSurvivingMedia(for: capture.captureID)"))
+    #expect(queueView.contains("Upload surviving media?"))
+    #expect(queueView.contains("showingMissingMediaRecoveryConfirmation"))
+    #expect(queueView.contains("private var missingMediaRecoveryDescription: String?"))
+    // The recovery action is confirmation-gated, never a single tap.
+    #expect(queueView.contains([
+        "            Button(\"Upload Surviving Media\") {",
+        "                Task { await model.uploadSurvivingMedia(for: capture.captureID) }",
+        "            }",
+        "            Button(\"Cancel\", role: .cancel) {}",
+    ].joined(separator: "\n")))
+    // The delete affordance the inline button used to carry survives elsewhere.
+    #expect(queueView.contains(".swipeActions(edge: .trailing)"))
+    #expect(queueView.contains(".contextMenu"))
+    #expect(queueView.contains("if capture.status != .uploading {"))
+    // Regression pin: the old "delete it and capture it again" advice must not return.
+    #expect(!queueView.contains("must be deleted and captured again"))
     #expect(queueView.contains("audioAttachments.count"))
     #expect(queueView.contains("private var audioSummaryText"))
     #expect(queueView.contains("failureRecoveryHint"))
@@ -1175,16 +1197,26 @@ import UniformTypeIdentifiers
     let externalAudioURL = external.appendingPathComponent("external.m4a")
     try Data("external-audio".utf8).write(to: externalAudioURL)
 
+    // This test is about ONE boundary: managed (inside the store's root) versus external.
+    // It deliberately opts out of ownership protection so that boundary is exercised in
+    // isolation — a genuine discard, where no persisted capture references these files.
+    // If a non-empty owner set were passed here, a regression in `isManagedMediaURL`
+    // could hide behind ownership and this test would still pass. This is the only place
+    // in the test suite that opts out; ownership protection is covered separately in
+    // MediaOwnershipIndependentVerifierTests.
+    let discardedMediaHasNoPersistedOwners: [LocalCapture] = []
     store.deletePendingMedia(
         photos: [
             managedPhoto,
             CapturePhoto(filename: "external.jpg", fileURL: externalPhotoURL),
         ],
-        audio: managedAudio
+        audio: managedAudio,
+        preservingMediaOwnedBy: discardedMediaHasNoPersistedOwners
     )
     store.deletePendingMedia(
         photos: [],
-        audio: CaptureAudio(filename: "external.m4a", fileURL: externalAudioURL, durationSeconds: 3)
+        audio: CaptureAudio(filename: "external.m4a", fileURL: externalAudioURL, durationSeconds: 3),
+        preservingMediaOwnedBy: discardedMediaHasNoPersistedOwners
     )
 
     #expect(FileManager.default.fileExists(atPath: managedPhoto.fileURL!.path) == false)
@@ -1452,7 +1484,38 @@ import UniformTypeIdentifiers
     #expect(captureViewSource.contains(".disabled(!canEditDraft)\n                .accessibilityLabel(\"Clear pending media\")"))
     #expect(captureViewSource.contains(".disabled(!canEditDraft)\n                            .accessibilityLabel(\"Photo note for"))
     #expect(captureViewSource.contains("discardPendingMedia()"))
-    #expect(captureViewSource.contains("mediaStore.deletePendingMedia(photos: pendingPhotos, audio: recorder.lastAudio)"))
+    // Migrated: the discard path no longer deletes straight from the editor's arrays.
+    // The guarantee the old one-line pin carried — a genuine discard really does delete
+    // BOTH the pending photos and the recorder's current audio — is preserved here as a
+    // single contiguous region, so it cannot be weakened by being split apart. The
+    // ordering is now load-bearing: the draft capture must stop owning the media
+    // (removeDraftCapture) before any file is removed.
+    #expect(captureViewSource.contains([
+        "        let photosToDelete = pendingPhotos",
+        "        let audiosToDelete = pendingAudios",
+        "        let recorderAudioToDelete = recorder.lastAudio",
+        "        pendingPhotos = []",
+        "        pendingAudios = []",
+        "        clearRecorder(intent: .discard)",
+        "        Task {",
+        "            _ = await model.removeDraftCapture(siteID: draftSiteID)",
+        "            let owners = model.persistedCapturesOwningMedia",
+        "            mediaStore.deletePendingMedia(",
+        "                photos: photosToDelete,",
+        "                audio: recorderAudioToDelete,",
+        "                preservingMediaOwnedBy: owners",
+        "            )",
+        "            for audio in audiosToDelete {",
+        "                mediaStore.deletePendingMedia(",
+        "                    photos: [],",
+        "                    audio: audio,",
+        "                    preservingMediaOwnedBy: owners",
+        "                )",
+        "            }",
+        "        }",
+    ].joined(separator: "\n")))
+    // Regression pin: the un-owned call shape that destroyed a saved voice note.
+    #expect(!captureViewSource.contains("mediaStore.deletePendingMedia(photos: pendingPhotos, audio: recorder.lastAudio)"))
     #expect(captureViewSource.contains(".onChange(of: model.selectedSiteID)"))
     #expect(captureViewSource.contains("discardDraftAfterSiteChange(previousSiteID: oldValue)"))
     #expect(captureViewSource.contains("model.observationText = \"\""))
@@ -3108,7 +3171,7 @@ import UniformTypeIdentifiers
     #expect(model.statusMessage == "Wait for sync to finish before retrying.")
 }
 
-@Test func failedCaptureRecoveryHintsExplainFieldActions() {
+@Test func failedCaptureRecoveryHintsExplainFieldActions() throws {
     let missingPhoto = LocalCapture(
         captureID: "capture-missing-photo",
         jobID: "job-missing-photo",
@@ -3123,7 +3186,34 @@ import UniformTypeIdentifiers
         status: .failed,
         lastError: "Missing photo file: missing.jpg"
     )
-    #expect(missingPhoto.failureRecoveryHint == "Delete this local capture and capture it again; the saved media file is no longer on this device.")
+    // Migrated: the hint no longer tells the operator to destroy the surviving evidence.
+    let missingMediaHint = "Some saved media is missing. Use Upload Remaining to review the loss, record it on the capture, and preserve the surviving evidence."
+    #expect(missingPhoto.failureRecoveryHint == missingMediaHint)
+
+    let missingAudio = LocalCapture(
+        captureID: "capture-missing-audio",
+        jobID: "job-missing-audio",
+        visitID: nil,
+        siteID: "site_1",
+        siteLabel: "Site One",
+        targetID: "site_1",
+        qcCategory: "general_note",
+        note: "Missing audio",
+        capturedAt: .now,
+        exportedAt: .now,
+        status: .failed,
+        lastError: "Missing audio file: voice-note.m4a"
+    )
+    // The field incident's own error string must land on the same recovery advice.
+    #expect(missingAudio.failureRecoveryHint == missingMediaHint)
+    // Strengthened: the hint must name a control that actually exists in the queue UI,
+    // so renaming the button cannot leave the operator chasing a phantom action.
+    let queueViewForHint = try String(
+        contentsOf: packageRoot().appendingPathComponent("Sources/BTQFieldCaptureApp/Views/QueueView.swift"),
+        encoding: .utf8
+    )
+    #expect(queueViewForHint.contains("Label(\"Upload Remaining\""))
+    #expect(missingMediaHint.contains("Upload Remaining"))
 
     let tooManyPhotos = LocalCapture(
         captureID: "capture-too-many",

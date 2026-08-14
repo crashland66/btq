@@ -10,6 +10,11 @@ private struct DraftContext: Equatable {
     let siteID: String?
 }
 
+private enum RecorderClearIntent {
+    case handoff
+    case discard
+}
+
 private struct PickedPhotoFile: Transferable {
     let fileURL: URL
 
@@ -38,6 +43,7 @@ struct CaptureNotebookView: View {
     @State private var photoImportMessage: String?
     @State private var isSavingDraft = false
     @State private var showingClearDraftMediaConfirmation = false
+    @State private var recorderClearIntents: [UUID: RecorderClearIntent] = [:]
     private let mediaStore = LocalMediaStore()
     private let cameraPermissionChecker: any CameraCapturePermissionChecking
 
@@ -621,7 +627,11 @@ struct CaptureNotebookView: View {
             upsertPendingAudio(finalizedAudio)
         }
         guard isActiveDraftContext(context) else {
-            mediaStore.deletePendingMedia(photos: [], audio: finalizedAudio)
+            mediaStore.deletePendingMedia(
+                photos: [],
+                audio: finalizedAudio,
+                preservingMediaOwnedBy: model.persistedCapturesOwningMedia
+            )
             model.statusMessage = "Draft changed before save completed. Review and save again."
             return
         }
@@ -638,6 +648,7 @@ struct CaptureNotebookView: View {
             pendingAudios.removeAll { savedAudio in
                 savedAudios.contains { $0.id == savedAudio.id }
             }
+            recordRecorderClearIntent(.handoff)
             recorder.clear()
         }
     }
@@ -700,14 +711,20 @@ struct CaptureNotebookView: View {
     @discardableResult
     private func appendPhotoToDraft(_ photo: CapturePhoto, context: DraftContext) async -> Bool {
         guard canAttachMedia(to: context) else {
-            mediaStore.deletePendingMedia(photos: [photo])
+            mediaStore.deletePendingMedia(
+                photos: [photo],
+                preservingMediaOwnedBy: model.persistedCapturesOwningMedia
+            )
             return false
         }
         pendingPhotos.append(photo)
         let didPersist = await model.upsertDraftCapture(photos: pendingPhotos, audios: activeDraftAudios)
         if !didPersist {
             pendingPhotos.removeAll { $0.id == photo.id }
-            mediaStore.deletePendingMedia(photos: [photo])
+            mediaStore.deletePendingMedia(
+                photos: [photo],
+                preservingMediaOwnedBy: model.persistedCapturesOwningMedia
+            )
         }
         return didPersist
     }
@@ -747,27 +764,51 @@ struct CaptureNotebookView: View {
     /// rest of the draft intact. Removes it from the strip, deletes its local media file, and
     /// re-persists the reduced draft — or drops the draft capture entirely if no media remains.
     private func removePendingPhoto(_ photo: CapturePhoto) {
+        let previousPhotos = pendingPhotos
         pendingPhotos.removeAll { $0.id == photo.id }
-        mediaStore.deletePendingMedia(photos: [photo])
+        let remainingPhotos = pendingPhotos
+        let remainingAudios = activeDraftAudios
         Task {
-            if pendingPhotos.isEmpty && activeDraftAudios.isEmpty {
-                await model.removeDraftCapture()
+            let didPersist: Bool
+            if remainingPhotos.isEmpty && remainingAudios.isEmpty {
+                didPersist = await model.removeDraftCapture()
             } else {
-                await model.upsertDraftCapture(photos: pendingPhotos, audios: activeDraftAudios)
+                didPersist = await model.upsertDraftCapture(photos: remainingPhotos, audios: remainingAudios)
             }
+            guard didPersist else {
+                pendingPhotos = previousPhotos
+                return
+            }
+            mediaStore.deletePendingMedia(
+                photos: [photo],
+                preservingMediaOwnedBy: model.persistedCapturesOwningMedia
+            )
         }
     }
 
     private func discardPendingMedia(draftSiteID: String? = nil) {
-        mediaStore.deletePendingMedia(photos: pendingPhotos, audio: recorder.lastAudio)
-        pendingPhotos = []
+        let photosToDelete = pendingPhotos
         let audiosToDelete = pendingAudios
+        let recorderAudioToDelete = recorder.lastAudio
+        pendingPhotos = []
         pendingAudios = []
-        recorder.clear()
-        for audio in audiosToDelete {
-            mediaStore.deletePendingMedia(photos: [], audio: audio)
+        clearRecorder(intent: .discard)
+        Task {
+            _ = await model.removeDraftCapture(siteID: draftSiteID)
+            let owners = model.persistedCapturesOwningMedia
+            mediaStore.deletePendingMedia(
+                photos: photosToDelete,
+                audio: recorderAudioToDelete,
+                preservingMediaOwnedBy: owners
+            )
+            for audio in audiosToDelete {
+                mediaStore.deletePendingMedia(
+                    photos: [],
+                    audio: audio,
+                    preservingMediaOwnedBy: owners
+                )
+            }
         }
-        Task { await model.removeDraftCapture(siteID: draftSiteID) }
     }
 
     private func discardDraftAfterSiteChange(previousSiteID: String?) {
@@ -801,7 +842,7 @@ struct CaptureNotebookView: View {
         #endif
         pendingPhotos = []
         pendingAudios = []
-        recorder.clear()
+        clearRecorder(intent: .handoff)
         selectedPhotoItems = []
         model.observationText = ""
         cameraMessage = nil
@@ -834,8 +875,19 @@ struct CaptureNotebookView: View {
             return
         }
 
+        if let oldAudio, let clearIntent = recorderClearIntents.removeValue(forKey: oldAudio.id) {
+            switch clearIntent {
+            case .handoff, .discard:
+                return
+            }
+        }
+
         if let oldAudio, pendingAudios.contains(where: { $0.id == oldAudio.id }) == false {
-            mediaStore.deletePendingMedia(photos: [], audio: oldAudio)
+            mediaStore.deletePendingMedia(
+                photos: [],
+                audio: oldAudio,
+                preservingMediaOwnedBy: model.persistedCapturesOwningMedia
+            )
         }
     }
 
@@ -874,14 +926,39 @@ struct CaptureNotebookView: View {
 
     private func removeCurrentVoiceMemo() {
         guard let audio = recorder.lastAudio ?? recorder.currentRecordingAudioSnapshot() else { return }
+        let previousAudios = pendingAudios
         pendingAudios.removeAll { $0.id == audio.id }
-        mediaStore.deletePendingMedia(photos: [], audio: audio)
+        recorderClearIntents[audio.id] = .discard
+        let remainingPhotos = pendingPhotos
+        let remainingAudios = pendingAudios
         Task {
-            if pendingPhotos.isEmpty && pendingAudios.isEmpty {
-                await model.removeDraftCapture()
+            let didPersist: Bool
+            if remainingPhotos.isEmpty && remainingAudios.isEmpty {
+                didPersist = await model.removeDraftCapture()
             } else {
-                await model.upsertDraftCapture(photos: pendingPhotos, audios: pendingAudios)
+                didPersist = await model.upsertDraftCapture(photos: remainingPhotos, audios: remainingAudios)
             }
+            guard didPersist else {
+                pendingAudios = previousAudios
+                recorder.restore(audio: previousAudios.last)
+                return
+            }
+            mediaStore.deletePendingMedia(
+                photos: [],
+                audio: audio,
+                preservingMediaOwnedBy: model.persistedCapturesOwningMedia
+            )
+        }
+    }
+
+    private func clearRecorder(intent: RecorderClearIntent) {
+        recordRecorderClearIntent(intent)
+        recorder.clear()
+    }
+
+    private func recordRecorderClearIntent(_ intent: RecorderClearIntent) {
+        if let audio = recorder.lastAudio {
+            recorderClearIntents[audio.id] = intent
         }
     }
 
