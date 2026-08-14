@@ -14,17 +14,74 @@ enum CameraFacing: Sendable {
     var avPosition: AVCaptureDevice.Position { self == .back ? .back : .front }
 }
 
-/// Pure capture-settings helpers. We prioritise quality so `fileDataRepresentation()`
-/// yields the full original encode (HEIC/JPEG + EXIF/GPS) — the field-capture upload
-/// path (`ImageNormalizer`) downsizes for the wire, but the camera hands off the best
-/// source it can.
+/// Pure capture-settings helpers. Quality prioritization protects handheld evidence
+/// sharpness while `fileDataRepresentation()` yields the full original encode
+/// (HEIC/JPEG + EXIF/GPS). The field-capture upload path (`ImageNormalizer`) downsizes
+/// for the wire.
 enum CameraCaptureSettingsFactory {
+    /// Single source for both the output maximum and every per-shot request. A shot that
+    /// exceeds the output maximum raises NSInvalidArgumentException at capture time.
     static let qualityPrioritization: AVCapturePhotoOutput.QualityPrioritization = .quality
 
     /// The flash mode to request given the user's toggle and whether the active device
     /// actually has a flash (front cameras usually don't).
     static func flashMode(flashOn: Bool, deviceHasFlash: Bool) -> AVCaptureDevice.FlashMode {
         (flashOn && deviceHasFlash) ? .on : .off
+    }
+}
+
+private enum PhotoCaptureResult: Sendable {
+    case success(Data)
+    case failure(String)
+}
+
+/// A delegate per shot preserves its lifetime through the terminal capture callback.
+private final class PhotoCaptureDelegate: NSObject, AVCapturePhotoCaptureDelegate {
+    private let completion: (PhotoCaptureResult) -> Void
+    private var keepAlive: PhotoCaptureDelegate?
+    private var didDeliverResult = false
+
+    init(completion: @escaping (PhotoCaptureResult) -> Void) {
+        self.completion = completion
+    }
+
+    func retainUntilCaptureFinishes() {
+        keepAlive = self
+    }
+
+    func photoOutput(
+        _ output: AVCapturePhotoOutput,
+        didFinishProcessingPhoto photo: AVCapturePhoto,
+        error: Error?
+    ) {
+        guard !didDeliverResult else { return }
+        didDeliverResult = true
+
+        if let error {
+            completion(.failure("Couldn't capture the photo: \(error.localizedDescription)"))
+            return
+        }
+
+        // Preserve the ORIGINAL encoded file (HEIC on modern devices, else JPEG) WITH
+        // EXIF/GPS. Auto-deferred delivery is disabled, so this can never be a proxy.
+        guard let data = photo.fileDataRepresentation() else {
+            completion(.failure("The camera returned no photo data. Please try again."))
+            return
+        }
+        completion(.success(data))
+    }
+
+    func photoOutput(
+        _ output: AVCapturePhotoOutput,
+        didFinishCaptureFor resolvedSettings: AVCaptureResolvedPhotoSettings,
+        error: Error?
+    ) {
+        if !didDeliverResult {
+            didDeliverResult = true
+            let detail = error?.localizedDescription ?? "The camera did not finish processing the photo."
+            completion(.failure("Couldn't capture the photo: \(detail)"))
+        }
+        keepAlive = nil
     }
 }
 
@@ -52,11 +109,18 @@ final class CameraSessionController: NSObject, ObservableObject {
     @Published private(set) var capturedCount: Int = 0
     /// Surfaced to an in-view alert on any failure, so nothing is silently dropped.
     @Published var captureError: String?
+    @Published private(set) var pendingPhotoDeliveryCount = 0
 
     private let photoOutput = AVCapturePhotoOutput()
     private var currentInput: AVCaptureDeviceInput?
     private let sessionQueue = DispatchQueue(label: "com.gregstoltz.btqfieldcapture.camera.session")
     private var isConfigured = false
+    private var pendingPhotoResults: [PhotoCaptureResult] = []
+    private var isDeliveringPhotos = false
+    /// Backpressure caps app-owned full-resolution encoded buffers while a detached
+    /// media write is in progress. Two slots keep the shutter usable without allowing
+    /// an 18-20 shot burst to retain tens of megabytes of `Data`.
+    private static let maxPendingPhotoDeliveries = 2
     /// Keeps both the live preview and encoded photos upright as the device rotates.
     let rotation = CaptureRotation()
 
@@ -101,6 +165,10 @@ final class CameraSessionController: NSObject, ObservableObject {
         currentInput?.device.hasFlash ?? false
     }
 
+    var canCapturePhoto: Bool {
+        pendingPhotoDeliveryCount < Self.maxPendingPhotoDeliveries
+    }
+
     func toggleFacing() {
         let next = facing.toggled
         sessionQueue.async { [weak self] in
@@ -119,9 +187,9 @@ final class CameraSessionController: NSObject, ObservableObject {
                 self.applyInput(for: .back, insideExistingConfiguration: true)
                 if self.session.canAddOutput(self.photoOutput) {
                     self.session.addOutput(self.photoOutput)
-                    self.photoOutput.maxPhotoQualityPrioritization = .quality
                 }
                 self.session.commitConfiguration()
+                self.applyPhotoOutputCapabilities(to: self.photoOutput, in: self.session)
                 self.isConfigured = true
             }
             if self.currentInput == nil {
@@ -155,7 +223,62 @@ final class CameraSessionController: NSObject, ObservableObject {
         } else if let existing = currentInput {
             session.addInput(existing) // never leave the session with no input
         }
-        if !insideExistingConfiguration { session.commitConfiguration() }
+        if !insideExistingConfiguration {
+            session.commitConfiguration()
+            applyPhotoOutputCapabilities(to: photoOutput, in: session)
+        }
+    }
+
+    /// Camera/format changes may reset these opt-ins. Re-apply the complete capability
+    /// policy after every configuration commit, then refresh prepared resources for the
+    /// active camera's supported flash modes.
+    private nonisolated func applyPhotoOutputCapabilities(
+        to output: AVCapturePhotoOutput,
+        in session: AVCaptureSession
+    ) {
+        guard session.outputs.contains(where: { $0 === output }) else { return }
+
+        output.maxPhotoQualityPrioritization = CameraCaptureSettingsFactory.qualityPrioritization
+        if output.isZeroShutterLagSupported {
+            output.isZeroShutterLagEnabled = true
+            if output.isResponsiveCaptureSupported {
+                output.isResponsiveCaptureEnabled = true
+            }
+        }
+        if output.isFastCapturePrioritizationSupported {
+            output.isFastCapturePrioritizationEnabled = false
+        }
+        if output.isAutoDeferredPhotoDeliverySupported {
+            output.isAutoDeferredPhotoDeliveryEnabled = false
+        }
+
+        preparePhotoSettings(for: output)
+    }
+
+    /// Pre-allocate resources for every flash mode this UI can request. Preparation and
+    /// live capture share `applyPhotoSettings`, so their quality/flash shape cannot drift.
+    private nonisolated func preparePhotoSettings(for output: AVCapturePhotoOutput) {
+        let requestedModes: [AVCaptureDevice.FlashMode] = [.off, .on]
+        let supportedModes = requestedModes.filter(output.supportedFlashModes.contains)
+        let modesToPrepare: [AVCaptureDevice.FlashMode?] = supportedModes.isEmpty
+            ? [nil]
+            : supportedModes.map(Optional.some)
+        let settings = modesToPrepare.map { flashMode in
+            let settings = AVCapturePhotoSettings()
+            applyPhotoSettings(settings, flashMode: flashMode)
+            return settings
+        }
+        output.setPreparedPhotoSettingsArray(settings, completionHandler: nil)
+    }
+
+    private nonisolated func applyPhotoSettings(
+        _ settings: AVCapturePhotoSettings,
+        flashMode: AVCaptureDevice.FlashMode?
+    ) {
+        settings.photoQualityPrioritization = CameraCaptureSettingsFactory.qualityPrioritization
+        if let flashMode {
+            settings.flashMode = flashMode
+        }
     }
 
     private static func wideCamera(for position: AVCaptureDevice.Position) -> AVCaptureDevice? {
@@ -170,6 +293,8 @@ final class CameraSessionController: NSObject, ObservableObject {
             captureError = "The camera is not ready."
             return
         }
+        guard canCapturePhoto else { return }
+        pendingPhotoDeliveryCount += 1
         let flashMode = CameraCaptureSettingsFactory.flashMode(
             flashOn: flashOn,
             deviceHasFlash: activeDeviceHasFlash
@@ -179,40 +304,48 @@ final class CameraSessionController: NSObject, ObservableObject {
             guard let self else { return }
             applyCaptureRotation(rotationAngle, to: self.photoOutput)
             let settings = AVCapturePhotoSettings()
-            settings.photoQualityPrioritization = CameraCaptureSettingsFactory.qualityPrioritization
-            if self.photoOutput.supportedFlashModes.contains(flashMode) {
-                settings.flashMode = flashMode
+            let supportedFlashMode: AVCaptureDevice.FlashMode? = self.photoOutput.supportedFlashModes.contains(flashMode)
+                ? flashMode
+                : nil
+            self.applyPhotoSettings(settings, flashMode: supportedFlashMode)
+            let delegate = PhotoCaptureDelegate { [weak self] result in
+                // AVFoundation supplies processed-photo callbacks in capture order.
+                // Main-queue FIFO preserves that order while crossing to the controller.
+                DispatchQueue.main.async { [weak self] in
+                    self?.enqueuePhotoResult(result)
+                }
             }
-            self.photoOutput.capturePhoto(with: settings, delegate: self)
+            delegate.retainUntilCaptureFinishes()
+            self.photoOutput.capturePhoto(with: settings, delegate: delegate)
         }
     }
-}
 
-// MARK: - Capture delegate
+    private func enqueuePhotoResult(_ result: PhotoCaptureResult) {
+        pendingPhotoResults.append(result)
+        deliverReadyPhotosInOrder()
+    }
 
-extension CameraSessionController: AVCapturePhotoCaptureDelegate {
-    nonisolated func photoOutput(
-        _ output: AVCapturePhotoOutput,
-        didFinishProcessingPhoto photo: AVCapturePhoto,
-        error: Error?
-    ) {
-        if let error {
-            Task { @MainActor in
-                self.captureError = "Couldn't capture the photo: \(error.localizedDescription)"
-            }
-            return
-        }
-        // The ORIGINAL encoded file (HEIC on modern devices, else JPEG) WITH EXIF/GPS —
-        // no UIImage/jpegData round-trip. The upload path normalizes it downstream.
-        guard let data = photo.fileDataRepresentation() else {
-            Task { @MainActor in
-                self.captureError = "The camera returned no photo data. Please try again."
-            }
-            return
-        }
+    /// AVCapturePhotoOutput documents processed-photo delivery in capture order, including
+    /// with responsive capture. A single FIFO delivery task remains the sole caller of
+    /// `onPhoto`, so async draft appends cannot interleave and no sequence hole can stall
+    /// later evidence indefinitely.
+    private func deliverReadyPhotosInOrder() {
+        guard !isDeliveringPhotos else { return }
+        isDeliveringPhotos = true
+
         Task { @MainActor in
-            self.capturedCount += 1
-            await self.onPhoto?(data)
+            while !pendingPhotoResults.isEmpty {
+                let result = pendingPhotoResults.removeFirst()
+                switch result {
+                case .success(let data):
+                    capturedCount += 1
+                    await onPhoto?(data)
+                case .failure(let message):
+                    captureError = message
+                }
+                pendingPhotoDeliveryCount = max(0, pendingPhotoDeliveryCount - 1)
+            }
+            isDeliveringPhotos = false
         }
     }
 }
@@ -386,6 +519,7 @@ public struct CameraCaptureView: View {
                 }
             }
             .accessibilityLabel("Take photo")
+            .disabled(!controller.canCapturePhoto)
 
             Spacer()
 

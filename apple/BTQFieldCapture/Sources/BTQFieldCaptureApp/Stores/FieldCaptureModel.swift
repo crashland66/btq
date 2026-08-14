@@ -29,6 +29,7 @@ public final class FieldCaptureModel {
     public private(set) var isReviewingInboxItem: Bool = false
     public private(set) var notificationPermissionStatus: NotificationPermissionStatus = .unknown
     public private(set) var requiresReconnect: Bool = false
+    public private(set) var isWritingPhoto = false
 
     private let store: any FieldCaptureStore
     private let apiClient: any CaptureAPIClient
@@ -36,6 +37,10 @@ public final class FieldCaptureModel {
     private let notificationScheduler: any UploadNotificationScheduling
     private let mediaStore: LocalMediaStore
     private let audioUploadPreparer: any AudioMemoUploadPreparing
+    private var pendingSyncTask: Task<Void, Never>?
+    private var syncPendingRequested = false
+    private var liveBackgroundUploadCaptureIDs: Set<String> = []
+    private var activePhotoWriteCount = 0
 
     public init(
         store: any FieldCaptureStore = SQLiteFieldCaptureStore(),
@@ -129,6 +134,12 @@ public final class FieldCaptureModel {
         QueueSummary(captures: captures)
     }
 
+    /// Includes the drain's final persistence window after its last capture leaves `.uploading`.
+    /// Scene-phase handling uses this signal to keep its UIKit assertion through quiescence.
+    public var backgroundSyncWorkCount: Int {
+        max(queueSummary.pending + queueSummary.uploading, pendingSyncTask == nil ? 0 : 1)
+    }
+
     public var activeAccountQueuedCaptureCount: Int {
         queuedCaptureCount(for: account.id)
     }
@@ -188,6 +199,12 @@ public final class FieldCaptureModel {
         return drafts.first
     }
 
+    public var persistedCapturesOwningMedia: [LocalCapture] {
+        captures + accountWorkspaces
+            .filter { $0.account.id != account.id }
+            .flatMap(\.captures)
+    }
+
     public var accounts: [BTQAccount] {
         accountWorkspaces.map(\.account)
     }
@@ -227,6 +244,7 @@ public final class FieldCaptureModel {
         do {
             let snapshot = try await store.load()
             apply(snapshot)
+            await reconcileBackgroundUploads()
             let recoveredUploads = recoverInterruptedUploads()
             _ = await refreshSessionIfPossible()
             if sites.isEmpty {
@@ -394,16 +412,22 @@ public final class FieldCaptureModel {
     }
 
     public func resumeOnlineWork() async {
+        await reconcileBackgroundUploads()
         if recoverInterruptedUploads() {
             do {
                 try await persist()
             } catch {
                 statusMessage = "Could not save recovered uploads. Try again."
+                await waitForPendingSyncQuiescence()
                 return
             }
         }
-        guard await refreshSessionIfPossible() else { return }
+        guard await refreshSessionIfPossible() else {
+            await waitForPendingSyncQuiescence()
+            return
+        }
         await syncPending()
+        await waitForPendingSyncQuiescence()
     }
 
     public func refreshSubmittedHistory() async {
@@ -635,7 +659,13 @@ public final class FieldCaptureModel {
             return
         }
         if let removedWorkspace {
-            mediaStore.deleteMedia(for: removedWorkspace.captures)
+            // Account removal is blocked while any capture is not done, and done captures have
+            // already released managed references. The empty owner set is therefore intentional.
+            let noRetainedMediaOwnersAfterGuardedAccountRemoval: [LocalCapture] = []
+            mediaStore.deleteMedia(
+                for: removedWorkspace.captures,
+                preservingMediaOwnedBy: noRetainedMediaOwnersAfterGuardedAccountRemoval
+            )
         }
         try? await tokenStore.deleteToken(accountID: accountID)
         accountWorkspaces.removeAll { $0.account.id == accountID }
@@ -691,6 +721,100 @@ public final class FieldCaptureModel {
     public func selectSite(id siteID: String?) {
         selectedSiteID = siteID
         selectedCategoryValue = defaultCategoryValue(for: selectedSite)
+    }
+
+    public func beginPhotoWrite() {
+        activePhotoWriteCount += 1
+        isWritingPhoto = true
+    }
+
+    public func endPhotoWrite() {
+        activePhotoWriteCount = max(0, activePhotoWriteCount - 1)
+        isWritingPhoto = activePhotoWriteCount > 0
+    }
+
+    /// Establishes durable ownership of a reserved photo URL without rewriting the full
+    /// snapshot. The media writer may create the file only after this method succeeds.
+    @discardableResult
+    public func appendPhotoToDraft(
+        _ photo: CapturePhoto,
+        photos: [CapturePhoto],
+        audios: [CaptureAudio] = []
+    ) async -> Bool {
+        guard photos.last?.id == photo.id,
+              photos.filter({ $0.id == photo.id }).count == 1 else {
+            statusMessage = "Could not save photo order locally."
+            return false
+        }
+        guard let site = selectedSite else {
+            statusMessage = "Choose a site before adding media."
+            return false
+        }
+        guard canSubmitCaptures else {
+            statusMessage = "This account cannot submit captures."
+            return false
+        }
+        guard photos.count <= maxImagesPerCapture else {
+            statusMessage = "Limit is \(photoLimitDescription) per capture."
+            return false
+        }
+
+        let previousCaptures = captures
+        let previousAccountWorkspaces = accountWorkspaces
+        let note = observationText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let category = selectedCategoryValue ?? defaultCategoryValue(for: site) ?? "general_note"
+        let now = Date()
+        let draftIndex: Int
+        if let index = captures.firstIndex(where: { $0.status == .draft && $0.siteID == site.siteID }) {
+            captures[index].siteLabel = site.label
+            captures[index].targetID = site.siteID
+            captures[index].qcCategory = category
+            captures[index].note = note
+            captures[index].exportedAt = now
+            captures[index].photos = photos
+            captures[index].audios = audios
+            captures[index].audio = audios.first
+            draftIndex = index
+        } else {
+            let suffix = String(UUID().uuidString.prefix(8)).lowercased()
+            let kind: CaptureAssetKind = audios.isEmpty ? .photo : .photoVoice
+            captures.append(
+                LocalCapture(
+                    captureID: BTQFormatting.makeCaptureID(capturedAt: now, suffix: suffix),
+                    jobID: BTQFormatting.makeJobID(exportedAt: now, assetKind: kind, siteLabel: site.label, suffix: suffix),
+                    visitID: activeVisit(forSiteID: site.siteID)?.id,
+                    siteID: site.siteID,
+                    siteLabel: site.label,
+                    targetID: site.siteID,
+                    qcCategory: category,
+                    note: note,
+                    capturedAt: now,
+                    exportedAt: now,
+                    status: .draft,
+                    photos: photos,
+                    audios: audios
+                )
+            )
+            draftIndex = captures.index(before: captures.endIndex)
+        }
+
+        upsertCurrentWorkspace()
+        let snapshot = currentSnapshot()
+        do {
+            try await store.appendDraftPhoto(
+                photo,
+                to: captures[draftIndex],
+                accountID: account.id,
+                snapshot: snapshot
+            )
+            statusMessage = "Draft saved locally."
+            return true
+        } catch {
+            captures = previousCaptures
+            accountWorkspaces = previousAccountWorkspaces
+            statusMessage = "Could not save draft locally."
+            return false
+        }
     }
 
     @discardableResult
@@ -758,15 +882,55 @@ public final class FieldCaptureModel {
         }
     }
 
-    public func removeDraftCapture(siteID: String? = nil) async {
+    /// Rolls back a pre-owned photo reference when its atomic file write fails. This rare
+    /// recovery path may use the full snapshot; successful per-photo writes never do.
+    @discardableResult
+    public func removeUnwrittenDraftPhoto(_ photoID: UUID, siteID: String?) async -> Bool {
+        guard let siteID,
+              let index = captures.firstIndex(where: { $0.status == .draft && $0.siteID == siteID }),
+              captures[index].photos.contains(where: { $0.id == photoID }) else {
+            return true
+        }
+        let previousCaptures = captures
+        let previousAccountWorkspaces = accountWorkspaces
+        captures[index].photos.removeAll { $0.id == photoID }
+        if captures[index].photos.isEmpty && captures[index].audioAttachments.isEmpty {
+            captures.remove(at: index)
+        }
+        do {
+            try await persist()
+            return true
+        } catch {
+            captures = previousCaptures
+            accountWorkspaces = previousAccountWorkspaces
+            statusMessage = "Could not remove an unwritten photo reference."
+            return false
+        }
+    }
+
+    @discardableResult
+    public func removeDraftCapture(siteID: String? = nil) async -> Bool {
         let draftSiteID = siteID ?? selectedSite?.siteID
         guard let draftSiteID,
               let index = captures.firstIndex(where: { $0.status == .draft && $0.siteID == draftSiteID }) else {
-            return
+            return true
         }
+        let previousCaptures = captures
+        let previousAccountWorkspaces = accountWorkspaces
         let draft = captures.remove(at: index)
-        mediaStore.deleteMedia(for: [draft])
-        try? await persist()
+        do {
+            try await persist()
+        } catch {
+            captures = previousCaptures
+            accountWorkspaces = previousAccountWorkspaces
+            statusMessage = "Could not remove the saved draft. Its media was kept."
+            return false
+        }
+        mediaStore.deleteMedia(
+            for: [draft],
+            preservingMediaOwnedBy: persistedCapturesOwningMedia
+        )
+        return true
     }
 
     @discardableResult
@@ -794,6 +958,10 @@ public final class FieldCaptureModel {
 
     @discardableResult
     public func saveQuickObservation(photos: [CapturePhoto] = [], audio: CaptureAudio? = nil, audios: [CaptureAudio] = []) async -> Bool {
+        guard !isWritingPhoto else {
+            statusMessage = "Wait for the photo to finish saving."
+            return false
+        }
         let audioAttachments = audios.isEmpty ? audio.map { [$0] } ?? [] : audios
         guard validateQuickObservationDraft(photoCount: photos.count, hasAudio: !audioAttachments.isEmpty) else {
             return false
@@ -864,12 +1032,34 @@ public final class FieldCaptureModel {
             statusMessage = "Saved offline. Captures will sync when connection returns."
             return true
         }
-        await syncPending()
+        requestPendingSync()
         return true
     }
 
     public func syncPending() async {
-        guard !isSyncing else { return }
+        guard pendingSyncTask == nil else {
+            syncPendingRequested = true
+            return
+        }
+        let task = startPendingSyncDrain()
+        await task.value
+    }
+
+    /// Observes the pending-sync queue until its active drain and any coalesced request finish.
+    /// This method never starts a drain, and `saveQuickObservation` must never await it.
+    public func waitForPendingSyncQuiescence() async {
+        while let task = pendingSyncTask {
+            await task.value
+        }
+    }
+
+    private func drainPendingSync() async {
+        isSyncing = true
+        defer {
+            syncPendingRequested = false
+            isSyncing = false
+            pendingSyncTask = nil
+        }
         guard canSubmitCaptures else {
             statusMessage = requiresReconnect || (session == nil && (account.personName != nil || !sites.isEmpty))
                 ? "Reconnect this account to sync captures."
@@ -884,121 +1074,180 @@ public final class FieldCaptureModel {
             statusMessage = "Saved offline. Connect a token to sync."
             return
         }
-        isSyncing = true
-        defer { isSyncing = false }
 
         var successfulUploadCount = 0
-        for capture in captures where capture.status == .pending && isReadyToRetry(capture) {
-            guard let index = captures.firstIndex(where: { $0.captureID == capture.captureID }) else { continue }
-            let repairedCapture = mediaStore.repairManagedMediaURLs(for: captures[index])
-            if repairedCapture != captures[index] {
-                captures[index] = repairedCapture
-            }
-            if let missingMedia = missingMediaDescription(for: captures[index]) {
-                captures[index].status = .failed
-                captures[index].lastError = missingMedia
+        var sentRecoveryNotification = false
+        drainLoop: while true {
+            syncPendingRequested = false
+            var shouldStopDrain = false
+            let readyCaptures = captures.filter { $0.status == .pending && isReadyToRetry($0) }
+
+            for capture in readyCaptures {
+                guard let index = captures.firstIndex(where: { $0.captureID == capture.captureID }) else { continue }
+                let repairedCapture = mediaStore.repairManagedMediaURLs(for: captures[index])
+                if repairedCapture != captures[index] {
+                    captures[index] = repairedCapture
+                }
+                if let missingMedia = missingMediaDescription(for: captures[index]) {
+                    captures[index].status = .failed
+                    captures[index].lastError = missingMedia
+                    captures[index].retryAfter = nil
+                    statusMessage = "Capture failed: \(missingMedia)"
+                    await notificationScheduler.notifyUploadFailed(capture: captures[index], reason: missingMedia)
+                    continue
+                }
+                captures[index].status = .uploading
+                captures[index].lastTriedAt = .now
                 captures[index].retryAfter = nil
-                statusMessage = "Capture failed: \(missingMedia)"
-                await notificationScheduler.notifyUploadFailed(capture: captures[index], reason: missingMedia)
-                continue
-            }
-            captures[index].status = .uploading
-            captures[index].lastTriedAt = .now
-            captures[index].retryAfter = nil
-            let uploadingCapture = captures[index]
-            var preparedCapture: LocalCapture?
-            defer {
-                if let preparedCapture {
-                    cleanupPreparedUploadMedia(preparedCapture, source: uploadingCapture)
-                }
-            }
-            do {
-                let captureForUpload = try await audioUploadPreparer.capturePreparedForUpload(uploadingCapture)
-                preparedCapture = captureForUpload
-                let submitResponse = try await apiClient.submit(capture: captureForUpload, baseURL: account.baseURL, token: token)
-                try validateSubmitResponse(submitResponse, for: captureForUpload)
-                guard let completedIndex = captures.firstIndex(where: { $0.captureID == uploadingCapture.captureID }) else {
-                    continue
-                }
-                captures[completedIndex] = captureWithRemotePhotoURLs(captures[completedIndex])
-                var releasedCapture = mediaStore.releaseManagedMedia(for: captures[completedIndex])
-                releasedCapture.status = .done
-                releasedCapture.lastError = nil
-                releasedCapture.retryAfter = nil
-                captures[completedIndex] = releasedCapture
-                successfulUploadCount += 1
-                statusMessage = "Synced \(releasedCapture.siteLabel)"
-            } catch let error as AudioMemoUploadPreparationError {
-                guard let failedIndex = captures.firstIndex(where: { $0.captureID == uploadingCapture.captureID }) else {
-                    statusMessage = "Could not prepare voice memos for upload."
-                    continue
-                }
-                let errorDescription = error.localizedDescription
-                captures[failedIndex].attempts += 1
-                captures[failedIndex].status = .failed
-                captures[failedIndex].lastError = errorDescription
-                captures[failedIndex].retryAfter = nil
-                statusMessage = "Capture failed: \(errorDescription)"
-                await notificationScheduler.notifyUploadFailed(capture: captures[failedIndex], reason: errorDescription)
-                continue
-            } catch let error as CaptureAPIError {
-                guard let failedIndex = captures.firstIndex(where: { $0.captureID == uploadingCapture.captureID }) else {
-                    statusMessage = "Sync paused. Will retry."
-                    continue
-                }
-                let errorDescription = userFacingCaptureError(error.description)
-                captures[failedIndex].attempts += 1
-                captures[failedIndex].lastError = errorDescription
-                if case .unauthorized = error {
-                    captures[failedIndex].status = .pending
-                    captures[failedIndex].retryAfter = nil
-                    await requireReconnect(message: "Token expired or revoked. Reconnect this account to sync.")
+                let uploadingCapture = captures[index]
+                do {
+                    // Persist correlation state before creating the background task. If the
+                    // process dies after this write, launch reconciliation can safely decide
+                    // whether the task exists instead of treating a disk-level `.pending` row
+                    // as new work while its first transfer is still live.
+                    try await persist()
+                } catch {
+                    captures[index].status = .pending
+                    captures[index].lastError = "Could not save upload state. It will retry automatically."
+                    captures[index].retryAfter = nextRetryDate(attempts: captures[index].attempts)
+                    statusMessage = "Could not save queue state. Try syncing again."
+                    shouldStopDrain = true
                     break
                 }
-                if error.isPermanent {
+                var preparedCapture: LocalCapture?
+                defer {
+                    if let preparedCapture {
+                        cleanupPreparedUploadMedia(preparedCapture, source: uploadingCapture)
+                    }
+                }
+                do {
+                    let captureForUpload = try await audioUploadPreparer.capturePreparedForUpload(uploadingCapture)
+                    preparedCapture = captureForUpload
+                    let submitResponse = try await apiClient.submit(capture: captureForUpload, baseURL: account.baseURL, token: token)
+                    try validateSubmitResponse(submitResponse, for: captureForUpload)
+                    guard let completedIndex = captures.firstIndex(where: { $0.captureID == uploadingCapture.captureID }) else {
+                        await apiClient.finishBackgroundUpload(captureID: uploadingCapture.captureID)
+                        continue
+                    }
+                    let mediaCapture = captures[completedIndex]
+                    var confirmedCapture = captureWithRemotePhotoURLs(mediaCapture)
+                    confirmedCapture = mediaStore.captureWithReleasedManagedMediaReferences(confirmedCapture)
+                    confirmedCapture.status = .done
+                    confirmedCapture.lastError = nil
+                    confirmedCapture.retryAfter = nil
+                    captures[completedIndex] = confirmedCapture
+                    do {
+                        // Persist confirmation before releasing the only managed evidence copy.
+                        // The uploader's durable completion stays available if this write fails.
+                        try await persist()
+                    } catch {
+                        captures[completedIndex] = mediaCapture
+                        statusMessage = "Server confirmed the capture, but its queue state could not be saved."
+                        shouldStopDrain = true
+                        break
+                    }
+                    mediaStore.deleteMedia(
+                        for: [mediaCapture],
+                        preservingMediaOwnedBy: persistedCapturesOwningMedia
+                    )
+                    await apiClient.finishBackgroundUpload(captureID: uploadingCapture.captureID)
+                    successfulUploadCount += 1
+                    statusMessage = "Synced \(confirmedCapture.siteLabel)"
+                } catch let error as AudioMemoUploadPreparationError {
+                    guard let failedIndex = captures.firstIndex(where: { $0.captureID == uploadingCapture.captureID }) else {
+                        statusMessage = "Could not prepare voice memos for upload."
+                        await apiClient.finishBackgroundUpload(captureID: uploadingCapture.captureID)
+                        continue
+                    }
+                    let errorDescription = error.localizedDescription
+                    captures[failedIndex].attempts += 1
                     captures[failedIndex].status = .failed
+                    captures[failedIndex].lastError = errorDescription
                     captures[failedIndex].retryAfter = nil
                     statusMessage = "Capture failed: \(errorDescription)"
                     await notificationScheduler.notifyUploadFailed(capture: captures[failedIndex], reason: errorDescription)
+                    await apiClient.finishBackgroundUpload(captureID: uploadingCapture.captureID)
                     continue
-                }
-                captures[failedIndex].status = .pending
-                captures[failedIndex].retryAfter = nextRetryDate(attempts: captures[failedIndex].attempts)
-                statusMessage = "Sync paused. Will retry."
-                continue
-            } catch let error as URLError where error.code == .cancelled {
-                guard let failedIndex = captures.firstIndex(where: { $0.captureID == uploadingCapture.captureID }) else {
-                    statusMessage = "Upload interrupted before confirmation."
+                } catch let error as CaptureAPIError {
+                    guard let failedIndex = captures.firstIndex(where: { $0.captureID == uploadingCapture.captureID }) else {
+                        statusMessage = "Sync paused. Will retry."
+                        await apiClient.finishBackgroundUpload(captureID: uploadingCapture.captureID)
+                        continue
+                    }
+                    let errorDescription = userFacingCaptureError(error.description)
+                    captures[failedIndex].attempts += 1
+                    captures[failedIndex].lastError = errorDescription
+                    if case .unauthorized = error {
+                        captures[failedIndex].status = .pending
+                        captures[failedIndex].retryAfter = nil
+                        await requireReconnect(message: "Token expired or revoked. Reconnect this account to sync.")
+                        await apiClient.finishBackgroundUpload(captureID: uploadingCapture.captureID)
+                        shouldStopDrain = true
+                        break
+                    }
+                    if error.isPermanent {
+                        captures[failedIndex].status = .failed
+                        captures[failedIndex].retryAfter = nil
+                        statusMessage = "Capture failed: \(errorDescription)"
+                        await notificationScheduler.notifyUploadFailed(capture: captures[failedIndex], reason: errorDescription)
+                        await apiClient.finishBackgroundUpload(captureID: uploadingCapture.captureID)
+                        continue
+                    }
+                    captures[failedIndex].status = .pending
+                    captures[failedIndex].retryAfter = nextRetryDate(attempts: captures[failedIndex].attempts)
+                    statusMessage = "Sync paused. Will retry."
+                    await apiClient.finishBackgroundUpload(captureID: uploadingCapture.captureID)
                     continue
-                }
-                let errorDescription = "Upload interrupted before server confirmation. Local media is still saved; check for duplicates before retrying."
-                captures[failedIndex].attempts += 1
-                captures[failedIndex].status = .failed
-                captures[failedIndex].lastError = errorDescription
-                captures[failedIndex].retryAfter = nil
-                statusMessage = "Capture failed: \(errorDescription)"
-                await notificationScheduler.notifyUploadFailed(capture: captures[failedIndex], reason: errorDescription)
-                continue
-            } catch {
-                guard let failedIndex = captures.firstIndex(where: { $0.captureID == uploadingCapture.captureID }) else {
+                } catch let error as URLError where error.code == .cancelled {
+                    guard let failedIndex = captures.firstIndex(where: { $0.captureID == uploadingCapture.captureID }) else {
+                        statusMessage = "Upload interrupted before confirmation."
+                        await apiClient.finishBackgroundUpload(captureID: uploadingCapture.captureID)
+                        continue
+                    }
+                    let errorDescription = "Upload interrupted before server confirmation. Local media is still saved; check for duplicates before retrying."
+                    captures[failedIndex].attempts += 1
+                    captures[failedIndex].status = .failed
+                    captures[failedIndex].lastError = errorDescription
+                    captures[failedIndex].retryAfter = nil
+                    statusMessage = "Capture failed: \(errorDescription)"
+                    await notificationScheduler.notifyUploadFailed(capture: captures[failedIndex], reason: errorDescription)
+                    await apiClient.finishBackgroundUpload(captureID: uploadingCapture.captureID)
+                    continue
+                } catch {
+                    guard let failedIndex = captures.firstIndex(where: { $0.captureID == uploadingCapture.captureID }) else {
+                        statusMessage = "Offline. Capture will sync later."
+                        await apiClient.finishBackgroundUpload(captureID: uploadingCapture.captureID)
+                        continue
+                    }
+                    captures[failedIndex].attempts += 1
+                    captures[failedIndex].status = .pending
+                    captures[failedIndex].lastError = error.localizedDescription
+                    captures[failedIndex].retryAfter = nextRetryDate(attempts: captures[failedIndex].attempts)
                     statusMessage = "Offline. Capture will sync later."
+                    await apiClient.finishBackgroundUpload(captureID: uploadingCapture.captureID)
                     continue
                 }
-                captures[failedIndex].attempts += 1
-                captures[failedIndex].status = .pending
-                captures[failedIndex].lastError = error.localizedDescription
-                captures[failedIndex].retryAfter = nextRetryDate(attempts: captures[failedIndex].attempts)
-                statusMessage = "Offline. Capture will sync later."
-                continue
             }
-        }
-        do {
-            try await persist()
-        } catch {
-            statusMessage = "Could not save queue state. Try syncing again."
-        }
-        if successfulUploadCount > 0, queueSummary.pending == 0, queueSummary.failed == 0 {
-            await notificationScheduler.notifySyncRecovered(pendingCount: 0)
+
+            do {
+                try await persist()
+            } catch {
+                statusMessage = "Could not save queue state. Try syncing again."
+            }
+            if !sentRecoveryNotification,
+               successfulUploadCount > 0,
+               queueSummary.pending == 0,
+               queueSummary.failed == 0 {
+                await notificationScheduler.notifySyncRecovered(pendingCount: 0)
+                sentRecoveryNotification = true
+            }
+            if shouldStopDrain {
+                break drainLoop
+            }
+            guard syncPendingRequested,
+                  captures.contains(where: { $0.status == .pending && isReadyToRetry($0) }) else {
+                break drainLoop
+            }
         }
     }
 
@@ -1019,6 +1268,71 @@ public final class FieldCaptureModel {
         await syncPending()
     }
 
+    public func missingMediaRecoveryDescription(for capture: LocalCapture) -> String? {
+        guard capture.status == .failed else { return nil }
+        let recovery = repairedMissingMedia(for: capture)
+        // Keep the existing recovery affordance for stale persisted URLs even when every file
+        // is rediscovered. Confirming that case persists the repaired URLs without a loss note.
+        guard !missingMedia(for: capture).isEmpty else { return nil }
+        let missing = recovery.missing
+        guard !missing.isEmpty else {
+            return "All saved media is available. Confirming will repair this capture so it can be retried. No media-loss note will be added."
+        }
+        return "\(missing.summary) \(survivingMediaSummary(for: recovery.capture, excluding: missing)) will be uploaded. A permanent media-loss note will be added to this capture."
+    }
+
+    public func uploadSurvivingMedia(for captureID: String) async {
+        guard !isSyncing else {
+            statusMessage = "Wait for sync to finish before recovering this capture."
+            return
+        }
+        guard let index = captures.firstIndex(where: { $0.captureID == captureID }),
+              captures[index].status == .failed else {
+            return
+        }
+
+        let previousCapture = captures[index]
+        let previousAccountWorkspaces = accountWorkspaces
+        let recovery = repairedMissingMedia(for: previousCapture)
+        let repairedCapture = recovery.capture
+        let missing = recovery.missing
+        guard !missing.isEmpty else {
+            captures[index] = repairedCapture
+            statusMessage = "All saved media is available. Retry the capture instead."
+            try? await persist()
+            return
+        }
+
+        var recoveredCapture = repairedCapture
+        recoveredCapture.photos.removeAll { missing.photoIDs.contains($0.id) }
+        recoveredCapture.audios.removeAll { missing.audioIDs.contains($0.id) }
+        recoveredCapture.audio = recoveredCapture.audios.first
+        let survivingSummary = survivingMediaSummary(for: repairedCapture, excluding: missing)
+        let lossRecord = "Media loss before upload: \(missing.inlineSummary). Operator confirmed upload of \(survivingSummary.lowercased())."
+        recoveredCapture.note = recoveredCapture.note.trimmingCharacters(in: .whitespacesAndNewlines)
+        if recoveredCapture.note.isEmpty {
+            recoveredCapture.note = lossRecord
+        } else {
+            recoveredCapture.note += "\n\n\(lossRecord)"
+        }
+        recoveredCapture.status = .pending
+        recoveredCapture.lastError = nil
+        recoveredCapture.retryAfter = nil
+        captures[index] = recoveredCapture
+
+        do {
+            try await persist()
+        } catch {
+            captures[index] = previousCapture
+            accountWorkspaces = previousAccountWorkspaces
+            statusMessage = "Could not save media recovery. The surviving evidence was kept."
+            return
+        }
+
+        statusMessage = "Recovery saved. Uploading surviving media with the loss recorded."
+        await syncPending()
+    }
+
     public func deleteCapture(_ captureID: String) async {
         guard let index = captures.firstIndex(where: { $0.captureID == captureID }) else {
             return
@@ -1027,10 +1341,22 @@ public final class FieldCaptureModel {
             statusMessage = "Capture is uploading and cannot be removed yet."
             return
         }
+        let previousCaptures = captures
+        let previousAccountWorkspaces = accountWorkspaces
         let capture = captures.remove(at: index)
-        mediaStore.deleteMedia(for: [capture])
+        do {
+            try await persist()
+        } catch {
+            captures = previousCaptures
+            accountWorkspaces = previousAccountWorkspaces
+            statusMessage = "Could not remove the capture. Its media was kept."
+            return
+        }
+        mediaStore.deleteMedia(
+            for: [capture],
+            preservingMediaOwnedBy: persistedCapturesOwningMedia
+        )
         statusMessage = "Capture removed"
-        try? await persist()
     }
 
     public func displayError(for capture: LocalCapture) -> String? {
@@ -1188,11 +1514,147 @@ public final class FieldCaptureModel {
         }
     }
 
+    /// Reconciles durable URL-session evidence before the age-based fallback can touch an
+    /// uploading capture. A task's presence is the authoritative liveness signal; a stored
+    /// successful delegate completion takes precedence over both liveness and retry heuristics.
+    private func reconcileBackgroundUploads() async {
+        // The active workspace is held in the top-level model properties between persistence
+        // points. Fold it into the durable workspace set before reconciling every account.
+        upsertCurrentWorkspace()
+        let uploadingCaptureIDs = Set(
+            accountWorkspaces.lazy
+                .flatMap(\.captures)
+                .filter { $0.status == .uploading }
+                .map(\.captureID)
+        )
+        let reconciliation = await apiClient.reconcileBackgroundUploads(
+            captureIDs: uploadingCaptureIDs
+        )
+        guard reconciliation.isAuthoritative else {
+            liveBackgroundUploadCaptureIDs = []
+            return
+        }
+
+        // The drain may have changed the active capture array while the client was suspended.
+        // Refresh that workspace, then reconcile only the captures included in the request.
+        upsertCurrentWorkspace()
+        let previousWorkspaces = accountWorkspaces
+        let previousCaptures = captures
+        var confirmedMedia: [LocalCapture] = []
+        var consumedCompletionIDs: Set<String> = []
+        var uploadFailures: [(LocalCapture, String)] = []
+        var changedCaptureIDs: Set<String> = []
+        var changed = false
+
+        liveBackgroundUploadCaptureIDs = reconciliation.liveCaptureIDs
+        for workspaceIndex in accountWorkspaces.indices {
+            let isActiveWorkspace = accountWorkspaces[workspaceIndex].account.id == account.id
+            for captureIndex in accountWorkspaces[workspaceIndex].captures.indices
+                where accountWorkspaces[workspaceIndex].captures[captureIndex].status == .uploading
+                    && uploadingCaptureIDs.contains(
+                        accountWorkspaces[workspaceIndex].captures[captureIndex].captureID
+                    ) {
+                let captureID = accountWorkspaces[workspaceIndex].captures[captureIndex].captureID
+                if let response = reconciliation.completedResponses[captureID] {
+                    consumedCompletionIDs.insert(captureID)
+                    do {
+                        try validateSubmitResponse(
+                            response,
+                            for: accountWorkspaces[workspaceIndex].captures[captureIndex]
+                        )
+                        let mediaCapture = accountWorkspaces[workspaceIndex].captures[captureIndex]
+                        var confirmed = captureWithRemotePhotoURLs(mediaCapture)
+                        confirmed = mediaStore.captureWithReleasedManagedMediaReferences(confirmed)
+                        confirmed.status = .done
+                        confirmed.lastError = nil
+                        confirmed.retryAfter = nil
+                        accountWorkspaces[workspaceIndex].captures[captureIndex] = confirmed
+                        confirmedMedia.append(mediaCapture)
+                        if isActiveWorkspace {
+                            statusMessage = "Synced \(confirmed.siteLabel)"
+                        }
+                    } catch {
+                        let description = userFacingCaptureError(error.localizedDescription)
+                        accountWorkspaces[workspaceIndex].captures[captureIndex].attempts += 1
+                        accountWorkspaces[workspaceIndex].captures[captureIndex].status = .failed
+                        accountWorkspaces[workspaceIndex].captures[captureIndex].lastError = description
+                        accountWorkspaces[workspaceIndex].captures[captureIndex].retryAfter = nil
+                        if isActiveWorkspace {
+                            statusMessage = "Capture failed: \(description)"
+                        }
+                        uploadFailures.append((
+                            accountWorkspaces[workspaceIndex].captures[captureIndex],
+                            description
+                        ))
+                    }
+                    changedCaptureIDs.insert(captureID)
+                    changed = true
+                } else if reconciliation.liveCaptureIDs.contains(captureID) {
+                    continue
+                } else {
+                    accountWorkspaces[workspaceIndex].captures[captureIndex].status = .pending
+                    accountWorkspaces[workspaceIndex].captures[captureIndex].lastError =
+                        "Upload was interrupted. It will retry automatically."
+                    accountWorkspaces[workspaceIndex].captures[captureIndex].retryAfter = .now
+                    changedCaptureIDs.insert(captureID)
+                    changed = true
+                }
+            }
+        }
+
+        if let activeWorkspace = accountWorkspaces.first(where: { $0.account.id == account.id }) {
+            let reconciledCaptures = Dictionary(
+                uniqueKeysWithValues: activeWorkspace.captures.lazy
+                    .filter { changedCaptureIDs.contains($0.captureID) }
+                    .map { ($0.captureID, $0) }
+            )
+            for captureIndex in captures.indices {
+                if let reconciledCapture = reconciledCaptures[captures[captureIndex].captureID] {
+                    captures[captureIndex] = reconciledCapture
+                }
+            }
+        }
+
+        if changed {
+            do {
+                try await persist()
+            } catch {
+                accountWorkspaces = previousWorkspaces
+                captures = previousCaptures
+                // A durable completion is also a liveness guard until it can be persisted into
+                // the capture store; do not let the stale fallback submit it again meanwhile.
+                liveBackgroundUploadCaptureIDs.formUnion(consumedCompletionIDs)
+                statusMessage = "Could not save reconciled uploads. Try again."
+                await apiClient.sweepUploadBodies(
+                    preservingCaptureIDs: liveBackgroundUploadCaptureIDs
+                )
+                return
+            }
+        }
+
+        for mediaCapture in confirmedMedia {
+            mediaStore.deleteMedia(
+                for: [mediaCapture],
+                preservingMediaOwnedBy: persistedCapturesOwningMedia
+            )
+        }
+        for captureID in consumedCompletionIDs {
+            await apiClient.finishBackgroundUpload(captureID: captureID)
+        }
+        for (capture, description) in uploadFailures {
+            await notificationScheduler.notifyUploadFailed(capture: capture, reason: description)
+        }
+        await apiClient.sweepUploadBodies(
+            preservingCaptureIDs: liveBackgroundUploadCaptureIDs
+        )
+    }
+
     @discardableResult
     private func recoverInterruptedUploads(now: Date = .now) -> Bool {
         let staleThreshold: TimeInterval = 120
         var recoveredUploads = false
-        for index in captures.indices where captures[index].status == .uploading {
+        for index in captures.indices where captures[index].status == .uploading
+            && !liveBackgroundUploadCaptureIDs.contains(captures[index].captureID) {
             let lastTriedAt = captures[index].lastTriedAt ?? captures[index].capturedAt
             if now.timeIntervalSince(lastTriedAt) > staleThreshold {
                 captures[index].status = .pending
@@ -1210,19 +1672,44 @@ public final class FieldCaptureModel {
     }
 
     private func missingMediaDescription(for capture: LocalCapture) -> String? {
-        for photo in capture.photos {
-            guard let fileURL = photo.fileURL,
-                  FileManager.default.fileExists(atPath: fileURL.path) else {
-                return "Missing photo file: \(photo.filename)"
-            }
+        let missing = missingMedia(for: capture)
+        if let photo = missing.photos.first {
+            return "Missing photo file: \(photo.filename)"
         }
-        for audio in capture.audioAttachments {
-            guard let fileURL = audio.fileURL,
-                  FileManager.default.fileExists(atPath: fileURL.path) else {
-                return "Missing audio file: \(audio.filename)"
-            }
+        if let audio = missing.audios.first {
+            return "Missing audio file: \(audio.filename)"
         }
         return nil
+    }
+
+    private func missingMedia(for capture: LocalCapture) -> MissingCaptureMedia {
+        MissingCaptureMedia(
+            photos: capture.photos.filter { mediaFileExists($0.fileURL) == false },
+            audios: capture.audioAttachments.filter { mediaFileExists($0.fileURL) == false }
+        )
+    }
+
+    private func repairedMissingMedia(
+        for capture: LocalCapture
+    ) -> (capture: LocalCapture, missing: MissingCaptureMedia) {
+        let repairedCapture = mediaStore.repairManagedMediaURLs(for: capture)
+        return (repairedCapture, missingMedia(for: repairedCapture))
+    }
+
+    private func mediaFileExists(_ fileURL: URL?) -> Bool {
+        guard let fileURL else { return false }
+        return FileManager.default.fileExists(atPath: fileURL.path)
+    }
+
+    private func survivingMediaSummary(
+        for capture: LocalCapture,
+        excluding missing: MissingCaptureMedia
+    ) -> String {
+        let photoCount = capture.photos.count - missing.photos.count
+        let audioCount = capture.audioAttachments.count - missing.audios.count
+        let photos = "\(photoCount) surviving photo\(photoCount == 1 ? "" : "s")"
+        let audios = "\(audioCount) surviving voice memo\(audioCount == 1 ? "" : "s")"
+        return "\(photos) and \(audios)"
     }
 
     private func validateSubmitResponse(_ response: SubmitCaptureResponse, for capture: LocalCapture) throws {
@@ -1279,7 +1766,11 @@ public final class FieldCaptureModel {
         let sourceAudioURLs = Set(source.audioAttachments.compactMap(\.fileURL))
         for audio in prepared.audioAttachments {
             guard let fileURL = audio.fileURL, !sourceAudioURLs.contains(fileURL) else { continue }
-            mediaStore.deletePendingMedia(photos: [], audio: audio)
+            mediaStore.deletePendingMedia(
+                photos: [],
+                audio: audio,
+                preservingMediaOwnedBy: persistedCapturesOwningMedia
+            )
         }
     }
 
@@ -1343,17 +1834,67 @@ public final class FieldCaptureModel {
 
     private func persist() async throws {
         upsertCurrentWorkspace()
-        try await store.save(
-            FieldCaptureSnapshot(
-                account: account,
-                session: session,
-                sites: sites,
-                visits: visits,
-                captures: captures,
-                activeAccountID: account.id,
-                accountWorkspaces: accountWorkspaces
-            )
+        try await store.save(currentSnapshot())
+    }
+
+    private func currentSnapshot() -> FieldCaptureSnapshot {
+        FieldCaptureSnapshot(
+            account: account,
+            session: session,
+            sites: sites,
+            visits: visits,
+            captures: captures,
+            activeAccountID: account.id,
+            accountWorkspaces: accountWorkspaces
         )
+    }
+
+    private func requestPendingSync() {
+        guard pendingSyncTask == nil else {
+            syncPendingRequested = true
+            return
+        }
+        startPendingSyncDrain()
+    }
+
+    @discardableResult
+    private func startPendingSyncDrain() -> Task<Void, Never> {
+        let task = Task { [weak self] in
+            guard let self else { return }
+            await self.drainPendingSync()
+        }
+        pendingSyncTask = task
+        return task
+    }
+}
+
+private struct MissingCaptureMedia {
+    var photos: [CapturePhoto]
+    var audios: [CaptureAudio]
+
+    var isEmpty: Bool {
+        photos.isEmpty && audios.isEmpty
+    }
+
+    var photoIDs: Set<UUID> {
+        Set(photos.map(\.id))
+    }
+
+    var audioIDs: Set<UUID> {
+        Set(audios.map(\.id))
+    }
+
+    var summary: String {
+        "Missing from this device: \(itemDescriptions.joined(separator: ", "))."
+    }
+
+    var inlineSummary: String {
+        "missing \(itemDescriptions.joined(separator: ", "))"
+    }
+
+    private var itemDescriptions: [String] {
+        photos.map { "photo \"\($0.filename)\"" }
+            + audios.map { "voice memo \"\($0.filename)\"" }
     }
 }
 

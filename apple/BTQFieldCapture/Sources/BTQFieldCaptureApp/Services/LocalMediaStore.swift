@@ -2,6 +2,7 @@ import Foundation
 
 public enum LocalMediaStoreError: Error, Equatable {
     case missingSourceFile
+    case invalidPhotoDestination
 }
 
 public struct LocalMediaStore: Sendable {
@@ -15,13 +16,32 @@ public struct LocalMediaStore: Sendable {
     }
 
     public func savePhotoData(_ data: Data, preferredStem: String = "photo", bucketID: String = UUID().uuidString) throws -> CapturePhoto {
+        let photo = makePhotoDestination(preferredStem: preferredStem, bucketID: bucketID)
+        try writePhotoData(data, to: photo)
+        return photo
+    }
+
+    /// Reserves the final managed URL without creating the file. Callers can durably attach
+    /// this reference to a draft before the evidence file becomes visible to deletion code.
+    public func makePhotoDestination(
+        preferredStem: String = "photo",
+        bucketID: String = UUID().uuidString
+    ) -> CapturePhoto {
         let filename = "\(safeStem(preferredStem))-\(UUID().uuidString).\(imagePolicy.format.fileExtension)"
         let url = mediaDirectory(bucketID: bucketID).appendingPathComponent(filename)
+        return CapturePhoto(filename: filename, mimeType: imagePolicy.format.mimeType, fileURL: url)
+    }
+
+    /// Performs image processing and the multi-megabyte atomic write for a reserved photo.
+    /// UI callers invoke this from a detached task after the destination is draft-owned.
+    public func writePhotoData(_ data: Data, to photo: CapturePhoto) throws {
+        guard let url = photo.fileURL, isManagedMediaURL(url) else {
+            throw LocalMediaStoreError.invalidPhotoDestination
+        }
         let normalizedData = try ImageNormalizer.normalizedData(from: data, policy: imagePolicy)
         try prepareMediaDirectory(for: url)
         try normalizedData.write(to: url, options: [.atomic])
         try LocalFilePrivacy.protectExistingItem(url)
-        return CapturePhoto(filename: filename, mimeType: imagePolicy.format.mimeType, fileURL: url)
     }
 
     public func savePhotoFile(_ sourceURL: URL, preferredStem: String = "photo", bucketID: String = UUID().uuidString) throws -> CapturePhoto {
@@ -64,47 +84,60 @@ public struct LocalMediaStore: Sendable {
         rootDirectory.appendingPathComponent(safeStem(bucketID), isDirectory: true)
     }
 
-    public func deleteMedia(for captures: [LocalCapture]) {
+    public func deleteMedia(
+        for captures: [LocalCapture],
+        preservingMediaOwnedBy retainedCaptures: [LocalCapture]
+    ) {
         var urls = Set<URL>()
         for capture in captures {
-            for photo in capture.photos {
-                if let url = photo.fileURL {
-                    urls.insert(url)
-                }
-            }
-            for audio in capture.audioAttachments {
-                if let url = audio.fileURL {
-                    urls.insert(url)
-                }
-            }
+            urls.formUnion(managedMediaURLs(for: capture))
         }
 
-        deleteManagedMediaURLs(urls)
+        deleteManagedMediaURLs(urls, preservingMediaOwnedBy: retainedCaptures)
     }
 
-    public func deletePendingMedia(photos: [CapturePhoto], audio: CaptureAudio? = nil) {
+    /// Deletes editor-owned media only when no supplied persisted capture references it.
+    /// Callers must always state which persisted captures still own media, even when that set
+    /// is deliberately empty.
+    public func deletePendingMedia(
+        photos: [CapturePhoto],
+        audio: CaptureAudio? = nil,
+        preservingMediaOwnedBy captures: [LocalCapture]
+    ) {
         var urls = Set<URL>()
         for photo in photos {
             if let url = photo.fileURL {
-                urls.insert(url)
+                urls.insert(url.standardizedFileURL)
             }
         }
         if let url = audio?.fileURL {
-            urls.insert(url)
+            urls.insert(url.standardizedFileURL)
         }
 
-        deleteManagedMediaURLs(urls)
+        deleteManagedMediaURLs(urls, preservingMediaOwnedBy: captures)
     }
 
-    private func deleteManagedMediaURLs(_ urls: Set<URL>) {
-        for url in urls where isManagedMediaURL(url) {
+    private func deleteManagedMediaURLs(
+        _ urls: Set<URL>,
+        preservingMediaOwnedBy captures: [LocalCapture]
+    ) {
+        let ownedURLs = Set(captures.flatMap { managedMediaURLs(for: $0) })
+        for url in urls.subtracting(ownedURLs) where isManagedMediaURL(url) {
             try? FileManager.default.removeItem(at: url)
             removeEmptyParentDirectories(startingAt: url.deletingLastPathComponent())
         }
     }
 
-    public func releaseManagedMedia(for capture: LocalCapture) -> LocalCapture {
-        deleteMedia(for: [capture])
+    private func managedMediaURLs(for capture: LocalCapture) -> Set<URL> {
+        var urls = Set(capture.photos.compactMap { $0.fileURL?.standardizedFileURL })
+        urls.formUnion(capture.audioAttachments.compactMap { $0.fileURL?.standardizedFileURL })
+        return urls
+    }
+
+    /// Clears references to app-managed evidence without deleting it. The queue uses this to
+    /// persist server-confirmed state before removing the files, so process death cannot restore
+    /// a pending capture whose only media copy has already been deleted.
+    public func captureWithReleasedManagedMediaReferences(_ capture: LocalCapture) -> LocalCapture {
         var released = capture
         released.photos = capture.photos.map { photo in
             var releasedPhoto = photo

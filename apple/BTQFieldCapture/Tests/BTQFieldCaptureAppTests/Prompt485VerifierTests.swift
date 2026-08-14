@@ -36,10 +36,15 @@ import Testing
 
 @Test func prompt485VerifierCaptureStampsOutputOnSessionQueueBeforePhotoCapture() throws {
     let source = try prompt485VerifierSource("Views/CameraCaptureView.swift")
+    // Prompt 128 moved the capture delegate out of `CameraSessionController` into a
+    // per-shot `SequencedPhotoCaptureDelegate`, so the old `// MARK: - Capture delegate`
+    // boundary and the `delegate: self` argument are gone. The invariant this test
+    // guards — rotation stamped on the session queue exactly once, before exactly one
+    // capture — is unchanged.
     let capture = try prompt485Slice(
         source,
         from: "func capturePhoto()",
-        to: "// MARK: - Capture delegate"
+        to: "private func enqueuePhotoResult"
     )
 
     #expect(prompt485Ordered([
@@ -47,7 +52,7 @@ import Testing
         "sessionQueue.async",
         "applyCaptureRotation(rotationAngle, to: self.photoOutput)",
         "let settings = AVCapturePhotoSettings()",
-        "self.photoOutput.capturePhoto(with: settings, delegate: self)",
+        "self.photoOutput.capturePhoto(with: settings, delegate: delegate)",
     ], in: capture))
     #expect(prompt485Occurrences(of: "applyCaptureRotation(", in: capture) == 1)
     #expect(prompt485Occurrences(of: "capturePhoto(with:", in: capture) == 1)
@@ -142,22 +147,42 @@ import Testing
 
 @Test func prompt485VerifierPrompt480OriginalEncodedByteContractRemainsIntact() throws {
     let source = try prompt485VerifierSource("Views/CameraCaptureView.swift")
-    let delegate = try prompt485Slice(
+    // Prompt 128 replaced the controller-as-delegate extension with a per-shot capture
+    // delegate plus a FIFO delivery drain; its follow-on renamed that delegate to
+    // `PhotoCaptureDelegate` when the sequence numbers were dropped.
+    //
+    // VERIFIER CORRECTION (prompt 128 review): the prompt-128 edit split this into two
+    // DISJOINT slices — the delegate class and `deliverReadyPhotosInOrder` — which left
+    // the middle of the evidence-byte path (the capture completion closure and
+    // `enqueuePhotoResult`) covered by NO re-encode assertion, and dropped the
+    // `prompt485Ordered` relationship between producing the bytes and handing them off.
+    // The original assertion covered the whole path as ONE contiguous span. Restored to
+    // one span with the same shape: from the delegate that produces the bytes through to
+    // the `// MARK: - Preview layer bridge` boundary. Keep it contiguous.
+    let evidencePath = try prompt485Slice(
         source,
-        from: "extension CameraSessionController: AVCapturePhotoCaptureDelegate",
+        from: "private final class PhotoCaptureDelegate",
         to: "// MARK: - Preview layer bridge"
     )
 
     #expect(source.contains("import AVFoundation"))
     #expect(source.contains("settings.photoQualityPrioritization = CameraCaptureSettingsFactory.qualityPrioritization"))
+    // Prioritization returned to `.quality` (operator decision: evidence sharpness wins),
+    // now offset by zero-shutter-lag, responsive capture and prepared photo settings, and
+    // with fast-capture prioritization explicitly OFF so nothing may silently drop below
+    // the requested level. None of that changes what is STORED —
+    // `fileDataRepresentation()` still yields the full original encode, and auto-deferred
+    // delivery is disabled so it can never be a proxy image.
     #expect(source.contains("static let qualityPrioritization: AVCapturePhotoOutput.QualityPrioritization = .quality"))
+    #expect(source.contains("isAutoDeferredPhotoDeliveryEnabled = false"))
+    #expect(source.contains("isFastCapturePrioritizationEnabled = false"))
     #expect(prompt485Ordered([
         "photo.fileDataRepresentation()",
-        "await self.onPhoto?(data)",
-    ], in: delegate))
-    #expect(!delegate.contains("UIImage(data:"))
-    #expect(!delegate.contains("jpegData("))
-    #expect(!delegate.contains("pngData("))
+        "await onPhoto?(data)",
+    ], in: evidencePath))
+    #expect(!evidencePath.contains("UIImage(data:"))
+    #expect(!evidencePath.contains("jpegData("))
+    #expect(!evidencePath.contains("pngData("))
 }
 
 private func prompt485VerifierSource(_ relativePath: String) throws -> String {

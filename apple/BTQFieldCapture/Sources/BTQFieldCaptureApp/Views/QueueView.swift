@@ -109,6 +109,9 @@ private struct LocalCaptureQueueRow: View {
     let onDetails: () -> Void
     @State private var isExpanded = false
     @State private var showingDeleteConfirmation = false
+    @State private var showingMissingMediaRecoveryConfirmation = false
+    @State private var missingMediaRecoveryDescription: String?
+    @State private var recoveryDescriptionSource: LocalCapture?
 
     var body: some View {
         DisclosureGroup(isExpanded: $isExpanded) {
@@ -144,16 +147,17 @@ private struct LocalCaptureQueueRow: View {
                         .disabled(model.isSyncing || !model.canSubmitCaptures)
                         .accessibilityLabel("Retry upload for \(capture.siteLabel)")
                         .accessibilityHint("Moves this failed capture back to pending.")
-                    } else if capture.status == .failed {
-                        Button(role: .destructive) {
-                            showingDeleteConfirmation = true
+                    } else if missingMediaRecoveryDescription != nil {
+                        Button {
+                            showingMissingMediaRecoveryConfirmation = true
                         } label: {
-                            Label("Delete", systemImage: "trash")
+                            Label("Upload Remaining", systemImage: "arrow.up.circle")
                         }
-                        .buttonStyle(.bordered)
+                        .buttonStyle(.borderedProminent)
                         .controlSize(.small)
-                        .accessibilityLabel("Delete unretryable capture for \(capture.siteLabel)")
-                        .accessibilityHint("The saved media file is missing, so this capture must be deleted and captured again.")
+                        .disabled(model.isSyncing || !model.canSubmitCaptures)
+                        .accessibilityLabel("Upload surviving media for \(capture.siteLabel)")
+                        .accessibilityHint("Shows exactly what is missing before recording the loss and uploading the surviving evidence.")
                     }
                 }
             }
@@ -233,6 +237,23 @@ private struct LocalCaptureQueueRow: View {
         } message: {
             Text("This removes the queued capture and any app-owned photo or voice memo files stored for \(capture.siteLabel).")
         }
+        .confirmationDialog(
+            "Upload surviving media?",
+            isPresented: $showingMissingMediaRecoveryConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button("Upload Surviving Media") {
+                Task { await model.uploadSurvivingMedia(for: capture.captureID) }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text(missingMediaRecoveryDescription ?? "The missing media could not be identified. No changes will be made.")
+        }
+        .task(id: capture) {
+            guard recoveryDescriptionSource != capture else { return }
+            missingMediaRecoveryDescription = model.missingMediaRecoveryDescription(for: capture)
+            recoveryDescriptionSource = capture
+        }
         .accessibilityIdentifier("queue.capture.\(capture.captureID)")
         .accessibilityElement(children: .contain)
     }
@@ -254,10 +275,9 @@ private struct LocalCaptureQueueRow: View {
     }
 
     private var canRetryFailedCapture: Bool {
-        guard capture.status == .failed, let lastError = capture.lastError?.localizedLowercase else {
-            return capture.status == .failed
-        }
-        return !lastError.contains("missing photo file") && !lastError.contains("missing audio file")
+        capture.status == .failed
+            && recoveryDescriptionSource == capture
+            && missingMediaRecoveryDescription == nil
     }
 
     private var audioSummaryText: String {

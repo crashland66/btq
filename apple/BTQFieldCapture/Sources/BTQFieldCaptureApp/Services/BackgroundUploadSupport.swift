@@ -25,6 +25,56 @@ public enum BackgroundUploadSupport {
         configuration.httpMaximumConnectionsPerHost = 2
         return URLSession(configuration: configuration)
     }
+
+    public static func defaultUploadRootDirectory() -> URL {
+        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            ?? FileManager.default.temporaryDirectory
+        return base
+            .appendingPathComponent("BTQFieldCapture", isDirectory: true)
+            .appendingPathComponent("BackgroundUploads", isDirectory: true)
+    }
+}
+
+public struct BackgroundUploadCompletion: Codable, Equatable, Sendable {
+    public var captureID: String
+    public var statusCode: Int?
+    public var responseData: Data
+    public var errorDescription: String?
+    public var completedAt: Date
+
+    public init(
+        captureID: String,
+        statusCode: Int?,
+        responseData: Data,
+        errorDescription: String?,
+        completedAt: Date = .now
+    ) {
+        self.captureID = captureID
+        self.statusCode = statusCode
+        self.responseData = responseData
+        self.errorDescription = errorDescription
+        self.completedAt = completedAt
+    }
+}
+
+public struct BackgroundUploadSnapshot: Equatable, Sendable {
+    public var liveCaptureIDs: Set<String>
+    public var completions: [BackgroundUploadCompletion]
+    public var isAuthoritative: Bool
+
+    public init(
+        liveCaptureIDs: Set<String> = [],
+        completions: [BackgroundUploadCompletion] = [],
+        isAuthoritative: Bool = true
+    ) {
+        self.liveCaptureIDs = liveCaptureIDs
+        self.completions = completions
+        self.isAuthoritative = isAuthoritative
+    }
+
+    public static let unavailable = BackgroundUploadSnapshot(
+        isAuthoritative: false
+    )
 }
 
 /// Performs the capture upload. Abstracted so the API client stays testable: production uses
@@ -32,6 +82,14 @@ public enum BackgroundUploadSupport {
 /// inject a `ForegroundUploader` over a stubbed session (background sessions ignore `URLProtocol`).
 public protocol CaptureUploader: Sendable {
     func upload(_ request: URLRequest, fromFile file: URL) async throws -> (Data, URLResponse)
+    func upload(_ request: URLRequest, fromFile file: URL, captureID: String) async throws -> (Data, URLResponse)
+    func reconciliationSnapshot() async -> BackgroundUploadSnapshot
+    func discardCompletion(for captureID: String) async
+}
+
+public extension CaptureUploader {
+    func reconciliationSnapshot() async -> BackgroundUploadSnapshot { .unavailable }
+    func discardCompletion(for captureID: String) async {}
 }
 
 /// Uploads on a plain (foreground) session via the async convenience — used for tests (a stubbed
@@ -42,16 +100,20 @@ public struct ForegroundUploader: CaptureUploader {
     public func upload(_ request: URLRequest, fromFile file: URL) async throws -> (Data, URLResponse) {
         try await session.upload(for: request, fromFile: file)
     }
+
+    public func upload(
+        _ request: URLRequest,
+        fromFile file: URL,
+        captureID: String
+    ) async throws -> (Data, URLResponse) {
+        try await session.upload(for: request, fromFile: file)
+    }
 }
 
-/// Uploads a capture on a **background** `URLSession`, so a 20-photo/~50 MB multipart transfer
-/// keeps going when the field worker locks the phone (a foreground session is suspended and the
-/// transfer cancelled — the root cause of the partial/dropped uploads). Background sessions are
-/// delegate-based and don't support the async `upload(for:)` convenience, so this bridges the
-/// delegate callbacks back to `async/await` via a per-task continuation.
-///
-/// If iOS terminates the app mid-upload, the waiting continuation is lost; that edge case
-/// self-heals on the next sync — a retry re-submits and the server merges/replays idempotently.
+/// Uploads a capture on a **background** `URLSession`, so a large multipart transfer keeps going
+/// while the app is suspended. Every production task stores its capture ID in `taskDescription`;
+/// successful and failed delegate completions are also written to app-owned storage before an
+/// in-memory waiter is resumed. That pair survives process death without relying on task IDs.
 public final class BackgroundUploader: NSObject, CaptureUploader, URLSessionDataDelegate, @unchecked Sendable {
     /// The shared instance the app and the API client use, so the app's background-relaunch
     /// completion handler reaches the same session.
@@ -59,19 +121,21 @@ public final class BackgroundUploader: NSObject, CaptureUploader, URLSessionData
 
     private var session: URLSession!
     private let lock = NSLock()
-    private var pending: [Int: PendingUpload] = [:]
+    private var pending: [Int: CheckedContinuation<(Data, URLResponse), Error>] = [:]
+    private var responseData: [Int: Data] = [:]
+    private let completionStore: BackgroundUploadCompletionStore
     /// Set by the app's `handleEventsForBackgroundURLSession` hook; called once the session has
     /// delivered all pending background events so iOS can suspend the app again.
     private var backgroundCompletionHandler: (@Sendable () -> Void)?
 
-    private struct PendingUpload {
-        let continuation: CheckedContinuation<(Data, URLResponse), Error>
-        var data: Data
-    }
-
     /// `configuration` defaults to the real background session; tests pass a foreground
     /// configuration (with a stub `URLProtocol`) to exercise the delegate/continuation bridge.
-    public init(configuration: URLSessionConfiguration? = nil) {
+    public init(
+        configuration: URLSessionConfiguration? = nil,
+        completionDirectory: URL = BackgroundUploadSupport.defaultUploadRootDirectory()
+            .appendingPathComponent("Completions", isDirectory: true)
+    ) {
+        completionStore = BackgroundUploadCompletionStore(directory: completionDirectory)
         super.init()
         self.session = URLSession(
             configuration: configuration ?? BackgroundUploadSupport.backgroundConfiguration(),
@@ -81,46 +145,151 @@ public final class BackgroundUploader: NSObject, CaptureUploader, URLSessionData
     }
 
     public func setBackgroundCompletionHandler(_ handler: @escaping @Sendable () -> Void) {
-        lock.lock(); backgroundCompletionHandler = handler; lock.unlock()
+        lock.withLock { backgroundCompletionHandler = handler }
     }
 
     public func upload(_ request: URLRequest, fromFile file: URL) async throws -> (Data, URLResponse) {
+        try await startUpload(request, fromFile: file, captureID: nil)
+    }
+
+    public func upload(
+        _ request: URLRequest,
+        fromFile file: URL,
+        captureID: String
+    ) async throws -> (Data, URLResponse) {
+        try await startUpload(request, fromFile: file, captureID: captureID)
+    }
+
+    public func reconciliationSnapshot() async -> BackgroundUploadSnapshot {
+        let tasks = await allTasks()
+        let liveCaptureIDs = Set(tasks.compactMap(\.taskDescription).filter { !$0.isEmpty })
+        let completions = lock.withLock { completionStore.loadAll() }
+        return BackgroundUploadSnapshot(
+            liveCaptureIDs: liveCaptureIDs,
+            completions: completions,
+            isAuthoritative: true
+        )
+    }
+
+    public func discardCompletion(for captureID: String) async {
+        lock.withLock { completionStore.removeAll(for: captureID) }
+    }
+
+    private func startUpload(
+        _ request: URLRequest,
+        fromFile file: URL,
+        captureID: String?
+    ) async throws -> (Data, URLResponse) {
         let task = session.uploadTask(with: request, fromFile: file)
+        task.taskDescription = captureID
         return try await withCheckedThrowingContinuation { continuation in
-            lock.lock()
-            pending[task.taskIdentifier] = PendingUpload(continuation: continuation, data: Data())
-            lock.unlock()
+            lock.withLock {
+                pending[task.taskIdentifier] = continuation
+                responseData[task.taskIdentifier] = Data()
+            }
             task.resume()
+        }
+    }
+
+    private func allTasks() async -> [URLSessionTask] {
+        await withCheckedContinuation { continuation in
+            session.getAllTasks { tasks in
+                continuation.resume(returning: tasks)
+            }
         }
     }
 
     // MARK: URLSession delegate
 
     public func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
-        lock.lock()
-        pending[dataTask.taskIdentifier]?.data.append(data)
-        lock.unlock()
+        lock.withLock { responseData[dataTask.taskIdentifier, default: Data()].append(data) }
     }
 
     public func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
-        lock.lock()
-        let entry = pending.removeValue(forKey: task.taskIdentifier)
-        lock.unlock()
-        guard let entry else { return } // no waiter (app was relaunched) — retry reconciles
+        let result = lock.withLock { () -> (CheckedContinuation<(Data, URLResponse), Error>?, Data) in
+            let continuation = pending.removeValue(forKey: task.taskIdentifier)
+            let data = responseData.removeValue(forKey: task.taskIdentifier) ?? Data()
+            if let captureID = task.taskDescription, !captureID.isEmpty {
+                completionStore.save(
+                    BackgroundUploadCompletion(
+                        captureID: captureID,
+                        statusCode: (task.response as? HTTPURLResponse)?.statusCode,
+                        responseData: data,
+                        errorDescription: error?.localizedDescription
+                    )
+                )
+            }
+            return (continuation, data)
+        }
+        guard let continuation = result.0 else {
+            // A relaunched process has no continuation, but the completion above is durable and
+            // will be consumed by `FieldCaptureModel` reconciliation.
+            return
+        }
         if let error {
-            entry.continuation.resume(throwing: error)
+            continuation.resume(throwing: error)
         } else if let response = task.response {
-            entry.continuation.resume(returning: (entry.data, response))
+            continuation.resume(returning: (result.1, response))
         } else {
-            entry.continuation.resume(throwing: CaptureAPIError.invalidResponse)
+            continuation.resume(throwing: CaptureAPIError.invalidResponse)
         }
     }
 
     public func urlSessionDidFinishEvents(forBackgroundURLSession session: URLSession) {
-        lock.lock()
-        let handler = backgroundCompletionHandler
-        backgroundCompletionHandler = nil
-        lock.unlock()
+        let handler = lock.withLock { () -> (@Sendable () -> Void)? in
+            let handler = backgroundCompletionHandler
+            backgroundCompletionHandler = nil
+            return handler
+        }
         handler?()
+    }
+}
+
+private struct BackgroundUploadCompletionStore: Sendable {
+    let directory: URL
+
+    func save(_ completion: BackgroundUploadCompletion) {
+        do {
+            try LocalFilePrivacy.prepareDirectory(directory)
+            let file = directory.appendingPathComponent("completion-\(UUID().uuidString).json")
+            let data = try JSONEncoder().encode(completion)
+            try data.write(to: file, options: [.atomic])
+            try LocalFilePrivacy.protectExistingItem(file)
+        } catch {
+            // The local capture remains uploading and will safely fall back to a retry if this
+            // resource-hygiene record cannot be written.
+        }
+    }
+
+    func loadAll() -> [BackgroundUploadCompletion] {
+        guard let files = try? FileManager.default.contentsOfDirectory(
+            at: directory,
+            includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles]
+        ) else {
+            return []
+        }
+        return files.compactMap { file in
+            guard let data = try? Data(contentsOf: file) else { return nil }
+            return try? JSONDecoder().decode(BackgroundUploadCompletion.self, from: data)
+        }
+    }
+
+    func removeAll(for captureID: String) {
+        guard let files = try? FileManager.default.contentsOfDirectory(
+            at: directory,
+            includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles]
+        ) else {
+            return
+        }
+        for file in files {
+            guard let data = try? Data(contentsOf: file),
+                  let completion = try? JSONDecoder().decode(BackgroundUploadCompletion.self, from: data),
+                  completion.captureID == captureID else {
+                continue
+            }
+            try? FileManager.default.removeItem(at: file)
+        }
     }
 }

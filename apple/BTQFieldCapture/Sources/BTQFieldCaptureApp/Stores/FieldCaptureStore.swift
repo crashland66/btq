@@ -69,6 +69,25 @@ public struct FieldCaptureSnapshot: Codable, Equatable, Sendable {
 public protocol FieldCaptureStore: Sendable {
     func load() async throws -> FieldCaptureSnapshot
     func save(_ snapshot: FieldCaptureSnapshot) async throws
+    func appendDraftPhoto(
+        _ photo: CapturePhoto,
+        to draft: LocalCapture,
+        accountID: UUID,
+        snapshot: FieldCaptureSnapshot
+    ) async throws
+}
+
+public extension FieldCaptureStore {
+    /// Stores may override this with a normalized append. The fallback preserves the
+    /// existing behavior for lightweight and test stores that only support snapshots.
+    func appendDraftPhoto(
+        _ photo: CapturePhoto,
+        to draft: LocalCapture,
+        accountID: UUID,
+        snapshot: FieldCaptureSnapshot
+    ) async throws {
+        try await save(snapshot)
+    }
 }
 
 public actor JSONFieldCaptureStore: FieldCaptureStore {

@@ -828,7 +828,7 @@ public struct LocalCapture: Identifiable, Codable, Equatable, Sendable {
         guard status == .failed, let lastError, !lastError.isEmpty else { return nil }
         let normalized = lastError.localizedLowercase
         if normalized.contains("missing photo file") || normalized.contains("missing audio file") {
-            return "Delete this local capture and capture it again; the saved media file is no longer on this device."
+            return "Some saved media is missing. Use Upload Remaining to review the loss, record it on the capture, and preserve the surviving evidence."
         }
         if normalized.contains("too many") || normalized.contains("at most") || normalized.contains("max images") {
             return "Delete and resave this capture with fewer photos."
