@@ -65,19 +65,6 @@ struct SettingsView: View {
                 .disabled(model.isSyncing || !model.canSubmitCaptures)
             }
 
-            Section("Diagnostics") {
-                NavigationLink {
-                    ReconciliationFieldDiagnosticView(
-                        records: model.reconciliationFieldDiagnostics
-                    )
-                } label: {
-                    LabeledContent(
-                        "Upload Reconciliation",
-                        value: "\(model.reconciliationFieldDiagnostics.count) runs"
-                    )
-                }
-            }
-
             Section("Notifications") {
                 LabeledContent("Sync Alerts", value: model.notificationPermissionStatus.displayName)
                     .accessibilityIdentifier("settings.notifications.status")

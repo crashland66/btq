@@ -190,12 +190,6 @@ final class CameraSessionController: NSObject, ObservableObject {
                 }
                 self.session.commitConfiguration()
                 self.applyPhotoOutputCapabilities(to: self.photoOutput, in: self.session)
-                if let cameraPosition = self.currentInput?.device.position {
-                    ReconciliationFieldDiagnosticRecorder().recordCameraCapabilityReadback(
-                        from: self.photoOutput,
-                        cameraPosition: cameraPosition
-                    )
-                }
                 self.isConfigured = true
             }
             if self.currentInput == nil {
@@ -232,12 +226,6 @@ final class CameraSessionController: NSObject, ObservableObject {
         if !insideExistingConfiguration {
             session.commitConfiguration()
             applyPhotoOutputCapabilities(to: photoOutput, in: session)
-            if let cameraPosition = currentInput?.device.position {
-                ReconciliationFieldDiagnosticRecorder().recordCameraCapabilityReadback(
-                    from: photoOutput,
-                    cameraPosition: cameraPosition
-                )
-            }
         }
     }
 

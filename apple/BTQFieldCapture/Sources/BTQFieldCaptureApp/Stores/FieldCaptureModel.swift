@@ -29,7 +29,6 @@ public final class FieldCaptureModel {
     public private(set) var isReviewingInboxItem: Bool = false
     public private(set) var notificationPermissionStatus: NotificationPermissionStatus = .unknown
     public private(set) var requiresReconnect: Bool = false
-    public private(set) var reconciliationFieldDiagnostics: [ReconciliationFieldDiagnosticRecord]
     public private(set) var isWritingPhoto = false
 
     private let store: any FieldCaptureStore
@@ -38,7 +37,6 @@ public final class FieldCaptureModel {
     private let notificationScheduler: any UploadNotificationScheduling
     private let mediaStore: LocalMediaStore
     private let audioUploadPreparer: any AudioMemoUploadPreparing
-    private let reconciliationFieldDiagnosticRecorder: ReconciliationFieldDiagnosticRecorder
     private var pendingSyncTask: Task<Void, Never>?
     private var syncPendingRequested = false
     private var liveBackgroundUploadCaptureIDs: Set<String> = []
@@ -58,9 +56,6 @@ public final class FieldCaptureModel {
         self.notificationScheduler = notificationScheduler
         self.mediaStore = mediaStore
         self.audioUploadPreparer = audioUploadPreparer ?? AudioMemoUploadPreparer(mediaStore: mediaStore)
-        let diagnosticRecorder = ReconciliationFieldDiagnosticRecorder()
-        reconciliationFieldDiagnosticRecorder = diagnosticRecorder
-        reconciliationFieldDiagnostics = diagnosticRecorder.load()
         account = .defaultProduction
         session = nil
         sites = []
@@ -1534,21 +1529,6 @@ public final class FieldCaptureModel {
         )
         let reconciliation = await apiClient.reconcileBackgroundUploads(
             captureIDs: uploadingCaptureIDs
-        )
-        let confirmedCaptureIDs = Set(reconciliation.completedResponses.keys)
-        let strandedCaptureIDs = reconciliation.isAuthoritative
-            ? uploadingCaptureIDs
-                .subtracting(reconciliation.liveCaptureIDs)
-                .subtracting(confirmedCaptureIDs)
-            : []
-        reconciliationFieldDiagnostics = reconciliationFieldDiagnosticRecorder.record(
-            ReconciliationFieldDiagnosticRecord(
-                isAuthoritative: reconciliation.isAuthoritative,
-                taskDescriptions: reconciliation.taskDescriptions,
-                liveCaptureIDs: reconciliation.liveCaptureIDs,
-                confirmedCaptureIDs: confirmedCaptureIDs,
-                strandedCaptureIDs: strandedCaptureIDs
-            )
         )
         guard reconciliation.isAuthoritative else {
             liveBackgroundUploadCaptureIDs = []

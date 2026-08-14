@@ -24,23 +24,19 @@ public struct CaptureUploadReconciliation: Equatable, Sendable {
     public var liveCaptureIDs: Set<String>
     public var completedResponses: [String: SubmitCaptureResponse]
     public var isAuthoritative: Bool
-    public var taskDescriptions: [String?]?
 
     public init(
         liveCaptureIDs: Set<String> = [],
         completedResponses: [String: SubmitCaptureResponse] = [:],
-        isAuthoritative: Bool = true,
-        taskDescriptions: [String?]? = []
+        isAuthoritative: Bool = true
     ) {
         self.liveCaptureIDs = liveCaptureIDs
         self.completedResponses = completedResponses
         self.isAuthoritative = isAuthoritative
-        self.taskDescriptions = taskDescriptions
     }
 
     public static let unavailable = CaptureUploadReconciliation(
-        isAuthoritative: false,
-        taskDescriptions: nil
+        isAuthoritative: false
     )
 }
 
@@ -280,8 +276,7 @@ public final class HTTPCaptureAPIClient: CaptureAPIClient, @unchecked Sendable {
         let snapshot = await uploader.reconciliationSnapshot()
         guard snapshot.isAuthoritative else {
             return CaptureUploadReconciliation(
-                isAuthoritative: false,
-                taskDescriptions: snapshot.taskDescriptions
+                isAuthoritative: false
             )
         }
         let globallyLiveCaptureIDs = snapshot.liveCaptureIDs.union(uploadBodyReservations())
@@ -310,8 +305,7 @@ public final class HTTPCaptureAPIClient: CaptureAPIClient, @unchecked Sendable {
         return CaptureUploadReconciliation(
             liveCaptureIDs: globallyLiveCaptureIDs.subtracting(completedResponses.keys),
             completedResponses: completedResponses,
-            isAuthoritative: true,
-            taskDescriptions: snapshot.taskDescriptions
+            isAuthoritative: true
         )
     }
 
