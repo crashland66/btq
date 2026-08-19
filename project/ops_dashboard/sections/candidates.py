@@ -750,7 +750,8 @@ def _render_thumb_strip(urls: list[str], *, size: int = 100) -> str:
         f'<a href="#" onclick="openLb({html.escape(json.dumps(url), quote=True)});return false"'
         f' title="View full size" style="cursor:zoom-in">'
         f'<img class="candidate-thumb" src="{html.escape(url, quote=True)}"'
-        f' width="{size}" height="{size}" style="object-fit:cover" alt="photo"></a>'
+        f' width="{size}" height="{size}" loading="lazy" decoding="async"'
+        f' style="object-fit:cover" alt="photo"></a>'
         for url in urls
     ]
     return f'<div class="thumb-strip">{"".join(thumbs)}</div>'

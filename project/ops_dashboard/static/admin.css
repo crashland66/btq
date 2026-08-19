@@ -1036,10 +1036,11 @@ button.is-copy-failed {
 .content-with-rail { display: grid; grid-template-columns: 240px minmax(0, 1fr); gap: 16px; align-items: start; }
 .filter-rail { position: sticky; top: 16px; }
 .candidate-group { border-left: 4px solid #8aa4c8; }
-.candidate-group-header { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 12px; align-items: start; }
-.candidate-thumb { width: 100px; height: 100px; object-fit: cover; border: 1px solid var(--line); border-radius: 6px; background: var(--pill-bg); transition: opacity .15s; }
+.candidate-group-header { display: flex; flex-direction: column; gap: 12px; align-items: stretch; min-width: 0; }
+.candidate-group-header > * { min-width: 0; }
+.candidate-thumb { box-sizing: border-box; width: 100px; height: 100px; object-fit: cover; border: 1px solid var(--line); border-radius: 6px; background: var(--pill-bg); transition: opacity .15s; }
 .candidate-thumb:hover { opacity: .82; }
-.thumb-strip { display: flex; flex-wrap: wrap; gap: 6px; align-items: flex-start; }
+.thumb-strip { display: flex; flex-wrap: wrap; width: 100%; max-width: 100%; min-width: 0; gap: 6px; align-items: flex-start; }
 .candidate-message { font-size: 1.15rem; line-height: 1.45; font-weight: 600; margin: 0 0 .35rem; }
 .candidate-meta { font-size: .85rem; margin: 0 0 .5rem; }
 .candidate-action { margin: .4rem 0 .6rem; }
@@ -1206,7 +1207,7 @@ details.raw-json pre { margin-top: 4px; }
   .admin-shell.nav-collapsed .nav-label { display: inline; }
   .admin-shell.nav-collapsed .admin-nav a { justify-content: flex-start; padding: 9px 10px; }
   .admin-content { padding: 16px; }
-  .content-with-rail, .candidate-group-header, .inbox-primary, .stat-strip { grid-template-columns: 1fr; }
+  .content-with-rail, .inbox-primary, .stat-strip { grid-template-columns: 1fr; }
   .list-toolbar form .toolbar-field { flex: 1 1 9rem; }
   .status-filter { flex: 1 1 100%; }
 }
