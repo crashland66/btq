@@ -588,6 +588,8 @@ def _build_semantic_prompt(capture: CaptureSemanticInput | FieldAudioTranscript)
         'may be the department: "Melting offices" means the offices in the Melting department. '
         "Never invent a predicate. You may normalize spacing or capitalization, but never turn "
         '"X offices" into "Offices are X" or add "needs attention" when nothing requests it. '
+        'The note may list several photographed rooms or areas separated by commas or "and", '
+        'optionally after a short preamble such as "Plant pictures". '
         "A label with no expressed condition, need, event, request, or command must return "
         '{"extracted_actions": []}.\n\n'
         + category_routing
@@ -1308,16 +1310,69 @@ def note_is_bare_location_label(source_text: str, area: str) -> bool:
     return not any(_contains_need_signal_term(haystack, term) for term in expressed_content_terms)
 
 
+def bare_location_label_note_segments(source_text: str) -> list[str]:
+    segments: list[str] = []
+    for sentence_segment in re.split(r"[.!;\n]+", source_text):
+        for list_segment in re.split(r",|\band\b", sentence_segment, flags=re.IGNORECASE):
+            segment = collapse_whitespace(list_segment)
+            if segment:
+                segments.append(segment)
+    return segments
+
+
+def note_segment_is_bare_location_label(segment: str) -> bool:
+    text = collapse_whitespace(segment)
+    if not text or len(text.split()) > 6:
+        return False
+    if need_signal_present(text) or re.search(r"\d|\?", text):
+        return False
+    expressed_content_terms = (
+        *BARE_LABEL_CONDITION_TERMS,
+        *BARE_LABEL_FINITE_VERB_TERMS,
+        *BARE_LABEL_REQUEST_VERB_TERMS,
+    )
+    haystack = _norm(text)
+    return not any(_contains_need_signal_term(haystack, term) for term in expressed_content_terms)
+
+
 def bare_location_label_documentation_actions(
     actions: list[ExtractedAction],
     source: CaptureSemanticInput,
 ) -> list[ExtractedAction]:
-    if not note_is_bare_location_label(source.source_text, source.area):
+    if note_is_bare_location_label(source.source_text, source.area):
+        return [
+            action
+            for action in actions
+            if action.job_type in {"", JOB_APPEND_TO_NOTE}
+        ]
+
+    category = collapse_whitespace(source.area).casefold()
+    if category not in DOCUMENTATION_CAPTURE_CATEGORY_VALUES:
         return actions
+
+    normalized_note = collapse_whitespace(source.source_text).casefold()
+    segments = bare_location_label_note_segments(source.source_text)
+    normalized_segments = [collapse_whitespace(segment).casefold() for segment in segments]
+
+    def action_survives(action: ExtractedAction) -> bool:
+        if action.job_type in {"", JOB_APPEND_TO_NOTE}:
+            return True
+        excerpt = collapse_whitespace(action.source_excerpt).casefold()
+        if not excerpt or excerpt not in normalized_note:
+            return True
+        containing_segments = [
+            segment
+            for segment, normalized_segment in zip(segments, normalized_segments)
+            if excerpt in normalized_segment
+        ]
+        if not containing_segments:
+            return True
+        return not all(note_segment_is_bare_location_label(segment) for segment in containing_segments)
+
     return [
         action
         for action in actions
-        if action.job_type in {"", JOB_APPEND_TO_NOTE}
+        if action_survives(action)
     ]
 
 
