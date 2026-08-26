@@ -259,7 +259,7 @@ def test_edit_link_absent_on_revoked_token_row(tmp_path: Path) -> None:
     store = TokenStore(runtime_root / "field_capture_tokens.sqlite3")
     store.revoke_token(created.record.token_id)
 
-    body = request_text("GET", "/tokens", runtime_root)[2]
+    body = request_text("GET", "/tokens?revoked=all", runtime_root)[2]
 
     assert f'/tokens/edit?token_id={created.record.token_id}' not in body
 
@@ -431,6 +431,26 @@ def test_tokens_list_filter_revoked_radio(tmp_path: Path) -> None:
 
     assert revoked.record.token_id[:12] in body
     assert active.record.token_id[:12] not in body
+
+
+def test_tokens_list_defaults_to_active_filter(tmp_path: Path) -> None:
+    # Bare /tokens defaults to revoked=active: revoked rows are hidden and the
+    # Active radio is pre-checked; revoked=all still shows everything.
+    runtime_root = tmp_path / "runtime"
+    active = create_token(runtime_root, label="Active")
+    revoked = create_token(runtime_root, label="Revoked")
+    TokenStore(runtime_root / "field_capture_tokens.sqlite3").revoke_token(revoked.record.token_id)
+
+    body = request_text("GET", "/tokens", runtime_root)[2]
+
+    assert active.record.token_id[:12] in body
+    assert revoked.record.token_id[:12] not in body
+    assert '<input type="radio" name="revoked" value="active" checked>' in body
+    assert '<input type="radio" name="revoked" value="all" checked>' not in body
+
+    everything = request_text("GET", "/tokens?revoked=all", runtime_root)[2]
+    assert active.record.token_id[:12] in everything
+    assert revoked.record.token_id[:12] in everything
 
 
 def test_tokens_list_last_used_warning_pill_after_90_days(tmp_path: Path) -> None:
@@ -730,7 +750,7 @@ def test_regenerate_button_absent_for_revoked_token_row(tmp_path: Path) -> None:
     created = create_token(runtime_root, label="Revoked phone")
     TokenStore(runtime_root / "field_capture_tokens.sqlite3").revoke_token(created.record.token_id)
 
-    body = request_text("GET", "/tokens", runtime_root)[2]
+    body = request_text("GET", "/tokens?revoked=all", runtime_root)[2]
 
     assert 'action="/tokens/regenerate"' not in body
     assert 'action="/tokens/revoke"' in body
@@ -832,7 +852,7 @@ def test_active_column_renders_warning_no_for_revoked_token(tmp_path: Path) -> N
     created = create_token(runtime_root, label="Revoked phone")
     TokenStore(runtime_root / "field_capture_tokens.sqlite3").revoke_token(created.record.token_id)
 
-    body = request_text("GET", "/tokens", runtime_root)[2]
+    body = request_text("GET", "/tokens?revoked=all", runtime_root)[2]
 
     assert "<th data-priority=\"2\">Active</th>" in body
     assert '<span class="pill warning">No</span>' in body
@@ -949,7 +969,7 @@ def test_tokens_list_sorts_active_before_revoked_newest_first_within_group(tmp_p
     runtime_root = tmp_path / "runtime"
     ids = _ordering_fixture(runtime_root)
 
-    body = request_text("GET", "/tokens", runtime_root)[2]
+    body = request_text("GET", "/tokens?revoked=all", runtime_root)[2]
     order = _row_order(body, ids)
 
     # (a) every active row precedes every revoked row
@@ -979,7 +999,7 @@ def test_tokens_list_active_before_revoked_survives_label_filter(tmp_path: Path)
     store.revoke_token(keep_revoked.record.token_id)
 
     # label_contains=keep matches both; revoked one is newer but must sort last.
-    body = request_text("GET", "/tokens?label_contains=keep", runtime_root)[2]
+    body = request_text("GET", "/tokens?revoked=all&label_contains=keep", runtime_root)[2]
     assert keep_active.record.token_id in body
     assert keep_revoked.record.token_id in body
     assert body.index(keep_active.record.token_id) < body.index(keep_revoked.record.token_id)

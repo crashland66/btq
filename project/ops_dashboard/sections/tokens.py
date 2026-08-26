@@ -316,7 +316,7 @@ def render_list(root: Path, query: dict[str, list[str]]) -> str:
         else ""
     )
     token_type = first_query_value(query, "token_type") or "all"
-    revoked = first_query_value(query, "revoked") or "all"
+    revoked = first_query_value(query, "revoked") or "active"
     label_filter = first_query_value(query, "label_contains").strip().lower()
     if token_type != "all":
         records = [record for record in records if record.token_type == token_type]
