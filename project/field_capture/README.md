@@ -40,6 +40,19 @@ from the vault's `People/*.md` frontmatter. The transitional assignment model
 is `job` for the primary site plus `additional_jobs` for secondary sites. Older
 `sites: [...]` records remain readable as a fallback.
 
+For production employees, issue tokens from the operator dashboard's
+`/tokens/new` screen. The operator database is the authoritative inventory; the
+dashboard retains the operator-approved Copy value and automatically syncs the
+hash-only authentication row to the public capture gateway. Confirm the row on
+`/tokens` and validate the bearer value against the public `/api/session`
+endpoint before sending the personal link. See **Production worker-token
+issuance** in `project/docs/runbook.md` for the full procedure and recovery
+steps.
+
+The CLI examples below are for local development or an explicitly configured
+operator token database. Do not issue a production employee token into a
+temporary database and sync only the gateway row.
+
 Create a token:
 
 ```bash
@@ -70,11 +83,13 @@ List token metadata:
 ./scripts/field-capture token list
 ```
 
-The raw token is printed only during creation. After that, operations use
-`token_id`; the database stores the token hash, not the raw bearer value.
-New capture metadata stores safe submitter context for operator review:
-`person_id`, `person_name`, and token label when available. Raw bearer tokens
-are never written into capture metadata or displayed by dashboards. Older
+The raw token is printed during CLI creation. The private operator database may
+retain an operator-approved `token_value` so `/tokens` can provide a Copy
+control; authentication still uses the token hash. Gateway synchronization is
+hash-only and intentionally omits `token_value`. New capture metadata stores
+safe submitter context for operator review: `person_id`, `person_name`, and
+token label when available. Raw bearer tokens must never enter capture
+metadata, audit payloads, queue jobs, journals, or shared documents. Older
 captures that predate safe submitter metadata may show `Unknown submitter`.
 
 ## Summit Wire Pilot Ready State

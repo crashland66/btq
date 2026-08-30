@@ -23,6 +23,9 @@ DEFAULT_STATE_RELATIVE_PATH = Path("safetyculture") / "shift-report-drafts.json"
 
 
 class JsonHttpClient(Protocol):
+    def get_json(self, url: str, headers: dict[str, str]) -> tuple[int, dict[str, Any]]:
+        ...
+
     def post_json(self, url: str, payload: dict[str, Any], headers: dict[str, str]) -> tuple[int, dict[str, Any]]:
         ...
 
@@ -31,14 +34,23 @@ class JsonHttpClient(Protocol):
 
 
 class UrllibJsonHttpClient:
+    def get_json(self, url: str, headers: dict[str, str]) -> tuple[int, dict[str, Any]]:
+        return self._json_request("GET", url, None, headers)
+
     def post_json(self, url: str, payload: dict[str, Any], headers: dict[str, str]) -> tuple[int, dict[str, Any]]:
         return self._json_request("POST", url, payload, headers)
 
     def put_json(self, url: str, payload: dict[str, Any], headers: dict[str, str]) -> tuple[int, dict[str, Any]]:
         return self._json_request("PUT", url, payload, headers)
 
-    def _json_request(self, method: str, url: str, payload: dict[str, Any], headers: dict[str, str]) -> tuple[int, dict[str, Any]]:
-        body = json.dumps(payload).encode("utf-8")
+    def _json_request(
+        self,
+        method: str,
+        url: str,
+        payload: dict[str, Any] | None,
+        headers: dict[str, str],
+    ) -> tuple[int, dict[str, Any]]:
+        body = None if payload is None else json.dumps(payload).encode("utf-8")
         outgoing_headers = {"Content-Type": "application/json", **headers}
         req = request.Request(url, data=body, headers=outgoing_headers, method=method)
         try:
@@ -199,12 +211,89 @@ def submit_prefill_payload(
         payload,
         {"Authorization": f"Bearer {token}"},
     )
-    if status != 201:
+    if status not in {200, 201}:
         raise SafetyCultureSubmitError(f"POST /audits failed with status {status}: {json.dumps(response_body, sort_keys=True)}")
     audit_id = str(response_body.get("audit_id") or "").strip()
     if not audit_id:
-        raise SafetyCultureSubmitError(f"POST /audits returned 201 without audit_id: {json.dumps(response_body, sort_keys=True)}")
+        raise SafetyCultureSubmitError(
+            f"POST /audits returned {status} without audit_id: {json.dumps(response_body, sort_keys=True)}"
+        )
+    missing = missing_prefill_payload(payload, response_body)
+    if missing["header_items"] or missing["items"]:
+        update_status, update_body = client.put_json(
+            f"{base_url.rstrip('/')}/audits/{parse.quote(audit_id, safe='')}",
+            missing,
+            {"Authorization": f"Bearer {token}"},
+        )
+        if update_status < 200 or update_status >= 300:
+            raise SafetyCultureSubmitError(
+                f"created audit_id={audit_id}, but repair PUT /audits/{audit_id} failed with status "
+                f"{update_status}: {json.dumps(update_body, sort_keys=True)}"
+            )
+        verify_status, verified_body = client.get_json(
+            f"{base_url.rstrip('/')}/audits/{parse.quote(audit_id, safe='')}",
+            {"Authorization": f"Bearer {token}"},
+        )
+        if verify_status < 200 or verify_status >= 300:
+            raise SafetyCultureSubmitError(
+                f"created audit_id={audit_id}, but verification GET /audits/{audit_id} failed with status "
+                f"{verify_status}: {json.dumps(verified_body, sort_keys=True)}"
+            )
+        still_missing = missing_prefill_payload(payload, verified_body)
+        if still_missing["header_items"] or still_missing["items"]:
+            missing_ids = [
+                item["item_id"]
+                for item in still_missing["header_items"] + still_missing["items"]
+            ]
+            raise SafetyCultureSubmitError(
+                f"created audit_id={audit_id}, but Mitti omitted prefill responses after repair: "
+                f"{', '.join(missing_ids)}"
+            )
     return audit_id
+
+
+def missing_prefill_payload(
+    expected: dict[str, Any],
+    actual: dict[str, Any],
+) -> dict[str, list[dict[str, Any]]]:
+    missing: dict[str, list[dict[str, Any]]] = {"header_items": [], "items": []}
+    for group in ("header_items", "items"):
+        actual_by_id = {
+            str(item.get("item_id") or ""): item
+            for item in actual.get(group, [])
+            if isinstance(item, dict)
+        }
+        for expected_item in expected.get(group, []):
+            if not isinstance(expected_item, dict):
+                continue
+            actual_item = actual_by_id.get(str(expected_item.get("item_id") or ""), {})
+            if not _responses_match(expected_item.get("responses"), actual_item.get("responses")):
+                missing[group].append(expected_item)
+    return missing
+
+
+def _responses_match(expected: object, actual: object) -> bool:
+    if not isinstance(expected, dict) or not isinstance(actual, dict):
+        return False
+    if "text" in expected:
+        return str(actual.get("text") or "") == str(expected.get("text") or "")
+    if "datetime" in expected:
+        expected_value = str(expected.get("datetime") or "").replace(".000Z", "Z")
+        actual_value = str(actual.get("datetime") or "").replace(".000Z", "Z")
+        return actual_value == expected_value
+    if "selected" in expected:
+        expected_ids = {
+            str(item.get("id") or "")
+            for item in expected.get("selected", [])
+            if isinstance(item, dict)
+        }
+        actual_ids = {
+            str(item.get("id") or "")
+            for item in actual.get("selected", [])
+            if isinstance(item, dict)
+        }
+        return actual_ids == expected_ids
+    return expected == actual
 
 
 def archive_inspection(
@@ -218,13 +307,16 @@ def archive_inspection(
     if not normalized_id:
         raise SafetyCultureArchiveError("archive_inspection requires audit_id")
     client = http_client or UrllibJsonHttpClient()
-    status, response_body = client.put_json(
-        f"{base_url.rstrip('/')}/audits/{parse.quote(normalized_id, safe='')}",
-        {"archived": True},
+    status, response_body = client.post_json(
+        f"{base_url.rstrip('/')}/inspections/v1/inspections/{parse.quote(normalized_id, safe='')}/archive",
+        {},
         {"Authorization": f"Bearer {token}"},
     )
     if status < 200 or status >= 300:
-        raise SafetyCultureArchiveError(f"PUT /audits/{normalized_id} failed with status {status}: {json.dumps(response_body, sort_keys=True)}")
+        raise SafetyCultureArchiveError(
+            f"POST /inspections/v1/inspections/{normalized_id}/archive failed with status {status}: "
+            f"{json.dumps(response_body, sort_keys=True)}"
+        )
 
 
 def inspection_link(audit_id: str) -> str:

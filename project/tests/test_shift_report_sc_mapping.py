@@ -206,12 +206,12 @@ def test_closeday_label_fields_prefill_safetyculture_text_and_choices():
     text_items = {
         i["item_id"]: i["responses"]["text"]
         for i in payload["header_items"] + payload["items"]
-        if i["type"] == "text"
+        if "text" in i.get("responses", {})
     }
     choice_items = {
         i["item_id"]: i["responses"]["selected"][0]["id"]
         for i in payload["items"]
-        if i["type"] == "question"
+        if "selected" in i.get("responses", {})
     }
 
     expected_text = {
@@ -237,6 +237,8 @@ def test_closeday_label_fields_prefill_safetyculture_text_and_choices():
     assert choice_items[ITEM_CLEANING_FILL_IN_COUNT] == ANSWER_CLEANING_COUNT["1-2"]
     assert choice_items[ITEM_INTERVIEWS_HIRES] == ANSWER_YES_NO_SHARED["No"]
     assert choice_items[ITEM_QUITS_TERMINATIONS] == ANSWER_YES_NO_QUITS["Yes"]
+    employees_item = next(i for i in payload["items"] if i["item_id"] == ITEM_EMPLOYEES_VISITED)
+    assert employees_item["type"] == "question"
     assert "Internal note" not in json.dumps(payload)
 
 
@@ -367,7 +369,53 @@ def test_submit_extracts_audit_id_via_injected_client():
     assert calls["auth"] == "Bearer tok"
 
 
-def test_submit_raises_on_non_201():
+@pytest.mark.parametrize("status", [200, 201])
+def test_submit_accepts_documented_and_legacy_success_statuses(status):
+    class FakeClient:
+        def post_json(self, url, payload, headers):
+            return status, {"audit_id": "audit_NEW123"}
+
+    assert cli.submit_prefill_payload({}, "tok", http_client=FakeClient()) == "audit_NEW123"
+
+
+def test_submit_repairs_and_verifies_silently_omitted_prefill_responses():
+    summary = {
+        "item_id": ITEM_NIGHTLY_SUMMARY,
+        "type": "text",
+        "responses": {"text": "Nightly summary"},
+    }
+    employees = {
+        "item_id": ITEM_EMPLOYEES_VISITED,
+        "type": "question",
+        "responses": {"text": "Sample Employee — Account 101"},
+    }
+    payload = {"template_id": TEMPLATE_ID, "header_items": [summary], "items": [employees]}
+
+    class FakeClient:
+        def __init__(self):
+            self.calls = []
+            self.audit = {"audit_id": "audit_REPAIRED", "header_items": [], "items": []}
+
+        def post_json(self, url, payload, headers):
+            self.calls.append("POST")
+            return 200, self.audit
+
+        def put_json(self, url, payload, headers):
+            self.calls.append("PUT")
+            self.audit["header_items"] = payload["header_items"]
+            self.audit["items"] = payload["items"]
+            return 200, {}
+
+        def get_json(self, url, headers):
+            self.calls.append("GET")
+            return 200, self.audit
+
+    client = FakeClient()
+    assert cli.submit_prefill_payload(payload, "tok", http_client=client) == "audit_REPAIRED"
+    assert client.calls == ["POST", "PUT", "GET"]
+
+
+def test_submit_raises_on_non_success_status():
     class FakeClient:
         def post_json(self, url, payload, headers):
             return 400, {"error": "bad"}

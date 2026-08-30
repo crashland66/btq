@@ -36,18 +36,33 @@ None.
 
 
 class FakeClient:
-    def __init__(self, post_status: int = 201, post_body: dict | None = None) -> None:
+    def __init__(self, post_status: int = 200, post_body: dict | None = None) -> None:
         self.calls: list[tuple[str, str]] = []
         self.post_status = post_status
-        self.post_body = post_body if post_body is not None else {"audit_id": "audit_NEW"}
+        self.post_body = post_body
+        self.audit: dict = {}
 
     def post_json(self, url, payload, headers):
         self.calls.append(("POST", url))
-        return self.post_status, self.post_body
+        if url.endswith("/archive"):
+            return 200, {}
+        if self.post_body is not None:
+            return self.post_status, self.post_body
+        self.audit = {"audit_id": "audit_NEW", **payload}
+        return self.post_status, self.audit
 
     def put_json(self, url, payload, headers):
         self.calls.append(("PUT", url))
+        for group in ("header_items", "items"):
+            if group in payload:
+                current = {item["item_id"]: item for item in self.audit.get(group, [])}
+                current.update({item["item_id"]: item for item in payload[group]})
+                self.audit[group] = list(current.values())
         return 200, {}
+
+    def get_json(self, url, headers):
+        self.calls.append(("GET", url))
+        return 200, self.audit
 
 
 def _ctx(tmp_path):
@@ -99,7 +114,7 @@ def test_publish_happy_path_submits_and_stages_field_write(tmp_path, enqueue_cap
     )
     assert status == HTTPStatus.SEE_OTHER
     assert "sc_audit_id=audit_NEW" in headers["Location"]
-    assert client.calls == [("POST", "https://api.safetyculture.io/audits")]  # no archive on first publish
+    assert client.calls == [("POST", "https://api.mitti.com/audits")]  # no archive on first publish
     assert len(enqueue_capture) == 1
     job = enqueue_capture[0]["job"]
     assert job["job_id"].startswith("edit-record-fields-")
@@ -118,8 +133,9 @@ def test_republish_archives_prior_draft_before_creating_new(tmp_path, enqueue_ca
         token_loader=lambda: "tok", now=lambda: "2026-06-27T00:00:00Z",
     )
     methods = [m for m, _ in client.calls]
-    assert methods == ["PUT", "POST"]  # archive old, then create new
+    assert methods == ["POST", "POST"]  # archive old, then create new
     assert "audit_OLD" in client.calls[0][1]
+    assert client.calls[0][1].endswith("/inspections/v1/inspections/audit_OLD/archive")
 
 
 def test_ops_manager_detail_never_reaches_safetyculture(tmp_path, enqueue_capture):

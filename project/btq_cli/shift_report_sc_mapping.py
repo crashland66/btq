@@ -5,7 +5,7 @@ from datetime import date as date_cls, datetime
 from typing import Any
 
 
-SC_BASE = "https://api.safetyculture.io"
+SC_BASE = "https://api.mitti.com"
 TEMPLATE_ID = "template_cbea032fa8414d7f81c107d75758ad67"
 PREPARED_BY = "Gregory Stoltz"
 
@@ -130,7 +130,10 @@ def build_prefill_payload(sections: dict[str, str], date: str | date_cls | datet
         choice_item(ITEM_QC_VISITS_COUNT, ANSWER_QC_COUNT[qc_count_bucket]),
         text_item(ITEM_ACCOUNTS_COMPLETED_QC, _section_body(sections, "Accounts Completed QC In")),
         choice_item(ITEM_TEAM_MEMBERS_COUNT, ANSWER_QC_COUNT[team_count_bucket]),
-        text_item(ITEM_EMPLOYEES_VISITED, _section_body(sections, "Employees Visited, Trained, Etc. (Who and Account)")),
+        question_text_item(
+            ITEM_EMPLOYEES_VISITED,
+            _section_body(sections, "Employees Visited, Trained, Etc. (Who and Account)"),
+        ),
         text_item(ITEM_TEAM_MEMBER_CONNECTION, _section_body(sections, "Team Member Connection (First and Last Name)")),
         choice_item(ITEM_CLEANING_FILL_IN_COUNT, ANSWER_CLEANING_COUNT[cleaning_count_bucket]),
         choice_item(ITEM_CLEANED_ACCOUNTS_YN, ANSWER_YES_NO_SHARED["No" if cleaning_count_bucket == "0" else "Yes"]),
@@ -171,6 +174,10 @@ def datetime_item(item_id: str, value: str) -> dict[str, Any]:
 
 def choice_item(item_id: str, answer_id: str) -> dict[str, Any]:
     return {"item_id": item_id, "type": "question", "responses": {"selected": [{"id": answer_id}]}}
+
+
+def question_text_item(item_id: str, text: str) -> dict[str, Any]:
+    return {"item_id": item_id, "type": "question", "responses": {"text": text}}
 
 
 def yes_no_item(item_id: str, body: str, *, answers: dict[str, str] = ANSWER_YES_NO_SHARED) -> dict[str, Any]:

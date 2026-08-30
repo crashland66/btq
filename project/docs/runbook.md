@@ -247,6 +247,52 @@ Pilot-ready Summit Wire state:
   toilet, trash can, or repetitive detail.
 - Voice note formula: `Location. Condition. Action taken or needed.`
 
+#### Production worker-token issuance
+
+The operator dashboard token database is authoritative for token inventory and
+supportability. The public capture gateway is a hash-only authentication
+replica. Always issue production employee tokens through the operator
+dashboard's `/tokens/new` screen so one action creates the operator record,
+retains the operator-approved Copy value, writes the audit entry, and invokes
+the built-in gateway sync.
+
+1. Resolve the employee and every requested site against canonical CouchDB
+   records. Do not infer identity or site IDs from chat history.
+2. On `/tokens/new`, select the employee, choose `capture`, use the `cleaner`
+   role, enable submission and site viewing, and enter the explicit site IDs.
+   Use multiple site IDs when an employee is authorized to work across nearby
+   locations; this does not change the employee's canonical primary assignment.
+3. Issue the token and copy the personal `fc_*` value or tokenized onboarding
+   URL from the one-time reveal.
+4. Confirm the new row appears on `/tokens`, is Active, has the intended site
+   scope, and has a working Copy control.
+5. Validate the same bearer value against the public capture service's
+   `/api/session`. Confirm the returned person, role, submission capability,
+   and complete site list before sending the link.
+6. Send the link only to its assigned employee. Never put raw bearer values in
+   CouchDB queue jobs, journals, shared documents, tickets, or audit payloads.
+
+Do not create a token in a temporary or non-operator SQLite database and then
+push only its hash to the public gateway. That produces a working employee link
+that is missing from the Tokens screen. When automation runs away from the
+operator host, it must route issuance through the operator dashboard workflow
+or connect to the operator host and invoke that workflow there.
+
+Recovery for a live token that is missing from `/tokens`:
+
+1. Do not rotate the token if its link has already been distributed.
+2. Copy only that exact token's metadata row from the gateway replica into the
+   operator token database.
+3. With explicit operator approval, submit the original raw bearer value
+   through `/tokens/set-raw`; the route verifies it against the stored hash
+   before retaining it for the Copy control.
+4. Verify the filtered `/tokens` view shows the employee row and Copy control,
+   then recheck `/api/session` on the public service.
+
+The gateway sync intentionally excludes `token_value`; the public service needs
+only the hash. Raw-token retention belongs only on the private operator host and
+only under the operator-approved supportability policy.
+
 Per-site capture guidance and display categories are configured through the
 admin UI (`/sites`); the SPA reads them from `/api/session` and falls back to
 `system_defaults` then to the built-in category list. Pipeline contracts are

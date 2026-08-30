@@ -152,7 +152,7 @@ def test_full_payload_is_unchanged_except_detail_inserted_after_quits_choice() -
             },
             {
                 "item_id": "8ddf707e-f811-46ad-ab3e-33535b8d1873",
-                "type": "text",
+                "type": "question",
                 "responses": {"text": "Employee Z at Site Alpha."},
             },
             {

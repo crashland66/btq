@@ -28,6 +28,14 @@
 - LLMs may interpret, summarize, classify, and propose changes, but only deterministic writer code may mutate the operational vault.
 - Do not create vault mutations directly from raw intake, transcripts, uploads, images, emails, PDFs, WhatsApp exports, or AI summaries.
 - Field capture upload must remain fast, non-blocking, and evidence-first.
+- Production employee tokens must originate in the operator dashboard's
+  `/tokens/new` workflow. The operator token database is the authoritative
+  inventory and the public gateway is a hash-only replica; never issue into a
+  temporary database and sync only the gateway. Before handing out a link,
+  verify the `/tokens` row and Copy control plus the public `/api/session`
+  identity, role, submission capability, and full site scope. Use the recovery
+  procedure in `project/docs/runbook.md` when a live token is missing from the
+  operator inventory.
 - Transcription, semantic cleanup, client-safe summaries, and vault mutations must remain post-upload processing layers.
 - Viewer routes should remain read-only unless a task explicitly says otherwise.
 - Any user-facing HTML (PWAs, dashboards, reporting apps, demos) must follow [STYLE_GUIDE.md](STYLE_GUIDE.md) — notably: honor the OS light/dark setting via `prefers-color-scheme`, never force a theme, route all colors through the canonical token palette (no hardcoded hex), and meet WCAG AA contrast in both modes.
