@@ -149,7 +149,7 @@ def _safe_doc_id(doc_id: str, *, max_len: int = 64) -> str:
 
 
 def materialize_queue_job(doc: dict[str, Any], runtime_root: Path, logger: logging.Logger, *, dry_run: bool = False) -> Path:
-    job_type = str(doc.get("type") or "unknown_job")
+    job_type = str(doc.get("job_type") or doc.get("type") or "unknown_job")
     doc_id = str(doc.get("_id") or "")
     payload = {key: value for key, value in doc.items() if key not in COUCHDB_METADATA_KEYS}
     queue_dir = runtime_root / "queue"
