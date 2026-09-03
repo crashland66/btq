@@ -27,6 +27,7 @@ from ops_dashboard.common import (
     default_actor,
     first_filter_value,
     load_photo_vision_sidecars,
+    photo_vision_sidecar_ids_on_disk,
     photo_vision_couchdb_config as _photo_vision_couchdb_config,
     read_json_artifact,
     render_deep_analysis_markdown,
@@ -928,7 +929,7 @@ def _pending_photo_records(
     intake_dir = field_photo_vision.default_intake_dir(runtime_root)
     upload_dir = field_photo_vision.default_upload_dir(runtime_root)
     photo_vision_dir = field_photo_vision.default_photo_vision_dir(runtime_root)
-    disk_sidecar_ids = {str(s.get("photo_asset_id") or "") for s in load_photo_vision_sidecars(photo_vision_dir)}
+    disk_sidecar_ids = photo_vision_sidecar_ids_on_disk(photo_vision_dir)
     submitters = submitters_by_capture(runtime_root)
     terminal_capture_ids = terminal_capture_ids or set()
 

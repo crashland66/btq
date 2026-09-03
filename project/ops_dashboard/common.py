@@ -1084,36 +1084,64 @@ def _location_account(site_id: str) -> str | None:
     return account or None
 
 
+_SITE_LABEL_CACHE_TTL_SECONDS = 60.0
+_SITE_LABEL_CACHE: dict[str, tuple[float, str]] = {}
+_SITE_LABEL_CACHE_LOCK = threading.Lock()
+_SITE_LABEL_CACHE_REGISTRY_FACTORY: object = CouchDBSiteRegistry
+
+
+def invalidate_site_label_cache() -> None:
+    with _SITE_LABEL_CACHE_LOCK:
+        _SITE_LABEL_CACHE.clear()
+
+
 def resolve_site_label(site_id: object, vault_root: Path) -> str:
+    global _SITE_LABEL_CACHE_REGISTRY_FACTORY
+
     site_id_text = _clean_display_part(site_id)
     if not site_id_text:
         return render_site_label(site_id)
-    try:
-        rows = CouchDBSiteRegistry().list_sites()
-        site_name = next(
-            (
-                _clean_display_part(row.get("canonical"))
-                for row in rows
-                if isinstance(row, dict) and _clean_display_part(row.get("site_id")) == site_id_text
-            ),
-            "",
-        )
-        if not site_name:
-            return render_site_label(site_id)
-        name_counts = Counter(
-            _clean_display_part(row.get("canonical"))
-            for row in rows
-            if isinstance(row, dict) and _clean_display_part(row.get("canonical"))
-        )
-        account = _location_account(site_id_text) if name_counts.get(site_name, 0) > 1 else None
-    except Exception as exc:
-        logger.warning("site label resolution failed site_id=%s: %s", site_id_text, exc)
-        return render_site_label(site_id)
-    return render_site_label(
-        site_id,
-        site_name=site_name,
-        account=account,
-    )
+
+    with _SITE_LABEL_CACHE_LOCK:
+        if _SITE_LABEL_CACHE_REGISTRY_FACTORY is not CouchDBSiteRegistry:
+            _SITE_LABEL_CACHE.clear()
+            _SITE_LABEL_CACHE_REGISTRY_FACTORY = CouchDBSiteRegistry
+        cached = _SITE_LABEL_CACHE.get(site_id_text)
+        if cached is not None:
+            cached_at, cached_result = cached
+            if time.monotonic() - cached_at < _SITE_LABEL_CACHE_TTL_SECONDS:
+                return cached_result
+
+        try:
+            rows = CouchDBSiteRegistry().list_sites()
+            site_name = next(
+                (
+                    _clean_display_part(row.get("canonical"))
+                    for row in rows
+                    if isinstance(row, dict) and _clean_display_part(row.get("site_id")) == site_id_text
+                ),
+                "",
+            )
+            if not site_name:
+                result = render_site_label(site_id)
+            else:
+                name_counts = Counter(
+                    _clean_display_part(row.get("canonical"))
+                    for row in rows
+                    if isinstance(row, dict) and _clean_display_part(row.get("canonical"))
+                )
+                account = _location_account(site_id_text) if name_counts.get(site_name, 0) > 1 else None
+                result = render_site_label(
+                    site_id,
+                    site_name=site_name,
+                    account=account,
+                )
+        except Exception as exc:
+            logger.warning("site label resolution failed site_id=%s: %s", site_id_text, exc)
+            result = render_site_label(site_id)
+
+        _SITE_LABEL_CACHE[site_id_text] = (time.monotonic(), result)
+        return result
 
 
 def slugify_status(value: object) -> str:
@@ -2017,6 +2045,15 @@ _PHOTO_VISION_CACHE_TTL_SECONDS = 5.0
 # cache[dir] = (cached_at_monotonic, dir_mtime, sidecar_summaries)
 _PHOTO_VISION_CACHE: dict[Path, tuple[float, float, list[dict[str, object]]]] = {}
 _PHOTO_VISION_CACHE_LOCK = threading.Lock()
+
+
+def photo_vision_sidecar_ids_on_disk(photo_vision_dir: Path) -> set[str]:
+    try:
+        if not photo_vision_dir.exists():
+            return set()
+        return {path.stem for path in photo_vision_dir.glob("*.json")}
+    except OSError:
+        return set()
 
 
 def load_photo_vision_sidecars(photo_vision_dir: Path) -> list[dict[str, object]]:
