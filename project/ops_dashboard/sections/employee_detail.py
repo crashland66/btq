@@ -8,6 +8,10 @@ from typing import Any
 from urllib.parse import quote
 from urllib import parse as urlparse, request as urlrequest
 
+from btq_vault.employee_assignments import (
+    bare_site_id as _bare_site_id,
+    employee_assigned_site_ids as _assigned_site_ids,
+)
 from event_pipeline import couchdb_config
 from ops_dashboard.common import HtmlFragment, field_rows, first_query_value, humanize_key, render_count_badge, render_relative_time, render_short_id
 from queue_spec import ENTITY_STATUSES
@@ -53,21 +57,6 @@ def _clean(value: object) -> str:
     return str(value or "").strip()
 
 
-def _string_values(value: object) -> list[str]:
-    if isinstance(value, (list, tuple, set)):
-        return [_clean(item) for item in value if _clean(item)]
-    text = _clean(value)
-    return [text] if text else []
-
-
-def _bare_site_id(value: object) -> str:
-    text = _clean(value).strip('"')
-    for prefix in ("location_", "site_"):
-        if text.startswith(prefix):
-            return text.removeprefix(prefix)
-    return text
-
-
 def _dedupe(values: list[str]) -> list[str]:
     seen: set[str] = set()
     result: list[str] = []
@@ -79,18 +68,8 @@ def _dedupe(values: list[str]) -> list[str]:
 
 
 def _primary_site_id(doc: dict[str, Any]) -> str:
-    values = [_bare_site_id(value) for value in _string_values(doc.get("job"))]
+    values = _assigned_site_ids({"job": doc.get("job")})
     return values[0] if values else ""
-
-
-def _assigned_site_ids(doc: dict[str, Any]) -> list[str]:
-    ids = [_bare_site_id(value) for value in _string_values(doc.get("site_ids"))]
-    if not ids:
-        ids.extend(_bare_site_id(value) for value in _string_values(doc.get("job")))
-        ids.extend(_bare_site_id(value) for value in _string_values(doc.get("additional_jobs")))
-        if not ids:
-            ids.extend(_bare_site_id(value) for value in _string_values(doc.get("sites")))
-    return _dedupe([site_id for site_id in ids if site_id])
 
 
 def _load_location_name(site_id: str) -> str:

@@ -586,7 +586,9 @@ Do not use when:
 - the writer resolves `employee_id` to an existing canonical `employee`
   document
 - `assign` appends `site_id` to `site_ids` only when it is not already present
-- `unassign` removes `site_id` from `site_ids` when present
+- `unassign` removes `site_id` from `site_ids` when present and scrubs matching
+  legacy `job`, `additional_jobs`, and `sites` values so fallback readers cannot
+  resurrect an explicitly removed assignment
 - existing `site_ids` order is preserved and duplicate entries are collapsed to
   the first occurrence
 - every other employee field is preserved, including status, name, employee ID,

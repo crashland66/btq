@@ -229,9 +229,18 @@ def test_save_identity_allows_existing_nonstandard_status_roundtrip(
     assert payload["phone"] == "555-9999"
 
 
-def test_save_assignment_splits_comma_lists_and_recomputes_site_ids(
+def test_save_assignment_splits_comma_lists_and_preserves_canonical_site_ids(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    # RECONCILED for prompt 541 (canonical-first employee_assignments rule):
+    # this test previously pinned the OLD always-overwrite-from-legacy
+    # behavior of recompute_employee_derived, asserting site_ids became the
+    # flat union of job+additional_jobs even though the fixture doc already
+    # carries a non-empty canonical site_ids=["7050"]. That was the exact bug
+    # 541 fixes (canonical site_ids silently dropped on every section save).
+    # Under the new contract, a non-empty stored site_ids is preserved
+    # verbatim regardless of legacy job/additional_jobs edits — comma-split
+    # parsing of additional_jobs itself is unaffected and still covered here.
     monkeypatch.setattr(ed, "_load_vault_doc", lambda _doc_id: _employee_doc())
     captured = _capture_put(monkeypatch)
     ctx = DummyContext(tmp_path)
@@ -245,4 +254,4 @@ def test_save_assignment_splits_comma_lists_and_recomputes_site_ids(
     payload = captured["payload"]
     assert isinstance(payload, dict)
     assert payload["additional_jobs"] == ["7040", "1338"]
-    assert payload["site_ids"] == ["7050", "7040", "1338"]
+    assert payload["site_ids"] == ["7050"]

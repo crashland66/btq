@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from btq_vault.employee_assignments import bare_site_id
 from queue_processor.canonical_rmw import (
     CanonicalEntityState,
     CanonicalMutation,
@@ -35,7 +36,26 @@ def _employee_site_ids_after_action(current_site_ids: object, site_id: str, acti
         if site_id in existing:
             return existing
         return [*existing, site_id]
-    return [value for value in existing if value != site_id]
+    target_site_id = bare_site_id(site_id)
+    return [value for value in existing if bare_site_id(value) != target_site_id]
+
+
+def _scrub_legacy_site_assignments(doc: dict, site_id: str) -> list[str]:
+    target_site_id = bare_site_id(site_id)
+    changed_fields: list[str] = []
+    for field in ("job", "additional_jobs", "sites"):
+        if field not in doc:
+            continue
+        current = doc[field]
+        if isinstance(current, list):
+            scrubbed = [value for value in current if bare_site_id(value) != target_site_id]
+            if scrubbed != current:
+                doc[field] = scrubbed
+                changed_fields.append(field)
+        elif bare_site_id(current) == target_site_id:
+            doc.pop(field)
+            changed_fields.append(field)
+    return changed_fields
 
 
 def _canonical_write_error(job: QueueJob, entity_id: str, exc: Exception) -> _shared.QueueJobError:
@@ -77,6 +97,11 @@ def _dry_run_assign_employee_site(store: object, target: CanonicalTarget, job: Q
         _shared.write_log_line(context.log_path, f"job_id={job.job_id} action=skip status=success reason=job-id-marker-present")
         return
     print(f"Job {job.job_id}: would {action} employee site")
+    if action == "unassign":
+        preview = dict(existing_doc)
+        scrubbed_fields = _scrub_legacy_site_assignments(preview, str(job.payload["site_id"]).strip())
+        if scrubbed_fields:
+            print(f"Job {job.job_id}: would scrub legacy assignment fields: {', '.join(scrubbed_fields)}")
     _shared.write_log_line(context.log_path, f"job_id={job.job_id} action={action}-employee-site status=success error=")
 
 
@@ -103,6 +128,8 @@ def process_assign_employee_site_job(job_path: Path, job: QueueJob, context: Run
     def transform(state: CanonicalEntityState) -> CanonicalMutation:
         outgoing = dict(state.doc or {})
         outgoing["site_ids"] = _employee_site_ids_after_action(outgoing.get("site_ids"), site_id, action)
+        if action == "unassign":
+            _scrub_legacy_site_assignments(outgoing, site_id)
         return CanonicalMutation(doc=outgoing, evidence_text=evidence_text)
 
     try:

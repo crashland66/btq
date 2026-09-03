@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 from urllib import error, parse, request
 
+from btq_vault.employee_assignments import employee_assigned_site_ids
 from btq_vault.entity_types import CANONICAL_ENTITY_TYPES, DEPRECATED_TYPE_ALIASES, OPERATOR_ID_GREG
 from config import get_config
 from event_pipeline import couchdb_config
@@ -86,21 +87,12 @@ def _string_list(value: object) -> list[str]:
 
 
 def _employee_site_ids(frontmatter: dict[str, Any]) -> list[str]:
-    site_ids: list[str] = []
-    # job may be a scalar ("7060") or a YAML list (["7060"] or
-    # even ["7060", "7050"]). Use _string_list which normalises
-    # both shapes -- same pattern additional_jobs already uses.
-    site_ids.extend(_string_list(frontmatter.get("job")))
-    site_ids.extend(_string_list(frontmatter.get("additional_jobs")))
-    if not site_ids:
-        site_ids.extend(_string_list(frontmatter.get("sites")))
-    seen: set[str] = set()
-    deduped: list[str] = []
-    for value in site_ids:
-        if value not in seen:
-            deduped.append(value)
-            seen.add(value)
-    return deduped
+    normalized = dict(frontmatter)
+    for field in ("site_ids", "job", "additional_jobs", "sites"):
+        value = frontmatter.get(field)
+        if isinstance(value, (str, list)):
+            normalized[field] = _string_list(value)
+    return employee_assigned_site_ids(normalized)
 
 
 def _employee_display_name(frontmatter: dict[str, Any]) -> str:

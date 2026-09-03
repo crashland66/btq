@@ -2,10 +2,8 @@ from __future__ import annotations
 
 import html
 
-from event_pipeline.couchdb.migrate_vault import (
-    _employee_display_name,
-    _employee_site_ids,
-)
+from btq_vault.employee_assignments import employee_assigned_site_ids
+from event_pipeline.couchdb.migrate_vault import _employee_display_name
 from ops_dashboard.common import field_rows, humanize
 
 _PROTECTED = frozenset({"_id", "_rev", "type", "operator", "vault_path", "site_ids", "name"})
@@ -131,5 +129,7 @@ def apply_section_update(
 
 def recompute_employee_derived(doc: dict) -> dict:
     doc["name"] = _employee_display_name(doc)
-    doc["site_ids"] = _employee_site_ids(doc)
+    current_site_ids = employee_assigned_site_ids({"site_ids": doc.get("site_ids")})
+    if not current_site_ids:
+        doc["site_ids"] = employee_assigned_site_ids(doc)
     return doc

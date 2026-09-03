@@ -5,6 +5,7 @@ import re
 from collections.abc import Iterable, Mapping
 from typing import Any
 
+from btq_vault.employee_assignments import employee_assigned_site_ids
 from event_pipeline import couchdb_config
 from event_pipeline import btq_client
 
@@ -301,7 +302,7 @@ def _person_records(docs: Iterable[Doc]) -> dict[str, dict[str, Any]]:
 def _build_person_record(doc: Doc) -> dict[str, Any]:
     canonical = _clean_string(doc.get("name") or _display_name_from_fields(doc) or doc.get("_id"))
     display = _display_name(doc, canonical)
-    assigned_job_numbers = _dedupe_strings(_string_list(doc.get("site_ids")))
+    assigned_job_numbers = employee_assigned_site_ids(doc)
     manager = _clean_string(doc.get("manager"))
     match_keys = _person_match_keys(doc, canonical, display)
     return {
