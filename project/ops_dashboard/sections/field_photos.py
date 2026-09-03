@@ -47,6 +47,11 @@ PENDING_LIMIT = 12
 _TERMINAL_CAPTURE_STATES = frozenset({"failed", "complete", "completed"})
 _FIELD_CAPTURE_PAGE_SIZE = 5000
 FIELD_AUDIO_TRANSCRIPT_TYPE = "field_audio_transcript"
+UNKNOWN_SUBMITTER_ID = "__unknown__"
+
+
+def _normalize_person_id(value: object) -> str:
+    return str(value or "").strip().replace("-", "_")
 
 
 def _build_mango_selector(
@@ -63,6 +68,7 @@ def _build_mango_selector(
     has_deep_analysis: bool = False,
     target_type: str = "",
     target_id: str = "",
+    capture_ids: set[str] | None = None,
 ) -> dict[str, object]:
     must: list[dict[str, object]] = [{"doc_type": "photo_vision_sidecar"}]
     if q:
@@ -71,6 +77,8 @@ def _build_mango_selector(
         must.append({"site_id": site_id})
     if capture_id:
         must.append({"capture_id": capture_id})
+    if capture_ids is not None:
+        must.append({"capture_id": {"$in": sorted(capture_ids)}})
     if qc_category:
         must.append({"qc_category": qc_category})
     if vision_category:
@@ -182,6 +190,156 @@ def _query_terminal_capture_ids(config: object) -> set[str] | None:
     return ids
 
 
+def _submitter_options_from_records(records: object) -> list[tuple[str, str]]:
+    names_by_id: dict[str, dict[str, int]] = {}
+    has_unknown = False
+    if isinstance(records, list):
+        values = records
+    elif isinstance(records, dict):
+        values = list(records.values())
+    else:
+        values = []
+    for record in values:
+        if not isinstance(record, dict):
+            continue
+        person_id = _normalize_person_id(record.get("person_id") or record.get("submitter_id"))
+        if not person_id:
+            has_unknown = True
+            continue
+        person_name = str(record.get("person_name") or record.get("submitter_name") or "").strip()
+        if person_name:
+            name_counts = names_by_id.setdefault(person_id, {})
+            name_counts[person_name] = name_counts.get(person_name, 0) + 1
+        else:
+            names_by_id.setdefault(person_id, {})
+
+    options: list[tuple[str, str]] = []
+    for person_id, name_counts in names_by_id.items():
+        if name_counts:
+            person_name = min(name_counts, key=lambda name: (-name_counts[name], name.casefold(), name))
+        else:
+            person_name = person_id
+        options.append((person_id, f"{person_name} ({person_id})"))
+    options.sort(key=lambda option: (option[1].casefold(), option[1], option[0]))
+    if has_unknown:
+        options.append((UNKNOWN_SUBMITTER_ID, "Unknown submitter"))
+    return options
+
+
+def _load_submitter_options(
+    cdb_config: object,
+    runtime_root: Path,
+) -> list[tuple[str, str]]:
+    if cdb_config is not None:
+        from event_pipeline import couchdb_config
+        from voice_memo.couchdb import query_couchdb_find
+
+        records: list[dict[str, object]] = []
+        bookmark: object = None
+        try:
+            for _ in range(400):  # safety cap (400 * 5000 = 2M docs)
+                mango: dict[str, object] = {
+                    "selector": {"type": "field_capture"},
+                    "fields": ["person_id", "person_name"],
+                    "limit": _FIELD_CAPTURE_PAGE_SIZE,
+                }
+                if bookmark:
+                    mango["bookmark"] = bookmark
+                response = query_couchdb_find(
+                    cdb_config,
+                    couchdb_config.field_captures_database(),
+                    mango,
+                )
+                docs = response.get("docs")
+                if not isinstance(docs, list):
+                    raise ValueError("field-capture submitter query returned invalid docs")
+                records.extend(doc for doc in docs if isinstance(doc, dict))
+                bookmark = response.get("bookmark")
+                if len(docs) < _FIELD_CAPTURE_PAGE_SIZE or not bookmark:
+                    break
+            return _submitter_options_from_records(records)
+        except Exception as exc:
+            logger.warning("field-capture submitter-option query failed, falling back to disk: %s", exc)
+    return _submitter_options_from_records(submitters_by_capture(runtime_root))
+
+
+def _disk_capture_ids_for_submitter(runtime_root: Path, submitter_id: str) -> set[str]:
+    selected_id = _normalize_person_id(submitter_id)
+    matches: set[str] = set()
+    for capture_id, submitter in submitters_by_capture(runtime_root).items():
+        actual_id = _normalize_person_id(submitter.get("submitter_id") if isinstance(submitter, dict) else "")
+        if selected_id == UNKNOWN_SUBMITTER_ID:
+            matched = not actual_id
+        else:
+            matched = actual_id == selected_id
+        if matched and str(capture_id).strip():
+            matches.add(str(capture_id).strip())
+    return matches
+
+
+def _capture_ids_for_submitter(
+    cdb_config: object,
+    runtime_root: Path,
+    submitter_id: str,
+) -> set[str] | None:
+    selected_id = _normalize_person_id(submitter_id)
+    if not selected_id:
+        return set()
+    if cdb_config is None:
+        return _disk_capture_ids_for_submitter(runtime_root, selected_id)
+
+    from event_pipeline import couchdb_config
+    from voice_memo.couchdb import query_couchdb_find
+
+    if selected_id == UNKNOWN_SUBMITTER_ID:
+        selector: dict[str, object] = {
+            "type": "field_capture",
+            "$or": [
+                {"person_id": {"$exists": False}},
+                {"person_id": ""},
+            ],
+        }
+    else:
+        person_id_forms = sorted({selected_id, selected_id.replace("_", "-")})
+        selector = {
+            "type": "field_capture",
+            "person_id": {"$in": person_id_forms},
+        }
+
+    capture_ids: set[str] = set()
+    bookmark: object = None
+    for _ in range(400):  # safety cap (400 * 5000 = 2M docs)
+        mango: dict[str, object] = {
+            "selector": selector,
+            "fields": ["capture_id", "_id"],
+            "limit": _FIELD_CAPTURE_PAGE_SIZE,
+        }
+        if bookmark:
+            mango["bookmark"] = bookmark
+        try:
+            response = query_couchdb_find(
+                cdb_config,
+                couchdb_config.field_captures_database(),
+                mango,
+            )
+            docs = response.get("docs")
+            if not isinstance(docs, list):
+                raise ValueError("field-capture submitter query returned invalid docs")
+        except Exception as exc:
+            logger.warning("field-capture submitter query failed, falling back to disk: %s", exc)
+            return None
+        for doc in docs:
+            if not isinstance(doc, dict):
+                continue
+            capture_id = str(doc.get("capture_id") or doc.get("_id") or "").strip()
+            if capture_id:
+                capture_ids.add(capture_id)
+        bookmark = response.get("bookmark")
+        if len(docs) < _FIELD_CAPTURE_PAGE_SIZE or not bookmark:
+            break
+    return capture_ids
+
+
 def _search_text(sidecar: dict[str, object]) -> str:
     parts = [
         str(sidecar.get("description") or ""),
@@ -210,9 +368,12 @@ def _in_memory_filter(
     vision_category: str = "",
     vision_disagrees: bool = False,
     has_deep_analysis: bool = False,
+    capture_ids: set[str] | None = None,
     limit: int = PAGE_LIMIT,
 ) -> list[dict[str, object]]:
     results = sidecars
+    if capture_ids is not None:
+        results = [s for s in results if str(s.get("capture_id") or "") in capture_ids]
     if q:
         ql = q.lower()
         results = [s for s in results if ql in _search_text(s)]
@@ -702,11 +863,21 @@ def _asset_matches_filters(
     date_from: str = "",
     date_to: str = "",
     submitter_name: str = "",
+    submitter_id: str = "",
+    asset_submitter_id: str = "",
 ) -> bool:
     asset_site_id = str(getattr(asset, "site_id", "") or "")
     asset_capture_id = str(getattr(asset, "capture_id", "") or "")
     captured_at = str(getattr(asset, "captured_at", "") or "")
     submitted_area = str(getattr(asset, "area", "") or "")
+    if submitter_id:
+        selected_id = _normalize_person_id(submitter_id)
+        actual_id = _normalize_person_id(asset_submitter_id)
+        if selected_id == UNKNOWN_SUBMITTER_ID:
+            if actual_id:
+                return False
+        elif actual_id != selected_id:
+            return False
     if site_id and asset_site_id != site_id:
         return False
     if capture_id and asset_capture_id != capture_id:
@@ -750,6 +921,7 @@ def _pending_photo_records(
     vision_disagrees: bool = False,
     date_from: str = "",
     date_to: str = "",
+    submitter_id: str = "",
 ) -> list[dict[str, object]]:
     from field_capture import photo_vision as field_photo_vision
 
@@ -766,7 +938,9 @@ def _pending_photo_records(
             continue
         if asset.capture_id in terminal_capture_ids:
             continue
-        submitter_name = submitters.get(asset.capture_id, {}).get("submitter_name", "")
+        submitter = submitters.get(asset.capture_id, {})
+        submitter_name = submitter.get("submitter_name", "")
+        asset_submitter_id = submitter.get("submitter_id", "")
         if not _asset_matches_filters(
             asset,
             q=q,
@@ -779,6 +953,8 @@ def _pending_photo_records(
             date_from=date_from,
             date_to=date_to,
             submitter_name=submitter_name,
+            submitter_id=submitter_id,
+            asset_submitter_id=asset_submitter_id,
         ):
             continue
         records.append(
@@ -878,6 +1054,8 @@ def _filter_form(
     has_deep_analysis: bool,
     *,
     capture_id: str = "",
+    submitter_id: str = "",
+    submitter_options: list[tuple[str, str]] | None = None,
     site_options: list[tuple[str, str]] | None = None,
     qc_category: str = "",
     qc_category_options: list[str] | None = None,
@@ -887,10 +1065,16 @@ def _filter_form(
     area_options: list[str] | None = None,
 ) -> str:
     site_options = site_options or []
+    submitter_options = submitter_options or []
     qc_category_options = qc_category_options or []
     vision_category_options = vision_category_options or []
     area_options = area_options or []
     site_opts = _select_options(site_options, site_id, any_label="All sites")
+    submitter_opts = _select_options(
+        submitter_options,
+        _normalize_person_id(submitter_id),
+        any_label="All submitters",
+    )
     qc_category_opts = _select_options([(c, c) for c in qc_category_options], qc_category, any_label="All QC categories")
     vision_category_opts = _select_options([(c, c) for c in vision_category_options], vision_category, any_label="All vision categories")
     area_opts = _select_options([(a, a) for a in area_options], area_guess, any_label="All vision areas")
@@ -901,6 +1085,7 @@ def _filter_form(
         ' style="display:flex;flex-wrap:wrap;gap:.5rem;align-items:flex-end">'
         f'<label style="flex:1 1 18em">Search<input name="q" value="{html.escape(q)}" placeholder="keyword…" style="width:100%"></label>'
         f'<label style="flex:1 1 14em">Site<select name="site_id" style="width:100%">{site_opts}</select></label>'
+        f'<label style="flex:1 1 14em">Submitter<select name="submitter_id" style="width:100%">{submitter_opts}</select></label>'
         f'<label style="flex:1 1 14em">QC Category<select name="qc_category" style="width:100%">{qc_category_opts}</select></label>'
         f'<label style="flex:1 1 14em">Vision category<select name="vision_category" style="width:100%">{vision_category_opts}</select></label>'
         f'<label style="flex:1 1 12em">Vision area<select name="area_guess" style="width:100%">{area_opts}</select></label>'
@@ -923,12 +1108,15 @@ def render_filter_form(
     vision_disagrees: bool = False,
     area_guess: str = "",
     capture_id: str = "",
+    submitter_id: str = "",
     date_from: str = "",
     date_to: str = "",
     has_deep_analysis: bool = False,
+    runtime_root: Path | None = None,
 ) -> str:
     cdb_config = _photo_vision_couchdb_config()
     site_options = _load_site_options()
+    submitter_options = _load_submitter_options(cdb_config, runtime_root) if runtime_root is not None else []
     qc_category_options = _load_qc_category_options(cdb_config)
     vision_category_options = _load_vision_category_options(cdb_config)
     area_options = _load_area_options(cdb_config)
@@ -940,6 +1128,8 @@ def render_filter_form(
         date_to,
         has_deep_analysis,
         capture_id=capture_id,
+        submitter_id=submitter_id,
+        submitter_options=submitter_options,
         site_options=site_options,
         qc_category=qc_category,
         qc_category_options=qc_category_options,
@@ -968,6 +1158,7 @@ def load_filtered_photo_sidecars(
     date_from: str = "",
     date_to: str = "",
     has_deep_analysis: bool = False,
+    submitter_id: str = "",
 ) -> tuple[list[dict[str, object]], bool, bool]:
     """Load filtered sidecars through the canonical Field Photos data path.
 
@@ -976,7 +1167,14 @@ def load_filtered_photo_sidecars(
     """
     cdb_config = _photo_vision_couchdb_config()
     fallback = False
-    if cdb_config is not None:
+    submitter_capture_ids: set[str] | None = None
+    if submitter_id:
+        submitter_capture_ids = _capture_ids_for_submitter(cdb_config, ctx.runtime_root, submitter_id)
+        if cdb_config is not None and submitter_capture_ids is None:
+            fallback = True
+        elif cdb_config is not None and not submitter_capture_ids:
+            return [], False, False
+    if cdb_config is not None and not fallback:
         mango = _build_mango_selector(
             q,
             site_id,
@@ -988,6 +1186,7 @@ def load_filtered_photo_sidecars(
             vision_category=vision_category,
             vision_disagrees=vision_disagrees,
             has_deep_analysis=has_deep_analysis,
+            capture_ids=submitter_capture_ids,
         )
         docs = _query_couchdb(cdb_config, mango)
         if docs is not None:
@@ -997,6 +1196,8 @@ def load_filtered_photo_sidecars(
     from field_capture import photo_vision as field_photo_vision
 
     runtime_root = ctx.runtime_root
+    if submitter_id and submitter_capture_ids is None:
+        submitter_capture_ids = _capture_ids_for_submitter(None, runtime_root, submitter_id)
     photo_vision_dir = field_photo_vision.default_photo_vision_dir(runtime_root)
     sidecars = _in_memory_filter(
         load_photo_vision_sidecars(photo_vision_dir),
@@ -1010,6 +1211,7 @@ def load_filtered_photo_sidecars(
         vision_category=vision_category,
         vision_disagrees=vision_disagrees,
         has_deep_analysis=has_deep_analysis,
+        capture_ids=submitter_capture_ids,
         limit=PAGE_LIMIT + 1,
     )
     return sidecars[:PAGE_LIMIT], fallback, len(sidecars) > PAGE_LIMIT
@@ -2289,6 +2491,7 @@ def render(ctx: object) -> str:
     vision_category = first_filter_value(query, "vision_category")
     area_guess = first_filter_value(query, "area_guess")
     capture_id = first_filter_value(query, "capture_id")
+    submitter_id = first_filter_value(query, "submitter_id")
     date_from = first_filter_value(query, "date_from")
     date_to = first_filter_value(query, "date_to")
     has_deep_analysis = first_filter_value(query, "deep_analysis").lower() in {"1", "true", "yes", "on"}
@@ -2307,6 +2510,7 @@ def render(ctx: object) -> str:
         date_from=date_from,
         date_to=date_to,
         has_deep_analysis=has_deep_analysis,
+        submitter_id=submitter_id,
     )
 
     processed_asset_ids: set[str] | None = None
@@ -2322,7 +2526,10 @@ def render(ctx: object) -> str:
         from field_capture import photo_vision as field_photo_vision
         photo_vision_dir = field_photo_vision.default_photo_vision_dir(runtime_root)
         all_sidecars = load_photo_vision_sidecars(photo_vision_dir)
-        sidecars = _in_memory_filter(
+        submitter_capture_ids = (
+            _capture_ids_for_submitter(None, runtime_root, submitter_id) if submitter_id else None
+        )
+        filtered_sidecars = _in_memory_filter(
             all_sidecars,
             q,
             site_id,
@@ -2334,7 +2541,11 @@ def render(ctx: object) -> str:
             vision_category=vision_category,
             vision_disagrees=vision_disagrees,
             has_deep_analysis=has_deep_analysis,
+            capture_ids=submitter_capture_ids,
+            limit=PAGE_LIMIT + 1,
         )
+        has_more = len(filtered_sidecars) > PAGE_LIMIT
+        sidecars = filtered_sidecars[:PAGE_LIMIT]
         processed_asset_ids = {str(s.get("photo_asset_id") or "") for s in all_sidecars}
 
     vault_root = Path(getattr(ctx.config, "vault_root", runtime_root / "vault")).expanduser()
@@ -2352,6 +2563,7 @@ def render(ctx: object) -> str:
             qc_category=qc_category,
             date_from=date_from,
             date_to=date_to,
+            submitter_id=submitter_id,
         )
     pending_html = _render_pending_section(pending_records, vault_root)
 
@@ -2363,9 +2575,11 @@ def render(ctx: object) -> str:
         vision_disagrees=vision_disagrees,
         area_guess=area_guess,
         capture_id=capture_id,
+        submitter_id=submitter_id,
         date_from=date_from,
         date_to=date_to,
         has_deep_analysis=has_deep_analysis,
+        runtime_root=runtime_root,
     )
 
     cards_html = "".join(_render_card(s, submitters, vault_root, card_index=index) for index, s in enumerate(sidecars))
