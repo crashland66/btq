@@ -113,6 +113,10 @@ def dispatch_post_route(
         employee_id = route_path.removeprefix("/employees/").removesuffix("/uniform").strip("/")
         if employee_id and "/" not in employee_id:
             return employee_detail.handle_uniform_post(ctx, employee_id, body)
+    if route_path.startswith("/employees/") and route_path.endswith("/retry-token-deactivation"):
+        employee_id = route_path.removeprefix("/employees/").removesuffix("/retry-token-deactivation").strip("/")
+        if employee_id and "/" not in employee_id:
+            return employee_detail.handle_retry_token_deactivation(ctx, employee_id, body)
     if route_path.endswith("/save-section"):
         for prefix, handler in (("/sites/", site_detail.handle_save_section), ("/employees/", employee_detail.handle_save_section)):
             entity_id = route_path.removeprefix(prefix).removesuffix("/save-section") if route_path.startswith(prefix) else ""

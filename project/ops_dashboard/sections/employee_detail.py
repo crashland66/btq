@@ -367,6 +367,7 @@ def _quick_facts(
     *,
     edit_section: str = "",
     employee_id: str = "",
+    edit_values: dict[str, str] | None = None,
 ) -> str:
     phone = _clean(doc.get("phone"))
     email = _clean(doc.get("email"))
@@ -396,7 +397,10 @@ def _quick_facts(
     for title, keys in _EMPLOYEE_GROUPS:
         slug = title.lower()
         if edit_section == slug:
-            groups.append(_facts_edit_form(title, slug, doc, keys, employee_id))
+            edit_doc = dict(doc)
+            if edit_values is not None:
+                edit_doc.update(edit_values)
+            groups.append(_facts_edit_form(title, slug, edit_doc, keys, employee_id))
             continue
         mapping, order = display_groups[slug]
         rows = field_rows(mapping, order, value_formatter=_quick_fact_value)
@@ -688,9 +692,72 @@ def _not_found(employee_id: str) -> str:
     return html_page("Not Found — BTQ", body, active_section="employee_detail")
 
 
-def render(ctx: object, employee_id: str) -> str:
+def _parse_token_ids(raw: str) -> list[str]:
+    return _dedupe([part.strip() for part in raw.split(",") if part.strip()])
+
+
+def _render_inactivation_confirm(
+    employee_id: str,
+    existing: dict[str, Any],
+    form_values: dict[str, str],
+    active: list[Any],
+    *,
+    inventory_changed: bool = False,
+) -> str:
+    import ops_dashboard.sections.tokens as tokens
+
+    eid = html.escape(employee_id, quote=True)
+    name = _person_name(existing, employee_id)
+    count = len(active)
+    noun = "token" if count == 1 else "tokens"
+    notice = (
+        '<section class="warning"><p>The token inventory changed. Review the current active tokens before continuing.</p></section>'
+        if inventory_changed
+        else ""
+    )
+    rows = "".join(
+        "<tr>"
+        f'<td><code title="{html.escape(str(record.token_id), quote=True)}">{html.escape(tokens.short_token_id(str(record.token_id)))}</code></td>'
+        f"<td>{html.escape(str(record.label or ''))}</td>"
+        f"<td>{html.escape(tokens.role_label(str(record.role or '')))}</td>"
+        f"<td>{html.escape(', '.join(record.site_ids) if record.site_ids else 'All sites')}</td>"
+        f"<td>{html.escape(str(record.expires_at or 'Never'))}</td>"
+        "</tr>"
+        for record in active
+    )
+    hidden_names = (*_EMPLOYEE_GROUPS[0][1], "_rev", "_entity_id", "_section")
+    hidden = "".join(
+        f'<input type="hidden" name="{html.escape(key, quote=True)}" value="{html.escape(str(form_values.get(key, "")), quote=True)}">'
+        for key in hidden_names
+        if key in form_values
+    )
+    token_ids = html.escape(",".join(str(record.token_id) for record in active), quote=True)
+    body = f"""
+    <header><h1>Deactivate employee</h1><p class="muted">{html.escape(name)} &middot; ID {html.escape(employee_id)}</p></header>
+    {notice}
+    <section>
+      <h2>Active field-capture tokens</h2>
+      <p>This employee has {count} active {noun}. Deactivate those tokens too?</p>
+      <table class="data-table"><thead><tr><th>Token ID</th><th>Label</th><th>Role</th><th>Site scope</th><th>Expires</th></tr></thead><tbody>{rows}</tbody></table>
+      <form method="post" action="/employees/{eid}/save-section" class="admin-form">
+        {hidden}
+        <input type="hidden" name="_token_ids" value="{token_ids}">
+        <button type="submit" name="_token_decision" value="revoke_tokens" class="reject">Deactivate employee and tokens</button>
+        <button type="submit" name="_token_decision" value="keep_tokens">Deactivate employee only</button>
+        <button type="submit" name="_token_decision" value="cancel">Cancel</button>
+      </form>
+    </section>
+    """
+    return html_page("Deactivate Employee", body, active_section="employees")
+
+
+def render(ctx: object, employee_id: str, edit_values: dict[str, str] | None = None) -> str:
     try:
+        import ops_dashboard.sections.tokens as tokens
+
         edit_section = first_query_value(getattr(ctx, "query", {}), "edit")
+        if edit_values is not None:
+            edit_section = "identity"
         doc = _load_vault_doc(f"employee_{employee_id}")
         if not isinstance(doc, dict) or doc.get("type") != "employee":
             return _not_found(employee_id)
@@ -742,6 +809,37 @@ def render(ctx: object, employee_id: str) -> str:
         )
 
         sections = [header]
+        query = getattr(ctx, "query", {}) or {}
+        tokens_kept = first_query_value(query, "tokens_kept")
+        tokens_deactivated = first_query_value(query, "tokens_deactivated")
+        pending_token_ids = _parse_token_ids(first_query_value(query, "token_deactivation_pending"))
+        if tokens_kept:
+            noun = "token" if tokens_kept == "1" else "tokens"
+            sections.append(
+                f'<section class="success">Employee inactive. {html.escape(tokens_kept)} active {noun} left in place.</section>'
+            )
+        if tokens_deactivated and not pending_token_ids:
+            noun = "token" if tokens_deactivated == "1" else "tokens"
+            sections.append(
+                f'<section class="success">Employee inactive. {html.escape(tokens_deactivated)} {noun} deactivated locally and at the gateway.</section>'
+            )
+        if pending_token_ids:
+            noun = "token" if len(pending_token_ids) == 1 else "tokens"
+            links = "".join(
+                '<li><a href="/tokens?token_id='
+                f'{quote(token_id, safe="")}"><code>{html.escape(tokens.short_token_id(token_id))}</code></a></li>'
+                for token_id in pending_token_ids
+            )
+            hidden_ids = html.escape(",".join(pending_token_ids), quote=True)
+            sections.append(
+                '<section class="warning">'
+                f'<p>Employee saved as inactive, but the gateway revoke is unresolved for {len(pending_token_ids)} {noun}.</p>'
+                f'<ul>{links}</ul>'
+                f'<form method="post" action="/employees/{eid}/retry-token-deactivation">'
+                f'<input type="hidden" name="token_ids" value="{hidden_ids}">'
+                '<button type="submit">Retry deactivation</button>'
+                '</form></section>'
+            )
         sections.append(
             _metric_cards(
                 assigned_sites=len(assigned_site_ids),
@@ -759,6 +857,7 @@ def render(ctx: object, employee_id: str) -> str:
                 site_names,
                 edit_section=edit_section if edit_section in _EDITABLE_SECTIONS else "",
                 employee_id=employee_id,
+                edit_values=edit_values,
             )
         )
         staged = first_query_value(getattr(ctx, "query", {}), "staged")
@@ -944,6 +1043,7 @@ def handle_save_section(ctx: object, employee_id: str, body: bytes):
     from urllib.parse import parse_qs, quote
     from ops_dashboard.common import first_query_value
     import ops_dashboard.sections.entity_edit as entity_edit
+    import ops_dashboard.sections.tokens as tokens
 
     form = parse_qs(body.decode("utf-8", errors="replace"), keep_blank_values=True)
     form_flat = {k: v[0] for k, v in form.items()}
@@ -964,6 +1064,9 @@ def handle_save_section(ctx: object, employee_id: str, body: bytes):
     if not existing or existing.get("type") != "employee":
         return ctx.redirect(f"/employees/{quote(employee_id)}?error=not_found")
 
+    token_decision = _clean(form_flat.get("_token_decision"))
+    status_normalized = _clean(form_flat.get("status")).lower()
+    existing_status_normalized = _clean(existing.get("status")).lower()
     if section == "identity":
         status_value = _clean(form_flat.get("status"))
         # The stored value stays valid even when it is outside the standard
@@ -971,6 +1074,58 @@ def handle_save_section(ctx: object, employee_id: str, body: bytes):
         allowed_statuses = set(ENTITY_STATUSES) | {_clean(existing.get("status"))}
         if status_value and status_value not in allowed_statuses:
             return 400, "text/plain; charset=utf-8", b"Invalid status", {}
+
+    inactivation = (
+        section == "identity"
+        and status_normalized == "inactive"
+        and existing_status_normalized != "inactive"
+    )
+    if token_decision:
+        if token_decision not in {"cancel", "keep_tokens", "revoke_tokens"} or not inactivation:
+            return 400, "text/plain; charset=utf-8", b"Invalid token decision", {}
+        if token_decision == "cancel":
+            edit_values = {
+                key: str(form_flat.get(key, ""))
+                for key in _EMPLOYEE_GROUPS[0][1]
+                if key in form_flat
+            }
+            return 200, "text/html; charset=utf-8", render(ctx, employee_id, edit_values).encode("utf-8"), {}
+
+    active: list[Any] = []
+    if inactivation:
+        store = tokens.token_store(ctx.runtime_root)
+        active = tokens.active_tokens_for_identity(store, tokens.employee_identity_keys(existing))
+        if not token_decision and active:
+            return (
+                200,
+                "text/html; charset=utf-8",
+                _render_inactivation_confirm(employee_id, existing, form_flat, active).encode("utf-8"),
+                {},
+            )
+        if token_decision == "revoke_tokens":
+            submitted_token_ids = _parse_token_ids(_clean(form_flat.get("_token_ids")))
+            if {str(record.token_id) for record in active} != set(submitted_token_ids):
+                ctx.audit(
+                    f"/employees/{employee_id}/save-section",
+                    {
+                        "section": "identity",
+                        "decision": token_decision,
+                        "token_ids": submitted_token_ids,
+                    },
+                    "failed: token inventory changed",
+                )
+                return (
+                    200,
+                    "text/html; charset=utf-8",
+                    _render_inactivation_confirm(
+                        employee_id,
+                        existing,
+                        form_flat,
+                        active,
+                        inventory_changed=True,
+                    ).encode("utf-8"),
+                    {},
+                )
 
     if section == "assignment":
         for key in ("additional_jobs", "sites"):
@@ -992,19 +1147,17 @@ def handle_save_section(ctx: object, employee_id: str, body: bytes):
     updated["_rev"] = existing["_rev"]
 
     doc_path = f"{couchdb_config.vault_database()}/employee_{employee_id}"
+    audit_payload: dict[str, object] = {"section": section}
+    if token_decision:
+        audit_payload["decision"] = token_decision
+        audit_payload["token_ids"] = [str(record.token_id) for record in active]
     try:
         sites.request_json("PUT", doc_path, updated)
-        ctx.audit(
-            f"/employees/{employee_id}/save-section",
-            {"section": section},
-            f"success: updated section={section}",
-        )
-        return ctx.redirect(f"/employees/{quote(employee_id)}")
     except Exception as exc:  # noqa: BLE001
         if getattr(exc, "code", None) == 409:
             ctx.audit(
                 f"/employees/{employee_id}/save-section",
-                {"section": section},
+                audit_payload,
                 "failed: conflict",
             )
             return (
@@ -1014,7 +1167,74 @@ def handle_save_section(ctx: object, employee_id: str, body: bytes):
             )
         ctx.audit(
             f"/employees/{employee_id}/save-section",
-            {"section": section},
+            audit_payload,
             f"failed: {exc}",
         )
         return ctx.redirect(f"/employees/{quote(employee_id)}?error={quote(str(exc))}")
+
+    if token_decision == "keep_tokens":
+        ctx.audit(
+            f"/employees/{employee_id}/save-section",
+            audit_payload,
+            f"success: updated section=identity; tokens_kept={len(active)}",
+        )
+        return ctx.redirect(f"/employees/{quote(employee_id)}?tokens_kept={len(active)}")
+    if token_decision == "revoke_tokens":
+        ctx.audit(
+            f"/employees/{employee_id}/save-section",
+            audit_payload,
+            "success: updated section=identity; decision=revoke_tokens",
+        )
+        outcomes = [
+            tokens.deactivate_token(
+                ctx,
+                store,
+                str(record.token_id),
+                via="employee_inactivation",
+            )
+            for record in active
+        ]
+        deactivated = sum(1 for outcome in outcomes if outcome["sync_ok"] is True)
+        pending = [
+            str(outcome["token_id"])
+            for outcome in outcomes
+            if outcome["sync_ok"] is False or outcome["local"] == "missing"
+        ]
+        redirect_query = f"tokens_deactivated={deactivated}"
+        if pending:
+            redirect_query += f"&token_deactivation_pending={quote(','.join(pending), safe='')}"
+        return ctx.redirect(f"/employees/{quote(employee_id)}?{redirect_query}")
+    ctx.audit(
+        f"/employees/{employee_id}/save-section",
+        audit_payload,
+        f"success: updated section={section}",
+    )
+    return ctx.redirect(f"/employees/{quote(employee_id)}")
+
+
+def handle_retry_token_deactivation(ctx: object, employee_id: str, body: bytes):
+    from urllib.parse import parse_qs, quote
+    import ops_dashboard.sections.tokens as tokens
+
+    form = parse_qs(body.decode("utf-8", errors="replace"), keep_blank_values=True)
+    token_ids = _parse_token_ids(first_query_value(form, "token_ids"))
+    store = tokens.token_store(ctx.runtime_root)
+    outcomes = [
+        tokens.deactivate_token(
+            ctx,
+            store,
+            token_id,
+            via="employee_inactivation_retry",
+        )
+        for token_id in token_ids
+    ]
+    deactivated = sum(1 for outcome in outcomes if outcome["sync_ok"] is True)
+    pending = [
+        str(outcome["token_id"])
+        for outcome in outcomes
+        if outcome["sync_ok"] is False or outcome["local"] == "missing"
+    ]
+    redirect_query = f"tokens_deactivated={deactivated}"
+    if pending:
+        redirect_query += f"&token_deactivation_pending={quote(','.join(pending), safe='')}"
+    return ctx.redirect(f"/employees/{quote(employee_id)}?{redirect_query}")

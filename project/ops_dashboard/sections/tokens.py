@@ -96,6 +96,75 @@ def employee_identity_keys(doc: dict) -> frozenset[str]:
     return frozenset(keys)
 
 
+def active_tokens_for_identity(
+    store: TokenStore,
+    identity_keys: frozenset[str] | set[str],
+    *,
+    now: datetime | None = None,
+) -> list[TokenRecord]:
+    """Return unrevoked, unexpired tokens belonging to an employee identity."""
+    effective_now = now or datetime.now(timezone.utc)
+    active: list[TokenRecord] = []
+    for record in store.list_tokens():
+        if record.person_id not in identity_keys or record.revoked:
+            continue
+        try:
+            expires_at = parse_timestamp(record.expires_at) if record.expires_at else None
+        except ValueError:
+            continue
+        if expires_at is None or expires_at > effective_now:
+            active.append(record)
+    return active
+
+
+def deactivate_token(
+    ctx: object,
+    store: TokenStore,
+    token_id: str,
+    *,
+    via: str,
+) -> dict[str, object]:
+    """Revoke one token locally and at the gateway, including retry-safe audit."""
+    record = store.get_token(token_id)
+    audit = {"token_id": token_id, "via": via}
+    if record is None:
+        detail = "token not found locally; gateway sync skipped"
+        ctx.audit("/tokens/revoke", audit, f"failed: missing token_id={token_id}")
+        ctx.audit("/tokens/sync", audit, f"failed: revoke token_id={token_id} {detail}")
+        return {
+            "token_id": token_id,
+            "local": "missing",
+            "sync_ok": False,
+            "sync_detail": detail,
+        }
+
+    revoked = store.revoke_token(token_id)
+    local = "revoked" if revoked else "already_revoked"
+    ctx.audit(
+        "/tokens/revoke",
+        audit,
+        f"success: {'revoked' if revoked else 'already revoked'} token_id={token_id}",
+    )
+    try:
+        sync_ok, sync_detail = sync_token_to_vps(
+            "revoke",
+            {"action": "revoke", "token_id": token_id},
+        )
+    except Exception as exc:  # noqa: BLE001 - gateway failure is a retryable outcome.
+        sync_ok, sync_detail = False, str(exc)
+    ctx.audit(
+        "/tokens/sync",
+        audit,
+        f"{'success' if sync_ok else 'failed'}: revoke token_id={token_id} {sync_detail}".strip(),
+    )
+    return {
+        "token_id": token_id,
+        "local": local,
+        "sync_ok": sync_ok,
+        "sync_detail": sync_detail,
+    }
+
+
 def _build_person_name_map(docs: list[dict]) -> dict[str, str]:
     """Map token person_id -> display name from canonical person/employee docs.
 
