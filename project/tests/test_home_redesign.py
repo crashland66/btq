@@ -229,7 +229,7 @@ def test_directories_are_sticky_collapsibles_with_names(monkeypatch: pytest.Monk
     assert '<details class="home-collapsible" id="site-directory">' in body
     assert '<details class="home-collapsible" id="employee-directory">' in body
     # Sentence-case summaries with counts.
-    assert "<summary>Site directory · 1</summary>" in body
+    assert "<summary>All sites · 1</summary>" in body
     assert "<summary>Employee directory · 1</summary>" in body
     # localStorage-sticky state keys (the 363/364 sticky behavior is preserved).
     assert "btq-home-sites-collapsed" in body

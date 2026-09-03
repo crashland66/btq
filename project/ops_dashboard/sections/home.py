@@ -42,8 +42,9 @@ from btq_vault.projector import (
     _Location,
     _SiteRecord,
 )
-from btq_vault.entity_types import current_operator_id
-from event_pipeline.visit_coverage import coverage_report
+from btq_vault.entity_types import current_operator_identity
+from event_pipeline.context_resolver import operator_context_snapshot
+from event_pipeline.visit_coverage import _normalize_account, coverage_report
 import ops_dashboard.sections.inbox as _inbox_mod
 import ops_dashboard.sections.field_photos as _field_photos_mod
 
@@ -215,6 +216,75 @@ def _render_account_directory(by_account: dict[str, list[_SiteRecord]]) -> str:
             )
     parts.append("</tbody></table>")
     return "".join(parts)
+
+
+def _operator_display_name(snapshot: dict | None, operator_identity: str) -> str:
+    if not isinstance(snapshot, dict) or isinstance(snapshot.get("resolution"), dict):
+        return operator_identity
+    name = _string(snapshot.get("operator"))
+    if "," in name:
+        last, first = name.split(",", 1)
+        name = f"{first.strip()} {last.strip()}".strip()
+    return name or operator_identity
+
+
+def _render_my_accounts_panel(
+    snapshot: dict | None,
+    site_records: dict[str, _SiteRecord],
+    operator_identity: str,
+) -> str:
+    operator_name = _operator_display_name(snapshot, operator_identity)
+    scope_note = (
+        f'<p class="subline">Sites assigned to {_esc(operator_name)} and active — the same set Visit/QC coverage '
+        "and site calendars use. Missing a site? Fix the assignment on the employee page.</p>"
+    )
+
+    if snapshot is None:
+        body = (
+            scope_note
+            + '<p class="empty">My accounts are unavailable because the operator resolver could not be reached.</p>'
+        )
+        count = 0
+    else:
+        resolution = snapshot.get("resolution") if isinstance(snapshot.get("resolution"), dict) else None
+        if resolution is not None:
+            kind = _string(resolution.get("kind"))
+            if kind == "ambiguous":
+                message = f'We could not resolve operator “{operator_name}” because the identity is ambiguous.'
+            else:
+                message = f'We could not resolve operator “{operator_name}”.'
+            body = scope_note + f'<p class="empty">{_esc(message)}</p>'
+            count = 0
+        else:
+            accounts_by_site_id: dict[str, str] = {}
+            accounts = snapshot.get("accounts") if isinstance(snapshot.get("accounts"), list) else []
+            for account in accounts:
+                if not isinstance(account, dict):
+                    continue
+                normalized = _normalize_account(account)
+                if normalized is None or not normalized["active"]:
+                    continue
+                site_id = _string(normalized["site_id"])
+                record = site_records.get(site_id)
+                if record is None:
+                    continue
+                accounts_by_site_id[site_id] = record.name or _string(normalized["site_name"]) or site_id
+
+            rows = sorted(accounts_by_site_id.items(), key=lambda item: (item[1].lower(), item[0]))
+            count = len(rows)
+            if rows:
+                items = [f'<li>{_site_link(site_id, name)}</li>' for site_id, name in rows]
+                account_list = f'<ul>{"".join(items)}</ul>'
+            else:
+                account_list = '<p class="empty">No active sites are assigned to this operator.</p>'
+            body = scope_note + account_list
+
+    return _collapsible_directory(
+        "my-accounts",
+        f"My accounts · {count}",
+        body,
+        "btq-home-my-accounts-collapsed",
+    )
 
 
 def _collapsible_directory(dom_id: str, title: str, inner_html: str, storage_key: str) -> str:
@@ -1162,12 +1232,19 @@ def _handoff_home_voice_memo_to_transcription(runtime_root: Path, record: dict) 
 
 def render(ctx: object) -> str:
     action_cards, action_notice = _home_action_cards(ctx)
+    operator_identity = current_operator_identity()
     coverage_data: dict | None = None
     try:
-        coverage_data = coverage_report(current_operator_id())
+        coverage_data = coverage_report(operator_identity)
         coverage_html = _render_coverage_panel(coverage_data)
     except Exception:  # noqa: BLE001 - homepage must degrade instead of 500ing.
         coverage_html = _render_coverage_unavailable()
+
+    operator_snapshot: dict | None = None
+    try:
+        operator_snapshot = operator_context_snapshot(operator_identity)
+    except Exception:  # noqa: BLE001 - homepage must degrade instead of 500ing.
+        pass
 
     try:
         cfg = couchdb_config.from_env()
@@ -1244,9 +1321,10 @@ def render(ctx: object) -> str:
         directory_html = _group(
             "directory",
             '<div class="dir-grid">'
+            + _render_my_accounts_panel(operator_snapshot, site_records, operator_identity)
             + _collapsible_directory(
                 "site-directory",
-                f"Site directory · {len(site_records)}",
+                f"All sites · {len(site_records)}",
                 _render_account_directory(by_account),
                 "btq-home-sites-collapsed",
             )
