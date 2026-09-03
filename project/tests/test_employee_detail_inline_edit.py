@@ -139,12 +139,24 @@ def test_edit_identity_renders_inline_form_in_quick_facts(monkeypatch: pytest.Mo
 
 
 def test_edit_assignment_renders_inline_form_with_list_values_joined(monkeypatch: pytest.MonkeyPatch) -> None:
+    # RECONCILED for prompt 542 (deliberate assignment editor): this test
+    # previously asserted an `additional_jobs` control rendered with a
+    # comma-joined value. Under the new contract the Assignment group's
+    # direct fields are only job/role; "additional_jobs" and "sites" are no
+    # longer editable controls at all -- multi-site membership is now the
+    # `assigned_sites` control, prefilled from the canonical-first rule
+    # (btq_vault.employee_assignments.employee_assigned_site_ids), which
+    # here resolves to the doc's non-empty canonical site_ids=["7050"] and
+    # ignores the legacy additional_jobs/sites fields entirely.
     doc = _employee_doc(additional_jobs=["7040", "1338"], sites=["7050"])
     facts = _quick_facts_region(_render(monkeypatch, doc, edit="assignment"))
     assert '<input type="hidden" name="_section" value="assignment">' in facts
     assert '<input type="text" name="job" value="7050">' in facts
     # Lists display comma-joined, never as a Python repr.
-    assert '<input type="text" name="additional_jobs" value="7040, 1338">' in facts
+    assert '<input type="text" name="assigned_sites" value="7050">' in facts
+    assert '<input type="hidden" name="_assigned_baseline" value="7050">' in facts
+    assert 'name="additional_jobs"' not in facts
+    assert 'name="sites"' not in facts
     assert "[&#x27;" not in facts
     # Identity stays read-only with its glyph.
     assert 'href="?edit=identity"' in facts
@@ -229,18 +241,27 @@ def test_save_identity_allows_existing_nonstandard_status_roundtrip(
     assert payload["phone"] == "555-9999"
 
 
-def test_save_assignment_splits_comma_lists_and_preserves_canonical_site_ids(
+def test_save_assignment_direct_job_edit_preserves_canonical_site_ids(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    # RECONCILED for prompt 541 (canonical-first employee_assignments rule):
-    # this test previously pinned the OLD always-overwrite-from-legacy
-    # behavior of recompute_employee_derived, asserting site_ids became the
-    # flat union of job+additional_jobs even though the fixture doc already
-    # carries a non-empty canonical site_ids=["7050"]. That was the exact bug
-    # 541 fixes (canonical site_ids silently dropped on every section save).
-    # Under the new contract, a non-empty stored site_ids is preserved
-    # verbatim regardless of legacy job/additional_jobs edits — comma-split
-    # parsing of additional_jobs itself is unaffected and still covered here.
+    # RECONCILED for prompt 541, then again for prompt 542.
+    #
+    # 541 fixed the bug where recompute_employee_derived silently overwrote
+    # a non-empty canonical site_ids with the flat union of legacy
+    # job/additional_jobs fields on every section save.
+    #
+    # 542 goes further: additional_jobs and sites are no longer accepted
+    # keys for the assignment section at all (allowed keys are only
+    # job/role; the old test posted `additional_jobs=7040,%201338` and
+    # asserted it landed in the payload as a split list, which is no longer
+    # possible -- the field is silently dropped, not written). Multi-site
+    # membership changes now go exclusively through assign_employee_site
+    # queue jobs driven by assigned_sites/_assigned_baseline, covered by
+    # project/tests/test_employee_assignment_editor_542.py. What remains
+    # worth pinning here is the original 541 guarantee in the new shape: a
+    # direct-field-only assignment save (job) never touches the stored
+    # canonical site_ids, and a dropped legacy key never resurfaces in the
+    # payload.
     monkeypatch.setattr(ed, "_load_vault_doc", lambda _doc_id: _employee_doc())
     captured = _capture_put(monkeypatch)
     ctx = DummyContext(tmp_path)
@@ -248,10 +269,11 @@ def test_save_assignment_splits_comma_lists_and_preserves_canonical_site_ids(
     ed.handle_save_section(
         ctx,
         "jordan",
-        b"_section=assignment&job=7050&additional_jobs=7040,%201338&_entity_id=jordan",
+        b"_section=assignment&job=7060&additional_jobs=7040,%201338&_entity_id=jordan",
     )
 
     payload = captured["payload"]
     assert isinstance(payload, dict)
-    assert payload["additional_jobs"] == ["7040", "1338"]
+    assert payload["job"] == "7060"
+    assert "additional_jobs" not in payload
     assert payload["site_ids"] == ["7050"]

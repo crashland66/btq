@@ -1697,6 +1697,34 @@ def write_set_employee_home_address_job(
     return enqueue_queue_job(job)
 
 
+def write_assign_employee_site_job(
+    *,
+    employee_id: str,
+    site_id: str,
+    actor: str,
+    action: str = "assign",
+    source: str = "ops_dashboard_employee_detail",
+) -> str:
+    """Stage one validated canonical employee-membership change."""
+    from queue_spec import JOB_ASSIGN_EMPLOYEE_SITE, validate_job
+
+    suffix = str(uuid.uuid4())
+    job = {
+        "job_id": f"assign-employee-site-{suffix}",
+        "job_type": JOB_ASSIGN_EMPLOYEE_SITE,
+        "payload": {
+            "employee_id": employee_id,
+            "site_id": site_id,
+            "actor": actor,
+            "action": action,
+            "source": source,
+        },
+    }
+    if not validate_job(job):
+        raise ValueError("invalid assign_employee_site payload")
+    return enqueue_queue_job(job)
+
+
 def write_set_employee_uniform_job(
     *,
     person: str,
@@ -1860,6 +1888,48 @@ def _selector_couch_find(database: str, selector: dict[str, object]) -> list[dic
     req = _request.Request(url, data=payload, headers=headers, method="POST")
     with _request.urlopen(req, timeout=cfg.timeout) as response:
         return [doc for doc in _json.loads(response.read().decode("utf-8")).get("docs", []) if isinstance(doc, dict)]
+
+
+def queue_job_states(job_ids: Iterable[str]) -> dict[str, dict[str, str]]:
+    """Return queue truth for the requested job ids, including missing jobs.
+
+    A queue read outage is deliberately represented as ``unknown`` for every
+    requested job so callers never mistake an unavailable read for success.
+    """
+    requested = list(
+        dict.fromkeys(
+            str(job_id).strip()
+            for job_id in job_ids
+            if str(job_id).strip()
+        )
+    )
+    states = {
+        job_id: {"state": "unknown", "site_id": "", "action": ""}
+        for job_id in requested
+    }
+    if not requested:
+        return states
+
+    try:
+        docs = _selector_couch_find(
+            couchdb_config.queue_database(),
+            {"_id": {"$in": requested}},
+        )
+    except Exception:  # noqa: BLE001 - callers must render an honest unknown state on queue outages.
+        return states
+
+    for doc in docs:
+        job_id = str(doc.get("_id") or doc.get("job_id") or "").strip()
+        if job_id not in states:
+            continue
+        payload = doc.get("payload")
+        payload = payload if isinstance(payload, dict) else {}
+        states[job_id] = {
+            "state": str(doc.get("btq_state") or "unknown"),
+            "site_id": str(payload.get("site_id") or ""),
+            "action": str(payload.get("action") or ""),
+        }
+    return states
 
 
 def employee_selector_options() -> list[tuple[str, str]]:

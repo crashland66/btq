@@ -67,10 +67,19 @@ def test_post_save_employee_section_identity_recomputes_name(
     assert payload["name"] == "Alice Smith"
 
 
-def test_post_save_employee_section_assignment_recomputes_site_ids(
+def test_post_save_employee_section_assignment_writes_job_without_recomputing_site_ids(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
+    # RECONCILED for prompt 542 (deliberate assignment editor): this test
+    # previously pinned the OLD behavior where any assignment-section save
+    # ran recompute_employee_derived, so a bare `job` edit silently derived
+    # site_ids from job/additional_jobs/sites. Under the new contract, job
+    # and role are the only direct assignment fields; membership (site_ids)
+    # is exclusively queue-owned via assign_employee_site jobs, and the
+    # assignment save branch deliberately skips recompute_employee_derived
+    # so site_ids stays untouched (_PROTECTED) on a legacy-only job/role
+    # edit with no assigned_sites/_assigned_baseline present.
     monkeypatch.setattr(
         employee_detail,
         "_load_vault_doc",
@@ -87,7 +96,8 @@ def test_post_save_employee_section_assignment_recomputes_site_ids(
 
     payload = captured["payload"]
     assert isinstance(payload, dict)
-    assert "7040" in payload["site_ids"]
+    assert payload["job"] == "7040"
+    assert payload["site_ids"] == []
 
 
 def test_post_save_employee_section_only_updates_allowed_keys(

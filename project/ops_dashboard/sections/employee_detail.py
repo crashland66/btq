@@ -38,7 +38,7 @@ def _load_vault_doc(doc_id: str) -> dict[str, Any] | None:
 
 _EMPLOYEE_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("Identity", ("first", "last", "preferred_name", "person_id", "status", "phone", "email")),
-    ("Assignment", ("job", "additional_jobs", "sites", "role")),
+    ("Assignment", ("job", "role")),
 )
 
 _STATUS_CHOICES: tuple[str, ...] = tuple(sorted(ENTITY_STATUSES))
@@ -65,6 +65,16 @@ def _dedupe(values: list[str]) -> list[str]:
             result.append(value)
             seen.add(value)
     return result
+
+
+def _parse_assigned_site_ids(value: object) -> list[str]:
+    return _dedupe(
+        [
+            site_id
+            for part in re.split(r"[,\r\n]+", str(value or ""))
+            if (site_id := _bare_site_id(part))
+        ]
+    )
 
 
 def _primary_site_id(doc: dict[str, Any]) -> str:
@@ -315,7 +325,15 @@ def _facts_head(title: str, slug: str, *, editing: bool) -> str:
     return f'<div class="facts-head"><h3>{html.escape(title)}</h3>{glyph}</div>'
 
 
-def _facts_edit_form(title: str, slug: str, doc: dict[str, Any], keys: tuple[str, ...], employee_id: str) -> str:
+def _facts_edit_form(
+    title: str,
+    slug: str,
+    doc: dict[str, Any],
+    keys: tuple[str, ...],
+    employee_id: str,
+    *,
+    assignment_changed: bool = False,
+) -> str:
     eid = html.escape(employee_id, quote=True)
     rev = html.escape(str(doc.get("_rev", "")), quote=True)
     controls = entity_edit.render_field_controls(
@@ -323,9 +341,27 @@ def _facts_edit_form(title: str, slug: str, doc: dict[str, Any], keys: tuple[str
         keys,
         select_fields={"status": _STATUS_CHOICES},
     )
+    notice = ""
+    if slug == "assignment":
+        assigned_site_ids = _assigned_site_ids(doc)
+        assigned_value = html.escape(", ".join(assigned_site_ids), quote=True)
+        baseline = html.escape(",".join(assigned_site_ids), quote=True)
+        controls = (
+            f"{controls}\n"
+            '    <label class="field-row"><span class="field-row-label">Assigned sites</span>\n'
+            f'      <input type="text" name="assigned_sites" value="{assigned_value}">\n'
+            "    </label>"
+            f'<input type="hidden" name="_assigned_baseline" value="{baseline}">'
+        )
+        if assignment_changed:
+            notice = (
+                '<section class="warning"><p>Assignments changed underneath you. '
+                "Review the current assigned sites before saving again.</p></section>"
+            )
     return (
         "<section>"
         f"{_facts_head(title, slug, editing=True)}"
+        f"{notice}"
         f'<form method="post" action="/employees/{eid}/save-section" class="admin-form entity-edit-form">'
         f'<input type="hidden" name="_rev" value="{rev}">'
         f'<input type="hidden" name="_entity_id" value="{eid}">'
@@ -347,6 +383,7 @@ def _quick_facts(
     edit_section: str = "",
     employee_id: str = "",
     edit_values: dict[str, str] | None = None,
+    assignment_changed: bool = False,
 ) -> str:
     phone = _clean(doc.get("phone"))
     email = _clean(doc.get("email"))
@@ -379,7 +416,16 @@ def _quick_facts(
             edit_doc = dict(doc)
             if edit_values is not None:
                 edit_doc.update(edit_values)
-            groups.append(_facts_edit_form(title, slug, edit_doc, keys, employee_id))
+            groups.append(
+                _facts_edit_form(
+                    title,
+                    slug,
+                    edit_doc,
+                    keys,
+                    employee_id,
+                    assignment_changed=assignment_changed,
+                )
+            )
             continue
         mapping, order = display_groups[slug]
         rows = field_rows(mapping, order, value_formatter=_quick_fact_value)
@@ -730,13 +776,21 @@ def _render_inactivation_confirm(
     return html_page("Deactivate Employee", body, active_section="employees")
 
 
-def render(ctx: object, employee_id: str, edit_values: dict[str, str] | None = None) -> str:
+def render(
+    ctx: object,
+    employee_id: str,
+    edit_values: dict[str, str] | None = None,
+    *,
+    assignment_changed: bool = False,
+) -> str:
     try:
         import ops_dashboard.sections.tokens as tokens
 
         edit_section = first_query_value(getattr(ctx, "query", {}), "edit")
         if edit_values is not None:
             edit_section = "identity"
+        if assignment_changed:
+            edit_section = "assignment"
         doc = _load_vault_doc(f"employee_{employee_id}")
         if not isinstance(doc, dict) or doc.get("type") != "employee":
             return _not_found(employee_id)
@@ -837,10 +891,49 @@ def render(ctx: object, employee_id: str, edit_values: dict[str, str] | None = N
                 edit_section=edit_section if edit_section in _EDITABLE_SECTIONS else "",
                 employee_id=employee_id,
                 edit_values=edit_values,
+                assignment_changed=assignment_changed,
             )
         )
         staged = first_query_value(getattr(ctx, "query", {}), "staged")
         error = first_query_value(getattr(ctx, "query", {}), "error")
+        if staged == "assignment":
+            from ops_dashboard.common import queue_job_states
+
+            job_ids = _parse_token_ids(first_query_value(getattr(ctx, "query", {}), "jobs"))
+            if job_ids:
+                job_states = queue_job_states(job_ids)
+                complete_count = sum(
+                    1 for job_id in job_ids
+                    if job_states.get(job_id, {}).get("state") == "complete"
+                )
+                if complete_count == len(job_ids):
+                    heading = f"All {len(job_ids)} changes applied"
+                    notice_class = "success"
+                else:
+                    heading = f"{complete_count} of {len(job_ids)} applied &mdash; reload to refresh"
+                    notice_class = "warning"
+                rows = []
+                for job_id in job_ids:
+                    outcome = job_states.get(
+                        job_id,
+                        {"state": "unknown", "site_id": "", "action": ""},
+                    )
+                    site_id = str(outcome.get("site_id") or job_id)
+                    action = str(outcome.get("action") or "change")
+                    state = str(outcome.get("state") or "unknown")
+                    rows.append(
+                        f"<li><code>{html.escape(site_id)}</code> &mdash; "
+                        f"{html.escape(action)} &middot; {html.escape(state)}</li>"
+                    )
+                sections.append(
+                    f'<section class="{notice_class}"><p><strong>{heading}</strong></p>'
+                    f'<ul>{"".join(rows)}</ul></section>'
+                )
+        if error == "assignment_queue_unavailable":
+            sections.append(
+                '<section class="warning"><p>Some assignment changes could not be staged. '
+                "Review the listed queue outcomes and try the remaining changes again.</p></section>"
+            )
         uniform_notice = ""
         if staged == "uniform":
             uniform_notice = "staged"
@@ -1020,7 +1113,7 @@ def handle_home_address_post(ctx: object, employee_id: str, body: bytes):
 
 def handle_save_section(ctx: object, employee_id: str, body: bytes):
     from urllib.parse import parse_qs, quote
-    from ops_dashboard.common import first_query_value
+    from ops_dashboard.common import default_actor, first_query_value, write_assign_employee_site_job
     import ops_dashboard.sections.entity_edit as entity_edit
     import ops_dashboard.sections.tokens as tokens
 
@@ -1030,7 +1123,7 @@ def handle_save_section(ctx: object, employee_id: str, body: bytes):
 
     _ALLOWED_KEYS: dict[str, frozenset[str]] = {
         "identity": frozenset(("first", "last", "preferred_name", "person_id", "status", "phone", "email")),
-        "assignment": frozenset(("job", "additional_jobs", "sites", "role")),
+        "assignment": frozenset(("job", "role")),
         # "contact" retained for backward-compatible saves; phone/email now live in identity.
         "contact": frozenset(("phone", "email")),
         "about": frozenset(("content",)),
@@ -1106,18 +1199,55 @@ def handle_save_section(ctx: object, employee_id: str, body: bytes):
                     {},
                 )
 
+    assignment_changes: list[tuple[str, str]] = []
     if section == "assignment":
-        for key in ("additional_jobs", "sites"):
-            value = form_flat.get(key)
-            if isinstance(value, str) and "," in value:
-                parts = [part.strip() for part in value.split(",") if part.strip()]
-                form_flat[key] = parts if parts else ""
+        current = _assigned_site_ids(existing)
+        membership_fields_present = (
+            "assigned_sites" in form_flat
+            or "_assigned_baseline" in form_flat
+        )
+        baseline_missing = (
+            membership_fields_present
+            and "_assigned_baseline" not in form_flat
+        )
+        baseline = (
+            _parse_assigned_site_ids(form_flat.get("_assigned_baseline"))
+            if membership_fields_present
+            else current
+        )
+        if baseline_missing or set(current) != set(baseline):
+            ctx.audit(
+                f"/employees/{employee_id}/save-section",
+                {"section": "assignment", "baseline_site_ids": baseline, "current_site_ids": current},
+                "failed: assignments changed underneath operator",
+            )
+            return (
+                200,
+                "text/html; charset=utf-8",
+                render(ctx, employee_id, assignment_changed=True).encode("utf-8"),
+                {},
+            )
+        submitted = (
+            _parse_assigned_site_ids(form_flat.get("assigned_sites"))
+            if membership_fields_present
+            else current
+        )
+        baseline_set = set(baseline)
+        submitted_set = set(submitted)
+        assignment_changes = [
+            *(("unassign", site_id) for site_id in baseline if site_id not in submitted_set),
+            *(("assign", site_id) for site_id in submitted if site_id not in baseline_set),
+        ]
 
-    updated = entity_edit.apply_section_update(existing, form_flat, allowed_keys)
+    section_update_keys = allowed_keys
+    if section == "assignment":
+        section_update_keys = frozenset(key for key in allowed_keys if key in form_flat)
+    updated = entity_edit.apply_section_update(existing, form_flat, section_update_keys)
 
-    # ALWAYS recompute derived fields after any employee section save.
-    # A stale name/site_ids breaks the home directory and employees_by_site view.
-    entity_edit.recompute_employee_derived(updated)
+    # Assignment membership is exclusively queue-owned. Other employee saves
+    # still run 541's canonical-first derived-field repair.
+    if section != "assignment":
+        entity_edit.recompute_employee_derived(updated)
 
     # Assert validate_doc_update contract (btq_vault requires type + non-empty operator)
     assert updated.get("type") == "employee"
@@ -1130,26 +1260,83 @@ def handle_save_section(ctx: object, employee_id: str, body: bytes):
     if token_decision:
         audit_payload["decision"] = token_decision
         audit_payload["token_ids"] = [str(record.token_id) for record in active]
-    try:
-        sites.request_json("PUT", doc_path, updated)
-    except Exception as exc:  # noqa: BLE001
-        if getattr(exc, "code", None) == 409:
+    direct_changed = section != "assignment" or any(
+        existing.get(key) != updated.get(key)
+        for key in section_update_keys
+    )
+    if direct_changed:
+        try:
+            sites.request_json("PUT", doc_path, updated)
+        except Exception as exc:  # noqa: BLE001
+            if getattr(exc, "code", None) == 409:
+                ctx.audit(
+                    f"/employees/{employee_id}/save-section",
+                    audit_payload,
+                    "failed: conflict",
+                )
+                return (
+                    200, "text/html; charset=utf-8",
+                    render(ctx, employee_id).encode("utf-8"),
+                    {},
+                )
             ctx.audit(
                 f"/employees/{employee_id}/save-section",
                 audit_payload,
-                "failed: conflict",
+                f"failed: {exc}",
             )
-            return (
-                200, "text/html; charset=utf-8",
-                render(ctx, employee_id).encode("utf-8"),
-                {},
+            return ctx.redirect(f"/employees/{quote(employee_id)}?error={quote(str(exc))}")
+
+    if section == "assignment":
+        job_ids: list[str] = []
+        staged_site_ids: list[str] = []
+        queue_error = False
+        actor = default_actor()
+        for action, site_id in assignment_changes:
+            try:
+                job_id = write_assign_employee_site_job(
+                    employee_id=str(existing.get("_id") or f"employee_{employee_id}"),
+                    site_id=site_id,
+                    actor=actor,
+                    action=action,
+                )
+            except Exception as exc:  # noqa: BLE001 - report partial staging honestly by the ids that exist.
+                queue_error = True
+                ctx.audit(
+                    f"/employees/{employee_id}/save-section",
+                    {
+                        "section": "assignment",
+                        "job_ids": job_ids,
+                        "site_ids": staged_site_ids,
+                        "failed_site_id": site_id,
+                        "failed_action": action,
+                    },
+                    f"failed: assignment queue enqueue {exc.__class__.__name__}",
+                )
+                break
+            job_ids.append(job_id)
+            staged_site_ids.append(site_id)
+
+        if job_ids:
+            ctx.audit(
+                f"/employees/{employee_id}/save-section",
+                {
+                    "section": "assignment",
+                    "job_ids": job_ids,
+                    "site_ids": staged_site_ids,
+                    "actions": [action for action, _site_id in assignment_changes[:len(job_ids)]],
+                },
+                f"success: staged {len(job_ids)} assignment changes",
             )
-        ctx.audit(
-            f"/employees/{employee_id}/save-section",
-            audit_payload,
-            f"failed: {exc}",
-        )
-        return ctx.redirect(f"/employees/{quote(employee_id)}?error={quote(str(exc))}")
+            query = f"staged=assignment&jobs={quote(','.join(job_ids), safe=',')}"
+            if queue_error:
+                query += "&error=assignment_queue_unavailable"
+            return ctx.redirect(f"/employees/{quote(employee_id)}?{query}")
+        if queue_error:
+            return ctx.redirect(
+                f"/employees/{quote(employee_id)}?edit=assignment&error=assignment_queue_unavailable"
+            )
+        if not direct_changed:
+            return ctx.redirect(f"/employees/{quote(employee_id)}")
 
     if token_decision == "keep_tokens":
         ctx.audit(
