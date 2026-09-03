@@ -20,6 +20,7 @@ from .employees import _display_name, _string, employee_is_active, load_employee
 LOGGER = logging.getLogger(__name__)
 RAW_TOKEN_FLASH: dict[str, tuple[str, float]] = {}
 RAW_TOKEN_TTL_SECONDS = 300
+PUBLIC_CAPTURE_ORIGIN_ENV = "BTQ_PUBLIC_CAPTURE_ORIGIN"
 TOKEN_SYNC_SSH_TARGET = os.environ.get("BTQ_VPS_SSH_TARGET", "deploy@vps.example.com")
 TOKEN_SYNC_REMOTE_WORKDIR = "/srv/btq/apps/field-capture/project"
 TOKEN_SYNC_REMOTE_DB = "/srv/btq/data/field_capture_tokens.sqlite3"
@@ -57,11 +58,32 @@ def short_token_id(token_id: str) -> str:
     return token_id if len(token_id) <= 12 else f"{token_id[:12]}..."
 
 
+def public_capture_origin() -> str:
+    return os.environ.get(PUBLIC_CAPTURE_ORIGIN_ENV, "").strip().rstrip("/")
+
+
+def capture_test_url(raw_token: str) -> str:
+    origin = public_capture_origin()
+    if not origin or not raw_token:
+        return ""
+    return f"{origin}/?token={quote(raw_token, safe='')}"
+
+
 def render_token_id_cell(value: object, row: dict[str, object]) -> str:
     token_id_str = str(value)
     short = html.escape(short_token_id(token_id_str))
     raw = str(row.get("token_value") or "")
     id_html = f'<code title="{html.escape(token_id_str)}">{short}</code>'
+    test_url = capture_test_url(raw)
+    if raw and not row.get("revoked") and test_url:
+        person = str(row.get("person_name") or row.get("person_id") or "")
+        link_title = f"Open Field Capture as {person} in a new tab (token {token_id_str})"
+        id_html = (
+            f'<a href="{html.escape(test_url, quote=True)}" target="_blank" '
+            f'rel="noopener noreferrer" class="token-test-link" '
+            f'title="{html.escape(link_title, quote=True)}" '
+            f'aria-label="{html.escape(link_title, quote=True)}">{id_html}</a>'
+        )
     if raw:
         copy_btn = (
             f'<button type="button" class="copy-btn" '
@@ -74,7 +96,14 @@ def render_token_id_cell(value: object, row: dict[str, object]) -> str:
             f'<a class="copy-btn muted" href="{html.escape(set_raw_url)}" '
             f'title="Paste the original raw token to enable Copy on this row.">Set...</a>'
         )
-    return f"{id_html} {copy_btn}"
+    unavailable = ""
+    if raw and not row.get("revoked") and not test_url:
+        unavailable = (
+            ' <span class="muted" '
+            'title="Set BTQ_PUBLIC_CAPTURE_ORIGIN on the dashboard to enable test links">'
+            "test link unavailable</span>"
+        )
+    return f"{id_html} {copy_btn}{unavailable}"
 
 
 def employee_identity_keys(doc: dict) -> frozenset[str]:
