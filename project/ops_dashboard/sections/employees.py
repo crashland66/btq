@@ -15,6 +15,10 @@ def _string(value: object) -> str:
     return str(value or "").strip()
 
 
+def employee_is_active(doc: dict) -> bool:
+    return _string(doc.get("status")).lower() == "active"
+
+
 def _display_name(doc: dict[str, Any]) -> str:
     first = _string(doc.get("first"))
     last = _string(doc.get("last"))
@@ -103,7 +107,7 @@ def _active_assigned_employees(docs: list[dict[str, Any]]) -> list[dict[str, Any
     return [
         doc
         for doc in docs
-        if _string(doc.get("status")).lower() == "active"
+        if employee_is_active(doc)
         and _string(doc.get("job"))
         and _string(doc.get("job")).upper() != "SANDBOX"
         and _string(doc.get("_id")) not in excluded_ids
@@ -186,9 +190,9 @@ def render(ctx: object = None) -> str:
     primary_site_filter = first_query_value(query, "primary_site_contains").strip().lower()
 
     if status_filter == "active":
-        docs = [doc for doc in docs if _string(doc.get("status")).lower() == "active"]
+        docs = [doc for doc in docs if employee_is_active(doc)]
     elif status_filter == "inactive":
-        docs = [doc for doc in docs if _string(doc.get("status")).lower() != "active"]
+        docs = [doc for doc in docs if not employee_is_active(doc)]
     if uniform_status_filter in {"adequate", "needs_shirts", "unknown"}:
         docs = [doc for doc in docs if _uniform_status(doc) == uniform_status_filter]
     if name_filter:

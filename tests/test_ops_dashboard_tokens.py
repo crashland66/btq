@@ -26,6 +26,21 @@ def disable_token_sync(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("BTQ_TOKEN_SYNC_DISABLED", "1")
 
 
+SANDBOX_ROSTER: list[dict[str, object]] = [
+    {"_id": "employee_sandbox_admin", "type": "employee", "status": "active", "person_id": "per_admin", "first": "Sandy", "last": "Sandbox", "job": "SANDBOX"},
+    {"_id": "employee_sandbox_alice", "type": "employee", "status": "active", "person_id": "per_alice", "first": "Sam", "last": "Sandbox", "job": "SANDBOX"},
+]
+
+
+@pytest.fixture(autouse=True)
+def sandbox_active_roster(monkeypatch: pytest.MonkeyPatch) -> None:
+    """/tokens/new now fails closed without an active roster (536). Give every
+    test in this module a small ACTIVE sandbox roster whose identity keys
+    include the per_admin / per_alice ids the pre-existing tests submit.
+    Tests that monkeypatch load_employees themselves override this."""
+    monkeypatch.setattr(tokens, "load_employees", lambda: [dict(doc) for doc in SANDBOX_ROSTER])
+
+
 def create_token(runtime_root: Path, **kwargs: object):
     created = TokenStore(runtime_root / "field_capture_tokens.sqlite3").create_token(person_id="per_alice", label=str(kwargs.pop("label", "Alice phone")), **kwargs)
     RAW_VALUES.append(created.token_value)
@@ -885,30 +900,35 @@ def test_copy_button_data_copy_value_is_raw_token_for_new_token(tmp_path: Path) 
 
 def test_new_form_uses_admin_form_layout_and_person_dropdown(monkeypatch) -> None:
     # Layout fix: the issue-token form is width-constrained like sites/employees.
-    # Typo guard: person_id is a <select> of known people, not a free-text box.
+    # Typo guard: person_id is a <select> of known ACTIVE people, not a free-text box (536).
     monkeypatch.setattr(
         tokens,
         "load_employees",
         lambda: [
-            {"person_id": "dalton_eric", "first": "Eric", "last": "Dalton", "type": "employee"},
-            {"person_id": "reed_taylor", "first": "Taylor", "last": "Reed", "type": "employee"},
+            {"person_id": "dalton_eric", "first": "Eric", "last": "Dalton", "type": "employee", "status": "active"},
+            {"person_id": "reed_taylor", "first": "Taylor", "last": "Reed", "type": "employee", "status": "active"},
         ],
     )
     out = tokens.render_new_form({})
     assert 'action="/tokens/new" class="admin-form"' in out
     assert '<select name="person_id" required>' in out
     assert '<option value="dalton_eric">Dalton, Eric (dalton_eric)</option>' in out
-    assert '<input name="person_id"' not in out  # no free-text fallback when roster loads
+    assert '<option value="reed_taylor">Reed, Taylor (reed_taylor)</option>' in out
+    assert '<input name="person_id"' not in out  # no free-text fallback, ever
 
 
-def test_new_form_falls_back_to_text_input_when_roster_unavailable(monkeypatch) -> None:
+def test_new_form_shows_roster_unavailable_state_without_person_control(monkeypatch) -> None:
     def boom() -> list:
         raise RuntimeError("couchdb unreachable")
 
     monkeypatch.setattr(tokens, "load_employees", boom)
     out = tokens.render_new_form({})
-    # Issuance must not hard-fail on a roster hiccup — degrade to free text.
-    assert '<input name="person_id" required' in out
+    # 536: issuance fails closed on a roster hiccup — no free-text fallback and
+    # no person_id control of any kind, just a distinct "unavailable" state.
+    assert "roster unavailable" in out
+    assert "No active employees" not in out
+    assert 'name="person_id"' not in out
+    assert "<select" not in out
     assert 'class="admin-form"' in out
 
 

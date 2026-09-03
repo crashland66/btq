@@ -14,7 +14,7 @@ from urllib.parse import parse_qs, quote
 from field_capture.auth import TokenRecord, TokenStore, parse_timestamp
 from ops_dashboard.common import first_query_value, humanize_key, render_table
 from ops_dashboard.layout import html_page
-from .employees import _display_name, _string, load_employees
+from .employees import _display_name, _string, employee_is_active, load_employees
 
 
 LOGGER = logging.getLogger(__name__)
@@ -77,6 +77,25 @@ def render_token_id_cell(value: object, row: dict[str, object]) -> str:
     return f"{id_html} {copy_btn}"
 
 
+def employee_identity_keys(doc: dict) -> frozenset[str]:
+    """Return every supported token person_id for an employee-like doc."""
+    keys: set[str] = set()
+    doc_id = str(doc.get("_id") or "").strip()
+    if doc_id:
+        keys.add(doc_id)
+        for prefix in ("employee_", "person_", "operator_"):
+            if doc_id.startswith(prefix):
+                slug = doc_id[len(prefix):]
+                if slug:
+                    keys.add(slug)
+                    keys.add(slug.replace("_", "-"))
+                break
+    person_id = str(doc.get("person_id") or "").strip()
+    if person_id:
+        keys.add(person_id)
+    return frozenset(keys)
+
+
 def _build_person_name_map(docs: list[dict]) -> dict[str, str]:
     """Map token person_id -> display name from canonical person/employee docs.
 
@@ -96,18 +115,8 @@ def _build_person_name_map(docs: list[dict]) -> dict[str, str]:
         name = str(doc.get("name") or "").strip() or f"{first} {last}".strip()
         if not name:
             continue
-        doc_id = str(doc.get("_id") or "").strip()
-        if doc_id:
-            names[doc_id] = name
-            for prefix in ("employee_", "person_", "operator_"):
-                if doc_id.startswith(prefix):
-                    slug = doc_id[len(prefix):]
-                    names[slug] = name
-                    names[slug.replace("_", "-")] = name
-                    break
-        person_id = str(doc.get("person_id") or "").strip()
-        if person_id:
-            names[person_id] = name
+        for key in employee_identity_keys(doc):
+            names[key] = name
     return names
 
 
@@ -215,27 +224,44 @@ def render_set_raw_form(query: dict[str, list[str]]) -> str:
 
 
 def render_person_id_field(selected: str = "") -> str:
-    """A <select> of known people (person_id + readable name) to avoid typos.
-
-    Falls back to a free-text input if the roster can't be loaded, so token
-    issuance never hard-fails on a CouchDB hiccup.
-    """
+    """Render an active-employee picker, failing closed without a roster."""
     try:
         employees = load_employees()
-    except Exception:  # noqa: BLE001 — roster is a convenience; never block issuance
-        employees = []
-    if not employees:
-        return f'<input name="person_id" required value="{html.escape(selected)}" placeholder="person_id">'
-    options = [f'<option value="" disabled{"" if selected else " selected"}>Select a person…</option>']
-    for doc in employees:
+    except Exception:  # noqa: BLE001 — the empty state deliberately hides issuance.
+        return '<p class="error">Employee roster unavailable — try again.</p>'
+
+    eligible = [doc for doc in employees if employee_is_active(doc)]
+    if not eligible:
+        return '<p class="muted">No active employees to issue a token for.</p>'
+
+    option_rows: list[tuple[dict, str, str]] = []
+    for doc in eligible:
         person_id = _string(doc.get("person_id")) or _string(doc.get("_id")).removeprefix("employee_")
         if not person_id:
             continue
         name = _display_name(doc)
         label = f"{name} ({person_id})" if name and name != person_id else person_id
-        chosen = " selected" if person_id == selected else ""
+        option_rows.append((doc, person_id, label))
+    if not option_rows:
+        return '<p class="muted">No active employees to issue a token for.</p>'
+
+    selected_index = (
+        next(
+            (
+                index
+                for index, (doc, _person_id, _label) in enumerate(option_rows)
+                if selected in employee_identity_keys(doc)
+            ),
+            None,
+        )
+        if selected
+        else None
+    )
+    options = [f'<option value="" disabled{" selected" if selected_index is None else ""}>Select a person…</option>']
+    for index, (_doc, person_id, label) in enumerate(option_rows):
+        chosen = " selected" if index == selected_index else ""
         options.append(f'<option value="{html.escape(person_id)}"{chosen}>{html.escape(label)}</option>')
-    return f'<select name="person_id" required>{"".join(options)}</select>'
+    return f'<label>Person ID <select name="person_id" required>{"".join(options)}</select></label>'
 
 
 def render_new_form(query: dict[str, list[str]] | None = None) -> str:
@@ -248,7 +274,7 @@ def render_new_form(query: dict[str, list[str]] | None = None) -> str:
     {error_html}
     <section>
       <form method="post" action="/tokens/new" class="admin-form">
-        <label>Person ID {render_person_id_field(selected_person)}</label>
+        {render_person_id_field(selected_person)}
         <label>Label <input name="label" required></label>
         <label><input type="radio" name="token_type" value="capture" checked> Capture</label>
         <label><input type="radio" name="token_type" value="client_viewer"> Client Viewer</label>
@@ -542,6 +568,18 @@ def handle_new_post(ctx: object, body: bytes):
             raise ValueError("person_id_required")
         if not label:
             raise ValueError("label_required")
+        try:
+            employees = load_employees()
+        except Exception as exc:  # noqa: BLE001 — token issuance must fail closed.
+            raise ValueError("roster_unavailable") from exc
+        employee = next(
+            (doc for doc in employees if isinstance(doc, dict) and person_id in employee_identity_keys(doc)),
+            None,
+        )
+        if employee is None:
+            raise ValueError("unknown_employee")
+        if not employee_is_active(employee):
+            raise ValueError("employee_not_active")
         created = token_store(root).create_token(
             person_id=person_id,
             label=label,
