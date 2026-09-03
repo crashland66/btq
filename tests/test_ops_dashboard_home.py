@@ -822,12 +822,13 @@ def test_site_directory_is_collapsible_like_employee_directory(monkeypatch: pyte
 
     assert status == HTTPStatus.OK
     # Redesign (372): sentence-case summary with a count badge.
-    assert "<summary>Site directory · 1</summary>" in site_details
+    assert "<summary>All sites · 1</summary>" in site_details
     # the account/site table is now nested inside the collapsible block
     assert '<table class="account-directory">' in site_details
     assert "btq-home-sites-collapsed" in directory
-    # both directories use the same collapsible mechanism
-    assert directory.count('class="home-collapsible"') == 2
+    # all three directory panels (My accounts, All sites, Employee directory)
+    # use the same collapsible mechanism (543 added My accounts).
+    assert directory.count('class="home-collapsible"') == 3
 
 
 def test_site_directory_precedes_employee_directory(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

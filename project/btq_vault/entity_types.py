@@ -31,6 +31,15 @@ def current_operator_id() -> str:
     return os.environ.get("BTQ_OPERATOR_ID") or OPERATOR_ID_GREG
 
 
+def current_operator_identity() -> str:
+    """Return the resolver-facing identity (an employee ``person_id``/``_id``).
+
+    This is distinct from the document-stamping operator id.
+    """
+    operator_identity = os.environ.get("BTQ_OPERATOR_IDENTITY", "").strip()
+    return operator_identity or current_operator_id()
+
+
 # Operator step after deploy: set VOICE_MEMO_PERSON_ID=<this-value> in the
 # ops-dashboard launch agent plist, then run `btq migrate-vault` to ingest
 # People/Avery, Jordan.md into btq_vault CouchDB.

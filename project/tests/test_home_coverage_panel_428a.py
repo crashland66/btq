@@ -205,7 +205,7 @@ def test_render_degrades_when_coverage_report_raises(monkeypatch: pytest.MonkeyP
         raise RuntimeError("coverage backend down")
 
     monkeypatch.setattr(home, "coverage_report", boom)
-    monkeypatch.setattr(home, "current_operator_id", lambda: "op-test")
+    monkeypatch.setattr(home, "current_operator_identity", lambda: "op-test")
 
     body = home.render(ctx)
     assert isinstance(body, str) and body
@@ -218,7 +218,7 @@ def test_render_degrades_when_coverage_report_raises(monkeypatch: pytest.MonkeyP
 def test_render_includes_coverage_panel_on_success(monkeypatch: pytest.MonkeyPatch) -> None:
     ctx = _install_home(monkeypatch)
     monkeypatch.setattr(home, "coverage_report", lambda _operator: _populated_report())
-    monkeypatch.setattr(home, "current_operator_id", lambda: "op-test")
+    monkeypatch.setattr(home, "current_operator_identity", lambda: "op-test")
 
     body = home.render(ctx)
     assert "Visit/QC Coverage" in body
