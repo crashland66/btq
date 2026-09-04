@@ -300,7 +300,7 @@ def test_tokens_compact_default_hides_detail_columns_and_toggle_shows_all(tmp_pa
     # essential columns (incl. Person + pinned Actions) always present.
     # Site Scope + Active stay in compact so the active status is visible
     # without horizontal scroll (the regression this fix protects).
-    for header in ("Token ID", "Person", "Role", "Label", "Site Scope", "Active", "Actions"):
+    for header in ("Token ID", "Person", "Role", "Site Scope", "Active", "Actions"):
         assert f">{header}</th>" in compact
     # noisy detail columns hidden in the compact default. Token Type and
     # Last Used are now detail-only so the table fits without scrolling.
@@ -323,7 +323,7 @@ def test_tokens_compact_default_visible_set_is_exactly_essential_columns(tmp_pat
 
     compact = request_text("GET", "/tokens", runtime_root)[2]
     headers = re.findall(r"<th[^>]*>([^<]+)</th>", compact)
-    assert headers == ["Token ID", "Person", "Role", "Label", "Site Scope", "Active", "Actions"]
+    assert headers == ["Token ID", "Person", "Role", "Site Scope", "Active", "Actions"]
 
 
 def test_build_person_name_map_resolves_token_slug_from_employee_doc() -> None:
@@ -889,7 +889,8 @@ def test_copy_button_data_copy_value_is_raw_token_for_new_token(tmp_path: Path) 
         )
 
     body = request_text("GET", "/tokens", runtime_root)[2]
-    legacy_row = body[body.index("fct_legacy") : body.index("Legacy phone")]
+    legacy_start = body.index("fct_legacy")
+    legacy_row = body[legacy_start : body.index("</tr>", legacy_start)]  # the Label column is gone (545); bound the row by its closing tag
 
     assert f'data-copy-value="{created.token_value}"' in body
     assert f'data-copy-value="{created.record.token_id}"' not in body
@@ -1018,8 +1019,9 @@ def test_tokens_list_active_before_revoked_survives_label_filter(tmp_path: Path)
     _set_created_at(runtime_root, keep_revoked.record.token_id, "2026-05-01T00:00:00Z")
     store.revoke_token(keep_revoked.record.token_id)
 
-    # label_contains=keep matches both; revoked one is newer but must sort last.
-    body = request_text("GET", "/tokens?revoked=all&label_contains=keep", runtime_root)[2]
+    # revoked=all lists both; the revoked one is newer but must sort last.
+    # (545 dropped the label_contains filter, so the grouping is checked on the unfiltered list.)
+    body = request_text("GET", "/tokens?revoked=all", runtime_root)[2]
     assert keep_active.record.token_id in body
     assert keep_revoked.record.token_id in body
     assert body.index(keep_active.record.token_id) < body.index(keep_revoked.record.token_id)

@@ -302,7 +302,7 @@ def test_list_without_origin_marks_unavailable_and_keeps_table(tmp_path: Path, m
     assert "test link unavailable" in cell
     assert f'data-copy-value="{created.token_value}"' in cell
     headers = re.findall(r"<th[^>]*>([^<]+)</th>", body)
-    assert headers == ["Token ID", "Person", "Role", "Label", "Site Scope", "Active", "Actions"]
+    assert headers == ["Token ID", "Person", "Role", "Site Scope", "Active", "Actions"]
 
 
 # --- 6. secrets placement ----------------------------------------------------

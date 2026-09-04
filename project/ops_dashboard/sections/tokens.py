@@ -373,7 +373,7 @@ def render_new_form(query: dict[str, list[str]] | None = None) -> str:
     <section>
       <form method="post" action="/tokens/new" class="admin-form">
         {render_person_id_field(selected_person)}
-        <label>Label <input name="label" required></label>
+        <label>Label (optional) <input name="label" placeholder="optional note"></label>
         <label><input type="radio" name="token_type" value="capture" checked> Capture</label>
         <label><input type="radio" name="token_type" value="client_viewer"> Client Viewer</label>
         <label><input type="radio" name="token_type" value="admin_viewer"> Admin Viewer</label>
@@ -441,15 +441,12 @@ def render_list(root: Path, query: dict[str, list[str]]) -> str:
     )
     token_type = first_query_value(query, "token_type") or "all"
     revoked = first_query_value(query, "revoked") or "active"
-    label_filter = first_query_value(query, "label_contains").strip().lower()
     if token_type != "all":
         records = [record for record in records if record.token_type == token_type]
     if revoked == "active":
         records = [record for record in records if not record.revoked]
     elif revoked == "revoked":
         records = [record for record in records if record.revoked]
-    if label_filter:
-        records = [record for record in records if label_filter in record.label.lower()]
     records = sorted(records, key=lambda record: record.created_at, reverse=True)
     records = sorted(records, key=lambda record: bool(record.revoked))
     names = person_name_map()
@@ -484,7 +481,6 @@ def render_list(root: Path, query: dict[str, list[str]]) -> str:
         {"key": "person_id", "label": "Person", "format": render_person_cell, "nowrap": True},
         {"key": "token_type", "label": "Token Type", "format": lambda value, _row: html.escape(humanize_key(value)), "priority": 2, "nowrap": True, "detail": True},
         {"key": "role", "label": "Role", "format": render_role_cell, "nowrap": True},
-        {"key": "label", "label": "Label"},
         {"key": "site_scope", "label": "Site Scope", "priority": 2, "nowrap": True},
         {"key": "can_submit", "label": "Can Submit", "format": lambda value, _row: bool_label(bool(value)), "priority": 3, "nowrap": True, "detail": True},
         {"key": "can_view_site", "label": "Can View Site", "format": lambda value, _row: bool_label(bool(value)), "priority": 3, "nowrap": True, "detail": True},
@@ -504,7 +500,6 @@ def render_list(root: Path, query: dict[str, list[str]]) -> str:
     <form method="get" action="/tokens" data-submit-on-change>
       {radio('token_type', token_type, ['all', 'capture', 'client_viewer', 'admin_viewer', 'import'])}
       {radio('revoked', revoked, ['all', 'active', 'revoked'])}
-      <label>Label contains <input name="label_contains" value="{html.escape(first_query_value(query, 'label_contains'))}"></label>
       <fieldset class="filter-columns"><legend>Columns</legend>{radio('columns', columns_mode, ['compact', 'all'])}</fieldset>
       <button>Apply</button>
     </form>
@@ -664,8 +659,6 @@ def handle_new_post(ctx: object, body: bytes):
     try:
         if not person_id:
             raise ValueError("person_id_required")
-        if not label:
-            raise ValueError("label_required")
         try:
             employees = load_employees()
         except Exception as exc:  # noqa: BLE001 — token issuance must fail closed.

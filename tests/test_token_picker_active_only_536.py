@@ -414,10 +414,9 @@ def test_post_validation_errors_still_precede_roster_lookup(monkeypatch: pytest.
     monkeypatch.setattr(tokens, "load_employees", counting)
 
     _s1, _c1, _b1, h1 = _post_new(runtime_root, "person_id=&label=Phone&token_type=capture&site_ids=SANDBOX")
-    _s2, _c2, _b2, h2 = _post_new(runtime_root, "person_id=per_sandbox&label=&token_type=capture&site_ids=SANDBOX")
 
+    # 545 made the label optional, so person_id is the only pre-roster validation left.
     assert h1["Location"] == "/tokens/new?error=person_id_required"
-    assert h2["Location"] == "/tokens/new?error=label_required"
     assert calls["n"] == 0
     assert _store(runtime_root).list_tokens() == []
     assert sync_calls == []
