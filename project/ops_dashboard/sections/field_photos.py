@@ -25,6 +25,7 @@ from ops_dashboard.common import (
     DEEP_ANALYSIS_LABELS,
     deep_analysis_prompt_label,
     default_actor,
+    employee_status_index,
     first_filter_value,
     load_photo_vision_sidecars,
     photo_vision_sidecar_ids_on_disk,
@@ -191,7 +192,9 @@ def _query_terminal_capture_ids(config: object) -> set[str] | None:
     return ids
 
 
-def _submitter_options_from_records(records: object) -> list[tuple[str, str]]:
+def _submitter_option_data_from_records(
+    records: object,
+) -> tuple[list[tuple[str, str]], frozenset[str]]:
     names_by_id: dict[str, dict[str, int]] = {}
     has_unknown = False
     if isinstance(records, list):
@@ -224,18 +227,67 @@ def _submitter_options_from_records(records: object) -> list[tuple[str, str]]:
     options.sort(key=lambda option: (option[1].casefold(), option[1], option[0]))
     if has_unknown:
         options.append((UNKNOWN_SUBMITTER_ID, "Unknown submitter"))
+    unnamed_ids = frozenset(person_id for person_id, name_counts in names_by_id.items() if not name_counts)
+    return options, unnamed_ids
+
+
+def _submitter_options_from_records(records: object) -> list[tuple[str, str]]:
+    options, _unnamed_ids = _submitter_option_data_from_records(records)
     return options
 
 
-def _load_submitter_options(
+def _group_submitter_options(
+    options: list[tuple[str, str]],
+    unnamed_ids: frozenset[str],
+) -> tuple[list[tuple[str, str]], frozenset[str] | None]:
+    try:
+        employees_by_identity = employee_status_index()
+    except Exception as exc:
+        logger.warning("employee roster unavailable; using alphabetical submitter options: %s", exc)
+        return options, None
+
+    active_options: list[tuple[str, str]] = []
+    inactive_options: list[tuple[str, str]] = []
+    unknown_option: tuple[str, str] | None = None
+    active_ids: set[str] = set()
+    for person_id, original_label in options:
+        if person_id == UNKNOWN_SUBMITTER_ID:
+            unknown_option = (person_id, original_label)
+            continue
+
+        employee_status = employees_by_identity.get(_normalize_person_id(person_id))
+        label = original_label
+        if employee_status is not None and person_id in unnamed_ids:
+            _is_active, employee_name = employee_status
+            if employee_name:
+                label = f"{employee_name} ({person_id})"
+
+        option = (person_id, label)
+        if employee_status is not None and employee_status[0]:
+            active_options.append(option)
+            active_ids.add(person_id)
+        else:
+            inactive_options.append(option)
+
+    sort_key = lambda option: (option[1].casefold(), option[1], option[0])
+    active_options.sort(key=sort_key)
+    inactive_options.sort(key=sort_key)
+    grouped_options = active_options + inactive_options
+    if unknown_option is not None:
+        grouped_options.append(unknown_option)
+    return grouped_options, frozenset(active_ids)
+
+
+def _load_submitter_option_state(
     cdb_config: object,
     runtime_root: Path,
-) -> list[tuple[str, str]]:
+) -> tuple[list[tuple[str, str]], frozenset[str] | None]:
+    records: object
     if cdb_config is not None:
         from event_pipeline import couchdb_config
         from voice_memo.couchdb import query_couchdb_find
 
-        records: list[dict[str, object]] = []
+        couch_records: list[dict[str, object]] = []
         bookmark: object = None
         try:
             for _ in range(400):  # safety cap (400 * 5000 = 2M docs)
@@ -254,14 +306,27 @@ def _load_submitter_options(
                 docs = response.get("docs")
                 if not isinstance(docs, list):
                     raise ValueError("field-capture submitter query returned invalid docs")
-                records.extend(doc for doc in docs if isinstance(doc, dict))
+                couch_records.extend(doc for doc in docs if isinstance(doc, dict))
                 bookmark = response.get("bookmark")
                 if len(docs) < _FIELD_CAPTURE_PAGE_SIZE or not bookmark:
                     break
-            return _submitter_options_from_records(records)
+            records = couch_records
         except Exception as exc:
             logger.warning("field-capture submitter-option query failed, falling back to disk: %s", exc)
-    return _submitter_options_from_records(submitters_by_capture(runtime_root))
+            records = submitters_by_capture(runtime_root)
+    else:
+        records = submitters_by_capture(runtime_root)
+
+    options, unnamed_ids = _submitter_option_data_from_records(records)
+    return _group_submitter_options(options, unnamed_ids)
+
+
+def _load_submitter_options(
+    cdb_config: object,
+    runtime_root: Path,
+) -> list[tuple[str, str]]:
+    options, _active_ids = _load_submitter_option_state(cdb_config, runtime_root)
+    return options
 
 
 def _disk_capture_ids_for_submitter(runtime_root: Path, submitter_id: str) -> set[str]:
@@ -1046,6 +1111,51 @@ def _select_options(choices: list[tuple[str, str]], current: str, any_label: str
     return out
 
 
+def _submitter_option_groups(
+    options: list[tuple[str, str]],
+    active_ids: frozenset[str],
+) -> list[tuple[str, list[tuple[str, str]]]]:
+    active: list[tuple[str, str]] = []
+    inactive: list[tuple[str, str]] = []
+    for option in options:
+        value, _label = option
+        if value == UNKNOWN_SUBMITTER_ID:
+            continue
+        (active if value in active_ids else inactive).append(option)
+    sort_key = lambda option: (option[1].casefold(), option[1], option[0])
+    active.sort(key=sort_key)
+    inactive.sort(key=sort_key)
+    return [
+        (label, group)
+        for label, group in (("Active", active), ("Inactive", inactive))
+        if group
+    ]
+
+
+def _submitter_select_options(
+    options: list[tuple[str, str]],
+    current: str,
+    active_ids: frozenset[str] | None,
+) -> str:
+    if active_ids is None:
+        return _select_options(options, current, any_label="All submitters")
+
+    out = '<option value="">All submitters</option>'
+    for group_label, group_options in _submitter_option_groups(options, active_ids):
+        out += f'<optgroup label="{html.escape(group_label)}">'
+        for value, label in group_options:
+            selected = " selected" if value == current else ""
+            out += f'<option value="{html.escape(value)}"{selected}>{html.escape(label)}</option>'
+        out += "</optgroup>"
+
+    unknown_option = next((option for option in options if option[0] == UNKNOWN_SUBMITTER_ID), None)
+    if unknown_option is not None:
+        value, label = unknown_option
+        selected = " selected" if value == current else ""
+        out += f'<option value="{html.escape(value)}"{selected}>{html.escape(label)}</option>'
+    return out
+
+
 def _filter_form(
     q: str,
     site_id: str,
@@ -1057,6 +1167,7 @@ def _filter_form(
     capture_id: str = "",
     submitter_id: str = "",
     submitter_options: list[tuple[str, str]] | None = None,
+    active_submitter_ids: frozenset[str] | None = None,
     site_options: list[tuple[str, str]] | None = None,
     qc_category: str = "",
     qc_category_options: list[str] | None = None,
@@ -1071,10 +1182,10 @@ def _filter_form(
     vision_category_options = vision_category_options or []
     area_options = area_options or []
     site_opts = _select_options(site_options, site_id, any_label="All sites")
-    submitter_opts = _select_options(
+    submitter_opts = _submitter_select_options(
         submitter_options,
         _normalize_person_id(submitter_id),
-        any_label="All submitters",
+        active_submitter_ids,
     )
     qc_category_opts = _select_options([(c, c) for c in qc_category_options], qc_category, any_label="All QC categories")
     vision_category_opts = _select_options([(c, c) for c in vision_category_options], vision_category, any_label="All vision categories")
@@ -1117,7 +1228,10 @@ def render_filter_form(
 ) -> str:
     cdb_config = _photo_vision_couchdb_config()
     site_options = _load_site_options()
-    submitter_options = _load_submitter_options(cdb_config, runtime_root) if runtime_root is not None else []
+    if runtime_root is not None:
+        submitter_options, active_submitter_ids = _load_submitter_option_state(cdb_config, runtime_root)
+    else:
+        submitter_options, active_submitter_ids = [], None
     qc_category_options = _load_qc_category_options(cdb_config)
     vision_category_options = _load_vision_category_options(cdb_config)
     area_options = _load_area_options(cdb_config)
@@ -1131,6 +1245,7 @@ def render_filter_form(
         capture_id=capture_id,
         submitter_id=submitter_id,
         submitter_options=submitter_options,
+        active_submitter_ids=active_submitter_ids,
         site_options=site_options,
         qc_category=qc_category,
         qc_category_options=qc_category_options,

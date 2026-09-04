@@ -12,7 +12,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, quote
 
 from field_capture.auth import TokenRecord, TokenStore, parse_timestamp
-from ops_dashboard.common import first_query_value, humanize_key, render_table
+from ops_dashboard.common import employee_identity_keys, first_query_value, humanize_key, render_table
 from ops_dashboard.layout import html_page
 from .employees import _display_name, _string, employee_is_active, load_employees
 
@@ -104,25 +104,6 @@ def render_token_id_cell(value: object, row: dict[str, object]) -> str:
             "test link unavailable</span>"
         )
     return f"{id_html} {copy_btn}{unavailable}"
-
-
-def employee_identity_keys(doc: dict) -> frozenset[str]:
-    """Return every supported token person_id for an employee-like doc."""
-    keys: set[str] = set()
-    doc_id = str(doc.get("_id") or "").strip()
-    if doc_id:
-        keys.add(doc_id)
-        for prefix in ("employee_", "person_", "operator_"):
-            if doc_id.startswith(prefix):
-                slug = doc_id[len(prefix):]
-                if slug:
-                    keys.add(slug)
-                    keys.add(slug.replace("_", "-"))
-                break
-    person_id = str(doc.get("person_id") or "").strip()
-    if person_id:
-        keys.add(person_id)
-    return frozenset(keys)
 
 
 def active_tokens_for_identity(

@@ -249,6 +249,19 @@ def _synthetic_surroundings(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(field_photos, "load_site_options", lambda: [("SANDBOX", "Sandbox (SANDBOX)")])
     monkeypatch.setattr("event_pipeline.couchdb_config.field_captures_database", lambda override=None: FC_DB)
     monkeypatch.setattr("field_capture.photo_vision.discover_photo_assets", lambda *_a, **_k: [])
+    # 546 reconciliation: this file's option-order/label gates predate the
+    # Active/Inactive employee-status grouping and pin the OLD flat
+    # casefold-alphabetical order (no <optgroup>). Force that degraded path
+    # deterministically rather than relying on employee_status_index()
+    # failing by environment accident (e.g. no reachable CouchDB here) — on
+    # a machine where the roster call *does* succeed, an unpatched call
+    # would silently start grouping options and these gates would break for
+    # the wrong reason. See test_field_photos_submitter_groups_546.py for
+    # the grouped-select contract itself.
+    def _roster_unavailable() -> dict[str, tuple[bool, str]]:
+        raise RuntimeError("employee roster unavailable in 539 fixture (by design)")
+
+    monkeypatch.setattr(field_photos, "employee_status_index", _roster_unavailable)
 
 
 @pytest.fixture

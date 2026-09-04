@@ -6,17 +6,13 @@ from urllib.parse import quote
 
 from btq_vault.entity_types import current_operator_id
 from btq_vault.projector import DDOC, query_view
-from ops_dashboard.common import first_query_value, render_table
+from ops_dashboard.common import employee_is_active, first_query_value, render_table
 from ops_dashboard.layout import html_page
 from .employee_detail import _cdb, _load_vault_doc  # noqa: F401
 
 
 def _string(value: object) -> str:
     return str(value or "").strip()
-
-
-def employee_is_active(doc: dict) -> bool:
-    return _string(doc.get("status")).lower() == "active"
 
 
 def _display_name(doc: dict[str, Any]) -> str:
