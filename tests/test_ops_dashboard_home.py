@@ -826,9 +826,9 @@ def test_site_directory_is_collapsible_like_employee_directory(monkeypatch: pyte
     # the account/site table is now nested inside the collapsible block
     assert '<table class="account-directory">' in site_details
     assert "btq-home-sites-collapsed" in directory
-    # all three directory panels (My accounts, All sites, Employee directory)
-    # use the same collapsible mechanism (543 added My accounts).
-    assert directory.count('class="home-collapsible"') == 3
+    # both directory panels (All sites, Employee directory) use the same
+    # collapsible mechanism (544 removed the My accounts panel 543 had added).
+    assert directory.count('class="home-collapsible"') == 2
 
 
 def test_site_directory_precedes_employee_directory(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
