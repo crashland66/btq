@@ -1890,6 +1890,46 @@ def _selector_couch_find(database: str, selector: dict[str, object]) -> list[dic
         return [doc for doc in _json.loads(response.read().decode("utf-8")).get("docs", []) if isinstance(doc, dict)]
 
 
+def employee_is_active(doc: dict) -> bool:
+    return str(doc.get("status") or "").strip().lower() == "active"
+
+
+def employee_identity_keys(doc: dict) -> frozenset[str]:
+    """Return every supported token person_id for an employee-like doc."""
+    keys: set[str] = set()
+    doc_id = str(doc.get("_id") or "").strip()
+    if doc_id:
+        keys.add(doc_id)
+        for prefix in ("employee_", "person_", "operator_"):
+            if doc_id.startswith(prefix):
+                slug = doc_id[len(prefix):]
+                if slug:
+                    keys.add(slug)
+                    keys.add(slug.replace("_", "-"))
+                break
+    person_id = str(doc.get("person_id") or "").strip()
+    if person_id:
+        keys.add(person_id)
+    return frozenset(keys)
+
+
+def employee_status_index() -> dict[str, tuple[bool, str]]:
+    """Map normalized employee identity keys to active status and display name."""
+    docs = _selector_couch_find(couchdb_config.vault_database(), {"type": "employee"})
+    index: dict[str, tuple[bool, str]] = {}
+    for doc in docs:
+        preferred = str(doc.get("preferred_name") or "").strip()
+        first = preferred or str(doc.get("first") or "").strip()
+        last = str(doc.get("last") or "").strip()
+        display_name = f"{first} {last}".strip() or str(doc.get("name") or "").strip()
+        status = employee_is_active(doc)
+        for identity_key in employee_identity_keys(doc):
+            normalized_key = identity_key.replace("-", "_")
+            if normalized_key:
+                index[normalized_key] = (status, display_name)
+    return index
+
+
 def queue_job_states(job_ids: Iterable[str]) -> dict[str, dict[str, str]]:
     """Return queue truth for the requested job ids, including missing jobs.
 
