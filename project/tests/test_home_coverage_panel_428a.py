@@ -144,8 +144,11 @@ def test_panel_zero_state_renders_without_error() -> None:
     assert "0 / 4" in html
     assert "4 remaining" in html
     # Sensible empty messages.
+    # RECONCILED for coverage-operator-match (547): the overdue empty state
+    # now names the threshold (defaults to 30 days when the report omits
+    # "overdue_qc_days") instead of the old static "No overdue QC accounts."
     assert "No QCs completed this week." in html
-    assert "No overdue QC accounts." in html
+    assert "All accounts have a recorded QC within 30 days." in html
     assert "No open visit gaps." in html
 
 

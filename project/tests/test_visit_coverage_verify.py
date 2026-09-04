@@ -134,9 +134,14 @@ def test_account_coverage_last_visit_last_qc_and_days_since():
 
 
 def test_account_coverage_overdue_never_qc_first_then_oldest_qc():
+    # RECONCILED for coverage-operator-match (547): `overdue` now excludes
+    # rows within OVERDUE_QC_DAYS (30). The original 1-day/10-day QCs no
+    # longer qualify as overdue at all, so both visits are pushed past the
+    # 30-day threshold (35 and 45 days since qc) to keep exercising the
+    # never-first-then-oldest ordering.
     visits = [
-        _visit("4001", "Acme North", "2031-05-13", visit_type="qc"),   # 1 day since qc
-        _visit("4002", "Acme South", "2031-05-04", visit_type="qc"),   # 10 days since qc
+        _visit("4001", "Acme North", "2031-04-09", visit_type="qc"),   # 35 days since qc
+        _visit("4002", "Acme South", "2031-03-30", visit_type="qc"),   # 45 days since qc
         # 4003: never qc'd
     ]
     result = visit_coverage.account_coverage(OP, now=NOW, visits=visits, visit_gaps=[], accounts=_accounts())

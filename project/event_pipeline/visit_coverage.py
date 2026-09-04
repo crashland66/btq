@@ -16,6 +16,7 @@ from collections.abc import Iterable, Mapping
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from btq_vault.entity_types import current_operator_id
 from event_pipeline import couchdb_config
 from event_pipeline.context_resolver import operator_context_snapshot
 
@@ -27,6 +28,7 @@ DEFAULT_FIND_LIMIT = 10000
 DEFAULT_COVERAGE_TIMEZONE = "America/New_York"
 DEFAULT_COVERAGE_ZONE = ZoneInfo(DEFAULT_COVERAGE_TIMEZONE)
 QC_VISIT_TYPES = frozenset({"qc", "qc_inspection"})
+OVERDUE_QC_DAYS = 30
 
 
 class VisitCoverageError(Exception):
@@ -181,7 +183,15 @@ def account_coverage(
             }
         )
 
-    overdue = sorted(account_rows, key=_overdue_sort_key)
+    overdue = sorted(
+        (
+            row
+            for row in account_rows
+            if row["days_since_last_qc"] is None
+            or row["days_since_last_qc"] > OVERDUE_QC_DAYS
+        ),
+        key=_overdue_sort_key,
+    )
     return {"accounts": account_rows, "overdue": overdue}
 
 
@@ -236,6 +246,7 @@ def coverage_report(
         "weekly": weekly,
         "accounts": account_result["accounts"],
         "overdue": account_result["overdue"],
+        "overdue_qc_days": OVERDUE_QC_DAYS,
         "gaps": gaps,
     }
 
@@ -392,8 +403,17 @@ def _stable_doc_sort_value(visit: Doc) -> str:
 
 
 def _visit_matches_operator(visit: Doc, aliases: set[str]) -> bool:
+    """Match the installation operator stamp or an existing name alias.
+
+    In a multi-operator installation, a stamped visit whose ``visited_by``
+    clearly names another resolved person may be over-attributed. Resolving
+    that ambiguity is intentionally outside this single-operator read model.
+    """
+
     operator = _clean_string(visit.get("operator"))
     visited_by = _clean_string(visit.get("visited_by"))
+    if operator == current_operator_id():
+        return True
     if operator and _normalize_text(operator) in aliases:
         return True
     if visited_by and _text_matches_alias(visited_by, aliases):
@@ -411,7 +431,7 @@ def _operator_aliases(operator: object, *, snapshot: Mapping[str, Any] | None = 
 
 
 def _operator_exact_aliases(operator: object, *, snapshot: Mapping[str, Any] | None = None) -> set[str]:
-    values = {_clean_string(operator)}
+    values = {_clean_string(operator), current_operator_id()}
     if snapshot is not None:
         values.add(_clean_string(snapshot.get("operator")))
         resolution = snapshot.get("resolution")

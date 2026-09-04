@@ -576,6 +576,7 @@ def _render_coverage_panel(report: dict, site_records: dict[str, _SiteRecord] | 
     count = _coverage_int(weekly.get("count"))
     target = _coverage_int(weekly.get("target"))
     remaining = _coverage_int(weekly.get("remaining"))
+    overdue_qc_days = _coverage_int(report.get("overdue_qc_days") or 30)
     pill_class = "success" if target > 0 and count >= target else "warning"
     remaining_text = f"{max(0, remaining)} remaining"
 
@@ -631,7 +632,7 @@ def _render_coverage_panel(report: dict, site_records: dict[str, _SiteRecord] | 
             {"key": "site", "label": f"Overdue accounts · {len(overdue)}"},
             {"key": "status", "label": "QC age", "nowrap": True},
         ],
-        empty_text="No overdue QC accounts.",
+        empty_text=f"All accounts have a recorded QC within {overdue_qc_days} days.",
         table_class="coverage-table",
     )
     gaps_table = render_table(
@@ -651,7 +652,8 @@ def _render_coverage_panel(report: dict, site_records: dict[str, _SiteRecord] | 
         "</div>"
         '<div class="dir-grid">'
         f"<div>{completed_table}{completed_note}</div>"
-        f"<div>{overdue_table}{overdue_note}</div>"
+        f'<div><p class="subline">No recorded QC in the last {_esc(str(overdue_qc_days))} days</p>'
+        f"{overdue_table}{overdue_note}</div>"
         f"<div>{gaps_table}{gaps_note}</div>"
         "</div>"
     )
