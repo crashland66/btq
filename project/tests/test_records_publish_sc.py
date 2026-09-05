@@ -30,8 +30,14 @@ None.
 ## Quits / Terminations Today
 None.
 
+## Additional Payroll / HR Notes
+- Correct a synthetic timecard.
+
+## Notes for HR
+- Synthetic HR request.
+
 ## Notes for Operations Manager
-- detail that must not be published
+- synthetic operations request
 """
 
 
@@ -138,7 +144,7 @@ def test_republish_archives_prior_draft_before_creating_new(tmp_path, enqueue_ca
     assert client.calls[0][1].endswith("/inspections/v1/inspections/audit_OLD/archive")
 
 
-def test_ops_manager_detail_never_reaches_safetyculture(tmp_path, enqueue_capture):
+def test_all_report_note_fields_reach_mitti(tmp_path, enqueue_capture):
     captured = {}
 
     class Recorder(FakeClient):
@@ -150,7 +156,10 @@ def test_ops_manager_detail_never_reaches_safetyculture(tmp_path, enqueue_captur
         _ctx(tmp_path), "rid", doc=_doc(), http_client=Recorder(),
         token_loader=lambda: "tok", now=lambda: "z",
     )
-    assert "must not be published" not in json.dumps(captured["payload"])
+    serialized = json.dumps(captured["payload"])
+    assert "Correct a synthetic timecard" in serialized
+    assert "Synthetic HR request" in serialized
+    assert "synthetic operations request" in serialized
 
 
 def test_submit_failure_writes_no_job_and_does_not_500(tmp_path, enqueue_capture):

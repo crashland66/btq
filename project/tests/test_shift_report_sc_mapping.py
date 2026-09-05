@@ -13,13 +13,17 @@ from btq_cli.shift_report_sc_mapping import (
     ANSWER_YES_NO_QUITS,
     ANSWER_YES_NO_SHARED,
     ITEM_ACCOUNTS_COMPLETED_QC,
+    ITEM_ADDITIONAL_PAYROLL_HR_NOTES,
     ITEM_CLEANING_FILL_IN_COUNT,
     ITEM_CUSTOMER_INTERACTIONS,
     ITEM_EHUB_WINTEAM_ALERTS,
     ITEM_EMPLOYEES_VISITED,
     ITEM_EXCUSED_MISSED_SHIFTS,
     ITEM_INTERVIEWS_HIRES,
+    ITEM_INTERVIEWS_HIRES_DETAIL,
     ITEM_NIGHTLY_SUMMARY,
+    ITEM_NOTES_FOR_HR,
+    ITEM_NOTES_FOR_OPERATIONS_MANAGER,
     ITEM_OPEN_POSITIONS_DETAIL,
     ITEM_OPEN_POSITIONS_FULL_AREA,
     ITEM_OVER_HOURS,
@@ -144,9 +148,15 @@ Sample Employee
 **Excused / Approved / Unexcused Missed Shifts:**
 - Account 101: one approved absence covered.
 
+**Additional Payroll / HR Notes:**
+- Correct one synthetic timecard entry.
+
 ## Requests-Notes
+**Notes for HR:**
+- Synthetic recruiting note for HR.
+
 **Notes for Operations Manager:**
-- Internal note that must not publish.
+- Synthetic operations note that should publish.
 """
 
 
@@ -171,7 +181,7 @@ def test_parse_extracts_bold_label_blocks_from_closeday_shape():
     assert sections["Interviews Conducted or Hires Made Today"] == "No"
     assert sections["Voluntary / Involuntary Quits or Terminations Today"].startswith("Yes")
     assert "Account 101" in sections["Open Positions — Account, Days, Hours, Pay"]
-    assert "Internal note" in sections["Notes for Operations Manager"]
+    assert "operations note" in sections["Notes for Operations Manager"]
 
 
 def test_title_page_fields_go_in_header_items_not_items():
@@ -226,6 +236,9 @@ def test_closeday_label_fields_prefill_safetyculture_text_and_choices():
         ITEM_OPEN_POSITIONS_DETAIL: "$16/hr",
         ITEM_QUITS_TERMINATIONS_DETAIL: "Sample Employee resigned",
         ITEM_EXCUSED_MISSED_SHIFTS: "approved absence",
+        ITEM_ADDITIONAL_PAYROLL_HR_NOTES: "synthetic timecard",
+        ITEM_NOTES_FOR_HR: "recruiting note",
+        ITEM_NOTES_FOR_OPERATIONS_MANAGER: "operations note",
     }
     for item_id, expected in expected_text.items():
         assert text_items[item_id]
@@ -318,10 +331,26 @@ def test_yes_no_detail(body, expected):
     assert yes_no_detail(body) == expected
 
 
-def test_notes_for_operations_manager_is_dropped():
+def test_all_closing_note_fields_are_included():
     payload = build_prefill_payload(_sections(), "2026-06-24")
-    all_text = json.dumps(payload)
-    assert "order bulk rags" not in all_text  # ops-manager detail must not leak into any field
+    by_id = {item["item_id"]: item for item in payload["items"]}
+    assert by_id[ITEM_NOTES_FOR_OPERATIONS_MANAGER]["responses"]["text"] == (
+        "- Interfuse (222): order bulk rags, trace missing delivery."
+    )
+    assert by_id[ITEM_ADDITIONAL_PAYROLL_HR_NOTES]["responses"]["text"] == "None noted."
+    assert by_id[ITEM_NOTES_FOR_HR]["responses"]["text"] == "None noted."
+
+
+def test_interview_detail_prefills_conditional_text_field():
+    report = """## Human Resources
+**Interviews Conducted or Hires Made Today:** Yes
+Synthetic Candidate — interviewed for Account 101 at $16/hour; start date pending.
+"""
+    payload = build_prefill_payload(parse_shift_report(report), "2026-07-14")
+    by_id = {item["item_id"]: item for item in payload["items"]}
+
+    assert by_id[ITEM_INTERVIEWS_HIRES]["responses"]["selected"][0]["id"] == ANSWER_YES_NO_SHARED["Yes"]
+    assert by_id[ITEM_INTERVIEWS_HIRES_DETAIL]["responses"]["text"].startswith("Synthetic Candidate")
 
 
 def _args(**kw):

@@ -86,7 +86,7 @@ def test_direct_no_show_detail_is_not_mistaken_for_a_negative_marker(detail: str
     assert _item(payload, QUITS_DETAIL_ID)["responses"]["text"] == detail
 
 
-def test_full_payload_is_unchanged_except_detail_inserted_after_quits_choice() -> None:
+def test_full_payload_includes_every_shift_report_field() -> None:
     sections = {
         "Nightly Summary": "Synthetic summary.",
         "eHub / WinTeam Alert Updates Needed": "Synthetic alert.",
@@ -103,6 +103,9 @@ def test_full_payload_is_unchanged_except_detail_inserted_after_quits_choice() -
         "Interviews Conducted or Hires Made Today": "Yes - synthetic interview completed.",
         QUITS_FIELD: "Yes\nSynthetic role ended; handoff documented.",
         "Excused / Approved / Unexcused Missed Shifts": "Synthetic approved absence.",
+        "Additional Payroll / HR Notes": "Synthetic payroll correction.",
+        "Notes for HR": "Synthetic HR request.",
+        "Notes for Operations Manager": "Synthetic operations request.",
     }
 
     assert mapping.build_prefill_payload(sections, "2026-02-03") == {
@@ -191,6 +194,11 @@ def test_full_payload_is_unchanged_except_detail_inserted_after_quits_choice() -
                 "responses": {"selected": [{"id": "060ace00-1f61-468e-9c42-918fa93badcf"}]},
             },
             {
+                "item_id": "3c9f43b8-65d7-48a8-9d5d-d066bb95b473",
+                "type": "text",
+                "responses": {"text": "Yes - synthetic interview completed."},
+            },
+            {
                 "item_id": QUITS_CHOICE_ID,
                 "type": "question",
                 "responses": {"selected": [{"id": QUITS_YES_ID}]},
@@ -204,6 +212,21 @@ def test_full_payload_is_unchanged_except_detail_inserted_after_quits_choice() -
                 "item_id": "fa3c326d-650c-4874-b150-bc29e78be13f",
                 "type": "text",
                 "responses": {"text": "Synthetic approved absence."},
+            },
+            {
+                "item_id": "cd785130-9af6-4e3f-8db1-762259f47372",
+                "type": "text",
+                "responses": {"text": "Synthetic payroll correction."},
+            },
+            {
+                "item_id": "bd6bd02a-b852-4404-9533-99dc1d9189fa",
+                "type": "text",
+                "responses": {"text": "Synthetic HR request."},
+            },
+            {
+                "item_id": "f6da8ba0-d061-477e-94fd-1e2372ed6a49",
+                "type": "text",
+                "responses": {"text": "Synthetic operations request."},
             },
         ],
     }

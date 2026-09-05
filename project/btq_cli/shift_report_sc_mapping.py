@@ -26,9 +26,13 @@ ITEM_CUSTOMER_INTERACTIONS = "5454f983-510b-4de9-baa6-612ee3a39c88"
 ITEM_OPEN_POSITIONS_FULL_AREA = "867d2e67-6ecc-4f28-b7b4-d02fb61f8122"
 ITEM_OPEN_POSITIONS_DETAIL = "309cbb25-106a-47fa-b1eb-4d2fb32e411b"
 ITEM_INTERVIEWS_HIRES = "5bf7cdfd-76f3-480b-bbb8-2cc0e95c8e2d"
+ITEM_INTERVIEWS_HIRES_DETAIL = "3c9f43b8-65d7-48a8-9d5d-d066bb95b473"
 ITEM_QUITS_TERMINATIONS = "0eff9059-bf4a-4160-9f80-f717f94cdf7d"
 ITEM_QUITS_TERMINATIONS_DETAIL = "5d8a8e88-74c2-4e05-a1b4-23765bd40d32"
 ITEM_EXCUSED_MISSED_SHIFTS = "fa3c326d-650c-4874-b150-bc29e78be13f"
+ITEM_ADDITIONAL_PAYROLL_HR_NOTES = "cd785130-9af6-4e3f-8db1-762259f47372"
+ITEM_NOTES_FOR_HR = "bd6bd02a-b852-4404-9533-99dc1d9189fa"
+ITEM_NOTES_FOR_OPERATIONS_MANAGER = "f6da8ba0-d061-477e-94fd-1e2372ed6a49"
 
 ANSWER_QC_COUNT = {
     "0": "62707c36-b9b8-4535-bc5a-b079c9e562b0",
@@ -122,6 +126,7 @@ def build_prefill_payload(sections: dict[str, str], date: str | date_cls | datet
     qc_count_bucket = count_bucket(_section_body(sections, "Accounts Visited for QC / Issue Ticket Follow-Up (how many)"))
     team_count_bucket = count_bucket(_section_body(sections, "Team Members Visited (Safety, QC, Training) (how many)"))
     cleaning_count_bucket = count_bucket(_section_body(sections, "Accounts Worked Strictly for Cleaning Fill-In (how many)"))
+    interviews_hires = _section_body(sections, "Interviews Conducted or Hires Made Today")
     quits_terminations = _section_body(sections, "Voluntary / Involuntary Quits or Terminations Today")
 
     items = [
@@ -140,17 +145,35 @@ def build_prefill_payload(sections: dict[str, str], date: str | date_cls | datet
         text_item(ITEM_CUSTOMER_INTERACTIONS, _section_body(sections, "Customer Interactions (In-Person, Who and Account)")),
         text_item(ITEM_OPEN_POSITIONS_FULL_AREA, _section_body(sections, "Open Positions (Full Area)")),
         text_item(ITEM_OPEN_POSITIONS_DETAIL, _section_body(sections, "Open Positions \u2014 Account, Days, Hours, Pay")),
-        yes_no_item(ITEM_INTERVIEWS_HIRES, _section_body(sections, "Interviews Conducted or Hires Made Today")),
+        yes_no_item(ITEM_INTERVIEWS_HIRES, interviews_hires),
+    ]
+    interviews_hires_detail = yes_no_detail(interviews_hires)
+    if interviews_hires_detail:
+        items.append(text_item(ITEM_INTERVIEWS_HIRES_DETAIL, interviews_hires_detail))
+    items.append(
         choice_item(
             ITEM_QUITS_TERMINATIONS,
             ANSWER_YES_NO_QUITS["No" if is_no_quits_body(quits_terminations) else "Yes"],
-        ),
-    ]
+        )
+    )
     quits_terminations_detail = yes_no_detail(quits_terminations)
     if quits_terminations_detail:
         items.append(text_item(ITEM_QUITS_TERMINATIONS_DETAIL, quits_terminations_detail))
     items.append(
         text_item(ITEM_EXCUSED_MISSED_SHIFTS, _section_body(sections, "Excused / Approved / Unexcused Missed Shifts", default="None noted."))
+    )
+    items.extend(
+        [
+            text_item(
+                ITEM_ADDITIONAL_PAYROLL_HR_NOTES,
+                _section_body(sections, "Additional Payroll / HR Notes", default="None noted."),
+            ),
+            text_item(ITEM_NOTES_FOR_HR, _section_body(sections, "Notes for HR", default="None noted.")),
+            text_item(
+                ITEM_NOTES_FOR_OPERATIONS_MANAGER,
+                _section_body(sections, "Notes for Operations Manager", default="None noted."),
+            ),
+        ]
     )
 
     return {
