@@ -149,7 +149,10 @@ def test_panel_zero_state_renders_without_error() -> None:
     # "overdue_qc_days") instead of the old static "No overdue QC accounts."
     assert "No QCs completed this week." in html
     assert "All accounts have a recorded QC within 30 days." in html
-    assert "No open visit gaps." in html
+    # RECONCILED for gap-window (548): the empty state now names the
+    # window (defaults to 30 days when the report omits "gap_window_days")
+    # instead of the old static "No open visit gaps."
+    assert "No open visit gaps in the last 30 days." in html
 
 
 def test_panel_empty_dict_does_not_crash() -> None:

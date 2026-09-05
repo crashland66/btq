@@ -29,6 +29,7 @@ DEFAULT_COVERAGE_TIMEZONE = "America/New_York"
 DEFAULT_COVERAGE_ZONE = ZoneInfo(DEFAULT_COVERAGE_TIMEZONE)
 QC_VISIT_TYPES = frozenset({"qc", "qc_inspection"})
 OVERDUE_QC_DAYS = 30
+OPEN_GAP_WINDOW_DAYS = 30
 
 
 class VisitCoverageError(Exception):
@@ -109,10 +110,12 @@ def account_coverage(
     accounts: Iterable[Doc] | Mapping[str, Any] | None = None,
     snapshot: Mapping[str, Any] | None = None,
     config: couchdb_config.CouchDBConfig | None = None,
+    _visits_loaded_from_vault: bool = False,
 ) -> dict[str, Any]:
     """Return last-visit, last-QC, and open-gap coverage for operator accounts."""
 
     as_of = _coerce_date(now)
+    gap_window_start = as_of - dt.timedelta(days=OPEN_GAP_WINDOW_DAYS)
     resolved_snapshot = snapshot
     if accounts is None:
         resolved_snapshot = snapshot or operator_context_snapshot(operator, now=_generated_at(now))
@@ -134,9 +137,41 @@ def account_coverage(
     )
     source_gaps = list(visit_gaps) if visit_gaps is not None else _load_visit_gap_docs(
         site_ids,
+        start_date=gap_window_start,
         end_date=as_of,
         config=config,
     )
+
+    candidate_gaps: list[tuple[str, dt.date]] = []
+    for gap in source_gaps:
+        site_id = _doc_site_id(gap)
+        gap_date = _doc_date(gap)
+        if (
+            site_id not in site_ids
+            or gap_date is None
+            or gap_date < gap_window_start
+            or gap_date > as_of
+            or not _is_open_gap(gap)
+        ):
+            continue
+        candidate_gaps.append((site_id, gap_date))
+
+    visits_are_full_universe = visits is not None and not _visits_loaded_from_vault
+    if visits_are_full_universe:
+        gap_closure_visits = source_visits
+    else:
+        gap_closure_visits = _load_gap_closure_visit_docs(
+            {site_id for site_id, _ in candidate_gaps},
+            start_date=gap_window_start,
+            end_date=as_of,
+            config=config,
+        )
+    visited_site_dates: set[tuple[str, str]] = set()
+    for visit in gap_closure_visits:
+        visit_date = _doc_date(visit)
+        if visit.get("type") != "visit" or _is_archived_visit(visit) or visit_date is None:
+            continue
+        visited_site_dates.add((_doc_site_id(visit), visit_date.isoformat()))
 
     visits_by_site: dict[str, list[tuple[dt.date, Doc]]] = {site_id: [] for site_id in site_ids}
     qc_by_site: dict[str, list[tuple[dt.date, Doc]]] = {site_id: [] for site_id in site_ids}
@@ -154,14 +189,11 @@ def account_coverage(
             qc_by_site.setdefault(site_id, []).append((visit_date, visit))
 
     gap_dates_by_site: dict[str, list[str]] = {site_id: [] for site_id in site_ids}
-    for gap in source_gaps:
-        site_id = _doc_site_id(gap)
-        gap_date = _doc_date(gap)
-        if site_id not in site_ids or gap_date is None or gap_date > as_of:
+    for site_id, gap_date in candidate_gaps:
+        gap_date_iso = gap_date.isoformat()
+        if (site_id, gap_date_iso) in visited_site_dates:
             continue
-        if not _is_open_gap(gap):
-            continue
-        gap_dates_by_site.setdefault(site_id, []).append(gap_date.isoformat())
+        gap_dates_by_site.setdefault(site_id, []).append(gap_date_iso)
 
     account_rows: list[dict[str, Any]] = []
     for account in active_accounts:
@@ -229,6 +261,7 @@ def coverage_report(
         accounts=accounts,
         snapshot=resolved_snapshot,
         config=config,
+        _visits_loaded_from_vault=visits is None,
     )
     weekly = weekly_qc_count(
         operator,
@@ -247,6 +280,7 @@ def coverage_report(
         "accounts": account_result["accounts"],
         "overdue": account_result["overdue"],
         "overdue_qc_days": OVERDUE_QC_DAYS,
+        "gap_window_days": OPEN_GAP_WINDOW_DAYS,
         "gaps": gaps,
     }
 
@@ -283,6 +317,7 @@ def _load_visit_docs(
 def _load_visit_gap_docs(
     site_ids: set[str],
     *,
+    start_date: dt.date,
     end_date: dt.date,
     config: couchdb_config.CouchDBConfig | None = None,
 ) -> list[dict[str, Any]]:
@@ -291,7 +326,24 @@ def _load_visit_gap_docs(
     selector = {
         "type": "visit_gap",
         "site_id": {"$in": sorted(site_ids)},
-        "date": {"$lte": end_date.isoformat()},
+        "date": {"$gte": start_date.isoformat(), "$lte": end_date.isoformat()},
+    }
+    return _find_vault_docs(selector, config=config)
+
+
+def _load_gap_closure_visit_docs(
+    site_ids: set[str],
+    *,
+    start_date: dt.date,
+    end_date: dt.date,
+    config: couchdb_config.CouchDBConfig | None = None,
+) -> list[dict[str, Any]]:
+    if not site_ids:
+        return []
+    selector = {
+        "type": "visit",
+        "site_id": {"$in": sorted(site_ids)},
+        "date": {"$gte": start_date.isoformat(), "$lte": end_date.isoformat()},
     }
     return _find_vault_docs(selector, config=config)
 
