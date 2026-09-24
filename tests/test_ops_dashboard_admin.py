@@ -6,6 +6,7 @@ from http import HTTPStatus
 from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Callable
 from urllib.parse import parse_qs, urlsplit
 
 import pytest
@@ -14,6 +15,7 @@ from field_capture import approved_job_drafts
 from field_capture.server import FieldCaptureHandler
 from ops_dashboard import audit
 import ops_dashboard.common as common
+import ops_dashboard.sections.health as health_section
 from ops_dashboard.app import request_context, route_response, route_response_with_headers
 from ops_dashboard.common import SectionContext
 from ops_dashboard.layout import NAV_ITEMS, _VERSION, nav_html
@@ -2556,6 +2558,30 @@ def test_health_route_renders_200_and_contains_runtime_root(tmp_path: Path) -> N
 
     assert status == HTTPStatus.OK
     assert str(runtime_root.expanduser().resolve(strict=False)) in body
+
+
+def test_health_summary_returns_immediately_while_refreshing_in_background(monkeypatch: pytest.MonkeyPatch) -> None:
+    health_section._health_summary_cache.clear()
+    health_section._health_summary_refreshing.clear()
+    callbacks: list[Callable[[], None]] = []
+
+    class FakeThread:
+        def __init__(self, *, target: Callable[..., None], args: tuple[object, ...] = (), **_kwargs: object) -> None:
+            self.target = target
+            self.args = args
+
+        def start(self) -> None:
+            callbacks.append(lambda: self.target(*self.args))
+
+    monkeypatch.setattr(health_section.threading, "Thread", FakeThread)
+    fallback = {"status": "refreshing"}
+
+    first = health_section.cached_health_summary("test:runtime", lambda: {"status": "ready"}, fallback)
+
+    assert first == fallback
+    assert len(callbacks) == 1
+    callbacks[0]()
+    assert health_section.cached_health_summary("test:runtime", lambda: {"status": "other"}, fallback) == {"status": "ready"}
 
 
 def runtime_health_fragment(body: str) -> str:

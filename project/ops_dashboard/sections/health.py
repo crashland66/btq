@@ -8,6 +8,7 @@ import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Callable
 
 from btq_vault.projector import _esc
 from field_capture.review_dashboard import review_dashboard_report
@@ -71,6 +72,79 @@ def disk_usage(path: Path) -> dict[str, object]:
 _FOOTPRINT_CACHE_TTL_SECONDS = 300.0
 _footprint_cache: dict[str, tuple[float, dict[str, int]]] = {}
 _footprint_lock = threading.Lock()
+
+# The review dashboard and photo-vision status each inspect a large amount of
+# durable state.  They are useful diagnostics, but must not hold up the Health
+# page itself.  Keep the last completed snapshot visible while a single
+# background refresh updates it.
+_HEALTH_SUMMARY_CACHE_TTL_SECONDS = 60.0
+_health_summary_cache: dict[str, tuple[float, dict[str, object]]] = {}
+_health_summary_refreshing: set[str] = set()
+_health_summary_lock = threading.Lock()
+
+
+def _empty_review_dashboard() -> dict[str, object]:
+    return {
+        "candidate_summary": {"pending_review": 0, "approved": 0},
+        "draft_summary": {
+            "approved_draft": 0,
+            "queue_state_counts": {},
+            "failed_unresolved": 0,
+            "failed_replayed_successfully": 0,
+            "failed_archive_total": 0,
+        },
+        "suggested_next_command": "Refreshing review status…",
+    }
+
+
+def _empty_photo_vision_status() -> dict[str, object]:
+    return {
+        "sidecar_count": 0,
+        "image_count": 0,
+        "completed_count": 0,
+        "failed_count": 0,
+        "skipped_count": 0,
+        "malformed_count": 0,
+        "backlog_count": 0,
+        "warning_count": 0,
+        "severity_counts": {"ok": 0, "degraded": 0, "unusable": 0},
+        "recent_warnings": [],
+    }
+
+
+def _refresh_health_summary(key: str, loader: Callable[[], dict[str, object]]) -> None:
+    try:
+        value = loader()
+    except Exception:
+        return
+    else:
+        with _health_summary_lock:
+            _health_summary_cache[key] = (time.monotonic(), value)
+    finally:
+        with _health_summary_lock:
+            _health_summary_refreshing.discard(key)
+
+
+def cached_health_summary(
+    key: str,
+    loader: Callable[[], dict[str, object]],
+    fallback: dict[str, object],
+) -> dict[str, object]:
+    """Return a completed Health summary without waiting for an expensive scan."""
+    with _health_summary_lock:
+        cached = _health_summary_cache.get(key)
+        fresh = cached is not None and time.monotonic() - cached[0] < _HEALTH_SUMMARY_CACHE_TTL_SECONDS
+        if fresh:
+            return cached[1]
+        if key not in _health_summary_refreshing:
+            _health_summary_refreshing.add(key)
+            threading.Thread(
+                target=_refresh_health_summary,
+                args=(key, loader),
+                name=f"btq-health-{key.rsplit(':', 1)[0]}",
+                daemon=True,
+            ).start()
+        return cached[1] if cached is not None else fallback
 
 
 def runtime_footprint(runtime_root: Path) -> dict[str, int]:
@@ -335,7 +409,17 @@ def build_status(ctx: object, *, log_lines: int = DEFAULT_LOG_LINES) -> dict[str
         "photo_vision": runtime_resolved / "field_capture" / "photo_vision",
         "logs": runtime_resolved / "logs",
     }
-    review_dashboard = review_dashboard_report(runtime_root=runtime_resolved)
+    summary_root_key = str(runtime_resolved.expanduser().resolve(strict=False))
+    review_dashboard = cached_health_summary(
+        f"review:{summary_root_key}",
+        lambda: review_dashboard_report(runtime_root=runtime_resolved),
+        _empty_review_dashboard(),
+    )
+    photo_vision = cached_health_summary(
+        f"photo-vision:{summary_root_key}",
+        lambda: photo_vision_status(runtime_resolved),
+        _empty_photo_vision_status(),
+    )
     maintenance = review_maintenance_status_report(runtime_root=runtime_resolved)
     site_issue_report = discover_site_issues()
     site_issues = site_issue_report.get("issues") if isinstance(site_issue_report.get("issues"), list) else []
@@ -378,7 +462,7 @@ def build_status(ctx: object, *, log_lines: int = DEFAULT_LOG_LINES) -> dict[str
             "transcript_count": count_files(paths["transcripts"], "*.json"),
             "semantic_count": count_files(paths["semantics"], "*.json"),
             "latest_semantics": latest_json_artifacts(paths["semantics"]),
-            "photo_vision": photo_vision_status(runtime_resolved),
+            "photo_vision": photo_vision,
         },
         "voice_memo": voice_memo_status(runtime_resolved, audio_inbox_dir),
         "voice_memo_intake": voice_memo_intake_state(),
