@@ -16,6 +16,7 @@ from collections.abc import Iterable, Mapping
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from btq_vault.entity_types import current_operator_id, current_operator_identity
 from event_pipeline import couchdb_config
 from event_pipeline.context_resolver import operator_context_snapshot
 
@@ -411,7 +412,13 @@ def _operator_aliases(operator: object, *, snapshot: Mapping[str, Any] | None = 
 
 
 def _operator_exact_aliases(operator: object, *, snapshot: Mapping[str, Any] | None = None) -> set[str]:
-    values = {_clean_string(operator)}
+    raw_operator = _clean_string(operator)
+    values = {raw_operator}
+    # The dashboard resolves the current manager by directory identity while
+    # visit creation stamps the runtime operator ID. Bridge only that current
+    # identity pair; other operators remain strictly isolated.
+    if raw_operator and _normalize_text(raw_operator) == _normalize_text(current_operator_identity()):
+        values.add(_clean_string(current_operator_id()))
     if snapshot is not None:
         values.add(_clean_string(snapshot.get("operator")))
         resolution = snapshot.get("resolution")

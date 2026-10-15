@@ -78,6 +78,31 @@ def test_weekly_qc_count_remaining_floor_and_full_completion():
     assert result["remaining"] == 0  # floored at 0, never negative
 
 
+def test_weekly_qc_count_accepts_current_runtime_stamping_id(monkeypatch):
+    monkeypatch.setenv("BTQ_OPERATOR_IDENTITY", "manager_directory_identity")
+    monkeypatch.setenv("BTQ_OPERATOR_ID", "op_current_manager")
+    visits = [
+        _visit("4001", "Acme North", "2031-05-12", visit_type="qc", operator="op_current_manager"),
+    ]
+
+    result = visit_coverage.weekly_qc_count("manager_directory_identity", now=NOW, visits=visits)
+
+    assert result["count"] == 1
+    assert result["completed"][0]["site_id"] == "4001"
+
+
+def test_weekly_qc_count_does_not_apply_current_runtime_alias_to_other_operator(monkeypatch):
+    monkeypatch.setenv("BTQ_OPERATOR_IDENTITY", "manager_directory_identity")
+    monkeypatch.setenv("BTQ_OPERATOR_ID", "op_current_manager")
+    visits = [
+        _visit("4001", "Acme North", "2031-05-12", visit_type="qc", operator="op_current_manager"),
+    ]
+
+    result = visit_coverage.weekly_qc_count("another_manager", now=NOW, visits=visits)
+
+    assert result["count"] == 0
+
+
 def test_weekly_qc_count_operator_isolation():
     visits = [
         _visit("4001", "Acme North", "2031-05-12", visit_type="qc", operator="op_other"),
