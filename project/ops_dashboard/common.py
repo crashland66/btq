@@ -1041,6 +1041,42 @@ def _clean_display_part(value: object) -> str:
     return str(value or "").strip()
 
 
+def employee_directory_name(
+    *,
+    first: object = None,
+    last: object = None,
+    name: object = None,
+    fallback: object = None,
+) -> tuple[str, tuple[str, str]]:
+    """Return a consistent ``Last, First`` label and directory sort key.
+
+    Older employee records store separate first/last fields. Newer records may
+    have only a human-readable name, so split that fallback conservatively for
+    presentation while leaving the canonical record untouched.
+    """
+    first_text = _clean_display_part(first)
+    last_text = _clean_display_part(last)
+    name_text = _clean_display_part(name)
+    fallback_text = _clean_display_part(fallback)
+
+    if not first_text and not last_text and name_text:
+        if "," in name_text:
+            parsed_last, parsed_first = (part.strip() for part in name_text.split(",", 1))
+            last_text, first_text = parsed_last, parsed_first
+        else:
+            parts = name_text.split()
+            if len(parts) >= 2:
+                first_text, last_text = " ".join(parts[:-1]), parts[-1]
+
+    if first_text and last_text:
+        return f"{last_text}, {first_text}", (last_text.lower(), first_text.lower())
+    if last_text:
+        return last_text, (last_text.lower(), "")
+    if first_text:
+        return first_text, (first_text.lower(), "")
+    return name_text or fallback_text, ((name_text or fallback_text).lower(), "")
+
+
 def render_site_label(
     site_id: object,
     *,

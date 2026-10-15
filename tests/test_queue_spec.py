@@ -1203,6 +1203,20 @@ def test_validate_mark_record_archive_payload_rejects_unknown_field() -> None:
     ) is False
 
 
+def test_validate_edit_record_fields_payload_accepts_employee_name_fields() -> None:
+    assert validate_job(
+        {
+            "job_type": JOB_EDIT_RECORD_FIELDS,
+            "payload": {
+                "record_type": "employee",
+                "record_id": "employee_watson_matthew",
+                "actor": "Greg",
+                "fields": {"first": "Matthew", "last": "Watson"},
+            },
+        }
+    )
+
+
 def test_validate_edit_record_fields_payload_passes_with_allowlisted_fields() -> None:
     assert validate_job(
         {

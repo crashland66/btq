@@ -47,7 +47,7 @@ from event_pipeline.visit_coverage import coverage_report
 import ops_dashboard.sections.inbox as _inbox_mod
 import ops_dashboard.sections.field_photos as _field_photos_mod
 
-from ops_dashboard.common import render_table
+from ops_dashboard.common import employee_directory_name, render_table
 from ops_dashboard.layout import html_page
 
 inbox_cards = _inbox_mod.inbox_cards
@@ -243,17 +243,13 @@ def _collapsible_directory(dom_id: str, title: str, inner_html: str, storage_key
 
 def _render_employee_directory(employee_rows: list[dict], site_records: dict[str, _SiteRecord]) -> str:
     def employee_label(doc: dict) -> tuple[str, tuple[str, str]]:
-        first = _string(doc.get("first"))
-        last = _string(doc.get("last"))
-        doc_id = _string(doc.get("_id"))
-        fallback = _string(doc.get("name")) or doc_id
-        if first and last:
-            return f"{last}, {first}", (last.lower(), first.lower())
-        if last:
-            return last, (last.lower(), "")
-        if first:
-            return first, (first.lower(), "")
-        return fallback, (fallback.lower(), "")
+        return employee_directory_name(
+            first=doc.get("first"),
+            last=doc.get("last"),
+            name=doc.get("name"),
+            fallback=doc.get("_id"),
+        )
+
 
     def primary_site_label(value: object) -> tuple[str, str]:
         site_id = _string(value)

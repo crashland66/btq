@@ -836,3 +836,17 @@ def test_default_actor_honors_env_override(monkeypatch: pytest.MonkeyPatch) -> N
     # blank/whitespace override falls back rather than pre-filling an empty name
     monkeypatch.setenv(common.DEFAULT_ACTOR_ENV, "   ")
     assert common.default_actor() == "Greg"
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "label", "sort_key"),
+    [
+        ({"first": "Anthony", "last": "Mezzelo", "name": "Anthony Mezzelo"}, "Mezzelo, Anthony", ("mezzelo", "anthony")),
+        ({"name": "Matthew Watson"}, "Watson, Matthew", ("watson", "matthew")),
+        ({"name": "Ruth Ann McKenzie"}, "McKenzie, Ruth Ann", ("mckenzie", "ruth ann")),
+        ({"name": "Watson, Matthew"}, "Watson, Matthew", ("watson", "matthew")),
+        ({"name": "Cher", "fallback": "employee_cher"}, "Cher", ("cher", "")),
+    ],
+)
+def test_employee_directory_name_normalizes_legacy_and_name_only_records(kwargs, label, sort_key) -> None:
+    assert common.employee_directory_name(**kwargs) == (label, sort_key)

@@ -6,7 +6,7 @@ from urllib.parse import quote
 
 from btq_vault.entity_types import current_operator_id
 from btq_vault.projector import DDOC, query_view
-from ops_dashboard.common import first_query_value, render_table
+from ops_dashboard.common import employee_directory_name, first_query_value, render_table
 from ops_dashboard.layout import html_page
 from .employee_detail import _cdb, _load_vault_doc  # noqa: F401
 
@@ -19,30 +19,21 @@ def employee_is_active(doc: dict) -> bool:
     return _string(doc.get("status")).lower() == "active"
 
 
+def _directory_name(doc: dict[str, Any]) -> tuple[str, tuple[str, str]]:
+    return employee_directory_name(
+        first=doc.get("first"),
+        last=doc.get("last"),
+        name=doc.get("name"),
+        fallback=doc.get("_id"),
+    )
+
+
 def _display_name(doc: dict[str, Any]) -> str:
-    first = _string(doc.get("first"))
-    last = _string(doc.get("last"))
-    fallback = _string(doc.get("name")) or _string(doc.get("_id"))
-    if first and last:
-        return f"{last}, {first}"
-    if last:
-        return last
-    if first:
-        return first
-    return fallback
+    return _directory_name(doc)[0]
 
 
 def _sort_key(doc: dict[str, Any]) -> tuple[str, str]:
-    first = _string(doc.get("first"))
-    last = _string(doc.get("last"))
-    fallback = _string(doc.get("name")) or _string(doc.get("_id"))
-    if first and last:
-        return last.lower(), first.lower()
-    if last:
-        return last.lower(), ""
-    if first:
-        return first.lower(), ""
-    return fallback.lower(), ""
+    return _directory_name(doc)[1]
 
 
 def load_employees() -> list[dict[str, Any]]:

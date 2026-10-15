@@ -152,6 +152,7 @@ EDIT_RECORD_FIELD_ALLOWLISTS = {
     "site_issue": {"site_id", "title", "summary", "priority", "category", "resolution_trigger"},
     "supply_need": {"site_id", "item_name", "quantity_needed", "urgency", "notes"},
     "equipment_request": {"site_id", "equipment_name", "reason", "priority", "notes"},
+    "employee": {"first", "last"},
     "shift_report": {"sc_audit_id", "sc_published_at"},
 }
 ENTITY_STATUS_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
