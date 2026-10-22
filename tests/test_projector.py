@@ -121,6 +121,34 @@ def test_build_site_dashboard_groups_by_account(monkeypatch: pytest.MonkeyPatch)
     assert "Beta Site" in html
 
 
+def test_employee_legacy_job_name_does_not_become_a_site() -> None:
+    rows = [
+        {
+            "doc": {
+                "type": "employee",
+                "_id": "employee_mezzelo_anthony",
+                "name": "Anthony Mezzelo",
+                "job": "Anthony Mezzelo",
+                "site_ids": ["1204"],
+            }
+        },
+        {
+            "doc": {
+                "type": "location",
+                "_id": "location_1204",
+                "site_id": "1204",
+                "location": "Central Cambria Elementary School",
+                "account": "Central Cambria",
+            }
+        },
+    ]
+
+    records = projector._build_site_records(rows)
+
+    assert set(records) == {"1204"}
+    assert records["1204"].name == "Central Cambria Elementary School"
+
+
 def test_build_site_dashboard_shows_contact_from_location_doc(monkeypatch: pytest.MonkeyPatch) -> None:
     install_fake_views(
         monkeypatch,

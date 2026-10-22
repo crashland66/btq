@@ -43,6 +43,7 @@ from btq_vault.projector import (
     _SiteRecord,
 )
 from btq_vault.entity_types import current_operator_identity
+from btq_vault.employee_assignments import employee_assigned_site_ids
 from event_pipeline.visit_coverage import coverage_report
 import ops_dashboard.sections.inbox as _inbox_mod
 import ops_dashboard.sections.field_photos as _field_photos_mod
@@ -276,7 +277,10 @@ def _render_employee_directory(employee_rows: list[dict], site_records: dict[str
         seen_ids.add(employee_id)
 
         display_name, sort_key = employee_label(doc)
-        primary_site_id, primary_site_display = primary_site_label(doc.get("job"))
+        assigned_site_ids = employee_assigned_site_ids(doc)
+        primary_site_id, primary_site_display = primary_site_label(
+            assigned_site_ids[0] if assigned_site_ids else ""
+        )
         employees.append(
             (
                 sort_key,

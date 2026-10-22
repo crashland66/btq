@@ -600,6 +600,12 @@ def _build_site_records(by_type_rows: list[dict]) -> dict[str, _SiteRecord]:
     for row in ordered:
         doc = row["doc"]
 
+        # Employees can carry a legacy `job` field that is not a site ID.
+        # Their actual assignments come from employees_by_site below; never
+        # turn an employee's name (or any employee field) into a site.
+        if doc.get("type") == "employee":
+            continue
+
         site_id = _string(doc.get("job") or doc.get("site_id"))
         if not site_id:
             continue

@@ -716,6 +716,29 @@ def test_home_directory_site_links_point_to_dynamic_detail_page() -> None:
     assert '<a href="/sites/b-2">Beta Two</a>' in html
 
 
+def test_employee_directory_uses_canonical_assignment_instead_of_legacy_job_name() -> None:
+    rows = [
+        {
+            "doc": {
+                "_id": "employee_mezzelo_anthony",
+                "first": "Anthony",
+                "last": "Mezzelo",
+                "name": "Anthony Mezzelo",
+                "job": "Anthony Mezzelo",
+                "site_ids": ["1204"],
+                "status": "active",
+            }
+        }
+    ]
+    sites = {"1204": home._SiteRecord("1204", "Central Cambria Elementary School", "Central Cambria")}
+
+    html = home._render_employee_directory(rows, sites)
+
+    assert "Mezzelo, Anthony" in html
+    assert '<a href="/sites/1204">Central Cambria Elementary School</a>' in html
+    assert 'href="/sites/Anthony Mezzelo"' not in html
+
+
 def test_home_directory_group_includes_employee_directory(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
